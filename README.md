@@ -1,13 +1,12 @@
 # Data Science Lab
-# Overview
 
+Team members
 <ul>
    <li>Jerry Yang</li>
    <li>Zhaofeng Liang</li>
    <li>Daniel Diamont</li>
 </ul>
 </p>
-
 
 # Installation
 
