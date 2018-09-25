@@ -46,7 +46,7 @@ Next activate the environment, and install all the python dependencies via the r
 
 ```bash
 $ source .env/bin/activate
-(.env) $ pip install -r requirements
+(.env) $ sudo pip install -r requirements
 ```
 
 <p> 
