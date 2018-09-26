@@ -1,0 +1,1414 @@
+Batched High-dimensional Bayesian Optimization
+via Structural Kernel Learning
+
+Zi Wang * 1 Chengtao Li * 1 Stefanie Jegelka 1 Pushmeet Kohli 2
+
+Abstract
+Optimization of high-dimensional black-box
+functions is an extremely challenging problem.
+While Bayesian optimization has emerged as
+a popular approach for optimizing black-box
+functions, its applicability has been limited to
+low-dimensional problems due to its computational and statistical challenges arising from
+high-dimensional settings. In this paper, we propose to tackle these challenges by (1) assuming
+a latent additive structure in the function and inferring it properly for more efficient and effective BO, and (2) performing multiple evaluations
+in parallel to reduce the number of iterations required by the method. Our novel approach learns
+the latent structure with Gibbs sampling and constructs batched queries using determinantal point
+processes. Experimental validations on both synthetic and real-world functions demonstrate that
+the proposed method outperforms the existing
+state-of-the-art approaches.
+
+1. Introduction
+Optimization is one of the fundamental pillars of modern
+machine learning. Considering that most modern machine
+learning methods involve the solution of some optimization
+problem, it is not surprising that many recent breakthroughs
+in this area have been on the back of more effective techniques for optimization. A case in point is deep learning,
+whose rise has been mirrored by the development of numerous techniques like batch normalization.
+While modern algorithms have been shown to be very
+*
+Equal contribution 1 Computer Science and Artificial Intelligence Laboratory, Massachusetts Institute of Technology, Massachusetts, USA 2 DeepMind, London, UK. Correspondence to: Zi Wang <ziw@csail.mit.edu>, Chengtao
+Li <ctli@mit.edu>, Stefanie Jegelka <stefje@csail.mit.edu>,
+Pushmeet Kohli <pushmeet@google.com>.
+
+Proceedings of the 34 th International Conference on Machine
+Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
+by the author(s).
+
+effective for convex optimization problems defined over
+continuous domains, the same cannot be stated for nonconvex optimization, which has generally been dominated
+by stochastic techniques. During the last decade, Bayesian
+optimization has emerged as a popular approach for optimizing black-box functions. However, its applicability is
+limited to low-dimensional problems because of computational and statistical challenges that arise from optimization
+in high-dimensional settings.
+In the past, these two problems have been addressed by
+assuming a simpler underlying structure of the black-box
+function. For instance, Djolonga et al. (2013) assume that
+the function being optimized has a low-dimensional effective subspace, and learn this subspace via low-rank matrix
+recovery. Similarly, Kandasamy et al. (2015) assume additive structure of the function where different constituent
+functions operate on disjoint low-dimensional subspaces.
+The subspace decomposition can be partially optimized by
+searching possible decompositions and choosing the one
+with the highest GP marginal likelihood (treating the decomposition as a hyper-parameter of the GP). Fully optimizing the decomposition is, however, intractable. Li et al.
+(2016) extended (Kandasamy et al., 2015) to functions with
+a projected-additive structure, and approximate the projective matrix via projection pursuit with the assumption that
+the projected subspaces have the same and known dimensions. The aforementioned approaches share the computational challenge of learning the groups of decomposed subspaces without assuming the dimensions of the subspaces
+are known. Both (Kandasamy et al., 2015) and subsequently (Li et al., 2016) adapt the decomposition by maximizing the GP marginal likelihood every certain number of
+iterations. However, such maximization is computationally
+intractable due to the combinatorial nature of the partitions
+of the feature space, which forces prior work to adopt randomized search heuristics.
+In this paper, we develop a new formulation of Bayesian
+optimization specialized for high dimensions. One of the
+key contributions of this work is a new formulation that
+interprets prior work on high-dimensional Bayesian optimization (HDBO) through the lens of structured kernels,
+and places a prior on the kernel structure. Thereby, our
+
+Batched High-dimensional Bayesian Optimization via Structural Kernel Learning
+
+formulation enables simultaneous learning of the decomposition of the function domain.
+Prior work on latent decomposition of the feature space
+considers the setting where exploration/evaluation is performed once at a time. This approach makes Bayesian
+optimization time-consuming for problems where a large
+number of function evaluations need to be made, which is
+the case for high dimensional problems. To overcome this
+restriction, we extend our approach to a batched version
+that allows multiple function evaluations to be performed
+in parallel (Desautels et al., 2014; González et al., 2016;
+Kathuria et al., 2016). Our second contribution is an approach to select the batch of evaluations for structured kernel learning-based HDBO.
+Other Related Work. In the past half century, a series
+of different acquisition functions was developed for sequential BO in relatively low dimensions (Kushner, 1964;
+Moc̆kus, 1974; Srinivas et al., 2012; Hennig & Schuler,
+2012; Hernández-Lobato et al., 2014; Kawaguchi et al.,
+2015; Wang et al., 2016a; Kawaguchi et al., 2016; Wang
+& Jegelka, 2017). More recent developments address
+high dimensional BO by making assumptions on the latent structure of the function to be optimized, such as lowdimensional structure (Wang et al., 2016b; Djolonga et al.,
+2013) or additive structure of the function (Li et al., 2016;
+Kandasamy et al., 2015). Duvenaud et al. (2013) explicitly
+search over kernel structures.
+While the aforementioned methods are sequential in nature, the growth of computing power has motivated settings
+where at once a batch of points is selected for observation (Contal et al., 2013; Desautels et al., 2014; González
+et al., 2016; Snoek et al., 2012; Wang et al., 2017). For
+example, the UCB-PE algorithm (Contal et al., 2013) exploits that the posterior variance of a Gaussian Process
+is independent of the function mean. It greedily selects
+points with the highest posterior variance, and is able to update the variances without observations in between selections. Similarly, B-UCB (Desautels et al., 2014) greedily
+chooses points with the highest UCB score computed via
+the out-dated function mean but up-to-date function variances. However, these methods may be too greedy in their
+selection, resulting in points that lie far from an optimum.
+More recently, Kathuria et al. (2016) tries to resolve this issue by sampling the batch via a diversity-promoting distribution for better randomized exploration, while Wang et al.
+(2017) quantifies the goodness of the batch with a submodular surrogate function that trades off quality and diversity.
+
+2. Background
+Let f : X → R be an unknown function and we aim to
+optimize it over a compact set X ⊆ RD . Within as few
+
+function evaluations as possible, we want to find
+f (x∗ ) = max f (x).
+x∈X
+
+Following (Kandasamy et al., 2015), we assume a latent decomposition of the feature dimensions [D] = {1, . . . , D}
+SM
+into disjoint subspaces, namely, m=1 Am = [D] and
+Ai ∩ Aj = ∅ for all i 6= j, i, j ∈ [D]. Further, f can
+be decomposed into the following additive form:
+X
+f (x) =
+fm (xAm ).
+m∈[M ]
+
+To make the problem tractable, we assume that each fm is
+drawn independently from GP(0, k (m) ) for all m ∈ [M ].
+The resulting f will also be a samplePfrom a GP: f ∼
+GP(µ, k), where the priors are µ(x) = m∈[M ] µm (xAm )
+P
+A
+(m) Am
+and k(x, x0 ) =
+(x , x0 m ). Let Dn =
+m∈[M ] k
+n
+{(xt , yt )}t=1 be the data we observed from f , where yt ∼
+N (f (xt ), σ). The log data likelihood for Dn is
+log p(Dn |{k (m) , Am }m∈[M ] )
+(2.1)
+1
+= − (y T (Kn + σ 2 I)−1 y + log |Kn + σ 2 I| + n log 2π)
+2
+hP
+i
+M
+(m) Am
+m
+where Kn =
+(xi , xA
+is the
+j )
+m=1 k
+i≤n,j≤n
+
+gram matrix associated with Dn , and y = [yt ]t≤n are the
+concatenated observed function values. Conditioned on the
+observations Dn , we can infer the posterior mean and covariance function of the function component f (m) to be
+Am
+µ(m)
+) = kn(m) (xAm )T (Kn + σ 2 I)−1 y,
+n (x
+
+kn(m) (xAm , x0
+−
+
+Am
+
+) = k (m) (xAm , x0
+
+kn(m) (xAm )T (Kn
+
++σ
+
+2
+
+Am
+
+)
+
+A
+I)−1 kn(m) (x0 m ),
+
+(m)
+
+Am
+m
+)]t≤n .
+where kn (xAm ) = [k (m) (xA
+t ,x
+
+We use regret to evaluate the BO algorithms, both in the
+sequential and the batch selection case. For the sequential
+selection, let r̃t = maxx∈X f (x) − f (xt ) denote the immediate regret at iteration t. We are interested
+in both the
+P
+averaged cumulative regret RT = T1 t r̃t and the simple
+regret rT = mint≤T r̃t for a total number of T iterations.
+For batch evaluations, r̃t = maxx∈X ,b∈[B] f (x) − f (xt,b )
+denotes the immediate regret obtained by the batch at iteration t. The P
+averaged cumulative regret of the batch setting
+is RT = T1 t r̃t , and the simple regret rT = mint≤T r̃t .
+We use the averaged cumulative regret in the bandit setting,
+where each evaluation of the function incurs a cost. If we
+simply want to optimize the function, we use the simple
+regret to capture the minimum gap between the best point
+found and the global optimum of the black-box function f .
+Note that the averaged cumulative regret upper bounds the
+simple regret.
+
+Batched High-dimensional Bayesian Optimization via Structural Kernel Learning
+
+3. Learning Additive Kernel Structure
+We take a Bayesian view on the task of learning the latent
+structure of the GP kernel. The decomposition of the input
+space X will be learned simultaneously with optimization
+as more and more data is observed. Our generative model
+draws mixing proportions θ ∼ D IR(α). Each dimension
+j is assigned to one out of M groups via the decomposition assignment variable zj ∼ M ULTI(θ). The objective
+PM
+Am
+), where Am =
+function is then f (x) =
+m=1 fm (x
+{j : zj = m} is the set of support dimensions for function
+fm , and each fm is drawn from a Gaussian Process. Finally, given an input x, we observe y ∼ N (f (x), σ). Figure 1 illustrates the corresponding graphical model.
+{(xt , yt )}nt=1 ,
+
+Given the observed data Dn =
+we obtain a
+posterior distribution over possible decompositions z (and
+mixing proportions θ) that we will include later in the BO
+process:
+p(z, θ | Dn ; α) ∝ p(Dn | z)p(z | θ)p(θ; α).
+Marginalizing over θ yields the posterior distribution of the
+decomposition assignment
+Z
+p(z | Dn ; α) ∝ p(Dn | z) p(z | θ)p(θ; α) dθ
+P
+Γ( m αm ) Y Γ(|Am | + αm )
+P
+∝ p(Dn | z)
+Γ(D + m αm ) m
+Γ(αm )
+where p(Dn |z) is the data likelihood (2.1) for the additive
+GP given a fixed structure defined by z. We learn the posterior distribution for z via Gibbs sampling, choose the decomposition among the samples that achieves the highest
+data likelihood, and then proceed with BO. The Gibbs sampler repeatedly draws coordinate assignments zj according
+to
+p(zj = m | z¬j , Dn ; α) ∝ p(Dn | z)p(zj | z¬j )
+∝ p(Dn | z)(|Am | + αm ) ∝ eφm ,
+where
+1
+φm = − y T (Kn(zj =m) + σ 2 I)−1 y
+2
+1
+− log |Kn(zj =m) + σ 2 I| + log(|Am | + αm )
+2
+(z =m)
+
+and Kn j
+is the gram matrix associated with the observations Dn by setting zj = m. We can use the Gumbel
+trick to efficiently sample from this categorical distribution.
+Namely, we sample a vector of i.i.d standard Gumbel variables ωi of length M , and then choose the sampled decomposition assignment zj = arg maxi≤M φi + ωi .
+With a Dirichlet process, we could make the model nonparametric and the number M of possible groups in the
+decomposition infinite. Given that we have a fixed number
+of input dimension D, we set M = D in practice.
+
+Figure 1. Graphical model for the structured Gaussian process; η
+is the hyperparameter of the GP kernel; z controls the decomposition for the input space.
+
+η
+
+α
+
+θ
+
+z
+
+d
+
+f
+
+x
+
+y
+
+4. Diverse Batch Sampling
+In real-world applications where function evaluations
+translate into time-intensive experiments, the typical sequential exploration strategy – observe one function value,
+update the model, then select the next observation – is undesirable. Batched Bayesian Optimization (BBO) (Azimi
+et al., 2010; Contal et al., 2013; Kathuria et al., 2016) instead selects a batch of B observations to be made in parallel, then the model is updated with all simultaneously.
+Extending this scenario to high dimensions, two questions
+arise: (1) the acquisition function is expensive to optimize and (2), by itself, does not sufficiently account for
+exploration. The additive kernel structure improves efficiency for (1). For batch selection (2), we need an efficient
+strategy that enourages observations that are both informative and non-redundant. Recent work (Contal et al., 2013;
+Kathuria et al., 2016) selects a point that maximizes the acquisition function, and adds additional batch points via a
+diversity criterion. In high dimensions, this diverse selection becomes expensive. For example, if each dimension
+has a finite number of possible values1 , the cost of sampling
+batch points via a Determinantal Point Process (DPP), as
+proposed in (Kathuria et al., 2016), grows exponentially
+with the number of dimensions. The same obstacle arises
+with the approach by Contal et al. (2013), where points
+are selected greedily. Thus, naı̈ve adoptions of these approaches in our setting would result in intractable algorithms. Instead, we propose a general approach that explicitly takes advantage of the structured kernel to enable
+relevant, non-redundant high-dimensional batch selection.
+We describe our approach for a single decomposition sampled from the posterior; it extends to a distribution of decompositions by sampling a set of decompositions from the
+posterior and then sampling points for each decomposition
+individually. Given a decomposition z, we define a separate Determinantal Point Process (DPP) on each group of
+Am dimensions. A set S of points in the subspace R|Am |
+(m)
+is sampled with probability proportional to det(Kn (S)),
+1
+
+While we use this discrete categorical domain to illustrate the
+batch setting, our proposed method is general and is applicable to
+continuous box-constrained domains.
+
+Batched High-dimensional Bayesian Optimization via Structural Kernel Learning
+(m)
+
+where Kn is the posterior covariance matrix of the mth group given n observations, and K(S) is the submatrix
+of K with rows and columns indexed by S. Assuming the
+group sizes are upper-bounded by some constant, sampling
+from each such DPP individually implies an exponential
+speedup compared to using the full kernel.
+Sampling vs. Greedy Maximization The determinant
+(m)
+det(Kn (S)) measures diversity, and hence the DPP assigns higher probability to diverse subsets S. An alternative
+to sampling is to directly maximize the determinant. While
+this is NP-hard, a greedy strategy gives an approximate solution, and is used in (Kathuria et al., 2016), and in (Contal
+et al., 2013) as Pure Exploration (PE). We too test this strategy in the experiments. In the beginning, if the GP is not
+approximating the function well, then greedy may perform
+no better than a stochastic combination of coordinates, as
+we observe in Fig. 6.
+Sample Combination Now we have chosen a diverse
+(m)
+subset Xm = {xi }i∈[B−1] ⊂ R|Am | of size (B − 1)
+for each group Am . We need to combine these subspace
+points to obtain B − 1 final batch query points in RD .
+A simple way to combine samples from each group is to
+do it randomly without replacement, i.e., we sample one
+(m)
+xi from each Xm uniformly randomly without replacement, and combine the parts, one for each m ∈ [M ], to get
+one sample in RD . We repeat this procedure until we have
+(B − 1) points. This retains diversity across the batch of
+samples, since the samples are diverse within each group
+of features.
+Besides this random combination, we can also combine
+(m)
+samples greedily. We define a quality function ψt
+for each group m ∈ [M ] at time t, and combine samples to maximize this quality function. Concretely, for
+(m)
+the first point, we combine the maximizers x∗
+=
+(m) (m)
+arg maxx(m) ∈Xm ψt (x ) from each group. We re(m)
+move those used parts, Xm ← Xm \{x∗ }, and repeat the
+procedure until we have (B − 1) samples. In each iteration, the sample achieving the highest quality score gets
+selected, while diversity is retained.
+Both selection strategies can be combined with a wide
+range of existing quality and acquisition functions.
+Add-UCB-DPP-BBO We illustrate the above framework with GP-UCB (Srinivas et al., 2012) as both the acquisition and quality functions. The Upper Confidence
+(m)
+(m)
+Bound (ft )+ and Lower Confidence Bound (ft )−
+with parameter βt for group m at time t are
+(m) +
+
+(m)
+
+(m) −
+
+(m)
+
+(ft
+(ft
+
+1/2 (m)
+σt (x);
+1/2 (m)
+βt σt (x),
+
+) (x) = µt−1 (x) + βt
+
+) (x) = µt−1 (x) −
+
+(4.1)
+
+(m)
+
+(m)
+
+and combine the expected value µt−1 (x) of ft with the
+1/2 (m)
+uncertainty βt σt (x). We set both the acquisition func(m)
+(m)
+tion and quality function ψt to be (ft )+ for group m
+at time t.
+To ensure that we select points with high acquisition function values, we follow (Contal et al., 2013; Kathuria et al.,
+(m)
+2016) and define a relevance region Rt for each group
+m as
+(m)
+
+Rt
+
+= {x ∈ Xm |
+(m)
+
+q
+
+µt−1 (x) + 2
+
+(m) (m)
+
+(m) •
+
+βt+1 σt−1 (x) ≥ (yt
+
+)
+
+
+,
+
+(m)
+
+(m)
+
+where (yt )• = maxx(m) ∈Xm (ft )− (x(m) ). We then
+(m)
+use Rt as the ground set to sample with PE/DPP. The
+full algorithm is shown in the appendix.
+
+5. Empirical Results
+We empirically evaluate our approach in two parts: First,
+we verify the effectiveness of using our Gibbs sampling algorithm to learn the additive structure of the unknown function, and then we test our batch BO for
+high dimensional problems with the Gibbs sampler. Our
+code is available at https://github.com/zi-w/
+Structural-Kernel-Learning-for-HDBBO.
+5.1. Effectiveness of Decomposition Learning
+We first probe the effectiveness of using the Gibbs sampling method described in Section 3 to learn the decomposition of the input space. More details of the experiments
+including sensitivity analysis for α can be found in the appendix.
+Recovering Decompositions First, we sample test functions from a known additive Gaussian Process prior with
+zero-mean and isotropic Gaussian kernel with bandwidth
+= 0.1 and scale = 5 for each function component. For
+D = 2, 5, 10, 20, 50, 100 input dimensions, we randomly
+sample decomposition settings that have at least two groups
+in the decomposition and at most 3 dimensions in each
+group.
+Table 1. Empirical posterior of any two dimensions correctly being grouped together by Gibbs sampling.
+N
+D
+5
+10
+20
+50
+100
+
+50
+
+150
+
+250
+
+450
+
+0.81 ± 0.28
+0.21 ± 0.13
+0.06 ± 0.06
+0.02 ± 0.03
+0.01 ± 0.01
+
+0.91 ± 0.19
+0.54 ± 0.25
+0.11 ± 0.08
+0.02 ± 0.02
+0.01 ± 0.01
+
+1.00 ± 0.03
+0.68 ± 0.25
+0.20 ± 0.12
+0.03 ± 0.03
+0.01 ± 0.01
+
+1.00 ± 0.00
+0.93 ± 0.15
+0.71 ± 0.22
+0.06 ± 0.04
+0.02 ± 0.02
+
+We set the burn-in period to be 50 iterations, and the total
+number of iterations for Gibbs sampling to be 100. In Tables 1 and 2, we show two quantities that are closely related
+
+Batched High-dimensional Bayesian Optimization via Structural Kernel Learning
+
+D=2
+
+D=10
+
+D=20
+
+40
+
+0.8
+
+50
+
+100
+
+40
+
+80
+
+30
+
+60
+
+rt
+
+20
+
+rt
+
+rt
+
+0.4
+
+120
+
+30
+
+rt
+
+Known
+NP
+FP
+PL-1
+PL-2
+Gibbs
+
+0.6
+
+D=50
+
+60
+
+0.2
+20
+
+40
+
+10
+
+20
+
+10
+
+0
+-0.2
+
+0
+200
+
+(a)
+
+0
+
+400
+
+200
+
+t
+
+(b)
+
+D=2
+
+0
+
+400
+
+200
+
+t
+
+400
+
+200 400 600
+
+t
+
+(c)
+
+D=10
+
+(d)
+
+D=20
+
+t
+D=50
+
+1
+
+35
+
+60
+
+120
+
+0.8
+
+30
+
+50
+
+100
+
+40
+
+80
+
+Rt
+
+Rt
+
+Rt
+
+20
+
+0.4
+
+Rt
+
+25
+0.6
+
+30
+
+60
+
+20
+
+40
+
+15
+0.2
+
+10
+
+0
+
+5
+200
+
+(e)
+
+t
+
+10
+
+400
+
+200
+
+(f)
+
+20
+
+400
+
+200
+
+(g)
+
+t
+
+400
+
+200 400 600
+
+(h)
+
+t
+
+t
+
+Figure 2. The simple regrets (rt ) and the averaged cumulative regrets (Rt ) for setting input space decomposition with Known, NP, FP,
+PL-1, PL-2, and Gibbs on 2, 10, 20, 50 dimensional synthetic additive functions. Gibbs achieved comparable results to Known.
+Comparing PL-1 and PL-2 we can see that sampling more settings of decompositions did help to find a better decomposition. But a
+more principled way of learning the decomposition using Gibbs can achieve much better performance than PL-1 and PL-2.
+
+to the learned empirical posterior of the decompositions
+with different numbers of randomly sampled observed data
+points (N ). Table 1 shows the probability of two dimensions being correctly grouped together by Gibbs sampling
+in each iteration
+Pof Gibbs sampling after the
+P burn-in period,
+namely,
+( i<j≤D 1zig ≡zjg ∧zi ≡zj )/( i<j≤D 1zi ≡zj ).
+Table 2 reports the probability of two dimensions being correctly separated in each iteration of
+Gibbs
+sampling after the
+P
+P burn-in period, namely,
+( i<j≤D 1zig 6=zjg ∧zi 6=zj )/( i<j≤D 1zi 6=zj ).
+The results show that the more data we observe, the more
+accurate the learned decompositions are. They also suggest that the Gibbs sampling procedure can converge to the
+ground truth decomposition with enough data for relatively
+small numbers of dimensions. The higher the dimension,
+the more data we need to recover the true decomposition.
+Effectiveness of Learning Decompositions for Bayesian
+Optimization To verify the effectiveness of the learned
+decomposition for Bayesian optimization, we tested on
+2, 10, 20 and 50 dimensional functions sampled from a
+zero-mean Add-GP with randomly sampled decomposi-
+
+Table 2. Empirical posterior of any two dimensions correctly being separated by Gibbs sampling.
+N
+D
+2
+5
+10
+20
+50
+100
+
+50
+
+150
+
+250
+
+450
+
+0.30 ± 0.46
+0.87 ± 0.17
+0.88 ± 0.05
+0.94 ± 0.02
+0.98 ± 0.00
+0.99 ± 0.00
+
+0.30 ± 0.46
+0.80 ± 0.27
+0.89 ± 0.06
+0.94 ± 0.02
+0.98 ± 0.00
+0.99 ± 0.00
+
+0.90 ± 0.30
+0.60 ± 0.32
+0.89 ± 0.07
+0.94 ± 0.02
+0.98 ± 0.01
+0.99 ± 0.00
+
+1.00 ± 0.00
+0.50 ± 0.34
+0.94 ± 0.07
+0.97 ± 0.02
+0.98 ± 0.01
+0.99 ± 0.00
+
+tion settings (at least two groups, at most 3 dimensions
+in each group) and isotropic Gaussian kernel with bandwidth = 0.1 and scale = 5. Each experiment was repeated 50 times. An example of a 2-dimensional function component is shown in the appendix. For Add-GP(m)
+UCB, we used βt
+= |Am | log 2t for lower dimensions
+(m)
+(D = 2, 5, 10), and βt
+= |Am | log 2t/5 for higher dimensions (D = 20, 30, 50). We show parts of the results
+on averaged cumulative regret and simple regret in Fig. 2,
+and the rest in the appendix. We compare Add-GP-UCB
+with known additive structure (Known), no partitions (NP),
+fully partitioned with one dimension for each group (FP)
+
+Batched High-dimensional Bayesian Optimization via Structural Kernel Learning
+
+1. Empirically, Gibbs changes the decompositions
+across iterations, especially in the beginning. With
+fluctuating partitions, even exploitation leads to moving around, because the supposedly “good” points are
+influenced by the partition. The result is an implicit
+“exploration” effect that is absent with a fixed partition.
+2. Gibbs sometimes merges “true” parts into larger
+parts. The parameter βt in UCB depends on the size
+of the part, |Am |(log 2t)/5 (as in (Kandasamy et al.,
+2015)). Larger parts hence lead to larger βt and hence
+more exploration.
+Of course, more exploration is not always better, but
+Gibbs was able to find a good balance between exploration and exploitation, which leads to better performance.
+Our preliminary experiments indicate that one solution to
+ensure that the ground truth decomposition produces the
+best result is to tune βt . Hyperparameter selection (such as
+choosing βt ) for BO is, however, very challenging and an
+active topic of research (e.g. (Wang et al., 2016a)).
+
+rt Improvement
+
+60
+40
+20
+0
+
+-20
+
+(a) 10
+
+20
+
+30
+
+40
+
+50
+
+60
+40
+20
+0
+
+(c)
+
+10
+
+40
+20
+0
+
+D
+
+80
+
+-20
+
+60
+
+-20
+
+rt Improvement %
+
+Rt Improvement
+
+80
+
+20
+
+30
+
+40
+
+(b) 10
+
+20
+
+10
+
+20
+
+40
+
+50
+
+30
+
+40
+
+50
+
+60
+40
+20
+0
+-20
+
+50
+
+(d)
+
+D
+
+30
+
+D
+
+80
+
+D
+
+Figure 3. Improvement made by learning the decomposition with
+Gibbs over optimizing without partitions (NP). (a) averaged cumulative regret; (b) simple regret. (c) averaged cumulative regret
+normalized by function maximum; (d) simple regret normalized
+by function maximum. Using decompositions learned by Gibbs
+continues to outperform BO without Gibbs.
+
+alternatives including partial learning. Since the function
+we tested here is composed of the distance to two objects,
+there could be some underlying additive structure for this
+function in certain regions of the input space, e.g. when
+the two robots hands are relatively distant from each other
+so that one of the hands only impacts one of the objects.
+Hence, it is possible for Gibbs to learn a good underlying
+additive structure and perform effective BO with the structures it learned.
+
+10
+NP
+FP
+PL-1
+PL-2
+Gibbs
+
+9
+8
+7
+
+rt
+
+Overall, the results show that Gibbs outperforms both of
+the partial learning methods, and for higher dimensions,
+Gibbs is sometimes even better than Known. Interestingly, similar results can be found in Fig. 3 (c) of (Kandasamy et al., 2015), where different decompositions than
+the ground truth may give better simple regret. We conjecture that this is because Gibbs is able to explore more than
+Known, for two reasons:
+
+80
+
+Rt Improvement %
+
+and the following methods of learning the decomposition:
+Gibbs sampling (Gibbs), randomly sampling the same
+number of decompositions sampled by Gibbs and select
+the one with the highest data likelihood (PL-1), randomly
+sampling 5 decompositions and selecting the one with the
+highest data likelihood (PL-2). For the latter two learning
+methods are referred to as “partial learning” in (Kandasamy
+et al., 2015). The learning of the decomposition is done every 50 iterations. Fig. 3 shows the improvement of learning
+decompositions with Gibbs over optimizing without partitions (NP).
+
+6
+5
+
+Next, we test the decomposition learning algorithm on a
+real-world function, which returns the distance between a
+designated goal location and two objects being pushed by
+two robot hands, whose trajectory is determined by 14 parameters specifying the location, rotation, velocity, moving direction etc. This function is implemented with a
+physics engine, the Box2D simulator (Catto, 2011). We
+use add-GP-UCB with different ways of setting the additive structure to tune the parameters for the robot hand so
+as to push the object closer to the goal. The regrets are
+shown in Fig. 4. We observe that the performance of learning the decomposition with Gibbs dominates all existing
+
+4
+3
+2
+100
+
+200
+
+300
+
+400
+
+500
+
+t
+
+Figure 4. Simple regret of tuning the 14 parameters for a robot
+pushing task. Learning decompositions with Gibbs is more effective than partial learning (PL-1, PL-2), no partitions (NP),
+or fully partitioned (FP). Learning decompositions with Gibbs
+helps BO to find a better point for this tuning task.
+
+Batched High-dimensional Bayesian Optimization via Structural Kernel Learning
+
+-8
+
+50
+
+(a)
+0
+
+-0.6
+
+-0.8
+
+-1
+
+-1
+
+-1.2
+
+D=2
+
+log10 R t
+
+(c)
+
+-0.2
+-0.4
+
+0
+
+(f)
+
+-0.4
+
+D=50
+
+-0.2
+-0.3
+-0.4
+-0.5
+
+100
+
+t
+
+100
+
+t
+
+-0.1
+
+-0.2
+
+-0.8
+50
+
+50
+
+(d)
+
+t
+
+-0.6
+
+100
+
+t
+
+100
+
+D=20
+
+0
+
+-0.8
+50
+
+50
+
+t
+
+-0.6
+
+-1
+
+-0.4
+
+-0.8
+
+100
+
+D=10
+
+0
+
+-0.2
+
+(e)
+
+-1.2
+50
+
+(b)
+
+-0.8
+
+-0.2
+
+-0.6
+
+t
+
+-0.6
+
+-0.6
+
+-0.8
+
+100
+
+-0.4
+
+-0.4
+
+log10 R t
+
+Rand
+Batch-UCB-PE
+Batch-UCB-DPP
+Batch-UCB-PE-Fnc
+Batch-UCB-DPP-Fnc
+
+-0.4
+
+log10 R t
+
+-6
+
+D=50
+
+0
+
+-0.2
+
+log10 r t
+
+log10 r t
+
+log10 r t
+
+-4
+
+D=20
+
+0
+
+-0.2
+
+-2
+
+log10 R t
+
+D=10
+
+0
+
+log10 r t
+
+D=2
+
+0
+
+50
+
+(g)
+
+t
+
+100
+
+50
+
+(h)
+
+100
+
+t
+
+Figure 5. Scaled simple regrets (rt ) and scaled averaged cumulative regrets (Rt ) on synthetic functions with various dimensions when
+the ground truth decomposition is known. The batch sampling methods (Batch-UCB-PE, Batch-UCB-DPP, Batch-UCB-PE-Fnc
+and Batch-UCB-DPP-Fnc) perform comparably well and outperform random sampling (Rand) by a large gap.
+
+5.2. Diverse Batch Sampling
+Next, we probe the effectiveness of batch BO in high dimensions. In particular, we compare variants of the AddUCB-DPP-BBO approach outlined in Section 4, and a
+baseline:
+• Rand: All batch points are chosen uniformly at random from X .
+• Batch-UCB-*: *∈ {PE, DPP}. All acquisition
+functions are UCB (Eq. 4.1). Exploration is done via
+PE or DPP with posterior covariance kernels for each
+group. Combination is via sampling without replacement.
+• *-Fnc: *∈ {Batch-UCB-PE, Batch-UCB-DPP}.
+All quality functions are also UCB’s, and combination
+is done by maximizing the quality functions.
+A direct application of existing batch selection methods is
+very inefficient in the high-dimensional settings where they
+differ more, algorithmically, from our approach that ex-
+
+ploits decompositions. Hence, we only compare to uniform
+sampling as a baseline.
+Effectiveness We tested on 2, 10, 20 and 50-dimensional
+functions sampled the same way as in Section 5.1; we assume the ground-truth decomposition of the feature space
+is known. Since Rand performs the worst, we show relative averaged cumulative regret and simple regret of all
+methods compared to Rand in Fig. 5. Results for absolute
+values of regrets are shown in the appendix. Each experiment was repeated for 20 times. For all experiments, we
+set βtm = |Am | log 2t and B = 10. All diverse batch sampling methods perform comparably well and far better than
+Rand, although there exist slight differences. While in
+lower dimensions (D ∈ {2, 10}), Batch-UCB-PE-Fnc
+performs among the best, in higher dimensions (D ∈
+{20, 50}), Batch-UCB-DPP-Fnc performs better than
+(or comparable to) all other variants. We will see a larger
+performance gap in later real-world experiments, showing
+that biasing the combination towards higher quality functions while retaining diversity across the batch of samples
+provides a better exploration-exploitation trade-off.
+
+Batched High-dimensional Bayesian Optimization via Structural Kernel Learning
+
+Rand
+Batch-UCB-PE
+Batch-UCB-DPP
+Batch-UCB-PE-Fnc
+Batch-UCB-DPP-Fnc
+
+rt
+
+8.5
+
+B=10
+
+Batch-UCB-PE
+Batch-UCB-DPP
+Batch-UCB-PE-Fnc
+Batch-UCB-DPP-Fnc
+
+8
+7
+
+7
+rt
+
+6
+
+8
+
+5
+
+6
+5
+
+4
+
+4
+20
+
+40
+
+60
+
+80
+
+t
+
+100
+
+10
+
+20
+
+30
+
+40
+
+50
+
+t
+
+Figure 7. Simple regret when tuning the 14 parameters of a robot
+pushing task with batch size 5 and 10. Learning decompositions
+with Gibbs sampling and diverse batch sampling are employed
+simultaneously. In general, Batch-UCB-DPP-Fnc performs a
+bit better than the other four diverse batch sampling variants. The
+gap increases with batch size.
+
+Moreover, their gain over existing methods increases as the
+dimensionality of the input grows. We believe that these
+results have the potential to enable the increased use of
+Bayesian optimization for challenging black-box optimization problems in machine learning that typically involve a
+large number of parameters.
+
+9.5
+9
+
+B=5
+
+rt
+
+For a real-data experiment, we tested the diverse batch sampling algorithms for BBO on the Walker function which
+returns the walking speed of a three-link planar bipedal
+walker implemented in Matlab (Westervelt et al., 2007).
+We tune 25 parameters that may influence the walking
+speed, including 3 sets of 8 parameters for the ODE solver
+and 1 parameter specifying the initial velocity of the stance
+leg. We discretize each dimension into 40 points, resulting
+in a function domain of |X | = 4025 . This size is very inefficient for existing batch sampling techniques. We learn the
+additive structure via Gibbs sampling and sample batches
+of size B = 5. To further improve efficiency, we limit
+the maximum size of each group to 2. The regrets for all
+methods are shown in Fig. 6. Again, all diverse batch sampling methods outperform Rand by a large gap. Moreover,
+Batch-UCB-DPP-Fnc is a bit better than other variants,
+suggesting that a selection by quality functions is useful.
+
+8
+
+Acknowledgements
+
+7.5
+7
+6.5
+10
+
+20
+
+30
+t
+
+40
+
+50
+
+60
+
+Figure 6. The simple regrets (rt ) of batch sampling methods on Walker data where B = 5. Four diverse batch
+sampling methods (Batch-UCB-PE, Batch-UCB-DPP,
+Batch-UCB-PE-Fnc
+and
+Batch-UCB-DPP-Fnc)
+outperform random sampling (Rand) by a large gap.
+Batch-UCB-DPP-Fnc performs the best among the four
+diverse batch sampling methods.
+
+Batch Sizes Finally, we show how the batch size B affects the performance of the proposed methods. We test
+the algorithms on the 14-dimensional Robot dataset with
+B ∈ {5, 10}. The regrets are shown in Fig. 4. With
+larger batches, the differences between the batch selection
+approaches become more pronounced. In both settings,
+Batch-UCB-DPP-Fnc performs a bit better than other
+variants, in particular with larger batch sizes.
+
+6. Conclusion
+In this paper, we propose two novel solutions for high dimensional BO: inferring latent structure, and combining it
+with batch Bayesian Optimization. The experimental results demonstrate that the proposed techniques are effective at optimizing high-dimensional black-box functions.
+
+We gratefully acknowledge support from NSF CAREER
+award 1553284, NSF grants 1420927 and 1523767, from
+ONR grant N00014-14-1-0486, and from ARO grant
+W911NF1410433. We thank MIT Supercloud and the
+Lincoln Laboratory Supercomputing Center for providing
+computational resources. Any opinions, findings, and conclusions or recommendations expressed in this material are
+those of the authors and do not necessarily reflect the views
+of our sponsors.
+
+References
+Azimi, Javad, Fern, Alan, and Fern, Xiaoli Z. Batch
+Bayesian optimization via simulation matching. In
+Advances in Neural Information Processing Systems
+(NIPS), 2010.
+Catto, Erin. Box2D, a 2D physics engine for games.
+http://box2d.org, 2011.
+Contal, Emile, Buffoni, David, Robicquet, Alexandre, and
+Vayatis, Nicolas. Parallel Gaussian process optimization with upper confidence bound and pure exploration.
+In Joint European Conference on Machine Learning
+and Knowledge Discovery in Databases, pp. 225–240.
+Springer, 2013.
+Desautels, Thomas, Krause, Andreas, and Burdick, Joel W.
+Parallelizing exploration-exploitation tradeoffs in Gaus-
+
+Batched High-dimensional Bayesian Optimization via Structural Kernel Learning
+
+sian process bandit optimization. Journal of Machine
+Learning Research, 2014.
+Djolonga, Josip, Krause, Andreas, and Cevher, Volkan.
+High-dimensional Gaussian process bandits. In Advances in Neural Information Processing Systems
+(NIPS), 2013.
+Duvenaud, David, Lloyd, James Robert, Grosse, Roger,
+Tenenbaum, Joshua B., and Ghahramani, Zoubin. Structure discovery in nonparametric regression through compositional kernel search. In International Conference on
+Machine Learning (ICML), 2013.
+
+Moc̆kus, J. On Bayesian methods for seeking the extremum. In Optimization Techniques IFIP Technical
+Conference, 1974.
+Snoek, Jasper, Larochelle, Hugo, and Adams, Ryan P.
+Practical Bayesian optimization of machine learning algorithms. In Advances in Neural Information Processing
+Systems (NIPS), 2012.
+Srinivas, Niranjan, Krause, Andreas, Kakade, Sham M, and
+Seeger, Matthias W. Information-theoretic regret bounds
+for Gaussian process optimization in the bandit setting.
+IEEE Transactions on Information Theory, 2012.
+
+González, Javier, Dai, Zhenwen, Hennig, Philipp, and
+Lawrence, Neil D. Batch Bayesian optimization via local penalization. International Conference on Artificial
+Intelligence and Statistics (AISTATS), 2016.
+
+Wang, Zi and Jegelka, Stefanie. Max-value entropy search
+for efficient Bayesian optimization. In International
+Conference on Machine Learning (ICML), 2017.
+
+Hennig, Philipp and Schuler, Christian J. Entropy search
+for information-efficient global optimization. Journal of
+Machine Learning Research, 13:1809–1837, 2012.
+
+Wang, Zi, Zhou, Bolei, and Jegelka, Stefanie. Optimization as estimation with Gaussian processes in bandit settings. In International Conference on Artificial Intelligence and Statistics (AISTATS), 2016a.
+
+Hernández-Lobato, José Miguel, Hoffman, Matthew W,
+and Ghahramani, Zoubin. Predictive entropy search
+for efficient global optimization of black-box functions.
+In Advances in Neural Information Processing Systems
+(NIPS), 2014.
+Kandasamy, Kirthevasan, Schneider, Jeff, and Poczos,
+Barnabas. High dimensional Bayesian optimisation and
+bandits via additive models. In International Conference
+on Machine Learning (ICML), 2015.
+Kathuria, Tarun, Deshpande, Amit, and Kohli, Pushmeet.
+Batched Gaussian process bandit optimization via determinantal point processes. In Advances in Neural Information Processing Systems (NIPS), 2016.
+Kawaguchi, Kenji, Kaelbling, Leslie Pack, and LozanoPérez, Tomás. Bayesian optimization with exponential
+convergence. In Advances in Neural Information Processing Systems (NIPS), 2015.
+Kawaguchi, Kenji, Maruyama, Yu, and Zheng, Xiaoyu.
+Global continuous optimization with error bound and
+fast convergence. Journal of Artificial Intelligence Research, 56(1):153–195, 2016.
+Kushner, Harold J. A new method of locating the maximum point of an arbitrary multipeak curve in the presence of noise. Journal of Fluids Engineering, 86(1):97–
+106, 1964.
+Li, Chun-Liang, Kandasamy, Kirthevasan, Póczos,
+Barnabás, and Schneider, Jeff.
+High dimensional
+Bayesian optimization via restricted projection pursuit
+models. In International Conference on Artificial Intelligence and Statistics (AISTATS), 2016.
+
+Wang, Zi, Jegelka, Stefanie, Kaelbling, Leslie Pack, and
+Pérez, Tomás Lozano. Focused model-learning and planning for non-Gaussian continuous state-action systems.
+In International Conference on Robotics and Automation (ICRA), 2017.
+Wang, Ziyu, Hutter, Frank, Zoghi, Masrour, Matheson,
+David, and de Feitas, Nando. Bayesian optimization in a
+billion dimensions via random embeddings. Journal of
+Artificial Intelligence Research, 55:361–387, 2016b.
+Westervelt, Eric R, Grizzle, Jessy W, Chevallereau, Christine, Choi, Jun Ho, and Morris, Benjamin. Feedback
+control of dynamic bipedal robot locomotion, volume 28.
+CRC press, 2007.
+
+

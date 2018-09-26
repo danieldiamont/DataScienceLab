@@ -1,0 +1,396 @@
+Dropout Inference in Bayesian Neural Networks with Alpha-divergences
+
+A. Code Example
+The following is a code snippet showing how our inference can be implemented with a few lines of Keras code (Chollet,
+2015). We define a new loss function bbalpha softmax cross entropy with mc logits, that takes MC sampled logits as an input. This is demonstrated for the case of classification. Regression can be implemented in a similar
+way.
+def bbalpha_softmax_cross_entropy_with_mc_logits(alpha):
+def loss(y_true, mc_logits):
+# mc_logits: output of GenerateMCSamples, of shape M x K x D
+mc_log_softmax = mc_logits - K.max(mc_logits, axis=2, keepdims=True)
+mc_log_softmax = mc_log_softmax - logsumexp(mc_log_softmax, 2)
+mc_ll = K.sum(y_true * mc_log_softmax, -1) # M x K
+return - 1. / alpha * (logsumexp(alpha * mc_ll, 1) + K.log(1.0 / K_mc))
+return loss
+
+MC samples for this loss can be generated using GenerateMCSamples, with layers being a list of Keras initialised
+layers:
+def GenerateMCSamples(inp, layers, K_mc=20):
+output_list = []
+for _ in xrange(K_mc):
+output_list += [apply_layers(inp, layers)]
+def pack_out(output_list):
+output = K.pack(output_list) # K_mc x nb_batch x nb_classes
+return K.permute_dimensions(output, (1, 0, 2)) # nb_batch x K_mc x nb_classes
+def pack_shape(s):
+s = s[0]
+return (s[0], K_mc, s[1])
+out = Lambda(pack_out, output_shape=pack_shape)(output_list)
+return out
+
+The above two functions rely on the following auxiliary functions:
+def logsumexp(x, axis=None):
+x_max = K.max(x, axis=axis, keepdims=True)
+return K.log(K.sum(K.exp(x - x_max), axis=axis, keepdims=True)) + x_max
+def apply_layers(inp, layers):
+output = inp
+for layer in layers:
+output = layer(output)
+return output
+
+B. Alpha-divergence minimisation
+There are various available definitions of α-divergences, and in this work we mainly used two of them: Amari’s definition
+(Amari, 1985) adapted to EP context (Minka, 2005), and Rényi divergence (Rényi, 1961) which is more used in information
+theory research.
+• Amari’s α-divergence (Amari, 1985):
+1
+Dα [p||q] =
+α(1 − α)
+
+
+
+Z
+1−
+
+α
+
+p(ω) q(ω)
+
+1−α
+
+
+dω .
+
+• Rényi’s α-divergence (Rényi, 1961):
+Rα [p||q] =
+
+1
+log
+α−1
+
+Z
+
+p(ω)α q(ω)1−α dω.
+
+Dropout Inference in Bayesian Neural Networks with Alpha-divergences
+1
+These two divergence can be converted to each other, e.g. Dα [p||q] = α(1−α)
+(1 − exp [(α − 1)Rα [p||q]]). In power
+EP (Minka, 2004), this α-divergence is minimised using projection-based updates. When the approximate posterior q
+has an exponential family form, minimising Dα [p||q] requires moment matching to the “tilted distribution” p̃α (ω) ∝
+p(ω)α q(ω)1−α . This projection update might be intractable for non-exponential family q distributions, and instead BB-α
+deploys a gradient-based update to search a local minimum. We will present the original derivation of the BB-α energy
+below and discuss how it relates to power EP.
+
+C. Original Derivation of BB-α Energy
+Here we include the original formulation of the BB-α energy for completeness. Consider approximating a distribution of
+the following form
+N
+Y
+1
+fn (ω),
+p(ω) = p0 (ω)
+Z
+n
+
+
+in which the prior distribution p0 (ω) has an exponential family form p0 (ω) ∝ exp λT0 φ(ω) . Here λ0 is called natural
+parameter or canonical parameter of the exponential family distribution, and φ(ω) is the sufficient statistic. As the factors
+fn might not be conjugate to the prior, the exact posterior no longer belongs to the same exponential family as the prior,
+and hence need approximations.
+EP construct
+such approximation by first approximating each complicated factor fn with
+
+
+a simpler one f˜n (ω) ∝ exp λTn φ(ω) , then constructing the approximate distribution as
+
+
+!T
+N
+X
+1
+exp 
+λn
+φ(ω) ,
+q(ω) =
+Z(λq )
+n=0
+PN
+with λq = λ0 + n=1 λn and Z(λq ) the normalising constant/partition function. These local parameters are updated
+using the following procedure (for α 6= 0):
+1 compute cavity distribution q \n (ω) ∝ q(ω)/f˜n (ω), equivalently. λ\n ← λq − λn ;
+2 compute the tilted distribution by inserting the likelihood term p̃n (ω) ∝ q \n (ω)fn (ω);
+3 compute a projection update: λq ← arg minλ Dα [p̃n ||qλ ] with qλ an exponential family with natural parameter λ;
+P
+4 recover the site approximation by λn ← λq − λ\n and form the final update λq ← n λn + λ0 .
+When converged, the solutions of λn return a fixed point of the so called power EP energy:
+Z
+N
+
+
+1X
+N
+log fn (ω)α exp (λq − αλn )T φ(ω) dω.
+LPEP (λ0 , {λn }) = log Z(λ0 ) + ( − 1) log Z(λq ) −
+α
+α n=1
+
+(8)
+
+But more importantly, before convergence all these local parameters λn are maintained in memory. This indicates that
+power EP does not scale with big data: consider Gaussian approximations which has O(d2 ) parameters with d the dimensionality of ω. Then the space complexity of power EP is O(N d2 ), which is clearly prohibitive for big models like neural
+networks that are typically applied to large datasets. BB-α provides a simple solution of this memory overhead by sharing
+the local parameters, i.e. defining λn = λ for all n = 1, ..., N . Furthermore, under the mild condition that the exponential
+family is regular, there exist a one-to-one mapping between λq and λ (given a fixed λ0 ). Hence we arrive at a “global”
+optimisation problem in the sense that only one parameter λq is optimised, where the objective function is the BB-α energy
+
+α 
+N
+1X
+fn (ω)
+Lα (λ0 , λq ) = log Z(λ0 ) − log Z(λq ) −
+log Eq
+.
+α n=1
+exp [λT φ(ω)]
+
+(9)
+
+One could verify that this is equivalent to the BB-α energy function presented in the main text by considering exponential
+family q distributions.
+Although empirical evaluations have demonstrated the superior performance of BB-α, the original formulation is difficult
+to interpret for practitioners. First the local alpha-divergence minimisation interpretation is inherited from power EP, and
+
+Dropout Inference in Bayesian Neural Networks with Alpha-divergences
+
+the intuition of power EP itself might already pose challenges for practitioners. Second, the derivation of BB-α from
+power EP is ad hoc and lacks theoretical justification. It has been shown that power EP energy can be viewed as the dual
+objective to a continuous version of Bethe free-energy, in which λn represents the Lagrange multiplier of the constraints
+in the primal problem. Hence tying the Lagrange multipliers would effectively changes the primal problem, thus losing
+a number of nice guarantees. Nevertheless this approximation has been shown to work well in real-world settings, which
+motivated our work to extend BB-α to dropout approximation.
+
+D. Full Regression Results
+Table 1. Regression experiment: Average negative test log likelihood/nats
+
+Dataset
+N
+boston
+506
+concrete
+1030
+energy
+768
+kin8nm
+8192
+power
+9568
+protein
+45730
+red wine
+1588
+yacht
+308
+naval
+11934
+year
+515345
+
+D
+α = 0.0
+α = 0.5
+α = 1.0
+HMC
+GP
+VI-G
+13 2.42±0.05 2.38±0.06 2.50±0.10 2.27±0.03 2.22±0.07 2.52±0.03
+8 2.98±0.02 2.88±0.02 2.96±0.03 2.72±0.02 2.85±0.02 3.11±0.02
+8 1.75±0.01 0.74±0.02 0.81±0.02 0.93±0.01 1.29±0.01 0.77±0.02
+8 -0.83±0.00 -1.03±0.00 -1.10±0.00 -1.35±0.00 -1.31±0.01 -1.12±0.01
+4 2.79±0.01 2.78±0.01 2.76±0.00 2.70±0.00 2.66±0.01 2.82±0.01
+9 2.87±0.00 2.87±0.00 2.86±0.00 2.77±0.00 2.95±0.05 2.91±0.00
+11 0.92±0.01 0.92±0.01 0.95±0.02 0.91±0.02 0.67±0.01 0.96±0.01
+6 1.38±0.01 1.08±0.04 1.15±0.06 1.62±0.01 1.15±0.03 1.77±0.01
+16 -2.80±0.00 -2.80±0.00 -2.80±0.00 -7.31±0.00 -4.86±0.04 -6.49±0.29
+90 3.59±NA 3.54±NA -3.59±NA
+NA±NA 0.65±NA 3.60±NA
+
+Table 2. Regression experiment: Average test RMSE
+
+Dataset
+N
+boston
+506
+concrete
+1030
+energy
+768
+kin8nm
+8192
+power
+9568
+protein
+45730
+red wine
+1588
+yacht
+308
+naval
+11934
+year
+515345
+
+D
+13
+8
+8
+8
+4
+9
+11
+6
+16
+90
+
+α = 0.0
+2.85±0.19
+4.92±0.13
+1.02±0.03
+0.09±0.00
+4.04±0.04
+4.28±0.02
+0.61±0.01
+0.76±0.05
+0.01±0.00
+8.66±NA
+
+α = 0.5
+2.97±0.19
+4.62±0.12
+1.11±0.02
+0.09±0.00
+4.01±0.04
+4.28±0.04
+0.62±0.01
+0.85±0.06
+0.01±0.00
+8.80±NA
+
+α = 1.0
+3.04±0.17
+4.76±0.15
+1.10±0.02
+0.08±0.00
+3.98±0.04
+4.23±0.01
+0.63±0.01
+0.88±0.06
+0.01±0.00
+8.97±NA
+
+HMC
+2.76±0.20
+4.12±0.14
+0.48±0.01
+0.06±0.00
+3.73±0.04
+3.91±0.02
+0.63±0.01
+0.56±0.05
+0.00±0.00
+NA±NA
+
+GP
+2.43±0.07
+5.55±0.02
+1.02±0.02
+0.07±0.00
+3.75±0.03
+4.83±0.21
+0.57±0.01
+1.15±0.09
+0.00±0.00
+0.79±NA
+
+VI-G
+2.89±0.17
+5.42±0.11
+0.51±0.01
+0.08±0.00
+4.07±0.04
+4.45±0.02
+0.63±0.01
+0.81±0.05
+0.00±0.00
+8.88±NA
+
+E. Run time trade-off
+We provide an assessment of the running time trade-offs of using an increasing number of samples at training time. Unlike
+VI, in our inference we rely on a large number of samples to reduce estimator bias. When a small number of samples is
+used (K = 1) our method collapses to standard VI. In Figure 8 we see both test accuracy as well as test log likelihood
+for a fully connected NN with four layers of 1024 units trained on the MNIST dataset, with α = 1. The two metrics are
+shown as a function of wall-clock run time for different values of K ∈ {1, 10, 100}. As can be seen, K = 1 converges to
+test accuracy of 98.8% faster than the other values of K, which converge to the same accuracy. On the other hand, when
+assessing test log likelihood, both K = 1 and K = 10 attain value −600 within 1000 seconds, but K = 10 continues
+improving its test log likelihood and converges to value −500 after 3000 seconds. K = 100 converges to the same value
+but requires much longer running time, possibly because of noise from other processes.
+
+Dropout Inference in Bayesian Neural Networks with Alpha-divergences
+
+0
+
+0.99
+
+500
+
+1000
+
+0.97
+
+Test ll
+
+Test accuracy (MC dropout)
+
+0.98
+
+1500
+0.96
+
+0.95
+10 2
+
+2000
+
+K=1
+K=10
+K=100
+10 3
+
+10 4
+Seconds (log scale)
+(a) Test accuracy
+
+10 5
+
+10 6
+
+2500 2
+10
+
+K=1
+K=10
+K=100
+10 3
+
+10 4
+Seconds (log scale)
+
+(b) Test log likelihood
+
+Figure 8. Run time experiment on the MNIST dataset for different number of samples K.
+
+10 5
+
+10 6
+
+

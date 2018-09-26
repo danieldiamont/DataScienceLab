@@ -1,0 +1,1311 @@
+Active Learning for Accurate Estimation of Linear Models
+Carlos Riquelme 1 Mohammad Ghavamzadeh 2 Alessandro Lazaric 3
+
+Abstract
+We explore the sequential decision-making problem where the goal is to estimate a number of linear models uniformly well, given a shared budget
+of random contexts independently sampled from
+a known distribution. For each incoming context,
+the decision-maker selects one of the linear models and receives an observation that is corrupted
+by the unknown noise level of that model. We
+present Trace-UCB, an adaptive allocation algorithm that learns the models’ noise levels while
+balancing contexts accordingly across them, and
+prove bounds for its simple regret in both expectation and high-probability. We extend the algorithm and its bounds to the high dimensional setting, where the number of linear models times
+the dimension of the contexts is more than the
+total budget of samples. Simulations with real
+data suggest that Trace-UCB is remarkably robust, outperforming a number of baselines even
+when its assumptions are violated.
+
+1. Introduction
+We study the problem faced by a decision-maker whose
+goal is to estimate a number of regression problems equally
+well (i.e., with a small prediction error for each of them),
+and has to adaptively allocate a limited budget of samples
+to the problems in order to gather information and improve
+its estimates. Two aspects of the problem formulation are
+key and drive the algorithm design: 1) The observations
+Y collected from each regression problem depend on side
+information (i.e., contexts X 2 Rd ) and we model the relationship between X and Y in each problem i as a linear
+function with unknown parameters i 2 Rd , and 2) The
+“hardness” of learning each parameter i is unknown in advance and may vary across the problems. In particular, we
+1
+Stanford University, Stanford, CA, USA. 2 DeepMind, Mountain View, CA, USA (The work was done when the author was
+with Adobe Research). 3 Inria Lille, France. Correspondence to:
+Carlos Riquelme <rikel@stanford.edu>.
+
+Proceedings of the 34 th International Conference on Machine
+Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
+by the author(s).
+
+assume that the observations are corrupted by noise levels
+that are problem-dependent and must be learned as well.
+This scenario may arise in a number of different domains
+where a fixed experimentation budget (number of samples)
+should be allocated to different problems. Imagine a drug
+company that has developed several treatments for a particular form of disease. Now it is interested in having an accurate estimate of the performance of each of these treatments
+for a specific population of patients (e.g., at a particular
+geographical location). Given the budget allocated to this
+experiment, a number of patients n can participate in the
+clinical trial. Volunteered patients arrive sequentially over
+time and they are represented by a context X 2 Rd summarizing their profile. We model the health status of patient X
+after being assigned to treatment i by scalar Yi 2 R, which
+depends on the specific drug through a linear function with
+parameter i (i.e., Yi ⇡ X T i ). The goal is to assign each
+incoming patient to a treatment in such a way that at the end
+of the trial, we have an accurate estimate for all i ’s. This
+will allow us to reliably predict the expected health status
+of each new patient X for any treatment i. Since the parameters i and the noise levels are initially unknown, achieving this goal requires an adaptive allocation strategy for the
+n patients. Note that while n may be relatively small, as
+the ethical and financial costs of treating a patient are high,
+the distribution of the contexts X (e.g., the biomarkers of
+cancer patients) can be precisely estimated in advance.
+This setting is clearly related to the problem of pure exploration and active learning in multi-armed bandits (Antos et al., 2008), where the learner wants to estimate the
+mean of a finite set of arms by allocating a finite budget
+of n pulls. Antos et al. (2008) first introduced this setting
+where the objective is to minimize the largest mean square
+error (MSE) in estimating the value of each arm. While
+the optimal solution is trivially to allocate the pulls proportionally to the variance of the arms, when the variances
+are unknown an exploration-exploitation dilemma arises,
+where variance and value of the arms must be estimated at
+the same time in order to allocate pulls where they are more
+needed (i.e., arms with high variance). Antos et al. (2008)
+proposed
+p a forcing algorithm where all arms are pulled at
+least n times before allocating pulls proportionally to the
+estimated variances. They derived bounds on the regret,
+measuring the difference between the MSEs of the learn-
+
+Active Learning for Accurate Estimation of Linear Models
+
+ing algorithm and an optimal allocation showing that the
+regret decreases as O(n 3/2 ). A similar result is obtained
+by Carpentier et al. (2011) that proposed two algorithms
+that use upper confidence bounds on the variance to estimate the MSE of each arm and select the arm with the
+larger MSE at each step. When the arms are embedded
+in Rd and their mean is a linear combination with an unknown parameter, then the problem becomes an optimal
+experimental design problem (Pukelsheim, 2006), where
+the objective is to estimate the linear parameter and minimize the prediction error over all arms (see e.g., Wiens &
+Li 2014; Sabato & Munos 2014). In this paper, we consider
+an orthogonal extension to the original problem where a finite number of linear regression problems is available (i.e.,
+the arms) and random contexts are observed at each time
+step. Similarly to the setting of Antos et al. (2008), we
+assume each problem is characterized by a noise with different variance and the objective is to return regularized
+least-squares (RLS) estimates with small prediction error
+(i.e., MSE). While we leverage on the solution proposed
+by Carpentier et al. (2011) to deal with the unknown variances, in our setting the presence of random contexts make
+the estimation problem considerably more difficult. In fact,
+the MSE in one specific regression problem is not only determined by the variance of the noise and the number of
+samples used to compute the RLS estimate, but also by the
+contexts observed over time.
+Contributions. We propose T RACE -UCB, an algorithm
+that simultaneously learns the “hardness” of each problem,
+allocates observations proportionally to these estimates,
+and balances contexts across problems. We derive performance bounds for T RACE -UCB in expectation and highprobability, and compare the algorithm with several baselines. T RACE -UCB performs remarkably well in scenarios
+where the dimension of the contexts or the number of instances is large compared to the total budget, motivating the
+study of the high-dimensional setting, whose analysis and
+performance bounds are reported in App. F of Riquelme
+et al. (2017a). Finally, we provide simulations with synthetic data that support our theoretical results, and with real
+data that demonstrate the robustness of our approach even
+when some of the assumptions do not hold.
+
+2. Preliminaries
+The problem. We consider m linear regression problems,
+where each instance i 2 [m] = {1, . . . , m} is characterized
+by a parameter i 2 Rd such that for any context X 2 Rd ,
+a random observation Y 2 R is obtained as
+Y = XT
+
+i
+
++ ✏i ,
+
+(1)
+
+where the noise ✏i is an i.i.d. realization of a Gaussian dis2
+tribution N (0, i2 ). We denote by max
+= maxi i2 and
+
+P
+by 2 = 1/m i i2 , the largest and the average variance,
+respectively. We define a sequential decision-making problem over n rounds, where at each round t 2 [n], the learning algorithm A receives a context Xt drawn i.i.d. from
+N (0, ⌃), selects an instance It , and observes a random
+sample YIt ,t according to (1). By the end of the experiment,
+a training set Dn = {Xt , It , YIt ,t }t2[n] has been collected
+and all the m linear regression problems are solved, each
+problem i 2 [m] with its own training set Di,n (i.e., a subset of Dn containing samples with It = i), and estimates
+of the parameters { ˆi,n }i2[m] are returned. For each ˆi,n ,
+we measure its accuracy by the mean-squared error (MSE)
+⇥
+⇤
+Li,n ( ˆi,n ) = EX (X T i X T ˆi,n )2 = k i ˆi,n k2⌃ . (2)
+We evaluate the overall accuracy of the estimates returned
+by the algorithm A as
+⇥
+⇤
+Ln (A) = max EDn Li,n ( ˆi,n ) ,
+(3)
+i2[m]
+
+where the expectation is w.r.t. the randomness of the contexts Xt and observations Yi,t used to compute ˆi,n . The
+objective is to design an algorithm A that minimizes the
+loss (3). This requires defining an allocation rule to select
+the instance It at each step t and the algorithm to compute the estimates ˆi,n , e.g., ordinary least-squares (OLS),
+regularized least-squares (RLS), or Lasso. In designing a
+learning algorithm, we rely on the following assumption.
+Assumption 1. The covariance matrix ⌃ of the Gaussian
+distribution generating the contexts {Xt }nt=1 is known.
+This is a standard assumption in active learning, since in
+this setting the learner has access to the input distribution and the main question is for which context she should
+ask for a label (Sabato & Munos, 2014; Riquelme et al.,
+2017b). Often times, companies, like the drug company
+considered in the introduction, own enough data to have
+an accurate estimate of the distribution of their customers
+(patients).
+While in the rest of the paper we focus on Ln (A), our algorithm and analysis can be easily extended to similar objectives such as replacing the maximum
+in⇥ (3) with average
+⇤
+Pm
+across all instances, i.e., 1/m i=1 EDn Li,n ( ˆi,n ) , and
+⇥
+⇤
+using weighted errors, i.e., maxi wi EDn Li,n ( ˆi,n ) , by
+updating the score to focus on the estimated standard deviation and by including the weights in the score, respectively. Later in the paper, we also consider the case where
+the expectation in (3) is replaced by the high-probability
+error (see Eq. 17).
+Optimal static allocation with OLS estimates. While the
+distribution of the contexts is fixed and does not depend on
+the instance i, the errors Li,n ( ˆi,n ) directly depend on the
+variances i2 of the noise ✏i . We define an optimal baseline
+
+Active Learning for Accurate Estimation of Linear Models
+
+obtained when the noise variances { i2 }m
+i=1 are known. In
+particular, we focus on a static allocation algorithm Astat
+that selects each instance i exactly ki,n times, independently of the context,1 and returns an estimate ˆi,n computed by OLS as
+bi,n = XT Xi,n
+i,n
+
+1
+
+XT
+i,n Yi,n ,
+
+(4)
+
+where Xi,n 2 Rki,n ⇥d is the matrix of (random) samples
+obtained at the end of the experiment, and Yi,n 2 Rki,n
+is its corresponding vector of observations. It is simple to
+show that the global error corresponding to Astat is
+Ln (Astat ) = max
+
+2
+i
+
+i2[m]
+
+ki,n
+
+⇣
+⇥ 1 ⇤⌘
+b
+Tr ⌃EDn ⌃
+,
+i,n
+
+(5)
+
+b i,n = XT Xi,n /ki,n 2 Rd⇥d is the empirical cowhere ⌃
+i,n
+variance matrix of the contexts assigned to instance i. Since
+the algorithm does not change the allocation depending on
+b 1 is distributed as an
+the contexts and Xt ⇠ N (0, ⌃), ⌃
+i,n
+inverse-Wishart and we may write (5) as
+Ln (Astat ) = max
+
+i2[m]
+
+d
+
+ki,n
+
+2
+i
+
+d
+
+1
+
+.
+
+(6)
+
+Thus, we derive the following proposition for the optimal
+static allocation algorithm A⇤stat .
+
+Proposition 1. Given m linear regression problems, each
+characterized by a parameter i , Gaussian noise with variance i2 , and Gaussian contexts with covariance ⌃, let
+n > m(d + 1), then the optimal OLS static allocation algorithm A⇤stat selects each instance
+✓
+◆
+2
+2
+i
+⇤
+ki,n
+= P i 2 n + (d + 1) 1
+,
+(7)
+2
+j
+
+j
+
+times (up to rounding effects), and incurs the global error
+✓
+◆2 !
+md
+⇤
+⇤
+2 md
+2
+Ln = Ln (Astat ) =
++O
+. (8)
+n
+n
+Proof. See Appendix A.1.2
+
+Proposition 1 divides the problems into two types: those
+for which i2
+¯ 2 (wild instances) and those for which
+2
+2
+i < ¯ (mild instances). We see that for the first type,
+the second term in (7) is negative and the instance should
+be selected less frequently than in the context-free case
+(where the optimal allocation is given just by the first term).
+On the other hand, instances whose variance is below the
+1
+This strategy can be obtained by simply selecting the first
+instance k1,n times, the second one k2,n times, and so on.
+2
+All the proofs can be found in the appendices of the extended
+version of the paper (Riquelme et al., 2017a).
+
+mean variance should be pulled more often. In any case,
+we see that the correction to the context-free allocation
+(i.e., the second term) is constant, as it does not depend on
+n. Nonetheless, it does depend on d and this suggests that
+in high-dimensional problems, it may significantly skew
+the optimal allocation.
+While A⇤stat effectively minimizes the prediction loss Ln ,
+it cannot be implemented in practice since the optimal allocation ki⇤ requires the variances i2 to be known at the
+beginning of the experiment. As a result, we need to devise
+a learning algorithm A whose performance approaches L⇤n
+as n increases. More formally, we define the regret of A as
+Rn (A) = Ln (A)
+
+Ln (A⇤stat ) = Ln (A)
+
+L⇤n ,
+
+(9)
+
+and we expect Rn (A) = o(1/n). In fact, any allocation
+strategy that selects each instance a linear number of times
+(e.g., uniform sampling) achieves a loss Ln = O(1/n), and
+thus, a regret of order O(1/n). However, we expect that the
+loss of an effective learning algorithm decreases not just at
+the same rate as L⇤n but also with the very same constant,
+thus implying a regret that decreases faster than O(1/n).
+
+3. The T RACE -UCB Algorithm
+In this section, we present and analyze an algorithm of
+the form discussed at the end of Section 2, which we
+call T RACE -UCB, whose pseudocode is in Algorithm 1.
+Algorithm 1 T RACE -UCB Algorithm
+1: for i = 1, . . . , m do
+2:
+Select problem instance i exactly d + 1 times
+2
+3:
+Compute its OLS estimates ˆi,m(d+1) and ˆi,m(d+1)
+4: end for
+5: for steps t = m(d + 1) + 1, . . . , n do
+6:
+for problem instance 1  i  m do
+7:
+Compute score
+( i,t 1 is defined in (11))
+si,t
+
+1
+
+=
+
+2
+bi,t
+
+1
+
++
+
+ki,t
+
+i,t 1
+1
+
+ˆ 1
+Tr ⌃⌃
+i,t
+
+1
+
+8:
+end for
+9:
+Select problem instance It = arg maxi2[m] si,t 1
+10:
+Observe Xt and YIt ,t
+11:
+Update its OLS estimators ˆIt ,t and ˆI2t ,t
+12: end for
+13: Return RLS estimates { ˆi,n }m
+i=1 with regularization
+
+The regularization parameter = O(1/n) is provided to
+the algorithm as input, while in practice one could set
+independently for each arm using cross-validation.
+Intuition. Equation (6) suggests that while the parameters
+of the context distribution, particularly its covariance ⌃, do
+
+Active Learning for Accurate Estimation of Linear Models
+
+not impact the prediction error, the noise variances play the
+most important role in the loss of each problem instance.
+⇤
+This is in fact confirmed by the optimal allocation ki,n
+2
+in (7), where only the variances i appear. This evidence
+suggests that an algorithm similar to GAFS-MAX (Antos
+et al., 2008) or CH-AS (Carpentier et al., 2011), which
+were designed for the context-free case (i.e., each instance i
+is associated to an expected value and not a linear function)
+would be effective in this setting as well. Nonetheless, (6)
+holds only for static allocation algorithms that completely
+ignore the context and the history to decide which instance
+It to choose at time t. On the other hand, adaptive learning
+algorithms create a strong correlation between the dataset
+Dt 1 collected so far, the current context Xt , and the decision It . As a result, the sample matrix Xi,t is no longer a
+random variable independent of A, and using (6) to design
+a learning algorithm is not convenient, since the impact of
+the contexts on the error is completely overlooked. Unfortunately, in general, it is very difficult to study the potential
+correlation between the contexts Xi,t , the intermediate estimates ˆi,t , and the most suitable choice It . However, in
+the next lemma, we show that if at each step t, we select It
+as a function of Dt 1 , and not Xt , we may still recover an
+expression for the final loss that we can use as a basis for
+the construction of an effective learning algorithm.
+Lemma 2. Let A be a learning algorithm that selects
+the instances It as a function of the previous history,
+i.e., Dt 1 = {X1 , I1 , YI1 ,1 , . . . , Xt 1 , It 1 , YIt 1 ,t 1 }
+and computes estimates bi,n using OLS. Then, its loss after
+n steps can be expressed as
+ 2 ⇣
+⌘
+i
+b 1 ,
+Ln (A) = max EDn
+Tr ⌃⌃
+(10)
+i,n
+ki,n
+i2[m]
+where ki,n =
+
+Pn
+
+t=1
+
+b i,n = XT Xi,n /ki,n .
+I{It = i} and ⌃
+i,n
+
+Proof. See Appendix B.
+
+Remark 1 (assumptions). We assume noise and contexts
+are Gaussian. The noise Gaussianity is crucial for the es2
+timates of the parameter bi,t and variance bi,t
+to be independent of each other, for each instance i and time t (we
+actually need and derive a stronger result in Lemma 9, see
+Appendix B). This is key in proving Lemma 2, as it allows
+us to derive a closed form expression for the loss function
+which holds under our algorithm, and is written in terms of
+the number of pulls and the trace of the inverse empirical
+2
+covariance matrix. Note that bi,t drives our loss, while bi,t
+drives our decisions. One way to remove this assumption is
+by defining and directly optimizing a surrogate loss equal
+to (10) instead of (3). On the other hand, the Gaussianity of
+contexts leads to the whitened inverse covariance estimate
+b 1 being distributed as an inverse Wishart. As there
+⌃⌃
+i,n
+
+is a convenient closed formula for its mean, we can find
+⇤
+the exact optimal static allocation ki,n
+in Proposition 1, see
+(7). In general, for sub-Gaussian contexts, no such closed
+formula for the trace is available. However, as long as the
+⇤
+optimal allocation ki,n
+has no second order n↵ terms for
+1/2  ↵ < 1, it is possible to derive the same regret rate
+results that we prove later on for T RACE -UCB.
+Equation (10) makes it explicit that the prediction error
+comes from two different sources. The first one is the noise
+in the measurements Y, whose impact is controlled by the
+unknown variances i2 ’s. Clearly, the larger the i2 is, the
+more observations are required to achieve the desired accuracy. At the same time, the diversity of contexts across
+instances also impacts the overall prediction error. This is
+very intuitive, since it would be a terrible idea for the research center discussed in the introduction to estimate the
+parameters of a drug by providing the treatment only to a
+hundred almost identical patients. We say contexts are balb i,n is well conditioned. Therefore, a good
+anced when ⌃
+algorithm should take care of both aspects.
+There are two extreme scenarios regarding the contributions of the two sources of error. 1) If the number of
+contexts n is relatively large, since the context distribution is fixed, one can expect that contexts allocated to each
+instance eventually become balanced (i.e., T RACE -UCB
+does not bias the distribution of the contexts). In this case,
+it is the difference in i2 ’s that drives the number of times
+each instance is selected. 2) When the dimension d or the
+number of arms m is large w.r.t. n, balancing contexts becomes critical, and can play an important role in the final
+prediction error, whereas the i2 ’s are less relevant in this
+scenario. While a learning algorithm cannot deliberately
+choose a specific context (i.e., Xt is a random variable),
+we may need to favor instances in which the contexts are
+poorly balanced and their prediction error is large, despite
+the fact that they might have small noise variances.
+
+Algorithm. T RACE -UCB is designed as a combination of
+the upper-confidence-bound strategy used in CH-AS (Carpentier et al., 2011) and the loss in (10), so as to obtain a
+learning algorithm capable of allocating according to the
+estimated variances and at the same time balancing the error generated by context mismatch. We recall that all the
+quantities that are computed at every step of the algorithm
+are indexed at the beginning and end of a step t by i, t 1
+2
+b
+(e.g., bi,t
+1 ) and i, t (e.g., i,t ), respectively. At the end of
+each step t, T RACE -UCB first computes an OLS estimate
+bi,t , and then use it to estimate the variance b2 as
+i,t
+2
+bi,t
+=
+
+1
+Yi,t
+ki,t d
+
+b
+XT
+i,t i,t
+
+2
+
+,
+
+which is the average squared deviation of the predictions
+based on bi,t . We rely on the following concentration in-
+
+Active Learning for Accurate Estimation of Linear Models
+
+equality for the variance estimate of linear regression with
+Gaussian noise, whose proof is reported in Appendix C.1.
+
+App. D.1) that shows that T RACE -UCB behaves similarly
+to the optimal static allocation.
+
+Proposition 3. Let the number of pulls ki,t
+d + 1 and
+R maxi i2 . If 2 (0, 3/4), then for any instance i and
+step t > m(d + 1), with probability at least 1 2 , we have
+s
+✓
+◆2
+2mn
+64
+2
+2
+|ˆi,t
+|
+
+=
+R
+log
+. (11)
+i,t
+i
+ki,t d
+
+Theorem 5. Let > 0. With probability at least 1
+,
+the total number of contexts that T RACE -UCB allocates to
+each problem instance i after n rounds satisfies
+r
+C + 8CTr
+nd
+⇤
+ki,n ki,n
+⌦(n1/4 )
+(14)
+2
+
+Given (11), we can construct an upper-bound on the prediction error of any instance i and time step t as
+si,t
+
+1
+
+=
+
+2
+ˆi,t
+
+1
+
++
+
+ki,t
+
+i,t 1
+
+Tr
+
+1
+
+⇣
+
+ˆ 1
+⌃⌃
+i,t 1
+
+⌘
+
+,
+
+(12)
+
+and then simply select the instance which maximizes this
+score, i.e., It = arg maxi si,t 1 . Intuitively, T RACE -UCB
+favors problems where the prediction error is potentially
+large, either because of a large noise variance or because
+of significant unbalance in the observed contexts w.r.t. the
+target distribution with covariance ⌃. A subtle but critical
+aspect of T RACE -UCB is that by ignoring the current context Xt (but using all the past samples Xt 1 ) when choosing It , the distribution of the contexts allocated to each instance stays untouched and the second term in the score
+b 1 ), naturally tends to d as more and
+si,t 1 , i.e., Tr(⌃⌃
+i,t 1
+more (random) contexts are allocated to instance i. This is
+shown by Proposition 4 whose proof is in Appendix C.2.
+Proposition 4. Force the number of samples ki,t d + 1.
+If 2 (0, 1), for any i 2 [m] and step t > m(d + 1) with
+probability at least 1
+/2, we have
+⇣
+⌘
+s
+s
+✓
+◆2
+✓
+◆2
+ˆ 1
+Tr
+⌃
+⌃
+i,t
+d
+d
+1 CTr
+
+ 1 + 2CTr
+,
+ki,t
+d
+ki,t
+p
+with CTr = 1 + 2 log(4nm/ )/d.
+While Proposition 4 shows that the error term due to context mismatch tends to the constant d for all instances i as
+the number of samples tends to infinity, when t is small
+w.r.t. d and m, correcting for the context mismatch may
+significantly improve the accuracy of the estimates bi,n returned by the algorithm. Finally, note that while T RACE UCB uses OLS to compute estimates bi,t , it computes its
+returned parameters bi,n by ridge regression (RLS) with
+regularization parameter as
+ˆ = (XT Xi,n + I)
+i
+i,n
+
+1
+
+XT
+i,n Yi,n .
+
+(13)
+
+As we will discuss later, using RLS makes the algorithm
+more robust and is crucial in obtaining regret bounds both
+in expectation and high probability.
+Performance Analysis. Before proving a regret bound for
+T RACE -UCB, we report an intermediate result (proof in
+
+min
+
+min
+
+2
+where R
+max is known by the algorithm, and
+P we defined
+2
+C = 16R log(2mn/ ) and min = min
+/ j j2 .
+
+We now report our regret bound for the T RACE -UCB algorithm. The proof of Theorem 6 is in Appendix D.2.
+Theorem 6. The regret of the Trace-UCB algorithm,
+i.e., the difference between its loss and the loss of optimal
+static allocation (see Eq. (8)), is upper-bounded by
+✓
+◆
+1 ⇣ d ⌘3/2
+Ln (A) L⇤n  O 2
+.
+(15)
+min n
+min
+
+Eq. (15) shows that the regret decreases as O(n 3/2 ) as expected. This is consistent with the context-free results (Antos et al., 2008; Carpentier et al., 2011), where the regret
+decreases as n 3/2 , which is conjectured to be optimal.
+However, it is important to note that in the contextual case,
+the numerator also includes the dimensionality d. Thus,
+when n
+d, the regret will be small, and it will be larger
+when n ⇡ d. This motivates studying the high-dimensional
+setting (App. F). Eq. (15) also indicates that the regret
+depends on a problem-dependent constant 1/ min , which
+measures the complexity of the problem. Note that when
+2
+2
+max ⇡ min , we have 1/ min ⇡ m, but 1/ min could be
+2
+2
+much larger when max
+min .
+Remark 2. We introduce a baseline motivated by the
+context-free problem. At round t, let VAR -UCB selects
+the instance that maximizes the score3
+s0i,t
+
+1
+
+=
+
+2
+ˆi,t
+
+1
+
++
+
+ki,t
+
+i,t 1
+
+.
+
+(16)
+
+1
+
+The only difference with the score used by T RACE -UCB
+is the lack of the trace term in (12). Moreover, the regret
+of this algorithm has similar rate in terms of n and d as
+that of T RACE -UCB reported in Theorem 6. However, the
+simulations of Sect. 4 show that the regret of VAR -UCB is
+actually much higher than that of T RACE -UCB, specially
+when dm is close to n. Intuitively, when n is close to dm,
+balancing contexts becomes critical, and VAR -UCB suffers
+because its score does not explicitly take them into account.
+Sketch of the proof of Theorem 6. The proof is divided
+into three parts. 1) We show that the behavior of the ridge
+3
+Note that VAR -UCB is similar to both the CH-AS and B-AS
+algorithms in Carpentier et al. (2011).
+
+Active Learning for Accurate Estimation of Linear Models
+
+loss of T RACE -UCB is similar to that reported in Lemma 2
+for algorithms that rely on OLS; see Lemma 19 in Ap2
+pendix E. The independence of the ˆi,t and ˆi,t
+estimates
+is again essential (see Remark 1). Although the loss of
+T RACE -UCB depends on the ridge estimate of the parameters ˆi,n , the decisions made by the algorithm at each
+2
+round only depend on the variance estimates ˆi,t
+and observed contexts. 2) We follow the ideas in Carpentier et al.
+(2011) to lower-bound the total number of pulls ki,n for
+each i 2 [m] under a good event (see Theorem 5 and its
+proof in Appendix D.1). 3) We finally use the ridge regularization to bound the impact of those cases outside the
+good event, and combine everything in Appendix D.2.
+The regret bound of Theorem 6 shows that the largest
+expected loss across the problem instances incurred by
+T RACE -UCB quickly approaches the loss of the optimal
+static allocation algorithm (which knows the true noise
+variances). While Ln (A) measures the worst expected loss,
+at any specific realization of the algorithm, there may be
+one of the instances which is very poorly estimated. As a
+result, it would also be desirable to obtain guarantees for
+the (random) maximum loss
+e n (A) = max k
+L
+i2[m]
+
+i
+
+ˆi,n k2 .
+
+(17)
+
+⌃
+
+In particular, we are able to prove the following highe n (A) for T RACE -UCB.
+probability bound on L
+Theorem 7. Let > 0, and assume k i k2  Z for all i,
+for some Z > 0. With probability at least 1
+,
+
+en 
+L
+
+m
+P
+
+j=1
+
+n
+
+2
+j ⇣
+
+d + 2 log
+
+3m ⌘
+
++O
+
+✓
+
+1 ⇣
+
+2
+min
+
+d
+n
+
+min
+
+⌘3 ◆
+2
+
+. (18)
+
+Note that the first term in (18) corresponds to the first term
+of the loss for the optimal static allocation, and the second
+term is, again, a n 3/2 deviation. However, in this case, the
+guarantees hold simultaneously for all the instances.
+Sketch of the proof of Theorem 7. In the proof we slightly
+modify the confidence ellipsoids for the ˆi,t ’s, based
+on self-normalized martingales, and derived in (AbbasiYadkori et al., 2011); see Thm. 13 in App. C. By means of
+the confidence ellipsoids we control the loss in (17). Their
+radiuses depend on the number of samples per instance, and
+we rely on a high-probability events to compute a lower
+bound on the number of samples. In addition, we need to
+make sure the mean norm of the contexts will not be too
+large (see Corollary 15 in App. C). Finally, we combine the
+lower bound on ki,n with the confidence ellipsoids to conclude the desired high-probability guarantees in Thm. 7.
+High-Dimensional Setting. High-dimensional linear models are quite common in practice, motivating the study of
+the n < dm case, where the algorithms discussed so far
+
+break down. We propose S PARSE -T RACE -UCB in Appendix F, an extension of T RACE -UCB that assumes and
+takes advantage of joint sparsity across the linear functions.
+The algorithm has two-stages: first, an approximate support is recovered, and then, T RACE -UCB is applied to the
+induced lower dimensional space. We discuss and extend
+our high-probability guarantees to S PARSE -T RACE -UCB
+under suitable standard assumptions in Appendix F.
+
+4. Simulations
+In this section, we provide empirical evidence to support
+our theoretical results. We consider both synthetic and realworld problems, and compare the performance (in terms of
+normalized MSE) of T RACE -UCB to uniform sampling,
+optimal static allocation (which requires the knowledge of
+noise variances), and the context-free algorithm VAR -UCB
+(see Remark 2). We do not compare to GFSP-MAX and
+GAFS-MAX (Antos et al., 2008) since they are outperformed by CH-AS Carpentier et al. (2011) and VAR -UCB
+is the same as CH-AS, except for the fact that we use the
+concentration inequality in Prop. 3, since we are estimating
+the variance from a regression problem using OLS.
+First, we use synthetic data to ensure that all the assumptions of our model are satisfied, namely we deal with linear regression models with Gaussian context and noise.
+We set the number of problem instances to m = 7 and
+consider two scenarios: one in which all the noise variances are equal to 1 and one where they are not equal,
+and 2 = (0.01, 0.02, 0.75, 1, 2, 2, 3). In the latter case,
+2
+2
+max / min = 300. We study the impact of (independently)
+increasing dimension d and horizon n on the performance,
+while keeping all other parameters fixed. Second, we consider real-world datasets in which the underlying model is
+non-linear and the contexts are not Gaussian, to observe
+how T RACE -UCB behaves (relative to the baselines) in settings where its main underlying assumptions are violated.
+Synthetic Data. In Figures 1(a,b), we display the results
+for fixed horizon n = 350 and increasing dimension d.
+For each value of d, we run 10, 000 simulations and report
+the median of the maximum error across the instances for
+each simulation. In Fig. 1(a), where i2 ’s are equal, uniform
+sampling and optimal static allocation execute the same allocation since there is no difference in the expected losses
+of different instances. Nonetheless we notice that VAR UCB suffers from poor estimation as soon as d increases,
+while T RACE -UCB is competitive with the optimal performance. This difference in performance can be explained
+by the fact that VAR -UCB does not control for contextual
+balance, which becomes a dominant factor in the loss of a
+learning strategy for problems of high dimensionality. In
+Fig. 1(b), in which i2 ’s are different, uniform sampling is
+no longer optimal but even in this case VAR -UCB performs
+
+Active Learning for Accurate Estimation of Linear Models
+1.0
+
+1.0
+Var-UCB
+Uniform Allocation
+Optimal Static Allocation
+Trace-UCB
+
+0.6
+
+0.4
+
+0.6
+
+0.4
+
+0.2
+
+5
+
+10
+2
+
+15
+
+20
+d
+
+25
+
+30
+
+35
+
+0.0
+
+(b)
+
+= (1, 1, 1, 1, 1, 1, 1).
+
+1.0
+
+5
+
+10
+2
+
+15
+
+20
+d
+
+25
+
+30
+
+35
+
+0.0
+
+0.6
+
+0.4
+
+0.2
+
+2
+
+200
+
+250
+n
+
+300
+
+350
+
+0.6
+
+0.4
+
+= (0.01, 0.02, 0.75, 1, 2, 2, 3).
+
+0.0
+
+200
+2
+
+250
+n
+
+300
+
+350
+
+= (1, 1, 1, 1, 1, 1, 1).
+
+1.0
+Var-UCB
+Uniform Allocation
+Optimal Static Allocation
+Trace-UCB
+
+0.2
+
+150
+
+150
+
+(c)
+
+= (0.01, 0.02, 0.75, 1, 2, 2, 3).
+
+0.8
+MSE (max 4.06)
+
+MSE (max 3.5)
+
+0.2
+
+1.0
+Var-UCB
+Uniform Allocation
+Optimal Static Allocation
+Trace-UCB
+
+0.8
+
+(d)
+
+0.4
+
+0.2
+
+(a)
+
+0.0
+
+0.6
+
+Var-UCB
+Uniform Allocation
+Optimal Static Allocation
+Trace-UCB
+
+0.8
+MSE (max 4.07)
+
+0.0
+
+Var-UCB
+Uniform Allocation
+Optimal Static Allocation
+Trace-UCB
+
+0.8
+MSE (max 1.74)
+
+0.8
+MSE (max 8.49)
+
+MSE (max 8.93)
+
+0.8
+
+1.0
+Var-UCB
+Uniform Allocation
+Optimal Static Allocation
+Trace-UCB
+
+0.6
+
+0.4
+
+0.2
+
+150
+
+(e)
+
+200
+2
+
+250
+n
+
+300
+
+= (1, 1, 1, 1, 1, 1, 1).
+
+350
+
+0.0
+
+(f)
+
+150
+2
+
+200
+
+250
+n
+
+300
+
+350
+
+= (0.01, 0.02, 0.75, 1, 2, 2, 3).
+
+Figure 1. White Gaussian synthetic data with m = 7. In Figures (a,b), we set n = 350. In Figures (c,d,e,f), we set d = 10.
+
+better than uniform sampling only for small d < 23, where
+it is more important to control for the i2 ’s. For larger dimensions, balancing uniformly the contexts eventually becomes a better strategy, and uniform sampling outperforms
+VAR -UCB. In this case too, T RACE -UCB is competitive
+with the optimal static allocation even for large d, successfully balancing both noise variance and contextual error.
+Next, we study the performance of the algorithms w.r.t. n.
+We report two different losses, one in expectation (3) and
+one in high probability (17), corresponding to the results
+we proved in Theorems 6 and 7, respectively. In order to
+approximate the loss in (3) (Figures 1(c,d)) we run 30, 000
+simulations, compute the average prediction error for each
+instance i 2 [m], and finally report the maximum mean error across the instances. On the other hand, we estimate the
+loss in (17) (Figures 1(e,f)) by running 30, 000 simulations,
+taking the maximum prediction error across the instances
+for each simulation, and finally reporting their median.
+In Figures 1(c, d), we display the loss for fixed dimension
+d = 10 and horizon from n = 115 to 360. In Figure 1(c),
+T RACE -UCB performs similarly to the optimal static allocation, whereas VAR -UCB performs significantly worse,
+
+ranging from 25% to 50% higher errors than T RACE -UCB,
+due to some catastrophic errors arising from unlucky contextual realizations for an instance. In Fig. 1(d), as the number of contexts grows, uniform sampling’s simple context
+balancing approach is enough to perform as well as VAR UCB that again heavily suffers from large mistakes. In
+both figures, T RACE -UCB smoothly learns the i2 ’s and
+outperforms uniform sampling and VAR -UCB. Its performance is comparable to that of the optimal static allocation,
+especially in the case of equal variances in Fig. 1(c).
+In Figure 1(e), T RACE -UCB learns and properly balances
+observations extremely fast and obtains an almost optimal
+performance. Similarly to figures 1(a,c), VAR -UCB struggles when variances ˆi2 are almost equal, mainly because it
+gets confused by random deviations in variance estimates
+ˆi2 , while overlooking potential and harmful context imbalances. Note that even when n = 360 (rightmost point), its
+median error is still 25% higher than T RACE -UCB’s. In
+Fig. 1(f), as expected, uniform sampling performs poorly,
+due to mismatch in variances, and only outperforms VAR UCB for small horizons in which uniform allocation pays
+off. On the other hand, T RACE -UCB is able to success-
+
+Active Learning for Accurate Estimation of Linear Models
+1.0
+
+0.7
+0.6
+0.5
+0.4
+
+Var-UCB
+Uniform Allocation
+Trace-UCB
+
+0.95
+
+0.8
+MSE (max 1.27)
+
+MSE (max 418.88)
+
+1.00
+
+Var-UCB
+Uniform Allocation
+Trace-UCB
+
+0.9
+
+0.90
+
+0.85
+
+0.80
+
+0.3
+500
+
+600
+
+700
+
+n
+
+800
+
+900
+
+1000
+
+200
+
+250
+
+300
+
+n
+
+350
+
+400
+
+450
+
+Figure 2. Results on Jester (left) with d = 40, m = 10 and MovieLens (right) with d = 25, m = 5. Median over 1000 simulations.
+
+fully handle the tradeoff between learning and allocating
+according to variance estimates ˆi2 , while accounting for
+b i , even for very low n. We observe
+the contextual trace ⌃
+that for large n, VAR -UCB eventually reaches the performance of the optimal static allocation and T RACE -UCB.
+In practice the loss in (17) (figures 1(e,f)) is often more relevant than (3), since it is in high probability and not in expectation, and T RACE -UCB shows excellent performance
+and robustness, regardless of the underlying variances i2 .
+Real Data. T RACE -UCB is based on assumptions such as
+linearity, and Gaussianity of noise and context that may not
+hold in practice, where data may show complex dependencies. Therefore, it is important to evaluate the algorithm
+with real-world data to see its robustness to the violation
+of its assumptions. We consider two collaborative filtering datasets in which users provide ratings for items. We
+choose a dense subset of k users and p items, where every
+user has rated every item. Thus, each user is represented
+by a p-dimensional vector of ratings. We define the user
+context by d out of her p ratings, and learn to predict her
+remaining m = p d ratings (each one is a problem instance). All item ratings are first centered, so each item’s
+mean is zero. In each simulation, n out of the k users are selected at random to be fed to the algorithm, also in random
+order. Algorithms can select any instance as the dataset
+contains the ratings of every instance for all the users. At
+the end of each simulation, we compute the prediction error
+for each instance by using the k n users that did not participate in training for that simulation. Finally, we report
+the median error across all simulations.
+Fig. 2(a) reports the results using the Jester Dataset
+by (Goldberg et al., 2001) that consists of joke ratings in
+a continuous scale from 10 to 10. We take d = 40 joke
+ratings as context and learn the ratings for another 9 jokes.
+In addition, we add another function that counts the total
+number of movies originally rated by the user. The latter
+is also centered, bounded to the same scale, and has higher
+variance (without conditioning on X). The number of to-
+
+tal users is k = 3811, and m = 10. When the number
+of observations is limited, the advantage of T RACE -UCB
+is quite significant (the improvement w.r.t. uniform allocation goes from 45% to almost 20% for large n, while w.r.t.
+VAR -UCB it goes from almost 30% to roughly 5%), even
+though the model and context distribution are far from linear and Gaussian, respectively.
+Fig. 2(b) shows the results for the MovieLens
+dataset (Maxwell Harper & Konstan, 2016) that consists of movie ratings between 0 and 5 with 0.5 increments.
+We select 30 popular movies rated by k = 1363 users,
+and randomly choose m = 5 of them to learn (so
+d = 25). In this case, all problems have similar variance
+2
+2
+(ˆmax
+/ˆmin
+⇡ 1.3) so uniform allocation seems appropriate. Both T RACE -UCB and VAR -UCB modestly improve
+uniform allocation, while their performance is similar.
+
+5. Conclusions
+We studied the problem of adaptive allocation of n contextual samples of dimension d to estimate m linear functions equally well, under heterogenous noise levels i2
+that depend on the linear instance and are unknown to
+the decision-maker. We proposed T RACE -UCB, an optimistic algorithm that successfully solves the explorationexploitation dilemma by simultaneously learning the i2 ’s,
+allocating samples accordingly to their estimates, and balancing the contextual information across the instances. We
+also provide strong theoretical guarantees for two losses of
+interest: in expectation and high-probability. Simulations
+were conducted in several settings, with both synthetic and
+real data. The favorable results suggest that T RACE -UCB
+is reliable, and remarkably robust even in settings that fall
+outside its assumptions, thus, a useful and simple tool to
+implement in practice.
+Acknowledgements. A. Lazaric is supported by French Ministry
+of Higher Education and Research, Nord-Pas-de-Calais Regional
+Council and French National Research Agency projects ExTraLearn (n.ANR-14-CE24-0010-01).
+
+Active Learning for Accurate Estimation of Linear Models
+
+References
+Abbasi-Yadkori, Y., Pál, D., and Szepesvári, Cs. Improved
+algorithms for linear stochastic bandits. In Advances in
+Neural Information Processing Systems, pp. 2312–2320,
+2011.
+Antos, A., Grover, V., and Szepesvári, Cs. Active learning
+in multi-armed bandits. In International Conference on
+Algorithmic Learning Theory, pp. 287–302, 2008.
+Carpentier, A., Lazaric, A., Ghavamzadeh, M., Munos, R.,
+and Auer, P. Upper-confidence-bound algorithms for
+active learning in multi-armed bandits. In Algorithmic
+Learning Theory, pp. 189–203. Springer, 2011.
+Goldberg, K., Roeder, T., Gupta, D., and Perkins, C. Eigentaste: A constant time collaborative filtering algorithm.
+Information Retrieval, 4(2):133–151, 2001.
+Hastie, T., Tibshirani, R., and Wainwright, M. Statistical
+learning with sparsity: the lasso and generalizations.
+CRC Press, 2015.
+Maxwell Harper, F. and Konstan, J. The movielens
+datasets: History and context. ACM Transactions on Interactive Intelligent Systems (TiiS), 5(4):19, 2016.
+Negahban, S. and Wainwright, M. Simultaneous support recovery in high dimensions: Benefits and perils of
+block-regularization. IEEE Transactions on Information
+Theory, 57(6):3841–3863, 2011.
+Obozinski, G., Wainwright, M., and Jordan, M. Support
+union recovery in high-dimensional multivariate regression. The Annals of Statistics, pp. 1–47, 2011.
+Pukelsheim, F. Optimal Design of Experiments. Classics in
+Applied Mathematics. Society for Industrial and Applied
+Mathematics, 2006.
+Raskutti, G., Wainwright, M. J, and Yu, B. Restricted
+eigenvalue properties for correlated gaussian designs.
+Journal of Machine Learning Research, 11(8):2241–
+2259, 2010.
+Riquelme, C., Ghavamzadeh, M., and Lazaric, A. Active
+learning for accurate estimation of linear models. arXiv
+preprint arXiv:1703.00579, 2017a.
+Riquelme, C., Johari, R., and Zhang, B. Online active
+linear regression via thresholding. In Thirty-First AAAI
+Conference on Artificial Intelligence, 2017b.
+Sabato, S. and Munos, R. Active regression by stratification. In Advances in Neural Information Processing
+Systems, pp. 469–477, 2014.
+Vershynin, R. Introduction to the non-asymptotic analysis
+of random matrices. arXiv:1011.3027, 2010.
+
+Wainwright, M. High-dimensional statistics: A nonasymptotic viewpoint. Draft, 2015.
+Wang, W., Liang, Y., and Xing, E. Block regularized lasso
+for multivariate multi-response linear regression. In AISTATS, 2013.
+Wiens, D. and Li, P. V-optimal designs for heteroscedastic regression. Journal of Statistical Planning and Inference, 145:125–138, 2014.
+
+
