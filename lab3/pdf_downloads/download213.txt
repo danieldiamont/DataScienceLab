@@ -1,1220 +1,1223 @@
-Differentiable Programs with Neural Libraries
+Provably Optimal Algorithms for Generalized Linear Contextual Bandits
 
-Alexander L. Gaunt 1 Marc Brockschmidt 1 Nate Kushman 1 Daniel Tarlow 2
+Lihong Li 1 Yu Lu 2 Dengyong Zhou 1
 
 Abstract
-We develop a framework for combining differentiable programming languages with neural networks. Using this framework we create end-toend trainable systems that learn to write interpretable algorithms with perceptual components.
-We explore the benefits of inductive biases for
-strong generalization and modularity that come
-from the program-like structure of our models. In
-particular, modularity allows us to learn a library
-of (neural) functions which grows and improves
-as more tasks are solved. Empirically, we show
-that this leads to lifelong learning systems that
-transfer knowledge to new tasks more effectively
-than baselines.
+Contextual bandits are widely used in Internet
+services from news recommendation to advertising, and to Web search. Generalized linear
+models (logistical regression in particular) have
+demonstrated stronger performance than linear
+models in many applications where rewards are
+binary. However, most theoretical analyses on
+contextual bandits so far are on linear bandits. In
+this work, we propose an upper confidence bound
+based algorithm for generalized linear
+√ contextual bandits, which achieves an Õ( dT ) regret
+over T rounds with d dimensional feature vectors. This regret matches the minimax lower
+bound, up to logarithmic terms,
+√and improves on
+the best previous result by a d factor, assuming the number of arms is fixed. A key component in our analysis is to establish a new, sharp
+finite-sample confidence bound for maximumlikelihood estimates in generalized linear models, which may be of independent interest. We
+also analyze a simpler upper confidence bound
+algorithm, which is useful in practice, and prove
+it to have optimal regret for certain cases.
 
 1. Introduction
-Recently, there has been much work on learning algorithms
-using neural networks. Following the idea of the Neural Turing Machine (Graves et al., 2014), this work has focused on
-extending neural networks with interpretable components
-that are differentiable versions of traditional computer components, such as external memories, stacks, and discrete
-functional units. However, trained models are not easily
-interpreted as the learned algorithms are embedded in the
-weights of a monolithic neural network. In this work we flip
-the roles of the neural network and differentiable computer
-architecture. We consider interpretable controller architectures which express algorithms using differentiable programming languages (Gaunt et al., 2016; Riedel et al., 2016;
-Bunel et al., 2016). In our framework, these controllers can
-execute discrete functional units (such as those considered
-by past work), but also have access to a library of trainable,
-uninterpretable neural network functional units. The system is end-to-end differentiable such that the source code
-representation of the algorithm is jointly induced with the
-parameters of the neural function library. In this paper we
+Contextual bandit problems are originally motivated by applications in clinical trials (Woodroofe, 1979). When a
+standard treatment and a new treatment are available for
+a certain disease, the doctor needs to decide, in a sequetial
+manner, which of them to use based on the patient’s profiles
+such as age, general physical status or medicine history.
+With the development of modern technologies, contextual
+bandit problems have more applications, especially in webbased recommendation, advertising and search (Agarwal
 1
 
-Microsoft Research, Cambridge, UK 2 Google Brain, Montréal,
-Canada (work done while at Microsoft). Correspondence to:
-Alexander L. Gaunt <algaunt@microsoft.com>.
+Microsoft Research, Redmond, WA 98052 2 Department
+of Statistics, Yale University, New Haven, CT, USA. Correspondence to:
+Lihong Li <lihongli@microsoft.com>,
+Yu Lu <yu.lu@yale.edu>,
+Dengyong Zhou <denzho@microsoft.com>.
 Proceedings of the 34 th International Conference on Machine
-Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017 by
-the author(s).
+Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
+by the author(s).
 
-explore potential advantages of this class of hybrid model
-over purely neural systems, with a particular emphasis on
-lifelong learning systems that learn from weak supervision.
-We concentrate on perceptual programming by example
-(PPBE) tasks that have both algorithmic and perceptual elements to exercise the traditional strengths of program-like
-and neural components. Examples of this class of task include navigation tasks guided by images or natural language
-(see Fig. 1) or handwritten symbol manipulation (see Sec. 3).
-Using an illustrative set of PPBE tasks we aim to emphasize
-two specific benefits of our hybrid models:
-First, the source code representation in the controller allows
-modularity: the neural components are small functions that
-specialize to different tasks within the larger program structure. It is easy to separate and share these functional units to
-transfer knowledge between tasks. In contrast, the absence
-of well-defined functions in purely neural solutions makes
-effective knowledge transfer more difficult, leading to problems such as catastrophic forgetting in multitask and lifelong learning (McCloskey & Cohen, 1989; Ratcliff, 1990).
-In our experiments, we consider a lifelong learning setting
-in which we train the system on a sequence of PPBE tasks
-that share perceptual subtasks.
-Second, the source code representation enforces an inductive bias that favors learning solutions that exhibit strong
-generalization. For example, once a suitable control flow
-structures (e.g., a for loop) for a list manipulation problem was learned on short examples, it trivially generalizes
-to lists of arbitrary length. In contrast, although some neural architectures demonstrate a surprising ability to generalize, the reasons for this generalization are not fully understood (Zhang et al., 2017) and generalization performance
-invariably degrades as inputs become increasingly distinct
-from the training data.
-This paper is structured as follows. We first present a language, called N EURAL T ERPRE T (NTPT), for specifying
-hybrid source code/neural network models (Sec. 2), and
-then introduce a sequence of PPBE tasks (Sec. 3). Our
-NTPT models and purely neural baselines are described
-in Sec. 4 and 5 respectively. The experimental results are
-presented in Sec. 6.
+et al., 2009; Li et al., 2010; 2012). In the problem of personalized news recommendation, the website must recommend news articles that are most interesting to users that
+visit the website. The problem is especially challenging
+for breaking news, as little data are available to make good
+prediction about user interest. A trade-off naturally occurs
+in this kind of sequential decision making problems. One
+needs to balance exploitation—choosing actions that performed well in the past—and exploration—choosing actions that may potentially give better outcomes.
+In this paper, we study the following stochastic, K-armed
+contextual bandit problem. Suppose at each of the T
+rounds, an agent is presented with a set of K actions, each
+of which is associated with a context (a d-dimensional feature vector). By choosing an action based on the rewards
+obtained from previous rounds and on the contexts, the
+agent will receive a stochastic reward generated from some
+unknown distribution conditioned on the context and the
+chosen action. The goal of the agent is to maximize the
+expected cumulative rewards over T rounds. The most
+studied model in contextual bandits literature is the linear
+model (Auer, 2002; Dani et al., 2008; Rusmevichientong
+& Tsitsiklis, 2010; Chu et al., 2011; Abbasi-Yadkori et al.,
+2011), in which the expected rewards at each round is a linear combination of features in the context vector. The linear model is theoretically convenient to work with. However, in practice, we usually have binary rewards (click or
+not, treatment working or not). Logistic regression model
+based algorithms have been shown to have substantial improvements over linear models (Li et al., 2012). We therefore consider generalized linear models (GLM) in the contextual bandit setting, in which linear, logistic and probit
+regression serve as three important special cases.
+The celebrated work of Lai & Robbins (1985) first introduces the upper confidence bound (UCB) approach to efficient exploration. Later, the idea of confidence bound has
+been successfully applied to many stochastic bandits problems, from K-arm bandits problems (Auer et al., 2002a;
+Bubeck & Cesa-Bianchi, 2012) to linear bandits (Auer,
+2002; Abbasi-Yadkori et al., 2011). UCB-type algorithms
+are both efficient and provable optimal in K-arm bandits
+and K-armed linear bandits. However, most study are limited to the linear case. While some UCB-type algorithms
+using GLMs perform well empirically (Li et al., 2012),
 
-Differentiable Programs with Neural Libraries
-Declaration & initialization
-# constants
-max_int = 15; n_instr = 3; T = 45
-W = 5; H = 3; w = 28; h = 28
-# variables
-img_grid = InputTensor(w, h)[W, H]
-init_X = Input(W)
-init_Y = Input(H)
-final_X = Output(W)
-final_Y = Output(H)
-path_len = Output(max_int)
-is_halted_at_end = Output(2)
-instr = Param(4)[n_instr]
-goto = Param(n_instr)[n_instr]
-X = Var(W)[T]
-Y = Var(H)[T]
-dir = Var(5)[T]
-reg = Var(max_int)[T]
-instr_ptr = Var(n_instr)[T]
-is_halted = Var(2)[T]
-# initialization
-X[0].set_to(init_X)
-Y[0].set_to(init_Y)
-dir[0].set_to(1)
-reg[0].set_to(0)
-instr_ptr[0].set_to(0)
+Generalized Linear Contextual Bandits
 
-Input-output
-data set
+there is little theoretical study of them. A natural question
+arises: can we find an efficient algorithm to achieve the optimal convergence rate for generalized linear bandits?
+Our Contributions In this paper, we propose a GLM
+version of the UCB algorithm called SupCB-GLM
+that
+√
+achieves a regret over T rounds of order Õ( dT ). This rate
+improves
+√ the state-of-the-art results of Filippi et al. (2010)
+by a d factor, assuming the number of actions is fixed.
+Moreover, it matches the GLM bandits problem’s minimax lower bound indicated by the linear bandits problem
+and thus is optimal. SupCB-GLM is inspired by the seminal work of Auer (2002), which introduced a technique to
+construct independence samples in linear contextual bandits. A key observation in proving this result is that the
+`2 confidence ball of the unknown parameter is insufficient
+to calculate a sharp upper confidence bound, yet what we
+need is the confidence interval in all directions. Thus, we
+prove a finite sample normality type confidence bound for
+the maximum likelihood estimator of GLM. To the best of
+our knowledge, this is the first non-asymptotic normality
+type result for the GLM and might be of its own theoretical
+value. We also analyze a simple version of UCB algorithm
+called UCB-GLM that is widely used in practice. We prove
+it also achieves the optimal regret bound under a reasonable assumption. These results shed light on explaining the
+good empirical performance of GLM bandits in practice.
+Related Work The study of GLM bandits problem goes
+back at least to Sarkar (1991), who considered discounted
+regrets rather than cumulative regerts. They prove that a
+myopic rule without exploration is asymptotically optimal.
+Recently, Filippi et al. (2010) study the same stochastic
+GLM bandit problem considered here. They propose the
+GLM-UCB algorithm, similar
+to our Algorithm 1, which
+√
+achieves a regret of Õ(d T ) after T rounds. However, as
+we believe the optimal regret for stochastic GLM bandits
+should be the same as linear case√when the number of actions is small, their rates misses a d term than the optimal
+rates.
+Another line of research focuses on using EXP-type algorithms, which can be applied to almost any model
+classes (Auer et al., 2002b). These algorithms, which
+choose actions using a carefully randomized policy, use
+importance sampling to reduce a bandit problem to its fullinformation analogue. Later variants of the EXP4 algorithm (Beygelzimer
+et al., 2010; Agarwal et al., 2014) give
+√
+an Õ( dKT ) regret that is near-optimal√ with respect to
+T . However, these regret bounds have a K dependence.
+Moreover, these algorithms can be expensive to run: they
+either have a computational complexity exponential in d for
+our GLM case, or need to make a large number of calls to
+a nontrivial optimization oracle.
 
-Execution model
+Organization Section 2 introduces the generalized linear
+bandit problem. Section 3 gives a brief review of the statistical properties of generalized linear model, and gives a
+sharp non-asymptotic normality-type result for GLM parameter estimation which can be of independent value.
+With this tool, Section 4 presents our algorithms and the
+main theoretical results. Section 5 concludes the paper with
+further discussions, including several open problems. All
+proofs are given in the supplementary materials.
+Notations For a vector x ∈ Rd , we use kxk to denote its
+`2 - norm and x0 its transpose. Bd := {x ∈ Rd : kxk ≤ 1}
+is the unit ball centered at the origin. The weighted `2 -norm
+associated √
+with a positive-definite matrix A is defined by
+kxkA := x0 Ax. The minimum and maximum singular
+values of a matrix A are written as λmin (A) and kAk, respectively. The trace of a matrix A is tr (A). For two symmetric matrices A and B of the same dimensions, A  B
+means that A − B is positive semi-definite. For a realvalued function f , we use f˙ and f¨ to denote its first and
+second derivatives. Finally, [n] := {1, 2, . . . , n}.
 
-Instruction Set
-# Discrete operations
-@Runtime([max_int], max_int)
-def INC(a):
-return (a + 1) % max_int
-@Runtime([max_int], max_int)
-def DEC(a):
-return (a - 1) % max_int
-@Runtime([W, 5], W)
-def MOVE_X(x, dir):
-if
-dir == 1: return (x + 1) % W # →
-elif dir == 3: return (x - 1) % W # ←
-else: return x
-@Runtime([H, 5], H)
-def MOVE_Y(y, dir):
-if
-dir == 2: return (y - 1) % H # ↑
-elif dir == 4: return (y + 1) % H # ↓
-else: return y
-# Helper functions
-@Runtime([5],2)
-def eq_zero(dir):
-return 1 if dir == 0 else 0
-# Learned operations
-@Learn([Tensor(w,h)],5,hid_sizes=[256,256])
-def LOOK(img):
-pass
-
-init_X = 0
-init_Y = 1
-img_grid =
-
-final_X = 4
-final_Y = 2
-path_len = 7
-
-for t in range(T - 1):
-is_halted[t].set_to(eq_zero(dir[t]))
-if is_halted[t] == 1:
-# halted
-dir[t + 1].set_to(dir[t])
-X[t + 1].set_to(X[t])
-Y[t + 1].set_to(Y[t])
-reg[t + 1].set_to(reg[t])
-instr_ptr[t + 1].set_to(instr_ptr[t])
-elif is_halted[t] == 0: # not halted
-with instr_ptr[t] as i:
-if instr[i] == 0:
-# INC
-reg[t + 1].set_to(INC(reg[t]))
-elif instr[i] == 1:
-# DEC
-reg[t + 1].set_to(DEC(reg[t]))
-else:
-reg[t + 1].set_to(reg[t])
-if instr[i] == 2:
-# MOVE
-X[t + 1].set_to(MOVE_X(X[t], dir[t]))
-Y[t + 1].set_to(MOVE_Y(Y[t], dir[t]))
-else:
-X[t + 1].set_to(X[t])
-Y[t + 1].set_to(Y[t])
-if instr[i] == 3:
-# LOOK
-with X[t] as x:
-with Y[t] as y:
-dir[t + 1].set_to(LOOK(img_grid[y,x]))
-else:
-dir[t + 1].set_to(dir[t])
-
-Solution
-instr = [3,2,0]
-goto = [1,2,0]
-
-L0
-if not halted:
-dir = LOOK
-halt if dir == 0
-goto L1
-
-L1
-if not halted:
-MOVE(dir)
-goto L2
-L2
-if not halted:
-reg = INC(reg)
-goto L0
-
-instr_ptr[t + 1].set_to(goto[i])
-final_X.set_to(X[T - 1])
-final_Y.set_to(X[T - 1])
-path_len.set_to(reg[T – 1])
-is_halted_at_end.set_to(ishalted[T - 2])
-
-LOOK:=
-
-Figure 1: Components of an illustrative NTPT program for learning loopy programs that measure path length (path len)
-through a maze of street sign images. The learned program (parameterized by instr and goto) must control the position
-(X, Y) of an agent on a grid of (W×H) street sign images each of size (w×h). The agent has a single register of memory
-(reg) and learns to interpret street signs using the LOOK neural function. Our system produces a solution consisting of a
-correctly inferred program and a trained neural network (see Supplementary Material). Learnable components are shown in
-blue and the NTPT extensions to the T ERPRE T language are highlighted. The red path on the img grid shows the desired
-behavior and is not provided at training time.
-
-2. Building hybrid models
-The T ERPRE T language (Gaunt et al., 2016) provides a system for constructing differentiable program interpreters that
-can induce source code operating on basic data types (e.g.
-integers) from input-output examples. We extend this language with the concept of learnable neural functions. These
-can either be embedded inside the differentiable interpreter
-as mappings from integer to integer or (as we emphasize in
-this work) can act as learnable interfaces between perceptual data represented as floating point Tensors and the differentiable interpreter’s integer data type. Below we briefly
-review the T ERPRE T language and describe the N EURAL
-T ERPRE T extensions.
-
-distributions over integers in finite ranges. Fig. 1 illustrates
-an example application of the language.
-T ERPRE T can be translated into a TensorFlow (Abadi et al.,
-2015) computation graph which can then be trained using
-standard methods. For this, two key features of the language
-need to be translated:
-
-2.1. T ERPRE T
-
-• Function
-application.
-The
-statement
-z.set to(foo(x,
-y))
-is
-translated
-into
-P
-x y
-a
-µzi =
-I
-µ
-µ
-where
-µ
-represents
-the
-jk ijk j k
-marginal distribution for the variable a and I is an
-indicator tensor 1[i = foo(j, k)]. This approach
-extends to all functions mapping any number of
-integer arguments to an integer output.
-
-T ERPRE T programs specify a differentiable interpreter by
-defining the relationship between Inputs and Outputs
-via a set of inferrable Params (that define an executable
-program) and Vars (that store intermediate results). T ER PRE T requires all of these variables to range over bounded
-integers. The model is made differentiable by a compilation
-step that lifts the relationships between integers specified
-by the T ERPRE T code to relationships between marginal
-
-• Conditional statements The statements if
-x == 0: z.set to(a); elif x == 1:
-z.set to(b) are translated to µz = µx0 µa + µx1 µb .
-Statements switching between more than two cases
-follow a similar pattern, with details given in (Gaunt
-et al., 2016).
-
-(a)
-
-(b)
-
-+
-
-8
-
-+
-
-10
-
-Differentiable Programs with Neural Libraries
-(c)
-
-4
-? 3
-? 2
-
-+
-
-+
-
-A
-
-A
-
-7
-
-11
-
-5
-
-14
-
-A
-
-14
-
-A
-
-3
-
-= 2
-
-= 11
-
-Figure 2: Overview of tasks in the (a) A DD 2 X 2, (b) A PPLY 2 X 2 and (c) M ATH scenarios. ‘A’ denotes the APPLY operator
-which replaces the ? tiles with the selected operators and executes the sum. We show two M ATH examples of different
-length.
-2.2. N EURAL T ERPRE T
-To handle perceptual data, we relax the restriction that all
-variables need to be finite integers. We introduce a new
-floating point Tensor type whose dimensions are fixed
-at declaration, and which is suitable for storing perceptual data. Additionally, we introduce learnable functions
-that can process integer or tensor variables. A learnable
-function is declared using @Learn([d1 , . . . , dD ], dout ,
-hid sizes=[`1 , . . . , `L ]), where the first component
-specifies the dimensions (resp. ranges) d1 , . . . , dD of the
-input tensors (resp. integers) and the second specifies the dimension of the output. NTPT compiles such functions into
-a fully-connected feed-forward neural network whose layout is controlled by the hid sizes component (specifying
-the number neurons in each layer). The inputs of the function are simply concatenated. Tensor output is generated by
-learning a mapping from the last hidden layer, and finite
-integer output is generated by a softmax layer producing a
-distribution over integers up to the declared bound. Learnable parameters for the generated network are shared across
-every use of the function in the NTPT program, and as they
-naturally fit into the computation graph for the remaining
-T ERPRE T program, the whole system is trained end-to-end.
-We illustrate an example NTPT program for learning navigation tasks in a maze of street signs (Stallkamp et al., 2011)
-in Fig. 1.
-
-3. A Lifetime of PPBE Tasks
-Motivated by the hypothesis that the modularity of the
-source code representation benefits knowledge transfer, we
-devise a sequence of PPBE tasks to be solved by sharing
-knowledge between tasks. Our tasks are based on algorithmic manipulation of handwritten digits and mathematical
-operators.
-In early tasks the model learns to navigate simple 2 × 2
-grids of images, and to become familiar with the concepts
-of digits and operators from a variety of weak supervision.
-Despite their simplicity, these challenges already pose problems for purely neural lifelong learning systems.
-
-The final task in the learning lifetime is more complex and
-designed to test generalization properties: the system must
-learn to compute the results of variable-length mathematical
-expressions expressed using handwritten symbols. The algorithmic component of this task is similar to arithmetic tasks
-presented to contemporary Neural GPU models (Kaiser &
-Sutskever, 2016; Price et al., 2016). The complete set of
-tasks is illustrated in Fig. 2 and described in detail below.
-A DD 2 X 2 scenario: The first scenario in Fig. 2(a) uses of
-a 2 × 2 grid of MNIST digits. We set 4 tasks based on this
-grid: compute the sum of the digits in the (1) top row, (2) left
-column, (3) bottom row, (4) right column. All tasks require
-classification of MNIST digits, but need different programs
-to compute the result. As training examples, we supply only
-a grid and the resulting sum. Thus, we never directly label
-an MNIST digit with its class.
-A PPLY 2 X 2 scenario: The second scenario in Fig. 2(b)
-presents a 2 × 2 grid of of handwritten arithmetic operators. Providing three auxiliary random integers d1 , d2 , d3 ,
-we again set 4 tasks based on this grid, namely to evaluate the expression1 d1 op1 d2 op2 d3 where (op1 , op2 )
-are the operators represented in the (1) top row, (2) left column, (3) bottom row, (4) right column. In comparison to
-the first scenario, the dataset of operators is relatively small
-and consistent2 , making the perceptual task of classifying
-operators considerably easier.
-M ATH scenario: The final task in Fig. 2(c) requires combination of the knowledge gained from the weakly labeled
-data in the first two scenarios to execute a handwritten arithmetic expression.
+2. Problem Setting
+We consider the stochastic K-armed contextual bandit
+problem. Let T be the number of total rounds. At round
+t, the agent observes a context consisting of a set of K
+feature vectors, {xt,a | a ∈ [K]} ⊂ Rd , which is drawn
+IID from an unknown distribution ν, with kxt,a k ≤ 1.
+Each feature vector xt,a is associated with an unknown
+stochastic reward yt,a ∈ [0, 1]. The agent selects one action, denoted at , and observes the corresponding reward
+yt,at . Finally, we make a regularity assumption about the
+distributionPν: there exists a constant σ0 > 0 such that
 1
-
-Note that for simplicity, our toy system ignores operator precedence and executes operations from left to right - i.e. the sequence
-in the text is executed as ((d1 op1 d2 ) op2 d3 ).
 2
-200 handwritten examples of each operator were collected
-from a single author to produce a training set of 600 symbols and
-a test set of 200 symbols from which to construct random 2 × 2
-grids.
+0
+λmin (E[ K
+a∈[K] xt,a xt,a ]) ≥ σ0 for all t.
+In this paper, we are concerned with the generalized linear
+model, or GLM, in which there is an unknown θ∗ ∈ Rd and
+a fixed, strictly increasing link function µ : R → R such
+that E[Y | X] = µ(X 0 θ∗ ), where X is the chosen action’s
+feature and Y the corresponding reward. One can verify
+that linear and logistic models are special cases of GLM
+with µ(x) = x and µ(x) = 1/(1 + e−x ), respectively.
+The agent’s goal is to maximize the cumulative expected
+rewards over T rounds. Suppose the agent takes action at
+at round t. Then the agent’s strategy can be evaluated by
+comparing its expected reward to the best expected reward.
+To do so, define the optimal action at round t by a∗t =
+argmaxa∈[K] µ(x0t,a θ∗ ). Then, the agent’s total regret of
+following strategy π can be expressed as follows
+T 
+
+X
+RT (π) :=
+µ(x0t,a∗t θ∗ ) − µ(x0t,at θ∗ ) .
+t=1
 
-Differentiable Programs with Neural Libraries
+Note that RT (π) is in general a random variable due to the
 
-(a)
+Generalized Linear Contextual Bandits
 
-(b)
+possible randomness in π. Denote by Xt = xt,at , Yt =
+yt,at , and our model can be written as
+Yt = µ(Xt0 θ∗ ) + t ,
 
-# initialization :
-R0 = READ
-# program :
-R1 = MOVE EAST
-R2 = MOVE SOUTH
-R3 = SUM(R0 , R1)
-R4 = NOOP
-return R3
+(1)
 
-# initialization :
-R0 = InputInt [0]
-R1 = InputInt [1]
-R2 = InputInt [2]
-R3 = READ
-# program :
-R4 = MOVE EAST
-R5 = MOVE SOUTH
-R6 = APPLY (R0 , R1 , R4)
-R7 = APPLY (R6 , R2 , R5)
-return R7
+where {t , t ∈ [T ]} are independent zero-mean noise.
+Here, Xt is a random variable because the agent chooses
+current action based on previous rewards. Formally, we assume there is an increasing sequence of sigma fields {Fn }
+such that t is Ft -measurable with E [ t | Ft−1 ] = 0.
+An example of Fn will be the sigma-field generated by
+{X1 , Y1 , . . . , Xn , Yn }. Also, we assume the noise t is
+sub-Gaussian with parameter σ, where σ is some positive,
+universal constant; that is, for all t,
+
+
+2 2
+E eλt | Ft−1 ≤ eλ σ /2 .
+(2)
+In practice, when we have bounded reward Yt ∈ [0, 1], the
+noise t is also bounded and hence satisfies (2) with some
+appropriate σ value. In addition to the boundedness assumption on the rewards and feature vectors, we also need
+the following assumption on the link function µ.
+Assumption 1. κ := inf {kxk≤1, kθ−θ∗ k≤1} µ̇(x0 θ) > 0.
+As we shall see in Section 3, the asymptotic normality of
+maximum-likelihood estimates implies the necessity of this
+assumption. Note that this assumption is weaker than Assumption 1 in Filippi et al. (2010), as it only requires to
+control the local behavior of µ̇(x0 θ) near θ∗ .
+Assumption 2. µ is twice differentiable. Its first and second order derivatives are upper-bounded by Lµ and Mµ ,
+respectively.
+It can be verified that Assumption 2 holds for the logistic
+link function, where we may choose Lµ = Mµ = 1/4.
 
-Figure 3: Example solutions for the tasks on the right
-columns of the (a) A DD 2 X 2 and (b) A PPLY 2 X 2 scenarios.
-The read head is initialized READing the top left cell and
-any auxiliary InputInts are loaded into memory. Instructions and arguments shown in black must be learned.
+3. Generalized Linear Models
+To motivate the algorithms proposed in this paper, we first
+briefly review the classical likelihood theory of generalized
+linear models. In the canonical generalized linear model
+(McCullagh & Nelder, 1989), the conditional distribution
+of Y given X is from the exponential family, and its density, parameterized by θ ∈ Θ, can be written as
+
+
+Y X 0 θ∗ − m(X 0 θ∗ )
++ h(Y, η) . (3)
+P(Y | X) = exp
+g(η)
+Here, η ∈ R+ is a known scale parameter; m, g and h
+are three normalization functions mapping from R to R.
+The exponential family (3) is a very broad family of distributions including the Gaussian, binomial, Poisson, gamma
+and inverse-Gaussian distributions. It follows from standard properties of exponential families (Brown, 1986) that
+m is infinitely differentiable satisfying ṁ(X 0 θ∗ ) = E[ Y |
 
-4. Models
-We study two kinds of NTPT model. First, for navigating
-the introductory 2 × 2 grid scenarios, we create a model
-which learns to write simple straight-line code. Second, for
-the M ATH scenario we ask the system to use a more complex language which supports loopy control flow (note that
-the baselines will also be specialized between the 2 × 2
-scenarios and the M ATH scenario). Knowledge transfer is
-achieved by defining a library of 2 neural network functions
-shared across all tasks and scenarios. Training on each task
-should produce a task-specific source code solution (from
-scratch) and improve the overall usefulness of the shared
-networks. All models are included in Supplementary Material, and below we outline further details of the models.
-4.1. Shared components
-We refer to the 2 networks in the shared library as net 0
-and net 1. Both networks have similar architectures: they
-take a 28 × 28 monochrome image as input and pass this
-sequentially through two fully connected layers each with
-256 neurons and ReLU activations. The last hidden vector
-is passed through a fully connected layer and a softmax to
-produce a 10 dimensional output (net 0) or 4 dimensional
-output (net 1) to feed to the differentiable interpreter (the
-output sizes are chosen to match the number of classes of
-MNIST digits and arithmetic operators respectively).
-One restriction that we impose is that when a new task is
-presented, no more than one new untrained network can
-be introduced into the library (i.e. in our experiments the
-very first task has access to only net 0, and all other tasks
-have access to both nets). This restriction is imposed because if a differentiable program tries to make a call to one
-of N untrained networks based on an unknown parameter
-net choice = Param(N), then the system effectively
-sees the N nets together with the net choice parameter
-as one large untrained network, which cannot usefully be
-split apart into the N components after training.
+X ] = µ(X 0 θ∗ ) and m̈(X 0 θ∗ ) = V(Y | X). It can be
+checked that the data generated from (3) automatically satisfies the sub-Gaussian condition (2).
+Suppose we have independent samples of Y1 , Y2 , . . . , Yn
+condition on X1 , X2 , . . . , Xn . The log-likelihood function
+of θ under model (3) is
+
+n 
+X
+Yt Xt0 θ − m(Xt0 θ)
++ c(Yt , η)
+log `(θ) =
+v(η)
+t=1
+n
 
-4.2. 2 × 2 model
-For the 2 × 2 scenarios we build a model capable of writing
-short straight line algorithms with up to 4 instructions. The
-model consists of a read head containing net 0 and net 1
-which are connected to a set of registers each capable of
-holding integers in the range 0, . . . , M , where M = 18.
-The head is initialized reading the top left cell of the 2 × 2
-grid. At each step in the program, one instruction can be
-executed, and lines of code are constructed by choosing an
-instruction and addresses of arguments for that instruction.
-We follow (Feser et al., 2016) and allow each line to store
-its result in a separate immutable register. For the A DD 2 X 2
-scenario the instruction set is:
-• NOOP: a trivial no-operation instruction.
-• MOVE NORTH, MOVE EAST, MOVE SOUTH,
-MOVE WEST: translate the head (if possible) and
-return the result of applying the neural network chosen
-by net choice to the image in the new cell.
-• ADD(·, ·): accepts two register addresses and returns
-the sum of their contents.
-The parameter net choice is to be learned and decides
-which of net 0 and net 1 to apply. In the A PPLY 2 X 2
-scenario we extend the ADD instruction to APPLY(a, b,
-op) which interprets the integer stored at op as an arithmetic operator and computes3 a op b. In addition, for the
-A PPLY 2 X 2 scenario we initialize three registers with the
-auxiliary integers supplied with each 2 × 2 operator grid
-[see Fig. 2(b)]. In total, this model exposes a program space
-of up to ∼ 1012 syntactically distinct programs.
-4.3. M ATH model
-The final task investigates the synthesis of more complex,
-loopy control flow. A natural solution to execute the expression on the tape is to build a loop with a body that alternates
-between moving the head and applying the operators [see
-Fig. 4(b)]. This loopy solution has the advantage that it generalizes to handle arbitrary length arithmetic expressions.
-Fig. 4(a) shows the basic architecture of the interpreter used
-in this scenario. We provide a set of three blocks each containing the instruction MOVE or APPLY, an address, a register and a net choice. A MOVE instruction increments
-the position of the head and loads the new symbol into a
-block’s register using either net 0 or net 1 as determined
-by the block’s net choice. After executing the instruction, the interpreter executes a GOTO IF statement which
-checks whether the head is over the end of the tape and if not
-3
-All operations are performed modulo (M + 1) and division
-by zero returns M .
+=
 
-Differentiable Programs with Neural Libraries
+1 X
+[Yt Xt0 θ − m(Xt0 θ)] + constant .
+v(η) t=1
 
-(a)
+Consequently, the maximum likelihood estimate (MLE)
+may be defined by
+θ̂n ∈ argmax
+θ∈Θ
 
-(b)
+n
+X
 
-1. Indep.: Each task is handled by an independent column with no mechanism for transfer.
+[Yt Xt0 θ − m(Xt0 θ)] .
 
-L0:
+t=1
 
-MOVE
-R0 = READ(net_0)
-GOTO_IF L1
+From classical likelihood theory (Lehmann & Casella,
+1998), we know that when the sample size n goes to infinity, the MLE θ̂n is asymptotically
+normal, that is, θ̂n −θ∗ →
+Pn
+−1
+N (0, Iθ∗ ), where Iθ = t=1 µ̇(Xt0 θ)Xt Xt0 is the Fisher
+Information Matrix. Note that if µ̇(Xt0 θ∗ ) → 0, the asymptotic variance of x0 θ̂ can go to infinity for some x. This
+suggests the necessity of Assumption 1.
+As we will see later, the normality result is crucial in our
+regret analysis of GLM bandits. However, to the best of
+our knowledge, there is no non-asymptotic normality results of the MLE for GLM. In the following, we present a
+finite-sample version of the classical asymptotic normality
+results, which can be of independent interest.
+Pn
+Theorem 1. Define Vn = t=1 Xt Xt0 , and let δ > 0 be
+given. Furthermore, assume that
+
+
+512Mµ2 σ 2
+1
+2
+d + log
+.
+(4)
+λmin (Vn ) ≥
+κ4
+δ
+Then, with probability at least 1 − 3δ, the maximumlikelihood estimator satisfies, for any x ∈ Rd , that
+3σ p
+|x0 (θ̂n − θ∗ )| ≤
+log(1/δ) kxkVn−1 .
+(5)
+κ
+This theorem characterizes the behavior of MLE on every
+direction. It implies that x0 (θ̂n − θ∗ ) has a sub-Gaussian
+tail bound for any x ∈ Rd . It also provides a rigorous justification of the asymptotic upper confidence bound derived
+heuristically by Filippi et al. (2010, Section 4.2).
+The proof of the theorem is given in the appendix. It consists of two main steps, as is typical for proving normalitytype results of MLEs (Van der Vaart, 2000). We first show
+the n−1/2 -consistency of θ̂ to θ∗ . Then, by using a secondorder Taylor expansion or Newton-step, we can prove the
+desired normality of θ̂.
 
-Labeli:
-instri
+Generalized Linear Contextual Bandits
 
-if
+The condition (4) on λmin (Vn ) is necessary for the consistency of estimating linear models (Lai & Wei, 1982; Bickel
+et al., 2009) and generalized linear models (Fahrmeir &
+Kaufmann, 1985; Chen et al., 1999). It can be satisfied under mild conditions such as the proposition below, which
+will be useful for our analysis.
+Pn
+0
+Proposition 1. Define Vn =
+t=1 Xt Xt , where Xt is
+drawn iid from some distribution ν with support in the unit
+ball, Bd . Furthermore, let Σ := E[Xt Xt0 ] be the second
+moment matrix, and B and δ > 0 be two positive constants. Then, there exist positive, universal constants C1
+and C2 such that λmin (Vn ) ≥ B with probability at least
+1 − δ, as long as
+n ≥
 
-is MOVE:
+!2
+p
+√
+C1 d + C2 log(1/δ)
+2B
++
+.
+λmin (Σ)
+λmin (Σ)
 
-L1:
-R1 = APPLY(R1, R0, R2)
-GOTO_IF L2
+Proof Sketch. We give a proof sketch here, and the full
+proof is found in the appendix. In the following, for simplicity, we will drop the subscript n when there is no ambiguity. Therefore, Vn is denoted V and so on. We will need a
+technical lemma, which is an existing result in random matrix theory. The version we presented here is adapted from
+Equation (5.23) of Theorem 5.39 from Vershynin (2012).
+Lemma 1. Let A ∈ Rn×d be a matrix whose rows Ai
+are independent sub-Gaussian isotropic random vectors in
+Rd with parameter σ, namely, E exp(x0 (Ai − EAi )) ≤
+2
+exp(σ 2 kxk /2) for any x ∈ Rd . Then, there exist positive, universal constants C1 and C2 such that, for every t ≥ 0, the following holds with probability
+at √
+least
+p
+2
+2
+d/n
++
+t/
+n):
+1 − 2 exp(−C
+t
+),
+where
+ε
+=
+σ
+(C
+1
+2
+ 1 A0 A − Id  ≤ max{ε, ε2 } .
+n
+Let X be a random vector drawn from the distribution
+ν. Define Z := Σ−1/2 X. P
+Then Z is isotropic, namely,
+n
+E[ZZ 0 ] = Id . Define U = t=1 Zt Zt0 = Σ−1/2 V Σ−1/2 .
+From Lemma 1, we have that, for any t, with probability
+√
+at least
+1 − 2 exp(−C2 t2 ), λmin (U ) ≥ n − C1 σ 2 nd −
+√
+σ 2 t n, where σ is the sub-Gaussian parameter of Z, which
 
-pos++
-net_choicei
+
+−1/2
+is upper-bounded by Σ−1/2  = λmin (Σ) (see, e.g., Vershynin (2012)). We thus can rewrite the above inequality
+(which holds with probability 1 − δ as
+
+√
+√ 
+2
+λmin (U ) ≥ n − λ−1
+nd + t n .
+min (Σ) C1 σ
+This implies the following lower bound:
+p
+√
+λmin (V ) ≥ λmin (Σ)n − C1 nd − C2 n log(1/δ) .
+Finally, simple calculations show that the last expression is
+no less than B as long as n is no smaller than the expression
+stated in the proposition, finishing the proof.
+
+4. Algorithms and Main Results
+In this section, we are going to present two algorithms.
+While the first algorithm is computationally more efficient,
+the second algorithm has a provable optimal regret bound.
+4.1. Algorithm UCB-GLM
+The idea of upper confidence bounds (UCB) is highly
+effective in dealing with the exploration and exploitation trade-off in many parametric bandit problems, including K-arm bandits (Auer et al., 2002a) and linear bandits (Abbasi-Yadkori et al., 2011; Auer, 2002; Chu et al.,
+2011; Dani et al., 2008). For the generalized linear model
+considered here, since µ is a strictly increasing function,
+our goal is equivalent to choosing a ∈ [K] to maximize
+x0t,a θ∗ at round t. Suppose θ̂t is our current estimator of θ∗
+after round t. An exploitation action is to take the action
+that maximizes the estimated mean value, while an exploration action is to choose the one that has the largest variance. Thus, to balance exploitation and exploration, we
+can simply choose the action that maximizes the sum of estimated mean and variance, which can be interpreted as an
+upper confidence bound of x0t,a θ̂t . This leads to the algorithm UCB-GLM (Algorithm 1).
+Algorithm 1 UCB-GLM
+Input: the total rounds T , tuning parameter τ and α.
+Initialization:
+Pτ randomly choose at ∈ [K] for t ∈ [τ ], set
+Vτ +1 = i=1 Xt Xt0
+For t = τ + 1, τ + 2, . . . , T do
+1. Calculate the maximum-likelihood estimator θ̂t by
+solving the equation
+t−1
+X
+(Yi − µ(Xi0 θ))Xi = 0
+(6)
+i=1
+
+
+
+0
+θ̂t + α kXt,a kV −1
+2. Choose at = argmaxa∈[K] Xt,a
+t
+
+3. Observe Yt , let Xt ← Xt,at , Vt+1 ← Vt + Xt Xt0
+End For
+UCB-GLM take two parameters. At the initialization stage,
+we randomly choose actions to ensure a unique solution
+of (6). The choice of τ in the theorem statement follows
+from Proposition 1 with B = 1. It should be noted that the
+IID assumption about contextual (i.e., the distribution ν)
+is only needed to ensure Vτ +1 is invertable (similar to the
+first phase in the algorithm of Filippi et al. (2010)); the rest
+of our analysis does not depend on this stochastic assumption. The same may be achieved by using regularization
+(see, e.g., Abbasi-Yadkori et al. (2011)). Another tuning
+parameter α is used to control the amount of exploration.
+The larger the α is, the more exploration will be used.
+As mentioned earlier, the feature vectors Xt depend on the
+
+Generalized Linear Contextual Bandits
+
+previous rewards. Consequently, the rewards {Yi , i ∈ [t]}
+may not be independent given {Xi , i ∈ [t]}. We instead use results on self-normalized martingales (AbbasiYadkori et al., 2011), together with a finite-time normality
+result like Theorem 1, to prove the next theorem.
+
+Lemma 3. Suppose λmin (Vτ +1 ) ≥ 1. For any δ ∈
+[1/T, 1), define event
+(
 )
-Ri = READ(
-else:
+r
+σ d
+E∆ := k∆t kVt ≤
+log(1 + 2t/d) + log(1/δ) .
+κ 2
 
-arg1i
+Theorem 2. Fix any δ > 0. There exists a universal
+constant
+q C > 0, such that if we run UCB-GLM with
 
-Ri = APPLY(
+Then, event E∆ holds for all t ≥ τ with probability at least
+1 − δ.
 
-arg2i
+σ
+κ
 
+Cσ0−2 (d +
+
+d
+2
+
+log(1 + 2T /d) + log(1/δ) and τ =
+α=
+log(1/δ)), then, with probability at least 1 − 2δ, the regret
+of the algorithm is upper bounded by
+ 
+2Lµ σd
+T √
+RT ≤ τ +
+log
+T.
+κ
+dδ
+
+√
+The theorem shows an Õ(d T ) regret bound that is independent of K. Indeed, this rate matches the minimax
+lower bound up to logarithm factor for the infinite actions
+contextual bandit problems (Dani et al., 2008). By choosing δ = 1/T and using the fact that RT ≤ T , this highprobability result
+√implies a bound on the expected regret:
+E[RT ] = Õ(d T ). Our result improves√the previous
+regret bound of Filippi et al. (2010) by a log T factor.
+Moreover, the algorithm proposed in Filippi et al. (2010)
+involves a projection step, which is computationally more
+expensive comparing to UCB-GLM. Finally, this algorithm
+works well in practice. We give a heuristic argument for its
+strong performance in Section 5, under a specific condition
+that sometimes are satisfied.
+Proof of Theorem 2. We first bound the one-step regret. To
+do so, fix t and let Xt∗ = xt,a∗t and ∆t = θ̂t − θ∗ , where
+a∗t ∈ arg maxa∈[K] µ(x0t,a θ∗ ) is an optimal action at round
+t. The selection of at in UCB-GLM implies
+hXt∗ , θ̂t i + α kXt∗ kV −1 ≤ hXt , θ̂t i + α kXt kV −1 . (7)
+t
+
+t
+
+Then, we have
+
+q
+We now choose α = σκ d2 log(1 + 2T /d) + log(1/δ). If
+event E∆ holds for all t ≥ τ , then,
+hXt∗ , θ∗ i − hXt , θ∗ i
+
+
+≤ α kXt kV −1 − kXt∗ kV −1 + kXt∗ − Xt kV −1
+t
+
+≤ 2α kXt k
+
+≤ α kXt kV −1 −
+t
+
+≤ α kXt kV −1
+t
+
+α kXt∗ kV −1
+t
+
+t
+
+.
+
+Combining the above with Lemma 2 yields
+s
+ 
+T
+X
+
+T
+∗ ∗
+∗
+hXt , θ i − hXt , θ i ≤ 2α 2T d log
+d
+t=τ +1
+ 
+2dσ
+T √
+≤
+T . (8)
+log
+κ
+dδ
+Note that µ is an increasing Lipschitz function with Lipschitz constant Lµ and the µ function is bounded between
+0 and 1. The regret of algorithm UCB-GLM can be upper
+bounded as
+RT
+
+=
+
+τ 
+X
+
+µ (hXt∗ , θ∗ i) − µ (hXt , θ∗ i)
+
+
+
+t=1
+T
+
+
+X
++
+µ (hXt∗ , θ∗ i) − µ (hXt , θ∗ i)
+t=τ +1
+
+≤ τ + Lµ
+
+hXt∗ , θ∗ i − hXt , θ∗ i = hXt∗ − Xt , θ̂t i − hXt∗ − Xt , θ̂t − θ∗ i
+
+t
+
+Vt−1
+
+T
+
+X
+
+
+hXt∗ , θ∗ i − hXt , θ∗ i .
+
+t=τ +1
+
+hXt∗
+
+−
+− Xt , ∆t i
+The proof can be finished by applying (8) and the specified
+
+∗
+∗
+− kXt kV −1 + kXt − Xt kV −1 k∆t kVt , value of τ to the bound above.
+t
+
+t
+
+where the last inequality is due to Cauchy-Schwartz inequality. We have the following two lemmas to bound
+k∆t kVt and kXt kV −1 , respectively. Their proofs are det
+ferred to the appendix.
+Lemma 2. Let {Xt }∞
+in Rd satisfying
+t=1 be a sequence
+Pt−1
+kXt k ≤ 1. Define X0 = 0 and Vt = s=0 Xs Xs0 . Suppose there is an integer m such that λmin (Vm+1 ) ≥ 1, then
+for all n > 0,
+s
+
+
+m+n
+X
+n+m
+.
+kXt kV −1 ≤ 2nd log
+t
+d
+t=m+1
+
+4.2. Algorithm SupCB-GLM
+While the algorithm UCB-GLM performs sufficiently well
+in practice (Li et al., 2012), it is
+√ unclear whether it can
+achieve the optimal rates of O( dT log K), when K is
+fixed and small. As mentioned in Section 4.1, the key
+technical difficulty in analyzing UCB-GLM is the dependence between samples. Inspired by a technique developed
+by Auer (2002) to create independent samples for linear
+contextual bandits, we propose another algorithm SupCBGLM (Algorithm 3), which uses algorithm CB-GLM (Algorithm 2) as a sub-routine.
+
+Generalized Linear Contextual Bandits
+
+Algorithm 2 CB-GLM
+
+Algorithm 3 SupCB-GLM
+
+Input: parameter α, index set Ψ(t), and candidate set A.
+1. Let θ̂t be the solution of
+X
+[Yi − µ(Xi0 θ)] Xi = 0
+
+Input: tuning parameter α, τ , the number of trials T .
+
+i∈Ψ(t)
+
+2. Vt =
+
+P
+
+i∈Ψ(t)
+
+Xi Xi0
+
+Initialization:
+for t ∈ [τ ], randomly choose at ∈ [K].
+Set S = blog2 T c, F = {a1, · · · , aτ } and Ψ0 = Ψ1 =
+· · · = ΨS = ∅.
+For t = τ + 1, τ + 2, · · · , T do
+1. Initialize A1 = [K] and s = 1.
+
+3. For a ∈ A, do
+wt,a = α kxt,a kV −1 ,
+t
+
+mt,a = hxt,a , θ̂t i
+
+End For
+
+This algorithm also relies on the idea of confidence bound
+to do exploration. At round t, the algorithm screens the
+(s)
+candidate actions based on the value of wt,a through S
+stages until an action is chosen. At stage s, we set the
+(s)
+confidence level at stage s to be 2−s . If wt,a > 2−s for
+some a, we need to do more exploration on xt,a and thus
+we choose this action. Otherwise, the actions are filtered
+in step 2d such that the actions passed to the next stage are
+close enough to the optimal action. Since all the widths
+(s)
+(s)
+are smaller than 2−s , if mt,a < mt,j − 2 · 2−s for some
+j ∈ As , the action a can not be the optimal action. The filter process terminates when we have
+√ already got accurate
+estimate of all x0t,a θ∗ up to the 1/ T level and we do not
+need to do exploration. Thus in step 2c we just choose the
+action that maximizes the estimated mean value.
+Our algorithm is different from the algorithm SupLinRel
+in Auer (2002) that we directly maximize the mean, rather
+than the upper confidence bound, in steps c and d. This
+modification leads to a simpler algorithm and a cleaner regret analysis. Also, we would like to point out that, unlike
+SpectralEliminator (Valko et al., 2014), the algorithm can
+easily handle a changing action set.
+The following result, adapted from Auer (2002, lemma 14),
+shows how the algorithm SupCB-GLM will give us independent samples. For the sake of completeness, we also
+present its proof here.
+Lemma 4. For all s ∈ [S] and t ∈ [T ], given {xi,ai , i ∈
+Ψs (t)}, the rewards {yi,ai , i ∈ Ψs (t)} are independent
+random variables.
+Proof of Lemma 4. Since a trial t can only be added to
+Ψs (t) in step 2b of algorithm SupCB-GLM, the event {t ∈
+Ψs } only depends on the results of trials τ ∈ ∪σ<s Ψσ (t)
+(s)
+(s)
+and on wt,a . From the definition of wt,a , we know it only
+depends on the feature vectors xi,ai , i ∈ Ψs (t) and on xt,i .
+This implies the lemma.
+
+2. While at =Null
+a. Run CB-GLM with α and Ψs ∪ F to calculate
+(s)
+(s)
+mt,a and wt,a for all a ∈ As .
+(s)
+
+b. If wt,a > 2−s for some a ∈ As ,
+set at = a, update Ψs = Ψs ∪ {t}
+√
+(s)
+c. Else if wt,a ≤ 1/ T for all a ∈ As ,
+(s)
+
+set at = argmax mt,a , update Ψ0 = Ψ0 ∪ {t}
+a∈As
+
+(s)
+
+d. Else if wt,a ≤ 2−s for all a ∈ As ,
+(s)
+
+(s)
+
+As+1 = {a ∈ As , mt,a ≥ max mt,j − 2 · 2−s },
+j∈As
+
+s ← s + 1.
+End For
+
+With Lemma 4, we are able to apply the non-asymptotic
+normality result (5) and thus to prove our regret bound of
+Algorithm SupCB-GLM.
+Theorem 3. For any√
+0 < δ < 1, if we run
+p the SupCB-GLM
+algorithm with τ = dT and α = 3σ
+2 log(T K/δ) for
+κ
+T ≥ T0 rounds, where
+ 2
+
+
+σ
+3 log(T K/δ)
+T0 = Ω
+max
+d
 ,
-
-arg3i
-
 ,
+(9)
+κ4
+d
+the regret of the algorithm is bounded as
+p
+√
+RT ≤ 45(σLµ /κ) log T log(T K/δ) log(T /d) dT ,
+with probability at least 1 − δ. With δ = 1/T , we obtain
+
+
+p
+E[RT ] = O (log T )1.5 dT log K .
+√
+The theorem demonstrates an Õ( dT log K) regret bound
+for the algorithm SupCB-GLM.√It has been proved in Chu
+et al. (2011, Theorem 2) that dT is the minimax lower
+bound of the expected regret for K-armed linear bandits,
+a special of the GLM bandits considered here. Therefore,
 
-)
+Generalized Linear Contextual Bandits
 
-L2:
-MOVE
-R2 = READ(net_1)
-GOTO_IF L0
+the regret of our SupCB-GLM algorithm is optimal up to
+logarithm terms of T and K. To the best of our knowledge,
+this is the first algorithm which achieves the (near-)optimal
+rate of GLM bandits.
+It is worthwhile to compare Theorem 3 with the result in
+Theorem 2. When K = o(2d ) is small, the rate of SupCB√
+GLM is faster, and we improve the previous rates by a d
+factor. Here,√
+we give a briefly illustration of how we get rid
+of the extra d factor. Both in Theorem 2 and in Filippi
+et al. (2010), |x0 (θ̂n − θ∗ )| is upper bounded by using the
+Cauchy-Schwartz inequality,
 
-goto_addr
 
-GOTO_IF
 
-halt:
 
-return_addr
+(10)
+|x0 (θ̂n − θ∗ )| ≤ kxkVn−1 θ̂n − θ∗  .
+Vn
 
-return
+for some
+√ constant c with probability at least 1 −
+exp(− dT ). By Theorem 1 and union bound, we have
+the desired result under condition (9).
+Lemma 6. Suppose that event EX holds, and that in round
+t, the action at is chosen at stage st . Then, a∗t ∈ As for all
+s ≤ st . Furthermore, we have
+µ(x0t,a∗t θ∗ ) − µ(x0t,at θ∗ )
+
+(8Lµ )/2√st if at is selected in step 2b
+≤
+(2Lµ )/ T if at is selected in step 2c .
+P
+Define Vs,t = t∈Ψs (T ) Xt Xt0 , then by Lemma 2,
+X
+X
+(s)
+wt,at =
+α(δ)kxt,at kV −1
+s,t
 
-Labelj:
-instrj
+Lemma 3 in the supplementary material establishes that
 
-halt:
-return R1
 
-Figure 4: Overview of the M ATH model. (a) The general
-form of a block in the model. Blue elements are learnable.
-(b) A loop-based solution to the task in the M ATH scenario.
-then it passes control to the block specified by goto addr,
-otherwise control passes to a halt block which returns a
-chosen register value and exits the program. This model
-describes a space of ∼ 106 syntactically distinct programs.
+p
 
-5. Baselines
-To evaluate the merits of including the source code structure
-in NTPT models, we build baselines that replace the differentiable program interpreter with neural networks, thereby
-creating purely neural solutions to the lifelong PPBE tasks.
-We specialize these neural baselines for the 2 × 2 task (with
-emphasis on lifelong learning) and for the M ATH task (with
-emphasis on generalization).
-5.1. 2 × 2 baselines
-We define a column as the following neural architecture (see
-Fig. 5(a)):
-• Each of the images in the 2 × 2 grid is passed through
-an embedding network with 2 layers of 256 neurons (cf.
-net 0/1) to produce a 10-dimensional embedding.
-The weights of the embedding network are shared
-across all 4 images.
-• These 4 embeddings are concatenated into a 40dimensional vector and for the A PPLY 2 X 2 the auxiliary integers are represented as one-hot vectors and
-concatenated with this 40-dimensional vector.
-• This is then passed through a network consisting of
-3 hidden layers of 128 neurons to produce a 19dimensional output.
-We construct 3 different neural baselines derived from this
-column architecture (see Fig. 5):
 
-2. Progressive Neural Network (PNN): We follow
-(Rusu et al., 2016) and build lateral connections linking each task specific column to columns from tasks
-appearing earlier in the learning lifetime. Weights in
-all columns except the active task’s column are frozen
-during a training update. Note that the number of layers in each column must be identical to allow lateral
-connections, meaning we cannot tune the architecture
-separately for each task.
-3. Multitask neural network (MTNN): We split the column into a shared perceptual part and a task specific
-part. The perceptual part consists of net 0 and net 1
-embedding networks (note that we use a similar symmetry breaking technique mentioned in Sec. 4.1 to encourage specialization of these networks to either digit
-or operator recognition respectively).
-The task-specific part consists of a neural network that
-maps the perceptual embeddings to a 19 dimensional
-output. Note that unlike PNNs, the precise architecture
-of the task specific part of the MTNN can be tuned for
-each individual task. We consider two MTNN architectures:
-(a) MTNN-1: All task-specific parts are 3 layer networks comparable to the PNN case.
-(b) MTNN-2: We manually tune the number of layers
-for each task and find best performance when the
-task specific part contains 1 hidden layer for the
-A DD 2 X 2 tasks and 3 layers for the A PPLY 2 X 2
-tasks.
-5.2. M ATH baselines
-For the M ATH task, we build purely neural baselines which
-(1) have previously been shown to offer competitive generalization performance for some tasks with sequential inputs
-of varying length (2) are able to learn to execute arithmetic
-operations and (3) are easily integrated with the library of
-perceptual networks learned in the 2 × 2 tasks. We consider
-two models fulfilling these criteria: an LSTM and a Neural
-GPU.
-For the LSTM, at each image in the mathematical expression the network takes in the embeddings of the current
-symbol from net 0 and net 1, updates an LSTM hidden
-state and then proceeds to the next symbol. We make a classification of the final answer using the last hidden state of
-the LSTM. Our best performance is achieved with a 3 layer
-LSTM with 1024 elements in each hidden state and dropout
-between layers.
+θ̂n − θ∗  ≤ C2 d log(T /δ).
+Vn
 
-Differentiable Programs with Neural Libraries
-(a) indep.
+√
 
-(b) PNN
+This will lead to an extra d factor compared to (5). By
+using the Cauchy-Schwartz inequality (10), we only make
+use of the fact that θ̂n is close to θ∗ in the `2 sense. However, (5) tells us that actually θ̂n is close to θ∗ in every
+direction.√This is the reason why we are able to remove
+the extra d factor to achieve a near-optimal regret. It also
+explains why the bound in Theorem 2 is tight when K is
+large. As K goes large, it is likely there is a direction x for
+which (10) is tight.
+Proof of Theorem 3. To facilitate our proof, we first
+present two technical lemmas. Lemma 5 follows from
+Lemma 4, Theorem 1, Theorem 5.39 of Vershynin (2012)
+and a union bound. The proof of Lemma 6 is deferred to
+the appendix.
+√
+Lemma 5. Fix
+δ > 0. Choose in SupCB-GLM τ = dT
+p
+and α = 3σ
+2 log(T K/δ). Suppose T satisfies condition
+κ
+(9). Define the following event:
+EX
 
-TASK 1
+:=
 
-TASK 2
+(s)
+{|mt,a
 
-TASK 3
+−
 
-(c) MTNN
+x0t,a θ∗ |
 
-(d) NTPT
+≤
 
-19
+(s)
+wt,a ,
 
-R0 = REA
-R1 = MOV
-R2 = SUM
-R3 = NOO
-R4 = NOO
-return R
+t∈Ψs (T )
 
-128
-128
-128
-concat
+≤
 
-concat
+t∈Ψs (T )
 
-concat
+Combining the above two inequalities gives us
+p
+|Ψs (T )| ≤ 2s α(δ) 2d log (T /d)|Ψs (T )|.
 
-concat
-concat
+(12)
 
-R0
-R1
-R2
-R3
-R4
-R5
+Let Ψ0 be the collection of trials such that at is chosen in
+step 2c. Since we have chose S = log2 T , each t ∈ [τ +
+1, T ] must be in one of Ψs and hence,
+√ {τ, τ + 1, . . . , T } =
+Ψ0 ∪ ∪Ss=1 Ψs (T ) . If we set τ = dT , we have
+RT =
+
+τ 
+X
+
+
+µ(x0t,a∗t θ∗ ) − µ(x0t,at θ∗ )
+
+t=1
+
++
+
+T
+
+X
+
+µ(x0t,a∗t θ∗ ) − µ(x0t,at θ∗ )
+
+
+
+t=τ +1
+
+≤
+
+τ+
+
+X
+
+µ(x0t,a∗t θ∗ ) − µ(x0t,at θ∗ )
+
+
+
+t∈Ψ0
+
++
+
+(11)
+
+Proof of Lemma 5. By Lemma 4, we have independent
+samples now. Then to apply Theorem 1, the key is to
+lower bound the minimum eigenvalue of Vt . Note that
+√ we
+randomly select the feature vectors at the first τ = dT
+rounds, that is, they are independent. Moreover, the feature vectors are bounded. Thus, X1 , X2 , . . . , Xτ are independent sub-Gaussian with parameter 1. It follows from
+Proposition 1 that
+√
+λmin (Vt ) ≥ λmin (Vτ ) ≥ c dT
+
+p
+α(δ) 2d log(T /d)|Ψs (n)| .
+
+On the other hand, by the step 2b of SupCB-GLM,
+X
+(s)
+wt,at ≥ 2−s |Ψs (T )|.
+
+S
+X
+X 
+
+
+µ(x0t,a∗t θ∗ ) − µ(x0t,at θ∗ )
+
+s=1 t∈Ψs (T )
+
+∀t ∈ [τ + 1, T ], s ∈ [S], a ∈ [K]}
+Then, event EX holds with probability at least 1 − δ.
+
+t∈Ψs (T )
+
+≤
+≤
+
+≤
+≤
+
+S
+2Lµ X
+dT + T · √ +
+Lµ · 23−s · |Ψs (T )|
+T
+s=1
+√
+√
+dT + 2Lµ T
+S r
+X
+T
++8Lµ α(δ)
+2d log |Ψs (T )|
+d
+s=1
+p
+√
+√
+√
+dT + 2Lµ T + 8Lµ α(δ) 2d log(T /d) ST
+p
+√
+45(σLµ /κ) log T log(T K/δ) log(T /d) dT ,
+
+√
+
+with probability at least 1 − δ. Here, the first inequality is
+due to the assumption that 0 ≤ µ ≤ 1. The second inequality is Lemma 6. The third inequality is the inequality (12)
+
+Generalized Linear Contextual Bandits
+
+and the fourth inequality is implied by Cauchy-Schwartz.
+This completes the proof of the high-probability result.
+
+follows that,
+T
+X
+
+1
+p
+
+5. Discussions
+
+t=τ +1
+
+λmin (Vt )
 
 =
-=
-=
-=
-=
-=
-
-Inp
-Inp
-Inp
-MOV
-MOV
-APP
-
-R0 = REA
-R1 = MOV
-R2 = MOV
-R3 = SUM
-R4 = NOO
-return R
-
-Library
-
-10
-256
-256
-(4,3,2)
-
-(4,3,2)
-(4,3,2)
-
-Figure 5: Cartoon illustration of all models used in the 2 × 2 experiments. See text for details.
-For the Neural GPU, we use the implementation from the
-original authors4 (Kaiser & Sutskever, 2016).
-
-6. Experiments
-In this section we report results illustrating the key benefits
-of NTPT for the lifelong PPBE tasks in terms of knowledge
-transfer (Sec. 6.1) and generalization (Sec. 6.2).
-6.1. Lifelong Learning
-Demonstration of lifelong learning requires a series of tasks
-for which there is insufficient data to learn independent solutions to all tasks and instead, success requires transferring
-knowledge from one task to the next. Empirically, we find
-that training any of the purely neural baselines or the NTPT
-model on individual tasks from the A DD 2 X 2 scenario with
-only 1k distinct 2 × 2 examples produces low accuracies of
-around 40 ± 20% (measured on a held-out test set of 10k examples). Since none of our models can satisfactorily solve
-an A DD 2 X 2 task independently in this small data regime,
-we can say that any success on these tasks during a lifetime
-of learning can be attributed to successful knowledge transfer. In addition, we check that in a data rich regime (e.g.
-≥4k examples) all of the baseline models and NTPT can
-independently solve each task with >80% accuracy. This
-indicates that the models all have sufficient capacity to represent satisfactory solutions, and the challenge is to find
-these solutions during training.
-We train on batches of data drawn from a time-evolving
-probability distribution over all 8 tasks in the 2×2 scenarios
-(see the top of Fig. 6(a)). During training, we observe the
-following key properties of the knowledge transfer achieved
-by NTPT:
-4
-available at https://github.com/tensorflow/
-models/tree/master/neural_gpu
-
-Reverse transfer: Fig. 6(a) focuses on the performance of
-NTPT on the first task (A DD 2 X 2:top). The red bars indicate
-times where the the system was presented with an example
-from this task. Note that even when we have stopped presenting examples, the performance on this task continues to
-increase as we train on later tasks - an example of reverse
-transfer. We verify that this is due to continuous improvement of net 0 in later tasks by observing that the accuracy
-on the A DD 2 X 2:top task closely tracks measurements of
-the accuracy of net 0 directly on the digit classification
-task.
-Avoidance of catastrophic forgetting: Fig. 6(b) shows the
-performance of the NTPT on the remaining A DD 2 X 2 tasks.
-Both Fig. 6(a) and (b) include results for the MTNN-2 baseline (the best baseline for these tasks). Note that whenever
-the dominant training task swaps from an A DD 2 X 2 task to
-an A PPLY 2 X 2 task the baseline’s performance on A DD 2 X 2
-tasks drops. This is because the shared perceptual network
-becomes corrupted by the change in task - an example of
-catastrophic forgetting. To try to limit the extent of catastrophic forgetting and make the shared components more
-robust, we have a separate learning rate for the perceptual
-networks in both the MTNN baseline and NTPT which is
-100 fold smaller than the learning rate for the task-specific
-parts. With this balance of learning rates we find empirically
-that NTPT does not display catastrophic forgetting, while
-the MTNN does.
-Final performance: Fig. 6(c) focuses on the A DD 2 X 2:left
-and A PPLY 2 X 2:left tasks to illustrate the relative performance of all the baselines described in Sec. 5. Note that
-although PNNs are effective at avoiding catastrophic forgetting, there is no clear overall winner between the MTNN
-and PNN baselines. NTPT learns faster and to a higher accuracy than all baselines for all the tasks considered here.
-For clarity we only plot results for the *:left tasks: the other
-tasks show similar behavior and the accuracies for all tasks
-at the end of the lifetime of learning are presented in Fig. 7.
-
-1.0
-
-ADD2x2: top row
-ADD2x2: left column
-ADD2x2: bottom row
-ADD2x2: right column
-APPLY2x2 tasks
-
-1.0
-0.5
-0.0
 
-ADD2x2:left
-accuracy
-
-probability
-
-Differentiable Programs with Neural Libraries
-
-0.0
-APPLY2x2:left
-accuracy
-
-accuracy
-
-1.0
-
-0.5
-
-0.0
-
-0.5
-
-0
-
-128
-256
-384
-training example (1000s)
-
-512 0
-
-128
-256
-384
-training example (1000s)
-
-512
-
-1.0
-indep.
-PNN
-MTNN-1
-MTNN-2
-NTPT
-
-0.5
-
-0.0
-
-0
-
-128
-256
-384
-training example (1000s)
-
-512
-
-(a)
-(b)
-(c)
-Figure 6: Lifelong learning with NTPT. (a) top: the sequential learning schedule for all 8 tasks, bottom: performance of
-NTPT (solid) and the MTNN-2 baseline (dashed) on the first A DD 2 X 2 task. (b) performance on the remaining A DD 2 X 2
-tasks. (c) Performance of all the baselines on the *:left tasks.
-A DD 2 X 2
-
-indep PNN MTNN-1 MTNN-2 NTPT
-
-top
-left
-bottom
-right
-
-35%
-32%
-34%
-32%
-
-35%
-36%
-33%
-35%
-
-26%
-38%
-40%
-44%
-
-24%
-47%
-56%
-60%
-
-87%
-87%
-86%
-86%
-
-A PPLY 2 X 2
-
-task
-
-top
-left
-bottom
-right
-
-38%
-39%
-39%
-39%
-
-39%
-51%
-48%
-51%
-
-40%
-41%
-41%
-42%
-
-38%
-39%
-40%
-37%
-
-98%
-100%
-100%
-100%
-
-Figure 7: Final accuracies on all 2 × 2 tasks for all models
-at the end of lifelong learning
-100
-92.8
-
-accuracy (%)
-
-100
-
-50
-
-(b)
-
-0
-100
-
-accuracy (%)
-
-(a)
-
-90
-
-Neural GPU (43.8M)
-LSTM
-(21.1M)
-TerpreT
-(32)
-
-25.0
-
-LSTM - 2digit
-LSTM - 5digit
-NTPT - 2digit
-
-87.1
-82.8
-80
-0
-
-5
-
-10
-
-15
-
-digits in expression
-
-Figure 8: Generalization behavior on M ATH expressions.
-Solid dots indicate expression lengths used in training. We
-show results on (a) a simpler non-perceptual M ATH task
-(numbers in parentheses indicate parameter count in each
-model) and (b) the M ATH task including perception.
-6.2. Generalization
-In the final experiment we take net 0/1 from the end of
-the NTPT 2 × 2 training and start training on the M ATH
-scenario. For the NTPT model we train on arithmetic expressions containing only 2 digits. The known difficulty
-in training differentiable interpreters with free loop structure (Gaunt et al., 2016) is revealed by the fact that only
-2/100 random restarts converge on a correct program in a
-global optimum of the loss landscape. We detect convergence by a rapid increase in the accuracy on a validation
-set (typically occurring after around 30k training examples).
-Once the correct program is found, continuing to train the
-
-model mainly leads to further improvement in the accuracy
-of net 0, which saturates at 97.5% on the digit classification task. The learned source code provably generalizes
-perfectly to expressions containing any number of digits,
-and the only limitation on the performance on long expressions comes from the repeated application of the imperfect
-net 0.
-To pick a strong baseline for the MATH problem, we first
-perform a preliminary experiment with two simplifications:
-(1) rather than expecting strong generalization from just 2digit training examples, we train candidate baselines with
-supervision on examples of up to 5 digits and 4 operators, and (2) we remove the perceptual component of the
-task, presenting the digits and operators as one-hot vectors
-rather than images. Fig. 8(a) shows the generalization performance of the LSTM and Neural GPU (512-filter) baselines in this simpler setting after training to convergence.5
-Based on these results, we restrict attention to the LSTM
-baseline and return to the full task including the perceptual
-component. In the full M ATH task, we initialize the embedding networks of each model using net 0/1 from the end
-of the NTPT 2 × 2 training. Fig. 8(b) shows generalization
-of the NTPT and LSTM models on expressions of up to 16
-digits (31 symbols) after training to convergence. We find
-that even though the LSTM shows surprisingly effective
-generalization when supplied supervision for up to 5 digits,
-NTPT trained on only 2-digit expressions still offers better
-results.
-
-7. Related work
-Lifelong Machine Learning.
-We operate in the
-paradigm of Lifelong Machine Learning (LML) (Thrun,
-1994; 1995; Thrun & O’Sullivan, 1996; Silver et al., 2013;
-5
-
-Note that (Price et al., 2016) also find poor generalization
-performance for a Neural GPU applied to the similar task of evaluating arithmetic expressions involving binary numbers.
-
-Differentiable Programs with Neural Libraries
-
-Chen et al., 2015), where a learner is presented a sequence
-of different tasks and the aim is to retain and re-use knowledge from earlier tasks to more efficiently and effectively
-learn new tasks. This is distinct from related paradigms of
-multitask learning (where a set of tasks is presented rather
-than in sequence (Caruana, 1997; Kumar & Daume III,
-2012; Luong et al., 2015; Rusu et al., 2016)), transfer learning (transfer of knowledge from a source to target domain
-without notion of knowledge retention (Pan & Yang, 2010)),
-and curriculum learning (training a single model for a single
-task of varying difficulty (Bengio et al., 2009)).
-The challenge for LML with neural networks is the problem
-of catastrophic forgetting: if the distribution of examples
-changes during training, then neural networks are prone to
-forget knowledge gathered from early examples. Solutions
-to this problem involve instantiating a knowledge repository (KR) either directly storing data from earlier tasks or
-storing (sub)networks trained on the earlier tasks with their
-weights frozen. This knowledge base allows either (1) rehearsal on historical examples (Robins, 1995), (2) rehearsal
-on virtual examples generated by the frozen networks (Silver & Mercer, 2002; Silver & Poirier, 2006) or (3) creation
-of new networks containing frozen sub networks from the
-historical tasks (Rusu et al., 2016; Shultz & Rivest, 2001)
-To frame our approach in these terms, our KR contains
-partially-trained neural network classifiers which we call
-from learned source code. Crucially, we never freeze the
-weights of the networks in the KR: all parts of the KR can
-be updated during the training of all tasks - this allows us to
-improve performance on earlier tasks by continuing training
-on later tasks (so-called reverse transfer). Reverse transfer
-has been demonstrated previously in systems which assume
-that each task can be solved by a model parameterized by an
-(uninterpretable) task-specific linear combination of shared
-basis weights (Ruvolo & Eaton, 2013). The representation
-of task-specific knowledge as source code, learning from
-weak supervision, and shared knowledge as a deep neural
-networks distinguishes this work from the linear model used
-in (Ruvolo & Eaton, 2013).
-Neural Networks Learning Algorithms. Recently, extensions of neural networks with primitives such as memory
-and discrete computation units have been studied to learn
-algorithms from input-output data (Graves et al., 2014; Weston et al., 2014; Joulin & Mikolov, 2015; Grefenstette et al.,
-2015; Kurach et al., 2015; Kaiser & Sutskever, 2016; Reed
-& de Freitas, 2016; Bunel et al., 2016; Andrychowicz &
-Kurach, 2016; Zaremba et al., 2016; Graves et al., 2016;
-Riedel et al., 2016; Gaunt et al., 2016; Feser et al., 2016).
-A dominant trend in these works is to use a neural network
-controller to managing differentiable computer architecture.
-We flip this relationship, and in our approach, a differentiable interpreter acts as the controller that can make calls
-to neural network components.
-
-The methods above, with the exception of (Reed & de Freitas, 2016) and (Graves et al., 2016), operate on inputs of
-(arrays of) integers. However, (Reed & de Freitas, 2016)
-requires extremely strong supervision, where the learner
-is shown all intermediate steps to solving a problem;
-our learner only observes input-output examples. (Reed &
-de Freitas, 2016) also show the performance of their system in a multitask setting. In some cases, additional tasks
-harm performance of their model and they freeze parts of
-their model when adding to their library of functions. Only
-(Bunel et al., 2016), (Riedel et al., 2016) and (Gaunt et al.,
-2016) aim to consume and produce source code that can
-be provided by a human (e.g. as sketch of a solution) or
-returned to a human (to potentially provide feedback).
-
-8. Discussion
-We have presented N EURAL T ERPRE T, a framework for
-building end-to-end trainable models that structure their solution as a source code description of an algorithm which
-may make calls into a library of neural functions. Experimental results show that these models can successfully be
-trained in a lifelong learning context, and they are resistant
-to catastrophic forgetting; in fact, they show that even after instances of earlier tasks are no longer presented to the
-model, performance still continues to improve.
-Our experiments concentrated on two key benefits of the
-hybrid representation of task solutions as source code and
-neural networks. First, the source code structure imposes
-modularity which can be seen as focusing the supervision.
-If a component is not needed for a given task, then the differentiable interpreter can choose not to use it, which shuts off
-any gradients from flowing to that component. We speculate
-that this could be a reason for the models being resistant to
-catastrophic forgetting, as the model either chooses to use
-a classifier, or ignores it (which leaves the component unchanged). The second benefit is that learning programs imposes a bias that favors learning models that exhibit strong
-generalization. Additionally, the source code representation
-has the advantage of being interpretable by humans, allowing verification and incorporation of domain knowledge describing the shape of the problem through the source code
-structure.
-The primary limitation of this design is that it is known
-that differentiable interpreters are difficult to train on problems significantly more complex than those presented here
-(Kurach et al., 2015; Neelakantan et al., 2016; Gaunt et al.,
-2016). However, if progress can be made on more robust
-training of differentiable interpreters (perhaps extending
-ideas in (Neelakantan et al., 2016) and (Feser et al., 2016)),
-then we believe there to be great promise in using hybrid
-models to build large lifelong learning systems.
-
-Differentiable Programs with Neural Libraries
+T
+X
+
+√
+Θ(t−1/2 ) = O( T ).
+
+t=τ +1
+
+In this paper, we propose two algorithms for K-armed bandits with generalized linear models. While the first algorithm, UCB-GLM, achieves the optimal rate for the case
+of infinite number of arms, the second algorithm SupCBGLM is provable optimal for the case of finite number actions at each round. However, it remains open whether
+UCB-GLM can achieve the optimal rate for small K.
+
+It should be cautioned that, since we do not know the distribution of our feature vectors, we cannot assume the above
+gap exists. It is therefore challenging to make the above
+arguments rigorous. In fact, when studying the ARIMA
+model in time series, Lai & Wei (1982, Example 1) provide an example such that λmin (Vt ) = O(log t).
+
+5.1. A better regret bound for UCB-GLM
+
+5.2. Open Questions
+
+A key quantity in determining the regret of UCB-GLM is
+the minimum eigenvalue of Vt . If we make an addition
+assumption on the minimum
+eigenvalue of Vt , we will be
+√
+able to prove an O( dT ) regret bound for UCB-GLM.
+
+Computational efficient algorithms. While UCB-GLM
+and SupCB-GLM enjoy good theoretical properties, they
+can be expensive in some applications. First, they require
+inverting a d × d matrix in every step, a costly operation
+when d is large. Second, at step t, the MLE is computed
+using Θ(t) samples, meaning that the per-step complexity
+grows at least linearly with t for a straightforward implementation of the algorithms. It is therefore interesting to
+investigate more scalable alternatives. It is possible to use a
+first-order, iterative optimization procedure to amortize the
+cost, analogous to the approach of Agarwal et al. (2014).
+
+Theorem 4. We run algorithm UCB-GLM with τ =
+8σ 2
+κ2 d log T and α ≤ Lµ σ/κ. For any δ ∈ [1/T, 1), suppose there is an universal constant c such that
+T
+X
+
+√
+−1/2
+λmin (Vt ) ≤ c T .
+
+(13)
+
+t=τ +1
+
+holds with probability at least 1 − δ, and
+
+
+σR
+2
+T =Ω
+d log T .
+κLµ
+
+(14)
+
+Then, the regret of the algorithm is bounded by
+RT ≤
+
+CLµ σ p
+dT log(T /δ)
+κ
+
+with probability at least 1 − 2δ, where C is a positive, universal constant.
+This theorem provides some insights of why UCB-GLM
+performs well in practice. Although the condition in (13) is
+hard to check and may be violated in some cases, for example, in K-armed bandits, we provide a heuristic argument
+to justify this assumption in a range of problems. When
+t is large enough, our estimator θ̂t is very close to θ∗ . If
+we assume there is a positive gap between hxt,a∗t , θ∗ i and
+hxt,a , θ∗ i √
+for all a 6= a∗t , we will have at = a∗t after, for
+example, T steps. Since {xt,a , a ∈ [K]} are independent
+for t ∈ [T ], {xt,a∗t } are also independent samples. Then
+Vt /t will be well-approximated by the covariance matrix of
+xt,a∗t , which we denote by Σ0 . In many problem in practice, especially when features are dense, it is unlikely the
+feature vector xt,a∗t lies in a low-dimensional subspace of
+Rd . It implies that Σ0 has full rank, and that we will have
+λmin (Vt ) = Θ(t · λmin (Σ0 )) when t is large enough. It
+
+K-dependent lower bound. Currently, all the lower
+bound results on (generalized) linear bandits have no dependence on K, the number of arms. The minimax lower
+bound will be of particularly interest because all current
+lower bound results assume that K ≤ d. Although it will
+at most be a logarithm dependence on K, it is still a theoretically interesting question.
+Randomized algorithms with optimal regret rate. As
+opposed to the deterministic, UCB-style algorithms studied in this paper, randomized algorithms like EXP4 (Auer
+et al., 2002b) and Thompson Sampling (Thompson, 1933)
+have advantages in certain situations, for example, when reward observations are delayed (Chapelle & Li, 2012). Recently developed techniques for analyzing Bayes regret in
+BLM bandits (Russo & Van Roy, 2014) may be useful to
+analyze the cumulative regret considered here.
+
+Generalized Linear Contextual Bandits
 
 References
-Abadi, Martı́n, Agarwal, Ashish, Barham, Paul, Brevdo,
-Eugene, Chen, Zhifeng, Citro, Craig, Corrado, Greg S.,
-Davis, Andy, Dean, Jeffrey, Devin, Matthieu, Ghemawat,
-Sanjay, Goodfellow, Ian, Harp, Andrew, Irving, Geoffrey, Isard, Michael, Jia, Yangqing, Jozefowicz, Rafal,
-Kaiser, Lukasz, Kudlur, Manjunath, Levenberg, Josh,
-Mané, Dan, Monga, Rajat, Moore, Sherry, Murray, Derek,
-Olah, Chris, Schuster, Mike, Shlens, Jonathon, Steiner,
-Benoit, Sutskever, Ilya, Talwar, Kunal, Tucker, Paul, Vanhoucke, Vincent, Vasudevan, Vijay, Viégas, Fernanda,
-Vinyals, Oriol, Warden, Pete, Wattenberg, Martin, Wicke,
-Martin, Yu, Yuan, and Zheng, Xiaoqiang. TensorFlow:
-Large-scale machine learning on heterogeneous systems,
-2015. URL http://tensorflow.org/. Software
-available from tensorflow.org.
-Andrychowicz, Marcin and Kurach, Karol. Learning efficient algorithms with hierarchical attentive memory.
-arXiv preprint arXiv:1602.03218, 2016.
-Bengio, Yoshua, Louradour, Jérôme, Collobert, Ronan, and
-Weston, Jason. Curriculum learning. In Proceedings of
-the 26th Annual International Conference on Machine
-Learning (ICML), pp. 41–48, 2009.
-Bunel, Rudy, Desmaison, Alban, Kohli, Pushmeet, Torr,
-Philip H. S., and Kumar, M. Pawan. Adaptive neural compilation. CoRR, abs/1605.07969, 2016. URL
-http://arxiv.org/abs/1605.07969.
-Caruana, Rich. Multitask learning. Machine Learning, 28:
-41–75, 1997.
-Chen, Zhiyuan, Ma, Nianzu, and Liu, Bing. Lifelong learning for sentiment classification. In Proceedings of the
-53rd Annual Meeting of the Association for Computational Linguistics (ACL), pp. 750–756, 2015.
-Feser, John K., Brockschmidt, Marc, Gaunt, Alexander L.,
-and Tarlow, Daniel. Neural functional programming.
-2016. Submitted to ICLR 2017.
-Gaunt, Alexander L., Brockschmidt, Marc, Singh, Rishabh,
-Kushman, Nate, Kohli, Pushmeet, Taylor, Jonathan, and
-Tarlow, Daniel. Terpret: A probabilistic programming
-language for program induction. CoRR, abs/1608.04428,
-2016.
-URL http://arxiv.org/abs/1608.
-04428.
-Graves, Alex, Wayne, Greg, and Danihelka, Ivo. Neural
-turing machines. CoRR, abs/1410.5401, 2014. URL
-http://arxiv.org/abs/1410.5401.
-Graves, Alex, Wayne, Greg, Reynolds, Malcolm, Harley,
-Tim, Danihelka, Ivo, Grabska-Barwińska, Agnieszka,
+Abbasi-Yadkori, Yasin, Pál, Dávid, and Szepesvári, Csaba.
+Improved algorithms for linear stochastic bandits. In Advances in Neural Information Processing Systems 24, pp.
+2312–2320, 2011.
+Agarwal, Alekh, Hsu, Daniel, Kale, Satyen, Langford,
+John, Li, Lihong, and Schapire, Robert E. Taming the
+monster: A fast and simple algorithm for contextual bandits. In Proceedings of the 31th International Conference
+on Machine Learning (ICML), pp. 1638–1646, 2014.
+Agarwal, Deepak, Chen, Bee-Chung, Elango, Pradheep,
+Motgi, Nitin, Park, Seung-Taek, Ramakrishnan, Raghu,
+Roy, Scott, and Zachariah, Joe. Online models for content optimization. In Advances in Neural Information
+Processing Systems 21, pp. 17–24, 2009.
+Auer, Peter. Using confidence bounds for exploitationexploration trade-offs. The Journal of Machine Learning
+Research, 3:397–422, 2002.
 
-Colmenarejo, Sergio Gómez, Grefenstette, Edward, Ramalho, Tiago, Agapiou, John, et al. Hybrid computing
-using a neural network with dynamic external memory.
-Nature, 2016.
-Grefenstette, Edward, Hermann, Karl Moritz, Suleyman,
-Mustafa, and Blunsom, Phil. Learning to transduce with
-unbounded memory. In Proceedings of the 28th Conference on Advances in Neural Information Processing
-Systems (NIPS), pp. 1828–1836, 2015.
-Joulin, Armand and Mikolov, Tomas. Inferring algorithmic patterns with stack-augmented recurrent nets. In
-Advances in Neural Information Processing Systems 2,
-[NIPS Conference, Denver, Colorado, USA, November
-27-30, 1989], pp. 190–198, 2015.
-Kaiser, Łukasz and Sutskever, Ilya. Neural GPUs learn algorithms. In Proceedings of the 4th International Conference on Learning Representations (ICLR), 2016. URL
-http://arxiv.org/abs/1511.08228.
-Kumar, Abhishek and Daume III, Hal. Learning task grouping and overlap in multi-task learning. arXiv preprint
-arXiv:1206.6417, 2012.
-Kurach, Karol, Andrychowicz, Marcin, and Sutskever, Ilya.
-Neural random-access machines. In Proceedings of the
-4th International Conference on Learning Representations 2016, 2015. URL http://arxiv.org/abs/
-1511.06392.
-Luong, Minh-Thang, Le, Quoc V, Sutskever, Ilya, Vinyals,
-Oriol, and Kaiser, Lukasz. Multi-task sequence to sequence learning. In International Conference on Learning Representations (ICLR), 2015.
-McCloskey, Michael and Cohen, Neal J. Catastrophic interference in connectionist networks: The sequential learning problem. Psychology of learning and motivation, 24:
-109–165, 1989.
-Neelakantan, Arvind, Le, Quoc V., and Sutskever, Ilya. Neural programmer: Inducing latent programs with gradient
-descent. In Proceedings of the 4th International Conference on Learning Representations 2016, 2016.
-Pan, Sinno Jialin and Yang, Qiang. A survey on transfer
-learning. IEEE Transactions on knowledge and data engineering, 22(10):1345–1359, 2010.
-Price, Eric, Zaremba, Wojciech, and Sutskever, Ilya. Extensions and limitations of the neural GPU. 2016. Submitted
-to ICLR 2017.
-Ratcliff, Roger. Connectionist models of recognition memory: constraints imposed by learning and forgetting functions. Psychological review, 97(2):285, 1990.
+Chu, Wei, Li, Lihong, Reyzin, Lev, and Schapire, Robert E.
+Contextual bandits with linear payoff functions. In Proceedings of the 14th International Conference on Artificial Intelligence and Statistics (AISTATS), pp. 208–214,
+2011.
+Dani, Varsha, Hayes, Thomas P, and Kakade, Sham M.
+Stochastic linear optimization under bandit feedback. In
+Proceedings of the 21st Annual Conference on Learning
+Theory (COLT), pp. 355–366, 2008.
+Fahrmeir, Ludwig and Kaufmann, Heinz. Consistency and
+asymptotic normality of the maximum likelihood estimator in generalized linear models. The Annals of Statistics, 13(1):342–368, 1985.
+Filippi, Sarah, Cappe, Olivier, Garivier, Aurélien, and
+Szepesvári, Csaba. Parametric bandits: The generalized
+linear case. In Advances in Neural Information Processing Systems 23, pp. 586–594, 2010.
 
-Differentiable Programs with Neural Libraries
+Auer, Peter, Cesa-Bianchi, Nicolo, and Fischer, Paul.
+Finite-time analysis of the multiarmed bandit problem.
+Machine learning, 47(2-3):235–256, 2002a.
 
-Reed, Scott E. and de Freitas, Nando. Neural programmerinterpreters. 2016.
-Riedel, Sebastian, Bosnjak, Matko, and Rocktäschel, Tim.
-Programming with a differentiable forth interpreter.
-CoRR, abs/1605.06640, 2016. URL http://arxiv.
-org/abs/1605.06640.
-Robins, Anthony. Catastrophic forgetting, rehearsal and
-pseudorehearsal. Connection Science, 7(2):123–146,
-1995.
-Rusu, Andrei A, Rabinowitz, Neil C, Desjardins, Guillaume,
-Soyer, Hubert, Kirkpatrick, James, Kavukcuoglu, Koray,
-Pascanu, Razvan, and Hadsell, Raia. Progressive neural
-networks. arXiv preprint arXiv:1606.04671, 2016.
-Ruvolo, Paul and Eaton, Eric. Ella: An efficient lifelong
-learning algorithm. ICML (1), 28:507–515, 2013.
-Shultz, Thomas R and Rivest, Francois. Knowledge-based
-cascade-correlation: Using knowledge to speed learning.
-Connection Science, 13(1):43–72, 2001.
-Silver, Daniel L and Mercer, Robert E. The task rehearsal
-method of life-long learning: Overcoming impoverished
-data. In Conference of the Canadian Society for Computational Studies of Intelligence, pp. 90–101. Springer,
-2002.
-Silver, Daniel L and Poirier, Ryan. Machine life-long learning with csmtl networks. In AAAI, 2006.
-Silver, Daniel L, Yang, Qiang, and Li, Lianghao. Lifelong
-machine learning systems: Beyond learning algorithms.
-In AAAI Spring Symposium: Lifelong Machine Learning,
-pp. 49–55, 2013.
-Stallkamp, Johannes, Schlipsing, Marc, Salmen, Jan, and
-Igel, Christian. The German Traffic Sign Recognition Benchmark: A multi-class classification competition.
-In IEEE International Joint Conference on Neural Networks, pp. 1453–1460, 2011.
-Thrun, Sebastian. A lifelong learning perspective for mobile
-robot control. In Proceedings of IEEE/RSJ International
-Conference on Intelligent Robots and Systems (IROS), pp.
-23–30, 1994.
-Thrun, Sebastian. Is learning the n-th thing any easier than
-learning the first? In Advances in Neural Information
-Processing Systems 8 (NIPS), pp. 640–646, 1995.
-Thrun, Sebastian and O’Sullivan, Joseph. Discovering structure in multiple learning tasks: The TC algorithm. In
-Machine Learning, Proceedings of the Thirteenth International Conference (ICML), pp. 489–497, 1996.
+Lai, Tze Leung and Robbins, Herbert. Asymptotically efficient adaptive allocation rules. Advances in Applied
+Mathematics, 6(1):4–22, 1985.
 
-Weston, Jason, Chopra, Sumit, and Bordes, Antoine. Memory networks. In Proceedings of the 3rd International
-Conference on Learning Representations 2015, 2014.
-URL http://arxiv.org/abs/1410.3916.
-Zaremba, Wojciech, Mikolov, Tomas, Joulin, Armand, and
-Fergus, Rob. Learning simple algorithms from examples.
-In Proceedings of the 33nd International Conference on
-Machine Learning, ICML 2016, pp. 421–429, 2016.
-Zhang, Chiyuan, Bengio, Samy, Hardt, Moritz, Recht, Benjamin, and Vinyals, Oriol. Understanding deep learning
-requires rethinking generalization. In International Conference on Learning Representations, 2017.
+Auer, Peter, Cesa-Bianchi, Nicolo, Freund, Yoav, and
+Schapire, Robert E. The nonstochastic multiarmed bandit problem. SIAM Journal on Computing, 32(1):48–77,
+2002b.
+
+Lai, Tze Leung and Wei, Ching Zong. Least squares estimates in stochastic regression models with applications
+to identification and control of dynamic systems. The
+Annals of Statistics, 10(1):154–166, 1982.
+
+Beygelzimer, Alina, Langford, John, Li, Lihong, Reyzin,
+Lev, and Schapire, Robert E. Contextual bandit algorithms with supervised learning guarantees. In Proceedings of the 14th International Conference on Artificial
+Intelligence and Statistics (AISTATS), pp. 19–26, 2010.
+
+Lehmann, Erich Leo and Casella, George. Theory of Point
+Estimation, volume 31 of Springer Texts in Statistics.
+Springer Science & Business Media, 1998.
+
+Bickel, Peter J, Ritov, Ya’acov, and Tsybakov, Alexandre B. Simultaneous analysis of Lasso and Dantzig selector. The Annals of Statistics, 37(4):1705–1732, 2009.
+Brown, Lawrence D. Fundamentals of Statistical Exponential Families with Applications in Statistical Decision
+Theory, volume 9 of Lecture Notes-Monograph Series.
+Institute of Mathematical Statistics, 1986.
+Bubeck, Sébastien and Cesa-Bianchi, Nicolo. Regret analysis of stochastic and nonstochastic multi-armed bandit
+problems. Foundations and Trends in Machine Learning, 5(1):1–122, 2012.
+Chapelle, Olivier and Li, Lihong. An empirical evaluation
+of Thompson sampling. In Advances in Neural Information Processing Systems 24, pp. 2249–2257, 2012.
+Chen, Kani, Hu, Inchi, and Ying, Zhiliang. Strong consistency of maximum quasi-likelihood estimators in generalized linear models with fixed and adaptive designs. The
+Annals of Statistics, 27(4):1155–1163, 1999.
+
+Li, Lihong, Chu, Wei, Langford, John, and Schapire,
+Robert E. A contextual-bandit approach to personalized
+news article recommendation. In Proceedings of the 19th
+International Conference on World Wide Web (WWW),
+pp. 661–670. ACM, 2010.
+Li, Lihong, Chu, Wei, Langford, John, Moon, Taesup, and
+Wang, Xuanhui. An unbiased offline evaluation of contextual bandit algorithms with generalized linear models. JMLR Workshop and Conference Proceedings, 26:
+19–36, 2012.
+McCullagh, Peter and Nelder, John A. Generalized Linear
+Models, volume 37. CRC press, 1989.
+Pollard, David. Empirical processes: Theory and applications. In NSF-CBMS regional conference series in probability and statistics, pp. i–86. JSTOR, 1990.
+Rusmevichientong, Paat and Tsitsiklis, John N. Linearly
+parameterized bandits. Mathematics of Operations Research, 35(2):395–411, 2010.
+
+Generalized Linear Contextual Bandits
+
+Russo, Daniel and Van Roy, Benjamin. Learning to optimize via posterior sampling. Mathematics of Operations
+Research, 39(4):1221–1243, 2014.
+Sarkar, Jyotirmoy. One-armed bandit problems with covariates. The Annals of Statistics, 19(4):1978–2002,
+1991.
+Thompson, William R. On the likelihood that one unknown
+probability exceeds another in view of the evidence of
+two samples. Biometrika, 25(3–4):285–294, 1933.
+Valko, Michal, Munos, Rémi, Kveton, Branislav, and
+Kocák, Tomáš. Spectral bandits for smooth graph functions. In Proceedings of the 31th International Conference on Machine Learning (ICML), pp. 46–54, 2014.
+Van der Vaart, Aad W. Asymptotic Statistics, volume 3.
+Cambridge university press, 2000.
+Vershynin, Roman. Introduction to the non-asymptotic
+analysis of random matrices. In Eldar, Yonina C. and
+Kutyniok, Gitta (eds.), Compressed Sensing: Theory and
+Applications, pp. 210–268. Cambridge University Press,
+2012.
+Woodroofe, Michael. A one-armed bandit problem with a
+concomitant variable. Journal of the American Statistical Association, 74(368):799–806, 1979.
 
 

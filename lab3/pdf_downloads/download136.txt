@@ -1,1245 +1,1190 @@
-Learning to Learn without Gradient Descent
-by Gradient Descent
-
-Yutian Chen 1 Matthew W. Hoffman 1 Sergio Gómez Colmenarejo 1 Misha Denil 1 Timothy P. Lillicrap 1
-Matt Botvinick 1 Nando de Freitas 1
-
-Abstract
-We learn recurrent neural network optimizers
-trained on simple synthetic functions by gradient descent. We show that these learned optimizers exhibit a remarkable degree of transfer in that
-they can be used to efficiently optimize a broad
-range of derivative-free black-box functions, including Gaussian process bandits, simple control
-objectives, global optimization benchmarks and
-hyper-parameter tuning tasks. Up to the training horizon, the learned optimizers learn to tradeoff exploration and exploitation, and compare
-favourably with heavily engineered Bayesian optimization packages for hyper-parameter tuning.
+On Calibration of Modern Neural Networks
+Chuan Guo * 1 Geoff Pleiss * 1 Yu Sun * 1 Kilian Q. Weinberger 1
 
 1. Introduction
-Findings in developmental psychology have revealed that
-infants are endowed with a small number of separable
-systems of core knowledge for reasoning about objects,
-actions, number, space, and possibly social interactions
-(Spelke and Kinzler, 2007). These systems enable infants
-to learn many skills and acquire knowledge rapidly. The
-most coherent explanation of this phenomenon is that the
-learning (or optimization) process of evolution has led to
-the emergence of components that enable fast and varied
-forms of learning. In psychology, learning to learn has a
-long history (Ward, 1937; Harlow, 1949; Kehoe, 1988).
-Inspired by this, many researchers have attempted to build
-agents capable of learning to learn (Schmidhuber, 1987;
-Naik and Mammone, 1992; Thrun and Pratt, 1998; Hochreiter et al., 2001; Santoro et al., 2016; Duan et al., 2016;
-Wang et al., 2016; Ravi and Larochelle, 2017; Li and Malik, 2017). The scope of research under the umbrella of
-learning to learn is very broad. The learner can implement
-and be trained by many different algorithms, including gra1
-DeepMind, London, United Kingdom. Correspondence to:
-Yutian Chen <yutianc@google.com>.
+Recent advances in deep learning have dramatically improved neural network accuracy (Simonyan & Zisserman,
+2015; Srivastava et al., 2015; He et al., 2016; Huang et al.,
+2016; 2017). As a result, neural networks are now entrusted
+with making complex decisions in applications, such as object detection (Girshick, 2015), speech recognition (Hannun et al., 2014), and medical diagnosis (Caruana et al.,
+2015). In these settings, neural networks are an essential
+component of larger decision making pipelines.
+In real-world decision making systems, classification networks must not only be accurate, but also should indicate
+when they are likely to be incorrect. As an example, consider a self-driving car that uses a neural network to detect
+pedestrians and other obstructions (Bojarski et al., 2016).
+*
 
+Equal contribution, alphabetical order. 1 Cornell University.
+Correspondence to: Chuan Guo <cg563@cornell.edu>, Geoff
+Pleiss <geoff@cs.cornell.edu>, Yu Sun <ys646@cornell.edu>.
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-dient descent, evolutionary strategies, simulated annealing,
-and reinforcement learning.
-For instance, one can learn to learn by gradient descent by
-gradient descent, or learn local Hebbian updates by gradient descent (Andrychowicz et al., 2016; Bengio et al.,
-1992). In the former, one uses supervised learning at the
-meta-level to learn an algorithm for supervised learning,
-while in the latter, one uses supervised learning at the metalevel to learn an algorithm for unsupervised learning.
-Learning to learn can be used to learn both models and
-algorithms. In Andrychowicz et al. (2016) the output of
-meta-learning is a trained recurrent neural network (RNN),
-which is subsequently used as an optimization algorithm to
-fit other models to data. In contrast, in Zoph and Le (2017)
-the output of meta-learning can also be an RNN model, but
-this new RNN is subsequently used as a model that is fit to
-data using a classical optimizer. In both cases the output
-of meta-learning is an RNN, but this RNN is interpreted
-and applied as a model or as an algorithm. In this sense,
-learning to learn with neural networks blurs the classical
-distinction between models and algorithms.
-In this work, the goal of meta-learning is to produce an
-algorithm for global black-box optimization. Specifically,
-we address the problem of finding a global minimizer of an
-unknown (black-box) loss function f . That is, we wish to
-compute x? = arg minx∈X f (x) , where X is some search
-space of interest. The black-box function f is not available
-to the learner in simple closed form at test time, but can be
-evaluated at a query point x in the domain. This evaluation
-produces either deterministic or stochastic outputs y ∈ R
-such that f (x) = E[y | f (x)]. In other words, we can only
-observe the function f through unbiased noisy point-wise
-observations y.
-Bayesian optimization is one of the most popular black-box
-optimization methods (Brochu et al., 2009; Snoek et al.,
-2012; Shahriari et al., 2016). It is a sequential modelbased decision making approach with two components.
-The first component is a probabilistic model, consisting of
-a prior distribution that captures our beliefs about the behavior of the unknown objective function and an observation model that describes the data generation mechanism.
+0.6
+0.4
 
-Learning to Learn without Gradient Descent by Gradient Descent
+Avg. confidence
 
-The model can be a Beta-Bernoulli bandit, a random forest, a Bayesian neural network, or a Gaussian process (GP)
-(Shahriari et al., 2016). Bayesian optimization is however
-often associated with GPs, to the point of sometimes being
-referred to as GP bandits (Srinivas et al., 2010).
-The second component is an acquisition function, which
-is optimized at each step so as to trade-off exploration
-and exploitation. Here again we encounter a huge variety
-of strategies, including Thompson sampling, information
-gain, probability of improvement, expected improvement,
-upper confidence bounds (Shahriari et al., 2016). The requirement for optimizing the acquisition function at each
-step can be a significant cost, as shown in the empirical section of this paper. It also raises some theoretical concerns
-(Wang et al., 2014).
-In this paper, we present a learning to learn approach for
-global optimization of black-box functions and contrast it
-with Bayesian optimization. In the meta-learning phase,
-we use a large number of differentiable functions generated with a GP to train RNN optimizers by gradient descent. We consider two types of RNN: long-short-term
-memory networks (LSTMs) by Hochreiter and Schmidhuber (1997) and differentiable neural computers (DNCs) by
-Graves et al. (2016).
-During meta-learning, we choose the horizon (number of
-steps) of the optimization process. We are therefore considering the finite horizon setting that is popular in AB tests
-(Kohavi et al., 2009; Scott, 2010) and is often studied under the umbrella of best arm identification in the bandits
-literature (Bubeck et al., 2009; Gabillon et al., 2012).
-The RNN optimizer learns to use its memory to store information about previous queries and function evaluations,
-and learns to access its memory to make decisions about
-which parts of the domain to explore or exploit next. That
-is, by unrolling the RNN, we generate new candidates for
-the search process. The experiments will show that this
-process is much faster than applying standard Bayesian optimization, and in particular it does not involve either matrix inversion or optimization of acquisition functions.
-In the experiments we also investigate distillation of acquisition functions to guide the process of training the RNN
-optimizers, and the use of parallel optimization schemes
-for expensive training of deep networks.
-The experiments show that the learned optimizers can
-transfer to optimize a large and diverse set of blackbox functions arising in global optimization, control, and
-hyper-parameter tuning. Moreover, withing the training
-horizon, the RNN optimizers are competitive with stateof-the-art heavily engineered packages such as Spearmint,
-SMAC and TPE (Snoek et al., 2014; Hutter et al., 2011a;
-Bergstra et al., 2011)
+0.8
 
-2. Learning Black-box Optimization
-A black-box optimization algorithm can be summarized by
-the following loop:
-1. Given the current state of knowledge ht propose a
-query point xt
-2. Observe the response yt
-3. Update any internal statistics to produce ht+1
-This easily maps onto the classical frameworks presented in
-the previous section where the update step computes statistics and the query step uses these statistics for exploration.
-In this work we take this framework as a starting point and
-define a combined update and query rule using a recurrent
-neural network parameterized by θ such that
-ht , xt = RNNθ (ht−1 , xt−1 , yt−1 ),
-yt ∼ p(y | xt ) .
+ResNet (2016)
+CIFAR-100
+Accuracy
 
+% of Samples
+
+1.0
+
+0.2
+0.0
+0.0 0.2 0.4 0.6 0.8 1.0
+1.0
+0.8
+
+Accuracy
+
+Confidence calibration – the problem of predicting probability estimates representative of the
+true correctness likelihood – is important for
+classification models in many applications. We
+discover that modern neural networks, unlike
+those from a decade ago, are poorly calibrated.
+Through extensive experiments, we observe that
+depth, width, weight decay, and Batch Normalization are important factors influencing calibration. We evaluate the performance of various
+post-processing calibration methods on state-ofthe-art architectures with image and document
+classification datasets. Our analysis and experiments not only offer insights into neural network learning, but also provide a simple and
+straightforward recipe for practical settings: on
+most datasets, temperature scaling – a singleparameter variant of Platt Scaling – is surprisingly effective at calibrating predictions.
+
+LeNet (1998)
+CIFAR-100
+Avg. confidence
+Accuracy
+
+Abstract
+
+Outputs
+Gap
+
+0.0 0.2 0.4 0.6 0.8 1.0
+Outputs
+Gap
+
+0.6
+0.4
+0.2
+
+Error=44.9
+
+Error=30.6
+
+0.0
+0.0 0.2 0.4 0.6 0.8 1.0 0.0 0.2 0.4 0.6 0.8 1.0
+Confidence
+
+Figure 1. Confidence histograms (top) and reliability diagrams
+(bottom) for a 5-layer LeNet (left) and a 110-layer ResNet (right)
+on CIFAR-100. Refer to the text below for detailed illustration.
+
+If the detection network is not able to confidently predict
+the presence or absence of immediate obstructions, the car
+should rely more on the output of other sensors for braking.
+Alternatively, in automated health care, control should be
+passed on to human doctors when the confidence of a disease diagnosis network is low (Jiang et al., 2012). Specifically, a network should provide a calibrated confidence
+measure in addition to its prediction. In other words, the
+probability associated with the predicted class label should
+reflect its ground truth correctness likelihood.
+Calibrated confidence estimates are also important for
+model interpretability. Humans have a natural cognitive intuition for probabilities (Cosmides & Tooby, 1996). Good
+confidence estimates provide a valuable extra bit of information to establish trustworthiness with the user – especially for neural networks, whose classification decisions
+are often difficult to interpret. Further, good probability
+estimates can be used to incorporate neural networks into
+other probabilistic models. For example, one can improve
+performance by combining network outputs with a lan-
+
+guage model in speech recognition (Hannun et al., 2014;
+Xiong et al., 2016), or with camera information for object
+detection (Kendall & Cipolla, 2016).
+In 2005, Niculescu-Mizil & Caruana (2005) showed that
+neural networks typically produce well-calibrated probabilities on binary classification tasks. While neural networks today are undoubtedly more accurate than they were
+a decade ago, we discover with great surprise that modern neural networks are no longer well-calibrated. This
+is visualized in Figure 1, which compares a 5-layer LeNet
+(left) (LeCun et al., 1998) with a 110-layer ResNet (right)
+(He et al., 2016) on the CIFAR-100 dataset. The top row
+shows the distribution of prediction confidence (i.e. probabilities associated with the predicted label) as histograms.
+The average confidence of LeNet closely matches its accuracy, while the average confidence of the ResNet is substantially higher than its accuracy. This is further illustrated in
+the bottom row reliability diagrams (DeGroot & Fienberg,
+1983; Niculescu-Mizil & Caruana, 2005), which show accuracy as a function of confidence. We see that LeNet is
+well-calibrated, as confidence closely approximates the expected accuracy (i.e. the bars align roughly along the diagonal). On the other hand, the ResNet’s accuracy is better,
+but does not match its confidence.
+Our goal is not only to understand why neural networks
+have become miscalibrated, but also to identify what methods can alleviate this problem. In this paper, we demonstrate on several computer vision and NLP tasks that neural networks produce confidences that cannot represent true
+probabilities. Additionally, we offer insight and intuition
+into network training and architectural trends that may
+cause miscalibration. Finally, we compare various postprocessing calibration methods on state-of-the-art neural
+networks, and introduce several extensions of our own.
+Surprisingly, we find that a single-parameter variant of Platt
+scaling (Platt et al., 1999) – which we refer to as temperature scaling – is often the most effective method at obtaining calibrated probabilities. Because this method is
+straightforward to implement with existing deep learning
+frameworks, it can be easily adopted in practical settings.
+
+2. Definitions
+The problem we address in this paper is supervised multiclass classification with neural networks. The input X ∈ X
+and label Y ∈ Y = {1, . . . , K} are random variables
+that follow a ground truth joint distribution π(X, Y ) =
+π(Y |X)π(X). Let h be a neural network with h(X) =
+(Ŷ , P̂ ), where Ŷ is a class prediction and P̂ is its associated confidence, i.e. probability of correctness. We would
+like the confidence estimate P̂ to be calibrated, which intuitively means that P̂ represents a true probability. For
+example, given 100 predictions, each with confidence of
+
+0.8, we expect that 80 should be correctly classified. More
+formally, we define perfect calibration as
+
+
 (1)
+P Ŷ = Y | P̂ = p = p, ∀p ∈ [0, 1]
+
+where the probability is over the joint distribution. In all
+practical settings, achieving perfect calibration is impossible. Additionally, the probability in (1) cannot be computed using finitely many samples since P̂ is a continuous
+random variable. This motivates the need for empirical approximations that capture the essence of (1).
+Reliability Diagrams (e.g. Figure 1 bottom) are a visual
+representation of model calibration (DeGroot & Fienberg,
+1983; Niculescu-Mizil & Caruana, 2005). These diagrams
+plot expected sample accuracy as a function of confidence.
+If the model is perfectly calibrated – i.e. if (1) holds – then
+the diagram should plot the identity function. Any deviation from a perfect diagonal represents miscalibration.
+To estimate the expected accuracy from finite samples, we
+group predictions into M interval bins (each of size 1/M )
+and calculate the accuracy of each bin. Let Bm be the set
+of indices of samples whose prediction confidence falls into
+m
+the interval Im = ( m−1
+M , M ]. The accuracy of Bm is
+1 X
+acc(Bm ) =
+1(ŷi = yi ),
+|Bm |
+i∈Bm
+
+where ŷi and yi are the predicted and true class labels for
+sample i. Basic probability tells us that acc(Bm ) is an unbiased and consistent estimator of P(Ŷ = Y | P̂ ∈ Im ).
+We define the average confidence within bin Bm as
+1 X
+conf(Bm ) =
+p̂i ,
+|Bm |
+i∈Bm
+
+where p̂i is the confidence for sample i. acc(Bm ) and
+conf(Bm ) approximate the left-hand and right-hand sides
+of (1) respectively for bin Bm . Therefore, a perfectly calibrated model will have acc(Bm ) = conf(Bm ) for all
+m ∈ {1, . . . , M }. Note that reliability diagrams do not display the proportion of samples in a given bin, and thus cannot be used to estimate how many samples are calibrated.
+Expected Calibration Error (ECE). While reliability
+diagrams are useful visual tools, it is more convenient to
+have a scalar summary statistic of calibration. Since statistics comparing two distributions cannot be comprehensive,
+previous works have proposed variants, each with a unique
+emphasis. One notion of miscalibration is the difference in
+expectation between confidence and accuracy, i.e.
+i
+h 
+
+
+
 (2)
+E P Ŷ = Y | P̂ = p − p
+P̂
 
-Intuitively this rule can be seen to update its hidden state
-using data from the previous time step and then propose
-a new query point. In what follows we will apply this
-RNN, with shared parameters, to many steps of a blackbox optimization process. An example of this computation
-is shown in Figure 1. Additionally, note that in order to
-generate the first query x1 we arbitrarily set the initial “observations” to dummy values x0 = 0 and y0 = 0; this is a
-point we will return to in Section 2.3.
-2.1. Loss Function
-Given this rule we now need a way to learn the parameters
-θ with stochastic gradient descent for any given distribution of differentiable functions p(f ). Perhaps the simplest
-loss function one could use is the loss of the final iteration: Lfinal (θ) = Ef,y1:T −1 [f (xT )] for some time-horizon
-T . This loss was considered by Andrychowicz et al. (2016)
-in the context of learning first-order optimizers, but ultimately rejected in favor of the summed loss
-" T
-#
+Expected Calibration Error (Naeini et al., 2015) – or ECE
+– approximates (2) by partitioning predictions into M
+equally-spaced bins (similar to the reliability diagrams) and
+
+Varying Depth
+ResNet - CIFAR-100
+
+0.7
+
+Error
+ECE
+
+0.6
+Error/ECE
+
+Varying Width
+ResNet-14 - CIFAR-100
+
+0.5
+
+Error
+ECE
+
+Using Normalization
+ConvNet - CIFAR-100
+
+Varying Weight Decay
+ResNet-110 - CIFAR-100
+
+Error
+ECE
+
+Error
+ECE
+
+0.4
+0.3
+0.2
+0.1
+0.0
+0
+
+20 40 60 80 100 120
+Depth
+
+0
+
+50 100 150 200 250 300
+Filters per layer
+
+Without
+With
+Batch Normalization
+
+10−5
+
+10−4
+10−3
+Weight decay
+
+10−2
+
+Figure 2. The effect of network depth (far left), width (middle left), Batch Normalization (middle right), and weight decay (far right) on
+miscalibration, as measured by ECE (lower is better).
+
+taking a weighted average of the bins’ accuracy/confidence
+difference. More precisely,
+
+
+M
 X
-Lsum (θ) = Ef,y1:T −1
-f (xt ) .
+
+|Bm | 
+
 (3)
-t=1
+ECE =
+acc(B
+)
+−
+conf(B
+)
+m
+m ,
+
+n
+m=1
 
-A key reason to prefer Lsum is that the amount of information conveyed by Lfinal is temporally very sparse. By
-instead utilizing a sum of losses to train the optimizer we
-are able to provide information from every step along this
-trajectory. Although at test time the optimizer typically
-only has access to the observation yt , at training time the
-true loss can be used. Note that optimizing the summed
-loss is equivalent to finding a strategy which minimizes the
-expected cumulative regret. Finally, while in many optimization tasks the loss associated with the best observation
-mint f (xt ) is often desired, the cumulative regret can be
-seen as a proxy for this quantity.
-
-Learning to Learn without Gradient Descent by Gradient Descent
-
-Loss
-f
-
-f
-
-yt-1
-xt-1
-
-ht-2
-
-RNN
-
-ht-1
-
-yt
-
-f
-
-yt+1
-
-xt
-RNN
-
-ht
-
-RNN
-
-ht+1
-
-xt-2 yt-2
-Figure 1. Computational graph of the learned black-box optimizer unrolled over multiple steps. The learning process will consist of
-differentiating the given loss with respect to the RNN parameters
-
-By using the above objective function we will be encouraged to trade off exploration and exploitation and hence
-globally optimize the function f . This is due to the fact that
-in expectation, any method that is better able to explore and
-find small values of f (x) will be rewarded for these discoveries. However the actual process of optimizing the above
-loss can be difficult due to the fact that nothing explicitly
-encourages the optimizer itself to explore.
-We can encourage exploration in the space of optimizers by
-encoding an exploratory force directly into the meta learning loss function. Many examples exist in the bandit and
-Bayesian optimization communities, for example
-" T
-#
-X
-LEI (θ) = −Ef,y1:T −1
-EI(xt | y1:t−1 )
+where n is the number of samples. The difference between
+acc and conf for a given bin represents the calibration gap
+(red bars in reliability diagrams – e.g. Figure 1). We use
+ECE as the primary empirical metric to measure calibration. See Section S1 for more analysis of this metric.
+Maximum Calibration Error (MCE). In high-risk applications where reliable confidence measures are absolutely necessary, we may wish to minimize the worst-case
+deviation between confidence and accuracy:
+
+ 
+
+
+
 (4)
-t=1
+max P Ŷ = Y | P̂ = p − p .
+p∈[0,1]
 
-where EI(·) is the expected posterior improvement of
-querying xt given observations up to time t. This can
-encourage exploration by giving an explicit bonus to the
-optimizer rather than just implicitly doing so by means of
-function evaluations. Alternatively, it is possible to use the
-observed improvement (OI)
-" T
-
-#
-X
-LOI (θ) = Ef,y1:T −1
-min f (xt ) − min(f (xi )), 0
-t=1
+The Maximum Calibration Error (Naeini et al., 2015) – or
+MCE – estimates an upper bound of this deviation. Similarly to ECE, this approximation involves binning:
+MCE =
 
-i<t
+max
+
+m∈{1,...,M }
+
+|acc(Bm ) − conf(Bm )| .
 
 (5)
-We also studied a loss based on GP-UCB (Srinivas et al.,
-2010) but in preliminary experiments this did not perform
-as well as the EI loss and is thus not included in the later
-experiments.
-The illustration of Figure 1 shows the optimizer unrolled
-over many steps, ultimately culminating in the loss function. To train the optimizer we will simply take derivatives
 
-of the loss with respect to the RNN parameters θ and perform stochastic gradient descent (SGD). In order to evaluate these derivatives we assume that derivatives of f can
-be computed with respect to its inputs. This assumption is
-made only in order to backpropagate errors from the loss to
-the parameters, but crucially is not needed at test time. If
-the derivatives of f are also not available at training time
-then it would be necessary to approximate these derivatives
-via an algorithm such as REINFORCE (Williams, 1992).
-2.2. Training Function Distribution
-To this point we have made no assumptions about the distribution of training functions p(f ). In this work we are
-interested in learning general-purpose black-box optimizers, and we desire our distribution to be quite broad.
-As a result we propose the use of GPs as a suitable training distribution. Under the GP prior, the joint distribution of function values at any finite set of query points follows a multivariate Gaussian distribution (Rasmussen and
-Williams, 2006), and we generate a realization of the training function incrementally at the query points using the
-chain rule with a total time complexity of O(T 3 ) for every function sample.
-The use of functions sampled from a GP prior also provides functions whose gradients can be easily evaluated at
-training time as noted above. Further, the posterior expected improvement used within LEI can be easily computed (Močkus, 1982) and differentiated as well. Search
-strategies based on GP losses, such as LEI , can be thought
-of as a distilled strategies. The major downside of search
-strategies which are based on GP inference is their cubic
-complexity.
-
-Learning to Learn without Gradient Descent by Gradient Descent
-
-algorithm.
-
-~
-yt
-xt ~
-
-f
-
-…
-1
-
-f
-
-f
-
-…
-i
-
-…
-j
-
-f
-
-A well-trained optimizer must learn to condition on ot−1 in
-order to either generate initial queries or generate queries
-based on past observations. Another key point to consider
-is that the batch nature of the optimizer can result in the
-ordering of queries being permuted: i.e. although xt is proposed before xt+1 it is entirely plausible that xt+1 is evaluated first. In order to account for this at training time and
-not allow the optimizer to rely on a specific ordering, we
-simulate a runtime ∆t ∼ Uniform(1 − σ, 1 + σ) associated
-with the t-th query. Observations are then made based on
-the order in which they complete.
-
-N
-
-xt
-ht-1
-
-RNN
-
-It is worth noting that the sequential setting is a special case
-of this parallel policy where N = 1 and every observation
-is made with ot−1 = 1. Note also that we have kept the
-number of workers fixed for simplicity of explanation only.
-The architecture allows for the number of workers to vary.
-
-ht
-
-~
-xt-1 ~
-yt-1 ot-1
-Figure 2. Graph depicting a single iteration of the parallel algorithm with N workers. Here we explicitly illustrate the fact that
-the query xt is being assigned to the i-th worker for evaluation,
-and that the the next observation pair (x̃t , ỹt ) is the output of the
-j-th worker, which has completed its function evaluation.
-
-While training with a GP prior grants us the convenience
-to assess the efficacy of our training algorithm by comparing head-to-head with GP-based methods, it is worth noting that our model can be trained with any distribution that
-permits efficient sampling and function differentiation. The
-flexibility could become useful when considering problems
-with specific prior knowledge and/or side information.
-
-It is instructive to contrast this strategy with what is done
-in parallel Bayesian optimization (Desautels et al., 2014;
-Snoek et al., 2012). There care must be taken to ensure
-that a diverse set of queries are utilized—in the absence of
-additional data the standard sequential strategy would propose N queries at the same point. Exactly computing the
-optimal N -step query is typically intractable, and as a result hand-engineered heuristics are employed. Often this
-involves synthetically reducing the uncertainty associated
-with outstanding queries in order to simulate later observations. In contrast, our RNN optimizer can store in its hidden state any relevant information about outstanding observations. Decisions about what to store are learned during
-training and as a result should be more directly related to
-later losses.
-
-2.3. Parallel Function Evaluation
-The use of parallel function evaluation is a common technique in Bayesian optimization, often used for costly, but
-easy to simulate functions. For example, as illustrated in
-the experiments, when searching for hyper-parameters of
-deep networks, it is convenient to train several deep networks in parallel.
-Suppose we have N workers, and that the process of
-proposing candidates for function evaluation is much faster
-than evaluating the functions. We augment our RNN optimizer’s input with a binary variable ot as follows:
-ht , xt = RNNθ (ht−1 , ot−1 , x̃t−1 , ỹt−1 ).
-
+In reliability diagrams, MCE measures the largest calibration gap (red bars) across all bins, whereas ECE measures a
+weighted average of all gaps. For perfectly calibrated classifiers, MCE and ECE both equal 0.
+Negative log likelihood is a standard measure of a probabilistic model’s quality (Friedman et al., 2001). It is also
+referred to as the cross entropy loss in the context of deep
+learning (Bengio et al., 2015). Given a probabilistic model
+π̂(Y |X) and n samples, NLL is defined as:
+n
+X
+L=−
+log(π̂(yi |xi ))
 (6)
 
-For the first t ≤ N steps, we set ot−1 = 0, arbitrarily
-set the inputs to dummy values x̃t−1 = 0 and ỹt−1 = 0,
-and generate N parallel queries x1:N . As soon as a worker
-finishes evaluating a query, the query and its evaluation are
-fed back to the network by setting ot−1 = 1, resulting in
-a new query xt . Figure 2 displays a single iteration of this
+3. Observing Miscalibration
+The architecture and training procedures of neural networks have rapidly evolved in recent years. In this section we identify some recent changes that are responsible
+for the miscalibration phenomenon observed in Figure 1.
+Though we cannot claim causality, we find that model
+capacity and lack of regularization are closely related to
+model (mis)calibration.
+Model capacity. The model capacity of neural networks
+has increased at a dramatic pace over the past few years.
+It is now common to see networks with hundreds, if not
+thousands of layers (He et al., 2016; Huang et al., 2016)
+and hundreds of convolutional filters per layer (Zagoruyko
+& Komodakis, 2016). Recent work shows that very deep
+or wide models are able to generalize better than smaller
+ones, while exhibiting the capacity to easily fit the training
+set (Zhang et al., 2017).
+Although increasing depth and width may reduce classification error, we observe that these increases negatively
+affect model calibration. Figure 2 displays error and ECE
+as a function of depth and width on a ResNet trained on
+CIFAR-100. The far left figure varies depth for a network
+with 64 convolutional filters per layer, while the middle left
+figure fixes the depth at 14 layers and varies the number
+of convolutional filters per layer. Though even the smallest models in the graph exhibit some degree of miscalibration, the ECE metric grows substantially with model capacity. During training, after the model is able to correctly
+classify (almost) all training samples, NLL can be further
+minimized by increasing the confidence of predictions. Increased model capacity will lower training NLL, and thus
+the model will be more (over)confident on average.
 
-3. Experiments
-We present several experiments that show the breadth
-of generalization that is achieved by our learned algorithms. We train our algorithms to optimize very simple
-functions—samples from a GP with a fixed length scale—
-and show that the learned algorithms are able to generalize
-from these simple objective functions to a wide variety of
-other test functions that were not seen during training.
-We experimented with two different RNN architectures:
-LSTMs and DNCs. However, we found the DNCs to perform slightly (but not significantly) better. For clarity, we
-only show plots for DNCs in most of the figures.
-We train each RNN optimizer with trajectories of T steps,
-and update the RNN parameters using BPTT with Adam.
-We use a curriculum to increase the length of trajectories
-gradually from T = 10 to 100. We repeat this process for
-each of the loss functions discussed in Section 2. Hyper-
+i=1
 
-Learning to Learn without Gradient Descent by Gradient Descent
+It is a standard result (Friedman et al., 2001) that, in expectation, NLL is minimized if and only if π̂(Y |X) recovers
+the ground truth conditional distribution π(Y |X).
 
-−0.8
-−1.0
-−1.2
-−1.4
+Batch Normalization (Ioffe & Szegedy, 2015) improves
+the optimization of neural networks by minimizing distribution shifts in activations within the neural network’s hid-
+
+NLL Overfitting on CIFAR−100
+45
+
+Error (%) / NLL (scaled)
+
+Test error
+Test NLL
 40
 
-60
-
-80
-
-−2.0
-−2.5
-−3.0
-
-100
-
-0
-
-GP samples, dim=6
-
-20
-
-−2.0
-−2.5
-−3.0
-−3.5
-−4.0
-
-40
-
-60
-
-80
-
-100
-
-GP samples, dim=9
-
-0
-
-Min function value
-
-−1.5
-
-Min function value
-
-20
-
-Spearmint
-Spearmint Fixed Hyper-parameters
-TPE
-SMAC
-DNC sum
-DNC OI
-DNC EI
-
-−1.5
-
-−1
-−2
-−3
-−4
-−5
-
-0
-
-20
-
-40
-
-60
-
-80
-
-100
-
-Compare DNC vs LSTM, dim=6
-
-0
-
-Min function value
-
-0
-
-GP samples, dim=3
-
-−1.0
-
-Min function value
-
-Min function value
-
-GP samples, dim=1
-−0.6
-
-DNC sum
-LSTM sum
-DNC OI
-LSTM OI
-DNC EI
-LSTM EI
-
-−1
-−2
-−3
-−4
-−5
-
-0
-
-20
-
-40
-
-60
-
-80
-
-100
-
-0
-
-20
-
-40
-
-60
-
-80
-
-100
-
-Figure 3. Average minimum observed function value, with 95% confidence intervals, as a function of search steps on functions sampled
-from the training GP distribution. Left four figures: Comparing DNC with different reward functions against Spearmint with fixed and
-estimated GP hyper-parameters, TPE and SMAC. Right bottom: Comparing different DNCs and LSTMs. As the dimension of the search
-space increases, the DNC’s performance improves relative to the baselines.
-DNC sum
-1.0
-
-40
-
-0.8
-0.6
-0.4
-0.2
-
-0.2
-
-0.4
-
-0.6
-
-0.8
-
-20
-
-0.4
-
-0
-1.0
-
-40
-
-0.8
-0.6
-
-0.2
-
-0.2
-
-0.4
-
-0.6
-
-0.8
-
-20
-
-0.4
-
-0
-1.0
-
-40
-
-0.8
-0.6
-
-0.2
-
-0.2
-
-0.4
-
-0.6
-
-0.8
-
-1.0
-
-50
-40
-
-0.8
+35
 
 30
 
-0.6
-
-30
+25
 
 20
-
-0.4
-
-20
-
-10
-
-0.0
-0.0
-
-Spearmint Fixed Hypers
-
-50
-
-1.0
-
-30
-
-10
-
-0.0
-0.0
-
-DNC EI
-
-50
-
-1.0
-
-30
-
-10
-
-0.0
-0.0
-
-DNC OI
-
-50
-
 0
-1.0
 
-0.2
+100
 
-10
+200
 
-0.0
-0.0
+300
 
-0.2
+400
 
-0.4
+plays training error and ECE for a 110-layer ResNet with
+varying amounts of weight decay. The only other forms
+of regularization are data augmentation and Batch Normalization. We observe that calibration and accuracy are not
+optimized by the same parameter setting. While the model
+exhibits both over-regularization and under-regularization
+with respect to classification error, it does not appear that
+calibration is negatively impacted by having too much
+weight decay. Model calibration continues to improve
+when more regularization is added, well after the point of
+achieving optimal accuracy. The slight uptick at the end of
+the graph may be an artifact of using a weight decay factor
+that impedes optimization.
 
-0.6
+500
+
+Epoch
+
+Figure 3. Test error and NLL of a 110-layer ResNet with stochastic depth on CIFAR-100 during training. NLL is scaled by a constant to fit in the figure. Learning rate drops by 10x at epochs 250
+and 375. The shaded area marks between epochs at which the best
+validation loss and best validation error are produced.
+
+den layers. Recent research suggests that these normalization techniques have enabled the development of very
+deep architectures, such as ResNets (He et al., 2016) and
+DenseNets (Huang et al., 2017). It has been shown that
+Batch Normalization improves training time, reduces the
+need for additional regularization, and can in some cases
+improve the accuracy of networks.
+While it is difficult to pinpoint exactly how Batch Normalization affects the final predictions of a model, we do observe that models trained with Batch Normalization tend to
+be more miscalibrated. In the middle right plot of Figure 2,
+we see that a 6-layer ConvNet obtains worse calibration
+when Batch Normalization is applied, even though classification accuracy improves slightly. We find that this result
+holds regardless of the hyperparameters used on the Batch
+Normalization model (i.e. low or high learning rate, etc.).
+Weight decay, which used to be the predominant regularization mechanism for neural networks, is decreasingly
+utilized when training modern neural networks. Learning
+theory suggests that regularization is necessary to prevent
+overfitting, especially as model capacity increases (Vapnik,
+1998). However, due to the apparent regularization effects
+of Batch Normalization, recent research seems to suggest
+that models with less L2 regularization tend to generalize
+better (Ioffe & Szegedy, 2015). As a result, it is now common to train models with little weight decay, if any at all.
+The top performing ImageNet models of 2015 all use an order of magnitude less weight decay than models of previous
+years (He et al., 2016; Simonyan & Zisserman, 2015).
+We find that training with less weight decay has a negative
+impact on calibration. The far right plot in Figure 2 dis-
+
+NLL can be used to indirectly measure model calibration. In practice, we observe a disconnect between NLL
+and accuracy, which may explain the miscalibration in Figure 2. This disconnect occurs because neural networks can
+overfit to NLL without overfitting to the 0/1 loss. We observe this trend in the training curves of some miscalibrated
+models. Figure 3 shows test error and NLL (rescaled to
+match error) on CIFAR-100 as training progresses. Both
+error and NLL immediately drop at epoch 250, when the
+learning rate is dropped; however, NLL overfits during the
+remainder of training. Surprisingly, overfitting to NLL is
+beneficial to classification accuracy. On CIFAR-100, test
+error drops from 29% to 27% in the region where NLL
+overfits. This phenomenon renders a concrete explanation
+of miscalibration: the network learns better classification
+accuracy at the expense of well-modeled probabilities.
+We can connect this finding to recent work examining the
+generalization of large neural networks. Zhang et al. (2017)
+observe that deep neural networks seemingly violate the
+common understanding of learning theory that large models with little regularization will not generalize well. The
+observed disconnect between NLL and 0/1 loss suggests
+that these high capacity models are not necessarily immune
+from overfitting, but rather, overfitting manifests in probabilistic error rather than classification error.
+
+4. Calibration Methods
+In this section, we first review existing calibration methods, and introduce new variants of our own. All methods
+are post-processing steps that produce (calibrated) probabilities. Each method requires a hold-out validation set,
+which in practice can be the same set used for hyperparameter tuning. We assume that the training, validation, and
+test sets are drawn from the same distribution.
+4.1. Calibrating Binary Models
+We first introduce calibration in the binary setting, i.e.
+Y = {0, 1}. For simplicity, throughout this subsection,
+
+we assume the model outputs only the confidence for the
+positive class.1 Given a sample xi , we have access to p̂i –
+the network’s predicted probability of yi = 1, as well as
+zi ∈ R – which is the network’s non-probabilistic output,
+or logit. The predicted probability p̂i is derived from zi using a sigmoid function σ; i.e. p̂i = σ(zi ). Our goal is to
+produce a calibrated probability q̂i based on yi , p̂i , and zi .
+Histogram binning (Zadrozny & Elkan, 2001) is a simple non-parametric calibration method. In a nutshell, all
+uncalibrated predictions p̂i are divided into mutually exclusive bins B1 , . . . , BM . Each bin is assigned a calibrated
+score θm ; i.e. if p̂i is assigned to bin Bm , then q̂i = θm . At
+test time, if prediction p̂te falls into bin Bm , then the calibrated prediction q̂te is θm . More precisely, for a suitably
+chosen M (usually small), we first define bin boundaries
+0 = a1 ≤ a2 ≤ . . . ≤ aM +1 = 1, where the bin Bm
+is defined by the interval (am , am+1 ]. Typically the bin
+boundaries are either chosen to be equal length intervals or
+to equalize the number of samples in each bin. The predictions θi are chosen to minimize the bin-wise squared loss:
+min
+
+θ1 ,...,θM
+
+n
+M X
+X
+
+m=1 i=1
+
+2
+
+1(am ≤ p̂i < am+1 ) (θm − yi ) , (7)
+
+where 1 is the indicator function. Given fixed bins boundaries, the solution to (7) results in θm that correspond to the
+average number of positive-class samples in bin Bm .
+Isotonic regression (Zadrozny & Elkan, 2002), arguably
+the most common non-parametric calibration method,
+learns a piecewise constant function f to transform uncalibrated outputs; i.e. q̂i = f (p̂i ). Specifically, isotonic
+f to minimize the square loss
+Pn regression produces
+2
+(f
+(p̂
+)
+−
+y
+)
+.
+Because
+f is constrained to be piecei
+i
+i=1
+wise constant, we can write the optimization problem as:
+min
+
+M X
+n
+X
+
+M
+m=1 i=1
+θ1 ,...,θM
+a1 ,...,aM +1
+
+1(am ≤ p̂i < am+1 ) (θm − yi )
+
+2
+
+subject to 0 = a1 ≤ a2 ≤ . . . ≤ aM +1 = 1,
+θ1 ≤ θ2 ≤ . . . ≤ θM .
+
+where M is the number of intervals; a1 , . . . , aM +1 are the
+interval boundaries; and θ1 , . . . , θM are the function values. Under this parameterization, isotonic regression is a
+strict generalization of histogram binning in which the bin
+boundaries and bin predictions are jointly optimized.
+Bayesian Binning into Quantiles (BBQ) (Naeini et al.,
+2015) is a extension of histogram binning using Bayesian
+1
+This is in contrast with the setting in Section 2, in which the
+model produces both a class prediction and confidence.
+
+model averaging. Essentially, BBQ marginalizes out all
+possible binning schemes to produce q̂i . More formally, a
+binning scheme s is a pair (M, I) where M is the number
+of bins, and I is a corresponding partitioning of [0, 1] into
+disjoint intervals (0 = a1 ≤ a2 ≤ . . . ≤ aM +1 = 1). The
+parameters of a binning scheme are θ1 , . . . , θM . Under this
+framework, histogram binning and isotonic regression both
+produce a single binning scheme, whereas BBQ considers
+a space S of all possible binning schemes for the validation dataset D. BBQ performs Bayesian averaging of the
+probabilities produced by each scheme:2
+X
+P(q̂te , S = s | p̂te , D)
+P(q̂te | p̂te , D) =
+s∈S
+
+=
+
+X
+
+s∈S
+
+P(q̂te | p̂te , S = s, D) P(S = s | D).
+
+where P(q̂te | p̂te , S = s, D) is the calibrated probability
+using binning scheme s. Using a uniform prior, the weight
+P(S = s | D) can be derived using Bayes’ rule:
+P(D | S = s)
+.
+P(S = s | D) = P
+0
+s0 ∈S P(D | S = s )
+
+The parameters θ1 , . . . , θM can be viewed as parameters of
+M independent binomial distributions. Hence, by placing
+a Beta prior on θ1 , . . . , θM , we can obtain a closed form
+expression for the marginal likelihood P(D | S = s). This
+allows us to compute P(q̂te | p̂te , D) for any test input.
+Platt scaling (Platt et al., 1999) is a parametric approach
+to calibration, unlike the other approaches. The nonprobabilistic predictions of a classifier are used as features
+for a logistic regression model, which is trained on the validation set to return probabilities. More specifically, in the
+context of neural networks (Niculescu-Mizil & Caruana,
+2005), Platt scaling learns scalar parameters a, b ∈ R and
+outputs q̂i = σ(azi + b) as the calibrated probability. Parameters a and b can be optimized using the NLL loss over
+the validation set. It is important to note that the neural
+network’s parameters are fixed during this stage.
+4.2. Extension to Multiclass Models
+For classification problems involving K > 2 classes, we
+return to the original problem formulation. The network
+outputs a class prediction ŷi and confidence score p̂i for
+each input xi . In this case, the network logits zi are vectors,
+(k)
+where ŷi = argmaxk zi , and p̂i is typically derived using
+the softmax function σSM :
+(k)
+
+exp(zi )
+σSM (zi )(k) = PK
+,
+(j)
+j=1 exp(zi )
+
+p̂i = max σSM (zi )(k) .
+k
+
+The goal is to produce a calibrated confidence q̂i and (possibly new) class prediction ŷi0 based on yi , ŷi , p̂i , and zi .
+2
+
+Because the validation dataset is finite, S is as well.
+
+Dataset
+
+Model
+
+Uncalibrated
+
+Hist. Binning
+
+Isotonic
+
+BBQ
+
+Temp. Scaling
+
+Vector Scaling
+
+Matrix Scaling
+
+Birds
+Cars
+CIFAR-10
+CIFAR-10
+CIFAR-10
+CIFAR-10
+CIFAR-10
+CIFAR-100
+CIFAR-100
+CIFAR-100
+CIFAR-100
+CIFAR-100
+ImageNet
+ImageNet
+SVHN
+
+ResNet 50
+ResNet 50
+ResNet 110
+ResNet 110 (SD)
+Wide ResNet 32
+DenseNet 40
+LeNet 5
+ResNet 110
+ResNet 110 (SD)
+Wide ResNet 32
+DenseNet 40
+LeNet 5
+DenseNet 161
+ResNet 152
+ResNet 152 (SD)
+
+9.19%
+4.3%
+4.6%
+4.12%
+4.52%
+3.28%
+3.02%
+16.53%
+12.67%
+15.0%
+10.37%
+4.85%
+6.28%
+5.48%
+0.44%
+
+4.34%
+1.74%
+0.58%
+0.67%
+0.72%
+0.44%
+1.56%
+2.66%
+2.46%
+3.01%
+2.68%
+6.48%
+4.52%
+4.36%
+0.14%
+
+5.22%
+4.29%
+0.81%
+1.11%
+1.08%
+0.61%
+1.85%
+4.99%
+4.16%
+5.85%
+4.51%
+2.35%
+5.18%
+4.77%
+0.28%
+
+4.12%
+1.84%
+0.54%
+0.9%
+0.74%
+0.81%
+1.59%
+5.46%
+3.58%
+5.77%
+3.59%
+3.77%
+3.51%
+3.56%
+0.22%
+
+1.85%
+2.35%
+0.83%
+0.6%
+0.54%
+0.33%
+0.93%
+1.26%
+0.96%
+2.32%
+1.18%
+2.02%
+1.99%
+1.86%
+0.17%
+
+3.0%
+2.37%
+0.88%
+0.64%
+0.6%
+0.41%
+1.15%
+1.32%
+0.9%
+2.57%
+1.09%
+2.09%
+2.24%
+2.23%
+0.27%
+
+21.13%
+10.5%
+1.0%
+0.72%
+0.72%
+0.41%
+1.16%
+25.49%
+20.09%
+24.44%
+21.87%
+13.24%
+0.17%
+
+20 News
+Reuters
+SST Binary
+SST Fine Grained
+
+DAN 3
+DAN 3
+TreeLSTM
+TreeLSTM
+
+8.02%
+0.85%
+6.63%
+6.71%
+
+3.6%
+1.75%
+1.93%
+2.09%
+
+5.52%
+1.15%
+1.65%
+1.65%
+
+4.98%
+0.97%
+2.27%
+2.61%
+
+4.11%
+0.91%
+1.84%
+2.56%
+
+4.61%
+0.66%
+1.84%
+2.98%
+
+9.1%
+1.58%
+1.84%
+2.39%
+
+Table 1. ECE (%) (with M = 15 bins) on standard vision and NLP datasets before calibration and with various calibration methods.
+The number following a model’s name denotes the network depth.
+
+Extension of binning methods. One common way of extending binary calibration methods to the multiclass setting
+is by treating the problem as K one-versus-all problems
+(Zadrozny & Elkan, 2002). For k = 1, . . . , K, we form a
+binary calibration problem where the label is 1(yi = k)
+and the predicted probability is σSM (zi )(k) . This gives
+us K calibration models, each for a particular class. At
+test time, we obtain an unnormalized probability vector
+(1)
+(K)
+(k)
+[q̂i , . . . , q̂i ], where q̂i is the calibrated probability for
+class k. The new class prediction ŷi0 is the argmax of the
+vector, and the new confidence q̂i0 is the max of the vector
+PK (k)
+normalized by k=1 q̂i . This extension can be applied
+to histogram binning, isotonic regression, and BBQ.
+Matrix and vector scaling are two multi-class extensions of Platt scaling. Let zi be the logits vector produced
+before the softmax layer for input xi . Matrix scaling applies a linear transformation Wzi + b to the logits:
+q̂i = max σSM (Wzi + b)(k) ,
+k
+
+ŷi0 = argmax (Wzi + b)(k) .
+
+(8)
+
+k
+
+The parameters W and b are optimized with respect to
+NLL on the validation set. As the number of parameters
+for matrix scaling grows quadratically with the number of
+classes K, we define vector scaling as a variant where W
+is restricted to be a diagonal matrix.
+Temperature scaling, the simplest extension of Platt
+scaling, uses a single scalar parameter T > 0 for all classes.
+Given the logit vector zi , the new confidence prediction is
+q̂i = max σSM (zi /T )(k) .
+k
+
+(9)
+
+T is called the temperature, and it “softens” the softmax
+(i.e. raises the output entropy) with T > 1. As T → ∞,
+the probability q̂i approaches 1/K, which represents maximum uncertainty. With T = 1, we recover the original
+probability p̂i . As T → 0, the probability collapses to a
+point mass (i.e. q̂i = 1). T is optimized with respect to
+NLL on the validation set. Because the parameter T does
+not change the maximum of the softmax function, the class
+prediction ŷi0 remains unchanged. In other words, temperature scaling does not affect the model’s accuracy.
+Temperature scaling is commonly used in settings such as
+knowledge distillation (Hinton et al., 2015) and statistical
+mechanics (Jaynes, 1957). To the best of our knowledge,
+we are not aware of any prior use in the context of calibrating probabilistic models.3 The model is equivalent to maximizing the entropy of the output probability distribution
+subject to certain constraints on the logits (see Section S2).
+4.3. Other Related Works
+Calibration and confidence scores have been studied in various contexts in recent years. Kuleshov & Ermon (2016)
+study the problem of calibration in the online setting, where
+the inputs can come from a potentially adversarial source.
+Kuleshov & Liang (2015) investigate how to produce calibrated probabilities when the output space is a structured
+object. Lakshminarayanan et al. (2016) use ensembles of
+networks to obtain uncertainty estimates. Pereyra et al.
+(2017) penalize overconfident predictions as a form of regularization. Hendrycks & Gimpel (2017) use confidence
+3
+
+To highlight the connection with prior works we define temperature scaling in terms of T1 instead of a multiplicative scalar.
+
+scores to determine if samples are out-of-distribution.
+Bayesian neural networks (Denker & Lecun, 1990;
+MacKay, 1992) return a probability distribution over outputs as an alternative way to represent model uncertainty.
+Gal & Ghahramani (2016) draw a connection between
+Dropout (Srivastava et al., 2014) and model uncertainty,
+claiming that sampling models with dropped nodes is a
+way to estimate the probability distribution over all possible models for a given sample. Kendall & Gal (2017)
+combine this approach with a model that outputs a predictive mean and variance for each data point. This notion
+of uncertainty is not restricted to classification problems.
+In contrast, our framework, which does not require model
+sampling, returns a confidence for a given output rather
+than returning a distribution of possible outputs.
+
+5. Results
+We apply the calibration methods in Section 4 to image
+classification and document classification neural networks.
+For image classification we use 6 datasets:
+1. Caltech-UCSD Birds (Welinder et al., 2010):
+200 bird species.
+5994/2897/2897 images for
+train/validation/test sets.
+2. Stanford Cars (Krause et al., 2013): 196 classes of
+cars by make, model, and year. 8041/4020/4020 images for train/validation/test.
+3. ImageNet 2012 (Deng et al., 2009): Natural scene images from 1000 classes. 1.3 million/25,000/25,000
+images for train/validation/test.
+4. CIFAR-10/CIFAR-100 (Krizhevsky & Hinton, 2009):
+Color images (32 × 32) from 10/100 classes.
+45,000/5,000/10,000 images for train/validation/test.
+5. Street View House Numbers (SVHN) (Netzer et al.,
+2011):
+32 × 32 colored images of cropped
+out house numbers from Google Street View.
+604,388/6,000/26,032 images for train/validation/test.
+We train state-of-the-art convolutional networks: ResNets
+(He et al., 2016), ResNets with stochastic depth (SD)
+(Huang et al., 2016), Wide ResNets (Zagoruyko & Komodakis, 2016), and DenseNets (Huang et al., 2017). We
+use the data preprocessing, training procedures, and hyperparameters as described in each paper. For Birds and Cars,
+we fine-tune networks pretrained on ImageNet.
+For document classification we experiment with 4 datasets:
+1. 20 News: News articles, partitioned into 20 categories by content. 9034/2259/7528 documents for
+train/validation/test.
+2. Reuters: News articles, partitioned into 8 categories by topic. 4388/1097/2189 documents for
+train/validation/test.
+
+3. Stanford Sentiment Treebank (SST) (Socher et al.,
+2013): Movie reviews, represented as sentence parse
+trees that are annotated by sentiment. Each sample includes a coarse binary label and a fine grained 5-class
+label. As described in (Tai et al., 2015), the training/validation/test sets contain 6920/872/1821 documents for binary, and 544/1101/2210 for fine-grained.
+On 20 News and Reuters, we train Deep Averaging Networks (DANs) (Iyyer et al., 2015) with 3 feed-forward
+layers and Batch Normalization. These networks obtain
+competitive accuracy using the optimization hyperparameters suggested by the original paper. On SST, we train
+TreeLSTMs (Long Short Term Memory) (Tai et al., 2015)
+using the default settings in the authors’ code.
+Calibration Results. Table 1 displays model calibration,
+as measured by ECE (with M = 15 bins), before and after applying the various methods (see Section S3 for MCE,
+NLL, and error tables). It is worth noting that most datasets
+and models experience some degree of miscalibration, with
+ECE typically between 4 to 10%. This is not architecture
+specific: we observe miscalibration on convolutional networks (with and without skip connections), recurrent networks, and deep averaging networks. The two notable exceptions are SVHN and Reuters, both of which experience
+ECE values below 1%. Both of these datasets have very
+low error (1.98% and 2.97%, respectively); and therefore
+the ratio of ECE to error is comparable to other datasets.
+Our most important discovery is the surprising effectiveness of temperature scaling despite its remarkable simplicity. Temperature scaling outperforms all other methods on
+the vision tasks, and performs comparably to other methods
+on the NLP datasets. What is perhaps even more surprising is that temperature scaling outperforms the vector and
+matrix Platt scaling variants, which are strictly more general methods. In fact, vector scaling recovers essentially
+the same solution as temperature scaling – the learned vector has nearly constant entries, and therefore is no different
+than a scalar transformation. In other words, network miscalibration is intrinsically low dimensional.
+The only dataset that temperature scaling does not calibrate
+is the Reuters dataset. In this instance, only one of the
+above methods is able to improve calibration. Because this
+dataset is well-calibrated to begin with (ECE ≤ 1%), there
+is not much room for improvement with any method, and
+post-processing may not even be necessary to begin with.
+It is also possible that our measurements are affected by
+dataset split or by the particular binning scheme.
+Matrix scaling performs poorly on datasets with hundreds
+of classes (i.e. Birds, Cars, and CIFAR-100), and fails
+to converge on the 1000-class ImageNet dataset. This is
+expected, since the number of parameters scales quadrat-
+
+1.0
+
+Accuracy
 
 0.8
 
-0
-1.0
+Uncal. - CIFAR-100
+ResNet-110 (SD)
+Outputs
+Gap
 
-Figure 4. How different methods trade-off exploration and exploitation in a one-dimensional example. Blue: Unknown function being
-optimized. Green crosses: Function values at query points. Red trajectory: Query points over 50 steps.
+Temp. Scale - CIFAR-100
+ResNet-110 (SD)
+Outputs
+Gap
 
-parameters for the RNN optimization algorithm (such as
-learning rate, number of hidden units, and memory size
-for the DNC models) are found through grid search during training. When ready to be used as an optimizer, the
-RNN requires neither tuning of hyper-parameters nor handengineering. It is fully automatic.
+Hist. Bin. - CIFAR-100
+ResNet-110 (SD)
+Outputs
+Gap
 
-with integer inputs, we treat them as piece-wise constant
-functions and round the network output to the closest values. We evaluate the performance at a given search step
-t ≤ T = 100, according to the minimum observed function value up to step t, mini≤t f (xi ).
+Iso. Reg. - CIFAR-100
+ResNet-110 (SD)
+Outputs
+Gap
 
-In the following experiments, DNC sum refers to the DNC
-network trained using the summed loss Lsum , DNC OI to
-the network trained using the loss LOI , and DNC EI to the
-network trained with the loss LEI .
+0.6
+0.4
+0.2
 
-3.1. Performance on Functions Sampled from the
-Training Distribution
-
-We compare our learning to learn approach with popular state-of-the-art Bayesian optimization packages, including Spearmint with automatic inference of the GP hyperparameters and input warping to deal with non-stationarity
-(Snoek et al., 2014), Hyperopt (TPE) (Bergstra et al.,
-2011), and SMAC (Hutter et al., 2011b). For test functions
-
-We first evaluate performance on functions sampled from
-the training distribution. Notice, however, that these functions are never observed during training. Figure 3 shows
-the best observed function values as a function of search
-step t, averaged over 10, 000 sampled functions for RNN
-models and 100 sampled functions for other models (we
-can afford to do more for RNNs because they are very fast
-optimizers). For Spearmint, we consider both the default
-
-Learning to Learn without Gradient Descent by Gradient Descent
-
-Min function value
-
-−0.90
-−0.95
-−1.00
-−1.05
-−1.10
-0
-
-40
-
-60
-
-80
-
-100
-
-0
-
-Hartmann3 dim=3
-
-−1.0
-−1.5
-−2.0
-−2.5
-−3.0
-−3.5
-−4.0
-
-20
-
-40
-
-60
-
-80
-
-100
-
-Hartmann6 dim=6
+ECE=12.67
 
 0.0
-
-Spearmint
-TPE
-SMAC
-DNC sum
-DNC OI
-DNC EI
-
-−0.5
-
-Min function value
-
-0.0
-
-Min function value
-
-20
-
-−0.5
-−1.0
-−1.5
-−2.0
-−2.5
-−3.0
-−3.5
-
-0
-
-20
-
-40
-
-60
-
-80
-
-100
-
-0
-
-20
-
-40
-
-60
-
-80
-
-1.0
-0.5
-0.0
-−0.5
-−1.0
-−1.5
-−2.0
-−2.5
-−3.0
-−3.5
-10 -3
-
-GoldsteinPrice dim=2
-
-10 -2
-
-100
-
-10 -1
-
-10 0
-
-10 1
-
-10 2
-
-10 3
-
-Hartmann6 dim=6
-
-0.0
-
-Min function value
-
-Min function value
-
-−0.85
-
-GoldsteinPrice dim=2
-
-1.0
-0.5
-0.0
-−0.5
-−1.0
-−1.5
-−2.0
-−2.5
-−3.0
-−3.5
-
-Min function value
-
-Branin dim=2
-
-−0.80
-
-−0.5
-−1.0
-−1.5
-−2.0
-−2.5
-−3.0
-−3.5
-10 -3
-
-10 -2
-
-10 -1
-
-10 0
-
-10 1
-
-10 2
-
-10 3
-
-Figure 5. Left: Average minimum observed function value, with 95% confidence intervals, as a function of search steps on 4 benchmark
-functions: Branin, Goldstein price, 3d-Hartmann and 6d-Hartmann. Again we see that as the dimension of the search space increases,
-the learned DNC optimizers are more effective than the Spearmint, TPE and SMAC packages within the training horizon. Right:
-Average minimum observed function value in terms of the optimizer’s run-time (seconds), illustrating the superiority in speed of the
-DNC optimizers over existing black-box optimization methods.
-
-setting with a prior distribution that estimates the GP hyperparameters by Monte Carlo and a setting with the same
-hyper-parameters as those used in training. For the second
-setting, Spearmint knows the ground truth and thus provides a very competitive baseline. As expected Spearmint
-with a fixed prior proves to be one of the best models
-under most settings. When the input dimension is 6 or
-higher, however, neural network models start to outperform Spearmint. We suspect it is because in higher dimensional spaces, the RNN optimizer learns to be more
-exploitative given the fixed number of iterations. Among
-all RNNs, those trained with expected/observed improvement perform better than those trained with direct function
-observations.
-Figure 4 shows the query trajectories xt , t = 1, . . . , 100,
-for different black-box optimizers in a one-dimensional example. All of the optimizers explore initially, and later settle in one mode and search more locally. The DNCs trained
-with EI behave most similarly to Spearmint. DNC with direct function observations (DNC sum) tends to explore less
-than the other optimizers and often misses the global optimum, while the DNCs trained with the observed improvement (OI) keep exploring even in later stages.
-3.2. Transfer to Global Optimization Benchmarks
-We compare the algorithms on four standard benchmark functions for black-box optimization with dimensions
-
-ranging from 2 to 6. To obtain a more robust evaluation of
-the performance of each model, we generate multiple instances for each benchmark function by applying a random
-translation (−0.1–0.1), scaling (0.9–1.1), flipping, and dimension permutation in the input domain.
-The lef hand side of Figure 5 shows the minimum observed
-function values achieved by the learned DNC optimizers,
-and contrasts these against the ones attained by Spearmint,
-TPE and SMAC. All methods appear to have similar performance with Spearming doing slightly better in low dimensions. As the dimension increases, we see that the DNC optimizers converge at at a much faster rate within the horizon
-of T = 100 steps.
-We also observe that DNC OI and DNC EI both outperform
-DNC with direct obsevations of the loss (DNC sum). It is
-encouraging that the curves for DNC OI and DNC EI are
-so close. While DNC EI is distilling a popular acquisition
-function from the EI literature, the DNC OI variant is much
-easier to train as it never requires the GP computations necessary to construct the EI acquisition function.
-The right hand side of Figure 5 shows that the neural network optimizers run about 104 times faster than Spearmint
-and 102 times faster than TPE and SMAC with the DNC
-architecture. There is an additional 5 times speedup when
-using the LSTM architecture, as shown in Table 1. The
-negligible runtime of our optimizers suggests new areas
-of application for global optimization methods that require
-
-Learning to Learn without Gradient Descent by Gradient Descent
-sample
-trajectory
-
-both high sample efficiency and real-time performance.
-Table 1. Run-time (seconds) for 100 iterations excluding the
-black-box function evaluation time.
-
-Branin
-Goldstein
-Hartmann 3
-Hartmann 6
-
-Spearmint
-1239
-1238
-1524
-2768
-
-TPE SMAC DNC LSTM
-16.3 16.3
-0.1
-0.02
-16.2 16.2
-0.1
-0.02
-19.3 19.3
-0.1
-0.02
-20.8 20.8
-0.1
-0.02
-
-repeller2
-
-3.3. Transfer to a Simple Control Problem
-
-contours of
-immediate reward
-
-Repellers
-Min function value
-
-We also consider an application to a simple reinforcement learning task described by (Hoffman et al., 2009).
-In this problem we simulate a physical system consisting
-of a number of repellers which affect the fall of particles
-through a 2D-space. The goal is to direct the path of the
-particles through high reward regions of the state space and
-maximize the accumulated discounted reward. The fourdimensional state-space in this problem consists of a particle’s position and velocity. The path of the particles can
-be controlled by the placement of repellers which push the
-particles directly away with a force inversely proportional
-to their distance from the particle. At each time step the
-particle’s position and velocity are updated using simple
-deterministic physical forward simulation. The control policy for this problem consists of 3 learned parameters for
-each repeller: 2d location and the strength of the repeller.
-
-repeller1
-
-Spearmint
-TPE
-SMAC
-DNC sum
-DNC OI
-DNC EI
-
-−1
-−2
-−3
-−4
-−5
-−6
-0
-
-20
-
-40
-
-60
-
-80
-
-100
-
-In our experiments we consider a problem with 2 repellers,
-i.e. 6 parameters. An example trajectory along with the reward structure (contours) and repeller positions (circles) is
-displayed in Figure 6. We apply the same perturbation as in
-the previous subsection to study the average performance.
-The loss (minimal negative reward) of all models are also
-plotted in Figure 6. Neural network models outperform all
-the other competitors in this problem.
-
-Figure 6. Top: An example trajectory of a falling particle in red,
-where solid circles show the position and strength of the two repellers and contour lines show the reward function. The aim to to
-position and choose the strength of the repellers so that the particle spends more time in regions of high reward. Bottom: The
-results of each method on optimizing the controller by direct policy search. Here, the learned DNC OI optimizer appears to have
-an edge over the other techniques.
-
-3.4. Transfer to ML Hyper-parameter Tuning
-
-2.3, with 5 parallel proposal mechanisms. This approach is
-about five times more efficient.
-
-Lastly, we consider hyper-parameter tuning for machine
-learning problems. We include the three standard benchmarks in the HPOLib package (Eggensperger et al., 2013):
-SVM, online LDA, and logistic regression with 3, 3, and 4
-hyper-parameters respectively. We also consider the problem of training a 6-hyper-parameter residual network for
-classification on the CIFAR-100 dataset.
-For the first three problems, the objective functions have already been pre-computed on a grid of hyper-parameter values, and therefore evaluation with different random seeds
-(100 for Spearmint, 1000 for TPE and SMAC) is cheap.
-For the last experiment, however, it takes at least 16 GPU
-hours to evaluate one hyper-parameter setting. For this reason, we test the parallel proposal idea introduced in Section
-
-For the first three tasks, our model is run once because
-the setup is deterministic. For the residual network task,
-there is some random variation so we consider three runs
-per method.
-The results are shown in Figure 7. The plots report the
-negative accuracy against number of function evaluations
-up to a horizon of T = 100. The neural network models
-especially when trained with observed improvement show
-competitive performance against the engineered solutions.
-In the ResNet experiment, we also compare our sequential
-DNC optimizers with the parallel versions with 5 workers. In this experiment we find that the learned and engineered parallel optimizers perform as well if not slightly
-
-Learning to Learn without Gradient Descent by Gradient Descent
-
-SVM, dim=3
-
-0.275
-
-Min function value
-
-Min function value
-
-0.280
-0.270
-0.265
-0.260
-0.255
-0.250
-0.245
-0.240
-0
-
-40
-
-60
-
-80
-
-0
-
-Logistic Regression, dim=4
-
-0.11
-0.10
-0.09
-0.08
-0.07
-0
-
-20
-
-40
-
-60
-
-80
-
-20
-
-40
-
-60
-
-80
-
-ResNet on Cifar-100, dim=6
-
-−0.40
-
-Min function value
-
-0.12
-
-Min function value
-
-20
-
-Online LDA, dim=3
-
-1350
-1340
-1330
-1320
-1310
-1300
-1290
-1280
-1270
-1260
-
-Spearmint
-Spearmint Parallel
-TPE
-SMAC
-DNC sum
-DNC OI
-DNC OI Parallel
-DNC EI
-DNC EI Parallel
-
-−0.45
-−0.50
-−0.55
-−0.60
-−0.65
-0
-
-20
-
-40
-
-60
-
-80
-
-Figure 7. Average test loss, with 95% confidence intervals, for the SVM, online LDA, and logistic regression hyper-parameter tuning
-benchmarks. The bottom-right plot shows the performance of all methods on the problem of tuning a residual network, demonstrating
-that the learned DNC optimizers are close in performance to the engineered optimizers, and that the faster parallel versions work
-comparably well.
-
-better than the sequential ones. These minor differences
-arise from random variation.
-
-optimizers. The parallel version of the algorithm also
-performed well when tuning the hyper-parameters of an
-expensive-to-train residual network.
-
-4. Conclusions and Future Work
-
-However, the current RNN optimizers also have some
-shortcomings. Training for very long horizons is difficult.
-This issue was also documented recently in (Duan et al.,
-2016). We believe curriculum learning should be investigated as a way of overcoming this difficulty. In addition, a
-new model has to be trained for every input dimension with
-the current network architecture. While training optimizers
-for every dimension is not prohibitive in low dimensions,
-future works should extend the RNN structure to allow a
-variable input dimension. A promising solution is to serialize the input vectors along the search steps.
-
-The experiments have shown that up to the training horizon the learned RNN optimizers are able to match the performance of heavily engineered Bayesian optimization solutions, including Spearmint, SMAC and TPE. The trained
-RNNs rely on neither heuristics nor hyper-parameters when
-being deployed as black-box optimizers.
-The optimizers trained on synthetic functions were able to
-transfer successfully to a very wide class of black-box functions, associated with GP bandits, control, global optimization benchmarks, and hyper-parameter tuning.
-The experiments have also shown that the RNNs are massively faster than other Bayesian optimization methods.
-Hence, for applications involving a known horizon and
-where speed is crucial, we recommend the use of the RNN
-
-References
-M. Andrychowicz, M. Denil, S. Gomez, M. W. Hoffman, D. Pfau,
-T. Schaul, B. Shillingford, and N. de Freitas. Learning to learn
-by gradient descent by gradient descent. In Advances in Neural
-Information Processing Systems, 2016.
-
-Learning to Learn without Gradient Descent by Gradient Descent
-Y. Bengio, S. Bengio, J. Cloutier, and J. Gecsei. On the optimization of a synaptic learning rule. In Conference on Optimality
-in Biological and Artificial Networks, 1992.
-J. S. Bergstra, R. Bardenet, Y. Bengio, and B. Kégl. Algorithms
-for hyper-parameter optimization. In Advances in Neural Information Processing Systems, pages 2546–2554, 2011.
-E. Brochu, V. M. Cora, and N. de Freitas. A tutorial on Bayesian
-optimization of expensive cost functions, with application to
-active user modeling and hierarchical reinforcement learning.
-Technical Report UBC TR-2009-23 and arXiv:1012.2599v1,
-Dept. of Computer Science, University of British Columbia,
-2009.
-S. Bubeck, R. Munos, and G. Stoltz. Pure exploration in multiarmed bandits problems. In International Conference on Algorithmic Learning Theory, 2009.
-T. Desautels, A. Krause, and J. Burdick. Parallelizing explorationexploitation tradeoffs with Gaussian process bandit optimization. Journal of Machine Learning Research, 2014.
-Y. Duan, J. Schulman, X. Chen, P. Bartlett, I. Sutskever, and
-P. Abbeel. Rl2 : Fast reinforcement learning via slow reinforcement learning. Technical report, UC Berkeley and OpenAI,
-2016.
-K. Eggensperger, M. Feurer, F. Hutter, J. Bergstra, J. Snoek,
-H. Hoos, and K. Leyton-Brown. Towards an empirical foundation for assessing bayesian optimization of hyperparameters.
-In NIPS workshop on Bayesian Optimization in Theory and
-Practice, 2013.
-V. Gabillon, M. Ghavamzadeh, and A. Lazaric. Best arm identification: A unified approach to fixed budget and fixed confidence. In Advances in Neural Information Processing Systems,
-pages 3212–3220, 2012.
-A. Graves, G. Wayne, M. Reynolds, T. Harley, I. Danihelka,
-A. Grabska-BarwiÅska, S. G. Colmenarejo, E. Grefenstette,
-T. Ramalho, J. Agapiou, A. A. P. Badia, K. M. Hermann,
-Y. Zwols, G. Ostrovski, A. Cain, H. King, C. Summerfield,
-P. Blunsom, K. Kavukcuoglu, and D. Hassabis. Hybrid computing using a neural network with dynamic external memory.
-Nature, 2016.
-H. F. Harlow. The formation of learning sets. Psychological review, 56(1):51, 1949.
-S. Hochreiter and J. Schmidhuber. Long short-term memory. Neural computation, 9(8):1735–1780, 1997.
-S. Hochreiter, A. S. Younger, and P. R. Conwell. Learning to
-learn using gradient descent. In International Conference on
-Artificial Neural Networks, pages 87–94. Springer, 2001.
-M. W. Hoffman, H. Kueck, N. de Freitas, and A. Doucet. New inference strategies for solving Markov decision processes using
-reversible jump MCMC. In Uncertainty in Artificial Intelligence, pages 223–231, 2009.
-F. Hutter, H. H. Hoos, and K. Leyton-Brown. Sequential modelbased optimization for general algorithm configuration. In
-LION, pages 507–523, 2011a.
-F. Hutter, H. H. Hoos, and K. Leyton-Brown. Sequential modelbased optimization for general algorithm configuration. In International Conference on Learning and Intelligent Optimization, pages 507–523. Springer, 2011b.
-E. J. Kehoe. A layered network model of associative learning:
-learning to learn and configuration. Psychological review, 95
-(4):411, 1988.
-R. Kohavi, R. Longbotham, D. Sommerfield, and R. M. Henne.
-Controlled experiments on the web: survey and practical guide.
-
-Data mining and knowledge discovery, 18(1):140–181, 2009.
-S. Li and J. Malik. Learning to optimize. In International Conference on Learning Representations, 2017.
-J. Močkus. The Bayesian approach to global optimization. In
-Systems Modeling and Optimization, volume 38, pages 473–
-481. Springer, 1982.
-D. K. Naik and R. Mammone. Meta-neural networks that learn
-by learning. In International Joint Conference on Neural Networks, volume 1, pages 437–442, 1992.
-C. E. Rasmussen and C. K. I. Williams. Gaussian Processes for
-Machine Learning. The MIT Press, 2006.
-S. Ravi and H. Larochelle. Optimization as a model for few-shot
-learning. In International Conference on Learning Representations, 2017.
-A. Santoro, S. Bartunov, M. Botvinick, D. Wierstra, and T. Lillicrap. Meta-learning with memory-augmented neural networks.
-In International Conference on Machine Learning, 2016.
-J. Schmidhuber. Evolutionary Principles in Self-Referential
-Learning. On Learning how to Learn: The Meta-Meta-Meta...Hook. PhD thesis, Institut f. Informatik, Tech. Univ. Munich,
-1987.
-S. L. Scott. A modern Bayesian look at the multi-armed bandit. Applied Stochastic Models in Business and Industry, 26
-(6):639–658, 2010.
-B. Shahriari, K. Swersky, Z. Wang, R. P. Adams, and N. de Freitas. Taking the human out of the loop: A review of Bayesian
-optimization. Proceedings of the IEEE, 104(1):148–175, 2016.
-J. Snoek, H. Larochelle, and R. P. Adams. Practical Bayesian optimization of machine learning algorithms. In Advances in Neural Information Processing Systems, pages 2951–2959, 2012.
-J. Snoek, K. Swersky, R. S. Zemel, and R. P. Adams. Input warping for Bayesian optimization of non-stationary functions. In
-International Conference on Machine Learning, 2014.
-E. S. Spelke and K. D. Kinzler. Core knowledge. Developmental
-science, 10(1):89–96, 2007.
-N. Srinivas, A. Krause, S. M. Kakade, and M. Seeger. Gaussian
-process optimization in the bandit setting: No regret and experimental design. In International Conference on Machine
-Learning, pages 1015–1022, 2010.
-S. Thrun and L. Pratt. Learning to learn. Springer Science &
-Business Media, 1998.
-J. X. Wang, Z. Kurth-Nelson, D. Tirumala, H. Soyer, J. Z. Leibo,
-R. Munos, C. Blundell, D. Kumaran, and M. Botvinick. Learning to reinforcement learn. arXiv Report 1611.05763, 2016.
-Z. Wang, B. Shakibi, L. Jin, and N. de Freitas. Bayesian multiscale optimistic optimization. In AI and Statistics, pages 1005–
-1014, 2014.
-L. B. Ward. Reminiscence and rote learning. Psychological
-Monographs, 49(4), 1937.
-R. J. Williams. Simple statistical gradient-following algorithms
-for connectionist reinforcement learning. Machine learning, 8
-(3-4):229–256, 1992.
-B. Zoph and Q. V. Le. Neural architecture search with reinforcement learning. In International Conference on Learning Representations, 2017.
+0.0 0.2 0.4 0.6 0.8 1.0
+
+ECE=0.96
+
+ECE=2.46
+
+0.0 0.2 0.4 0.6 0.8 1.0 0.0 0.2 0.4 0.6 0.8 1.0
+Confidence
+
+ECE=4.16
+0.0 0.2 0.4 0.6 0.8 1.0
+
+Figure 4. Reliability diagrams for CIFAR-100 before (far left) and after calibration (middle left, middle right, far right).
+
+ically with the number of classes. Any calibration model
+with tens of thousands (or more) parameters will overfit to
+a small validation set, even when applying regularization.
+Binning methods improve calibration on most datasets, but
+do not outperform temperature scaling. Additionally, binning methods tend to change class predictions which hurts
+accuracy (see Section S3). Histogram binning, the simplest
+binning method, typically outperforms isotonic regression
+and BBQ, despite the fact that both methods are strictly
+more general. This further supports our finding that calibration is best corrected by simple models.
+Reliability diagrams. Figure 4 contains reliability diagrams for 110-layer ResNets on CIFAR-100 before and after calibration. From the far left diagram, we see that the
+uncalibrated ResNet tends to be overconfident in its predictions. We then can observe the effects of temperature
+scaling (middle left), histogram binning (middle right), and
+isotonic regression (far right) on calibration. All three displayed methods produce much better confidence estimates.
+Of the three methods, temperature scaling most closely recovers the desired diagonal function. Each of the bins are
+well calibrated, which is remarkable given that all the probabilities were modified by only a single parameter. We include reliability diagrams for other datasets in Section S4.
+Computation time. All methods scale linearly with the
+number of validation set samples. Temperature scaling
+is by far the fastest method, as it amounts to a onedimensional convex optimization problem. Using a conjugate gradient solver, the optimal temperature can be found
+in 10 iterations, or a fraction of a second on most modern
+hardware. In fact, even a naive line-search for the optimal
+temperature is faster than any of the other methods. The
+computational complexity of vector and matrix scaling are
+linear and quadratic respectively in the number of classes,
+reflecting the number of parameters in each method. For
+CIFAR-100 (K = 100), finding a near-optimal vector scal-
+
+ing solution with conjugate gradient descent requires at
+least 2 orders of magnitude more time. Histogram binning
+and isotonic regression take an order of magnitude longer
+than temperature scaling, and BBQ takes roughly 3 orders
+of magnitude more time.
+Ease of implementation. BBQ is arguably the most difficult to implement, as it requires implementing a model
+averaging scheme. While all other methods are relatively
+easy to implement, temperature scaling may arguably be
+the most straightforward to incorporate into a neural network pipeline. In Torch7 (Collobert et al., 2011), for example, we implement temperature scaling by inserting a
+nn.MulConstant between the logits and the softmax,
+whose parameter is 1/T . We set T = 1 during training, and
+subsequently find its optimal value on the validation set.
+
+6. Conclusion
+Modern neural networks exhibit a strange phenomenon:
+probabilistic error and miscalibration worsen even as classification error is reduced. We have demonstrated that
+recent advances in neural network architecture and training – model capacity, normalization, and regularization
+– have strong effects on network calibration. It remains
+future work to understand why these trends affect calibration while improving accuracy. Nevertheless, simple
+techniques can effectively remedy the miscalibration phenomenon in neural networks. Temperature scaling is the
+simplest, fastest, and most straightforward of the methods,
+and surprisingly is often the most effective.
+
+Acknowledgments
+The authors are supported in part by the III-1618134, III1526012, and IIS-1149882 grants from the National Science Foundation, as well as the Bill and Melinda Gates
+Foundation and the Office of Naval Research.
+
+References
+Bengio, Yoshua, Goodfellow, Ian J, and Courville, Aaron.
+Deep learning. Nature, 521:436–444, 2015.
+Bojarski, Mariusz, Del Testa, Davide, Dworakowski,
+Daniel, Firner, Bernhard, Flepp, Beat, Goyal, Prasoon,
+Jackel, Lawrence D, Monfort, Mathew, Muller, Urs,
+Zhang, Jiakai, et al. End to end learning for self-driving
+cars. arXiv preprint arXiv:1604.07316, 2016.
+Caruana, Rich, Lou, Yin, Gehrke, Johannes, Koch, Paul,
+Sturm, Marc, and Elhadad, Noemie. Intelligible models
+for healthcare: Predicting pneumonia risk and hospital
+30-day readmission. In KDD, 2015.
+Collobert, Ronan, Kavukcuoglu, Koray, and Farabet,
+Clément. Torch7: A matlab-like environment for machine learning. In BigLearn Workshop, NIPS, 2011.
+Cosmides, Leda and Tooby, John. Are humans good intuitive statisticians after all? rethinking some conclusions
+from the literature on judgment under uncertainty. cognition, 58(1):1–73, 1996.
+DeGroot, Morris H and Fienberg, Stephen E. The comparison and evaluation of forecasters. The statistician, pp.
+12–22, 1983.
+Deng, Jia, Dong, Wei, Socher, Richard, Li, Li-Jia, Li, Kai,
+and Fei-Fei, Li. Imagenet: A large-scale hierarchical
+image database. In CVPR, pp. 248–255, 2009.
+Denker, John S and Lecun, Yann. Transforming neural-net
+output levels to probability distributions. In NIPS, pp.
+853–859, 1990.
+Friedman, Jerome, Hastie, Trevor, and Tibshirani, Robert.
+The elements of statistical learning, volume 1. Springer
+series in statistics Springer, Berlin, 2001.
+Gal, Yarin and Ghahramani, Zoubin. Dropout as a bayesian
+approximation: Representing model uncertainty in deep
+learning. In ICML, 2016.
+Girshick, Ross. Fast r-cnn. In ICCV, pp. 1440–1448, 2015.
+Hannun, Awni, Case, Carl, Casper, Jared, Catanzaro,
+Bryan, Diamos, Greg, Elsen, Erich, Prenger, Ryan,
+Satheesh, Sanjeev, Sengupta, Shubho, Coates, Adam,
+et al. Deep speech: Scaling up end-to-end speech recognition. arXiv preprint arXiv:1412.5567, 2014.
+He, Kaiming, Zhang, Xiangyu, Ren, Shaoqing, and Sun,
+Jian. Deep residual learning for image recognition. In
+CVPR, pp. 770–778, 2016.
+Hendrycks, Dan and Gimpel, Kevin. A baseline for detecting misclassified and out-of-distribution examples in
+neural networks. In ICLR, 2017.
+
+Hinton, Geoffrey, Vinyals, Oriol, and Dean, Jeff. Distilling
+the knowledge in a neural network. 2015.
+Huang, Gao, Sun, Yu, Liu, Zhuang, Sedra, Daniel, and
+Weinberger, Kilian. Deep networks with stochastic
+depth. In ECCV, 2016.
+Huang, Gao, Liu, Zhuang, Weinberger, Kilian Q, and
+van der Maaten, Laurens. Densely connected convolutional networks. In CVPR, 2017.
+Ioffe, Sergey and Szegedy, Christian. Batch normalization:
+Accelerating deep network training by reducing internal
+covariate shift. 2015.
+Iyyer, Mohit, Manjunatha, Varun, Boyd-Graber, Jordan,
+and Daumé III, Hal. Deep unordered composition rivals
+syntactic methods for text classification. In ACL, 2015.
+Jaynes, Edwin T. Information theory and statistical mechanics. Physical review, 106(4):620, 1957.
+Jiang, Xiaoqian, Osl, Melanie, Kim, Jihoon, and OhnoMachado, Lucila. Calibrating predictive model estimates
+to support personalized medicine. Journal of the American Medical Informatics Association, 19(2):263–274,
+2012.
+Kendall, Alex and Cipolla, Roberto. Modelling uncertainty
+in deep learning for camera relocalization. 2016.
+Kendall, Alex and Gal, Yarin. What uncertainties do we
+need in bayesian deep learning for computer vision?
+arXiv preprint arXiv:1703.04977, 2017.
+Krause, Jonathan, Stark, Michael, Deng, Jia, and Fei-Fei,
+Li. 3d object representations for fine-grained categorization. In IEEE Workshop on 3D Representation and
+Recognition (3dRR), Sydney, Australia, 2013.
+Krizhevsky, Alex and Hinton, Geoffrey. Learning multiple
+layers of features from tiny images, 2009.
+Kuleshov, Volodymyr and Ermon, Stefano. Reliable confidence estimation via online learning. arXiv preprint
+arXiv:1607.03594, 2016.
+Kuleshov, Volodymyr and Liang, Percy. Calibrated structured prediction. In NIPS, pp. 3474–3482, 2015.
+Lakshminarayanan, Balaji, Pritzel, Alexander, and Blundell, Charles. Simple and scalable predictive uncertainty estimation using deep ensembles. arXiv preprint
+arXiv:1612.01474, 2016.
+LeCun, Yann, Bottou, Léon, Bengio, Yoshua, and Haffner,
+Patrick. Gradient-based learning applied to document
+recognition. Proceedings of the IEEE, 86(11):2278–
+2324, 1998.
+
+Supplementary Materials: On Calibration of Modern Neural Networks
+
+MacKay, David JC. A practical bayesian framework for
+backpropagation networks. Neural computation, 4(3):
+448–472, 1992.
+Naeini, Mahdi Pakdaman, Cooper, Gregory F, and
+Hauskrecht, Milos. Obtaining well calibrated probabilities using bayesian binning. In AAAI, pp. 2901, 2015.
+Netzer, Yuval, Wang, Tao, Coates, Adam, Bissacco,
+Alessandro, Wu, Bo, and Ng, Andrew Y. Reading digits in natural images with unsupervised feature learning.
+In Deep Learning and Unsupervised Feature Learning
+Workshop, NIPS, 2011.
+Niculescu-Mizil, Alexandru and Caruana, Rich. Predicting
+good probabilities with supervised learning. In ICML,
+pp. 625–632, 2005.
+Pereyra, Gabriel, Tucker, George, Chorowski, Jan, Kaiser,
+Łukasz, and Hinton, Geoffrey. Regularizing neural
+networks by penalizing confident output distributions.
+arXiv preprint arXiv:1701.06548, 2017.
+Platt, John et al. Probabilistic outputs for support vector machines and comparisons to regularized likelihood
+methods. Advances in large margin classifiers, 10(3):
+61–74, 1999.
+Simonyan, Karen and Zisserman, Andrew. Very deep convolutional networks for large-scale image recognition. In
+ICLR, 2015.
+Socher, Richard, Perelygin, Alex, Wu, Jean, Chuang, Jason, Manning, Christopher D., Ng, Andrew, and Potts,
+Christopher. Recursive deep models for semantic compositionality over a sentiment treebank. In EMNLP, pp.
+1631–1642, 2013.
+Srivastava, Nitish, Hinton, Geoffrey, Krizhevsky, Alex,
+Sutskever, Ilya, and Salakhutdinov, Ruslan. Dropout: A
+simple way to prevent neural networks from overfitting.
+Journal of Machine Learning Research, 15:1929–1958,
+2014.
+Srivastava, Rupesh Kumar, Greff, Klaus, and Schmidhuber, Jürgen. Highway networks. arXiv preprint
+arXiv:1505.00387, 2015.
+Tai, Kai Sheng, Socher, Richard, and Manning, Christopher D. Improved semantic representations from treestructured long short-term memory networks. 2015.
+Vapnik, Vladimir N. Statistical Learning Theory. WileyInterscience, 1998.
+Welinder, P., Branson, S., Mita, T., Wah, C., Schroff, F.,
+Belongie, S., and Perona, P. Caltech-UCSD Birds 200.
+Technical Report CNS-TR-2010-001, California Institute of Technology, 2010.
+
+Xiong, Wayne, Droppo, Jasha, Huang, Xuedong, Seide,
+Frank, Seltzer, Mike, Stolcke, Andreas, Yu, Dong,
+and Zweig, Geoffrey. Achieving human parity in
+conversational speech recognition.
+arXiv preprint
+arXiv:1610.05256, 2016.
+Zadrozny, Bianca and Elkan, Charles. Obtaining calibrated probability estimates from decision trees and
+naive bayesian classifiers. In ICML, pp. 609–616, 2001.
+Zadrozny, Bianca and Elkan, Charles. Transforming classifier scores into accurate multiclass probability estimates.
+In KDD, pp. 694–699, 2002.
+Zagoruyko, Sergey and Komodakis, Nikos. Wide residual
+networks. In BMVC, 2016.
+Zhang, Chiyuan, Bengio, Samy, Hardt, Moritz, Recht, Benjamin, and Vinyals, Oriol. Understanding deep learning
+requires rethinking generalization. In ICLR, 2017.
 
 

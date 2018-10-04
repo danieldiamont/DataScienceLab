@@ -1,843 +1,1339 @@
-Learning Gradient Descent: Better Generalization and Longer Horizons
+Tensor Belief Propagation
 
-Kaifeng Lv * 1 Shunhua Jiang * 1 Jian Li 1
+Andrew Wrigley 1 Wee Sun Lee 2 Nan Ye 3
 
 Abstract
-Training deep neural networks is a highly nontrivial task, involving carefully selecting appropriate training algorithms, scheduling step sizes
-and tuning other hyperparameters. Trying different combinations can be quite labor-intensive
-and time consuming. Recently, researchers have
-tried to use deep learning algorithms to exploit
-the landscape of the loss function of the training
-problem of interest, and learn how to optimize
-over it in an automatic way. In this paper, we
-propose a new learning-to-learn model and some
-useful and practical tricks. Our optimizer outperforms generic, hand-crafted optimization algorithms and state-of-the-art learning-to-learn optimizers by DeepMind in many tasks. We demonstrate the effectiveness of our algorithms on a
-number of tasks, including deep MLPs, CNNs,
-and simple LSTMs.
+We propose a new approximate inference algorithm for graphical models, tensor belief propagation, based on approximating the messages
+passed in the junction tree algorithm. Our algorithm represents the potential functions of the
+graphical model and all messages on the junction
+tree compactly as mixtures of rank-1 tensors. Using this representation, we show how to perform
+the operations required for inference on the junction tree efficiently: marginalisation can be computed quickly due to the factored form of rank-1
+tensors while multiplication can be approximated
+using sampling. Our analysis gives sufficient
+conditions for the algorithm to perform well, including for the case of high-treewidth graphs, for
+which exact inference is intractable. We compare our algorithm experimentally with several
+approximate inference algorithms and show that
+it performs well.
 
 1. Introduction
-Training a neural network can be viewed as solving an optimization problem for a highly non-convex loss function.
-Gradient-based algorithms are by far the most widely used
-algorithms for training neural networks, such as basic SGD,
-Adagrad, RMSprop, Adam, etc. For a particular neural
-network, it is unclear a priori which one is the best optimization algorithm, and how to set up the hyperparameters (such as learning rates). It usually takes a lot of time
-and experienced hands to identify the best optimization algorithm together with best hyperparameters, and possibly
-some other tricks are necessary to make the network work.
-*
-Equal contribution † The research is supported in part
-by the National Basic Research Program of China grants
-2015CB358700, 2011CBA00300, 2011CBA00301, and the
-1
-National NSFC grants 61632016.
-Institute for Interdisciplinary Information Sciences, Tsinghua University, Beijing, China.
-Correspondence to: Kaifeng Lv <vfleaking@163.com>, Shunhua Jiang <linda6582@163.com>, Jian Li
-<lijian83@mail.tsinghua.edu.cn>.
+Probabilistic graphical models provide a general framework to conveniently build probabilistic models in a modular and compact way. They are commonly used in statistics,
+computer vision, natural language processing, machine
+learning and many related fields (Wainwright & Jordan,
+2008). The success of graphical models depends largely
+on the availability of efficient inference algorithms. Unfortunately, exact inference is intractable in general, making
+approximate inference an important research topic.
+Approximate inference algorithms generally adopt a variational approach or a sampling approach. The variational
+approach formulates the inference problem as an optimi1
 
-1.1. Existing Work
-To address the above issue, a promising approach is to
-use machine learning algorithms to replace the hard-coded
-optimization algorithms, and hopefully, the learning algorithm is capable of learning a good strategy, from experience, to explore the landscape of the loss function and
-adaptively choose good descent steps. In a high level, the
-idea can be categorized under the umbrella of learning-tolearn (or meta-learning), a broad area known to learning
-community for more than two decades.
-Using deep learning for training deep neural networks was
-initiated in a recent paper (Andrychowicz et al., 2016). The
-authors proposed an optimizer using coordinatewise Long
-Short Term Memory (LSTM) (Hochreiter & Schmidhuber,
-1997) that takes the gradients of the optimizee as input and
-outputs the updates for each optimizee parameters. We
-call this optimizer DMoptimizer throughout this paper, and
-we use the term optimizee to refer to the loss function of
-the neural network being optimized. The authors showed
-that DMoptimizer outperforms traditional optimization algorithms in solving the task on which it is trained, and it
-also generalizes well to the same type of tasks. In one
-of their experiments, they trained DMoptimizer to minimize the average loss of a 100-step training process of a
-1-hidden-layer Multilayer Perceptron (MLP) with sigmoid
-as the activation function, and the optimizer was shown to
-have generalization ability to some extent: it also performs
-well on such MLP with one more hidden layer or double
-hidden neurons. However, there are still some limitations:
-1. If the activation function of the MLP is changed from
-sigmoid to ReLU in the test phase, DMoptimizer performs poorly to train such MLP. In other words, their
-algorithms fail to generalize to different activations.
-2. Even though the authors showed that DMoptimizer
-performs well to train the optimizee for 200 descent
-steps, the loss increases dramatically for much longer
-horizons. In other words, their algorithms fail to handle a relatively large number of descent steps.
-1.2. Our Contributions
-
+Australian National University, Canberra, Australia.
+2
+National University of Singapore, Singapore. 3 Queensland
+University of Technology, Brisbane, Australia. Correspondence
+to: Andrew Wrigley <andrew.wrigley@anu.edu.au>, Wee Sun
+Lee <leews@comp.nus.edu.sg>, Nan Ye <n.ye@qut.edu.au>.
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-In this paper, we propose two new training tricks and a new
-model to improve the results of training a recurrent neural
+sation problem and constructs approximations by solving
+relaxations of the optimisation problem. A number of wellknown inference algorithms can be seen as variational algorithms, such as loopy belief propagation, mean-field variational inference, and generalized belief propagation (Wainwright & Jordan, 2008). The sampling approach uses sampling to approximate either the underlying distribution or
+key quantities of interest. Commonly used sampling methods include particle filters and Markov-chain Monte Carlo
+(MCMC) algorithms (Andrieu et al., 2003).
+Our proposed algorithm, tensor belief propagation (TBP),
+can be seen as a sampling-based algorithm. Unlike particle filters or MCMC methods, which sample states (also
+known as particles), TBP samples functions in the form of
+rank-1 tensors. Specifically, we use a data structure commonly used in exact inference, the junction tree, and perform approximate message passing on the junction tree using messages represented as mixtures of rank-1 tensors.
+We assume that each factor in the graphical model is originally represented as a tensor decomposition (mixture of
+rank-1 tensors). Under this assumption, all messages and
+intermediate factors also have the same representation. Our
+key observation is that marginalisation can be performed
+efficiently for mixtures of rank-1 tensors, and multiplication can be approximated by sampling. This leads to an approximate message passing algorithm where messages and
+intermediate factors are approximated by low-rank tensors.
+We provide analysis, giving conditions under which the
+method performs well. We compare TBP experimentally
+with several existing approximate inference methods using
+Ising models, random MRFs and two real-world datasets,
+demonstrating promising results.
 
-Learning Gradient Descent: Better Generalization and Longer Horizons
+2. Related Work
+Exact inference on tree-structured graphical models can
+be performed efficiently using belief propagation (Pearl,
+1982), a dynamic programming algorithm that involves
+passing messages between nodes containing the results of
+intermediate computations. For arbitrary graphical models,
+the well-known junction tree algorithm (Shafer & Shenoy,
+1990; Lauritzen & Spiegelhalter, 1988; Jensen et al., 1990)
+is commonly used. The model is first compiled into a junc-
 
-network (RNN) to optimize the loss functions of real-world
-neural networks.
-The most effective trick is Random Scaling, which is used
-when training the RNN optimizer to improve its generalization ability by randomly scaling the parameters of the
-optimizee. The other trick is to combine the loss function
-of the optimizee with other simple convex functions, which
-helps to accelerate the training process. With the help of
-our new training tricks, our new model, called RNNprop,
-achieves notable improvements upon previous work after
-being trained on a simple 1-hidden-layer MLP:
+Tensor Belief Propagation
 
-From a reinforcement learning perspective, the optimizer
-can be viewed as a policy which takes the current state
-as input and output the next action (Schmidhuber et al.,
-1999). Two recent papers (Daniel et al., 2016; Hansen,
-2016) trained adaptive controllers to adjust the hyperparameters (learning rate) of traditional optimization algorithms from this perspective. Their method can be regarded
-as hyperparameter optimization. More general methods
-have been introduced in (Li & Malik, 2017; Wang et al.,
-2016) which also take the RL perspective and train a neural
-network to model a policy.
-2.2. Traditional Optimization Algorithms
+tion tree data structure and a similar message passing algorithm is then run over the junction tree. Unfortunately, for
+non-tree models the time and space complexity of the junction tree algorithm grows exponentially with a property of
+the graph called its treewidth. For high-treewidth graphical
+models, exact inference is intractable in general.
+Our work approximates the messages passed in the junction tree algorithm to avoid the exponential runtime caused
+by exact computations in high-treewidth models. Various
+previous work has taken the same approach. Expectation
+propagation (EP) (Minka, 2001) approximates messages by
+minimizing the Kullback-Leiber (KL) divergence between
+the actual message and its approximation. Structured message passing (Gogate & Domingos, 2013) can be considered as a special case of EP where structured representations, in particular algebraic decision diagrams (ADDs) and
+sparse hash tables, are used so that EP can be performed
+efficiently. In contrast to ADDs, the tensor decompositions used for TBP may provide a more compact representation for some problems. An ADD partitions a tensor into
+axis-aligned hyper-rectangles – it is possible to represent
+a hyper-rectangle using a rank-1 tensor but a rank-1 tensor is generally not representable as an axis-aligned rectangle. Furthermore, the supports of the rank-1 tensors in the
+mixture may overlap. However, ADD compresses hyperrectangles that share sub-structures and this may result in
+the methods having different strengths. Sparse tables, on
+the other hand, work well for cases with extreme sparsity.
+Several methods use sampled particles to approximate messages (Koller et al., 1999; Ihler & McAllester, 2009; Sudderth et al., 2010). To allow their algorithms to work well
+on problems with less sparsity, Koller et al. (1999) and Sudderth et al. (2010) use non-parametric methods to smooth
+the particle representation of messages. In contrast, we decompose each tensor into a mixture of rank-1 tensors and
+sample the rank-1 tensors directly, instead of through the
+intermediate step of sampling particles. Another approach,
+which pre-samples the particles at each node and passes
+messages between these pre-sampled particles was taken
+by Ihler & McAllester (2009). The methods of Ihler &
+McAllester (2009) and Sudderth et al. (2010) were also applied on graphs with loops using loopy belief propagation.
+Xue et al. (2016) use discrete Fourier representations for inference via the elimination algorithm. The discrete Fourier
+representation is a special type of tensor decomposition. Instead of sampling, the authors perform approximations by
+truncating the Fourier coefficients, giving different approximation properties. Other related works include (Darwiche,
+2000; Park & Darwiche, 2002; Chavira & Darwiche, 2005),
+where belief networks are compiled into compact arithmetic circuits (ACs). On the related problem of MAP inference, McAuley & Caetano (2011) show that junction tree
 
-1. It can train optimizees for longer horizons. In particular, when RNNprop is only trained to minimize
-the final loss of a 100-step training process, in testing
-phase it can successfully train optimizees for several
-thousand steps.
-2. It can generalize to a variety of neural networks
-including much deeper MLPs, CNNs, and simple
-LSTMs. On these tasks it achieves better or at least
-comparable performance with traditional optimization
-algorithms.
+clusters that factor over subcliques or consist only of latent
+variables yield improved complexity properties.
 
-2. Other Related Work
-
-A great number of optimization algorithms have been proposed to improve the performance of vanilla gradient descent, including Momentum(Tseng, 1998), Adagrad(Duchi
-et al., 2011), Adadelta(Zeiler, 2012), RMSprop(Tieleman
-& Hinton, 2012), Adam(Kingma & Ba, 2015). The update
-rules of several common optimization algorithms are listed
-in Table 1.
-Table 1. Traditional optimization algorithms. θ are the parameters
-of a neural network and g represents the gradient. α, β1 , β2 , γ
-are the hyperparameters of an optimization algorithm. All vector
-operations are coordinatewise.
-Name
-
-Update Rule
-
-SGD
-
-∆θt = −αgt
-
-Momentum
-
-mt = γmt−1 + (1 − γ)gt ,
-∆θt = −α mt
-
-Adagrad
-
-Gt = Gt−1 + gt2 ,
-−1/2
-∆θt = −α gt Gt
-
-Adadelta
-
-vt = β2 vt−1 + (1 − β2 )gt2 ,
-−1/2 1/2
-Dt−1 ,
-∆θt = −αgt vt
-Dt = β1 Dt−1 + (1 − β1 )(∆θt /α)2
-
-RMSprop
-
-vt = β2 vt−1 + (1 − β2 )gt2 ,
-−1/2
-∆θt = −α gt vt
-
-Adam
-
-mt = β1 mt−1 + (1 − β1 )gt ,
-vt = β2 vt−1 + (1 − β2 )gt2 ,
-m̂t = mt /(1 − β1t ),
-v̂t = vt /(1 − β2t ),
-−1/2
-∆θt = −α m̂t v̂t
-
-2.1. Learning to Learn
-The notion of learning to learn or meta-learning has been
-used to address the concept of learning meta-knowledge
-about the learning process for years. However, there is
-no agreement on the exact definition of meta-learning, and
-various concepts have been developed by different authors
-(Thrun & Pratt, 1998; Vilalta & Drissi, 2002; Brazdil et al.,
-2008).
-In this paper, we view the training process of a neural network as an optimization problem, and we use an RNN as
-an optimizer to train other neural networks. The usage of
-another neural network to direct the training of neural networks has been put forward by Naik and Mammone (1992).
-In their early work, Cotter and Younger (1990; 1999) argued that RNNs can be used to model adaptive optimization algorithms (Prokhorov et al., 2002). This idea was further developed in (Younger et al., 2001; Hochreiter et al.,
-2001) and gradient descent is used to train an RNN optimizer on convex problems. Recently, as shown in Section
-1.1, Andrychowicz et al. (2016) proposed a more general
-optimizer model using LSTM to learn gradient descent, and
-our work directly follows their work. In another recent paper (Chen et al., 2016), an RNN is used to take current
-position and value as input and outputs the next position,
-and it works well for black-box optimization and simple
-RL tasks.
-
-3. Rethinking of Optimization Problems
-3.1. Problem Formalization
-We are interested in finding an optimizer that undertakes
-the optimization tasks for different optimizees. An optimizee is a function f (θ) to be minimized. In the case when
-the optimizee is stochastic, that is, the value of f (θ) de-
-
-Learning Gradient Descent: Better Generalization and Longer Horizons
-
-pends on the sample d selected from a dataset D, the goal
-of an optimizer is to minimize
-1 X
-fd (θ)
-|D|
-
+3. Preliminaries
+For simplicity we limit our discussion to Markov random fields (MRFs), but our results apply equally to
+Bayesian networks and general factor graphs. We focus
+only on discrete models. A Markov random field G is
+an undirected graph representing a probability distribution P (X1 , . . . , XN ), such that P factorises over the maxcliques in G, i.e.
+1 Y
+φc (Xc )
 (1)
+P (X1 , . . . , XN ) =
+Z
+c∈cl(G)
 
-d∈D
+where
+P Qcl(G) is the set of max-cliques in G and Z =
+X
+c∈cl(G) φc (Xc ) ensures normalisation. We call the
+factors φc clique potentials or potentials.
+TBP is based on the junction tree algorithm (see e.g.
+(Koller & Friedman, 2009)). A junction tree is a special
+type of cluster graph, i.e. an undirected graph with nodes
+called clusters that are associated with sets of variables
+rather than single variables. Specifically, a junction tree is a
+cluster graph that is a tree and which also satisfies the running intersection property. The running intersection property states that if a variable is in two clusters, it must also be
+in every cluster on the path that connects the two clusters.
+The junction tree algorithm is essentially the well-known
+belief propagation algorithm applied to the junction tree
+after the cluster potentials have been initialized. At initialisation, each clique potential is first associated with a
+cluster. Each cluster potential Φt (Xt ) is computed by multiplying all the clique potentials φc (Xc ) associated with the
+cluster Xt . Thereafter, the algorithm is defined recursively
+in terms of messages passed between neighbouring clusters. A message is always a function of the variables in the
+receiving cluster, and represents an intermediate marginalisation over a partial set of factors. The message mt→s (Xs )
+sent from a cluster t to a neighbouring cluster s is defined
+recursively by
+X
+Y
+mt→s (Xs ) =
+Φt (Xt )
+mu→t (Xt ), (2)
+Xt \Xs
 
-over the variables θ.
-When optimizing an optimizee on a dataset D, the behavior
-of an optimizer can be summarized by the following loop.
-For each step:
-1. Given the current parameters θt and a sample dt ∈ D,
-perform forward and backward propagation to compute the function value yt = fdt (θt ) and the gradient
-gt = ∇fdt (θt );
-2. Based on the current state ht (of the optimizer) and
-the gradient gt , the optimizer produces the new state
-ht+1 and proposes an increment ∆θt ;
-3. Update the parameters by setting θt+1 = θt + ∆θt .
-In the initialization phase, h0 is produced by the optimizer,
-and θ0 is generated according to the initialization rule of
-the given optimizee. At the end of the loop, we take θT as
-the final optimizee parameters.
-3.2. Some Insight into Adaptivity
-Table 1 summaries optimization algorithms that are most
-commonly used when training neural networks. All of
-these optimization algorithms have some degree of adaptivity, that is, they are able to adjust the effective step size
-|∆θt | when training.
-We can divide these algorithms into two classes. The first
-class includes SGD and Momentum, as they determine the
-effective step size by the absolute size of gradients. The
-second class includes Adagrad, Adadelta, RMSprop, and
-Adam. These algorithms maintain the sum or the moving
-average of past gradients gt2 , which can be seen as, with
-a little abuse of terminology, the second raw moment (or
-uncentered variance). Then, these algorithms produce the
-effective step size only by the relative size of the gradient,
-namely, the gradient divided by the square root of the second moment coordinatewise.
-In a training process, as the parameters gradually approach
-to a local minimum, a smaller effective step size is required for a more careful local optimization. To obtain
-such smaller effective step size, these two classes of algorithms have two different mechanisms. For the first class,
-if we take the full gradient, the effective step size automatically gets smaller when approaching to a local minimum.
-However, since we use stochastic gradient descent, the effective step size may not be small enough, even if θ is not
+u∈N (t)\{s}
 
-far from a local minimum. For the second class, a smaller
-effective step size |∆θt,i | of each coordinate i is mainly induced by a relatively smaller partial derivative comparing
-with past partial derivatives. When approaching to a local minimum, the gradient may fluctuate due to stochastic
-nature. Algorithms of the second class can decrease the
-effective step size of each coordinate in accordance with
-the fluctuation amplitude of that coordinate, i.e., a coordinate with larger uncentered variance yields smaller effective step size. Thus, the algorithms of the second class are
-able to further decrease effective step size for the coordinates with more uncertainty, and they are more robust than
-those of the first class.
-To get more insight into the difference between these two
-classes of algorithms, we consider what happens if we scale
-the optimizee by a factor c, i.e., let f˜(θ) = cf (θ). Ideally, the scaling should not affect the behaviors of the algorithms. However, for the algorithms of the first class, since
-∇f˜(θ) = c∇f (θ), the effective step size is also scaled by c.
-Hence, the behaviors of the algorithms change completely.
-But for the algorithms of the second class, they behave the
-same on f˜(θ) and f (θ) since the scale factor c is canceled
-out. Thus the algorithms of the second class are more robust with respect to scaling.
-The above observation, albeit very simple, is a key inspiration for our new model. On the one hand, we use some
-training tricks so that our model can be exposed to functions with different scales at the training stage. On the other
-hand, we take relative gradients as input so that our optimizer belongs to the second class. In the following section,
-we introduce our training tricks and new model in details.
-
-4. Methods
-Our RNN optimizer operates coordinatewise on parameters θ, which follows directly from (Andrychowicz et al.,
-2016). The RNN optimizer handles the gradients coordinatewise and maintains hidden states for every coordinate
-respectively. The parameters of the RNN itself are shared
-between different coordinates. In this way, the RNN optimizer can train optimizees with any number of parameters.
-4.1. Random Scaling
-We propose a training trick, called Random Scaling, to prevent overfitting when training our model. Before introducing our ideas, consider what happens if we train an RNN
-optimizer to minimize f (θ) = λkθk22 with initial parame1
-∇f (θt ) is the optimal polter θ0 . Clearly, θt+1 = θt − 2λ
-icy since the lowest point can be reached in just one step.
-However, if the RNN optimizer learns to follow this rule
-exactly, testing this RNN optimizer on the same function
-with different λ might produce a modest or even bad result.
-
-Learning Gradient Descent: Better Generalization and Longer Horizons
-
-The method to solve this issue is rather simple: We randomly pick a λ for every iteration when training our RNN
-optimizer. Notice that we can also pick a random number to
-scale all the parameters to achieve the same goal. To further
-generalize this idea, we design our training trick, Random
-Scaling, which coordinatewise randomly scales the parameters of the objective function in the training stage.
-In more details, for each iteration of training the optimizer
-on a loss function f (θ) with initial parameter θ0 , we first
-randomly pick a vector c of the same dimension as θ, where
-each coordinate of c is sampled independently from a distribution D0 . Then, we train our model on a new optimizee
-fc (θ) = f (cθ)
-
-(2)
-
-with initial parameter c−1 θ0 , where all the multiplication
-and inversion operations are performed coordinatewise. In
-this way, the RNN optimizer is forced to learn an adaptive
-policy to determine the best effective step size, rather than
-to learn the best effective step size itself of a particular task.
-4.2. Combination with Convex Functions
-Now we introduce another training trick. It is clear that
-we should train our RNN optimizer on optimizees implemented with neural networks. However, due to non-convex
-and stochastic nature of neural networks, it may be hard for
-an RNN to learn the basic idea of gradient descent.
-Our idea is loosely inspired by the proximal algorithms (see
-e.g., (Parikh & Boyd, 2014)). To make training easier, we
-combine the original optimizee function f with an n-dim
-convex function g to get a new optimizee function F
-F (θ, x) = f (θ) + g(x).
-
+where N (t) is the set of neighbours of t. Since the junction tree is singly connected, this recursion is well-defined.
+After all messages have been computed, the marginal distribution on a cluster of variables Xs is computed using
+Y
+Ps (Xs ) ∝ Φs (Xs )
+mt→s (Xs ),
 (3)
+t∈N (s)
 
-For every iteration of training RNN optimizer, we generate
-a random vector v in n-dim vector space, and the function
-g is defined as
-n
+and univariate marginals can be computed by summation
+over cluster marginals. The space and time complexity of
 
-g(x) =
+Tensor Belief Propagation
 
-1X
-(xi − vi )2 ,
-n i=1
+the junction tree inference algorithm is exponential in the
+induced width of the graph, i.e. the number of variables in
+the largest tree cluster minus 1 (Koller & Friedman, 2009).
+The lowest possible induced width (over all possible junction trees for the graph) is defined as the treewidth of the
+graph1 .
 
-We can apply Random Scaling on the function g as well to
-make the behavior of the RNN optimizer more robust.
-4.3. RNNprop Model
-Aside from the above two tricks, we also design a new
-model RNNprop as shown in Figure 1. All the operations in
-our model are coordinatewise, following the idea of DMoptimizer idea in (Andrychowicz et al., 2016).
-The main difference between RNNprop and DMoptimizer
-is the input. The input m̃t and g̃t are defined as follows:
-m̃t
-g̃t
+4. Tensor Belief Propagation
+The TBP algorithm we propose (Algorithm 1) is the same
+as the junction tree algorithm except for the approximations
+at line 1 and line 4, which we describe below.
+Algorithm 1 Tensor Belief Propagation
+input Clique potentials {φc (Xc )}, junction tree J.
+output Approximate cluster marginals {P̃s (XsQ
+)} for all s.
+1: For each cluster Xt , compute Φ̃t (Xt ) ≈ c φc (Xc ),
+where the product is over all cliques c associated with
+t.
+2: while there is any unsent message do
+3:
+Pick an unsent message mt→s (Xs ) with all messages to t from neighbours
+Y s sent.
+X other than
+Φ̃t (Xt )
+m̃u→t (Xt ).
+4:
+Send m̃t→s (Xs ) ≈
+Xt \Xs
 
-−1/2
+u∈N (t)\{s}
 
-=
+5: end while
+Q
+6: return P̃s (Xs ) ∝ Φ̃s (Xs ) t∈N (s) m̃t→s (Xs ).
 
-m̂t v̂t
+There are two challenges in applying the junction tree algorithm to high-treewidth graphical models: representing
+the intermediate potential functions, and computing them.
+For representation, using tables to represent the cluster potentials and messages requires space exponential in the induced width. For computation, the two operations relevant
+to the complexity of the algorithm are marginalisation over
+a subset of variables in a cluster and multiplication of multiple factors. When clusters become large, these operations
+become intractable unless additional structure can be exploited.
+TBP alleviates these difficulties by representing all potential functions as mixtures of rank-1 tensors. We show how
+to perform exact marginalisation of a mixture (required in
+line 4) efficiently, and how to perform approximate multiplication of mixtures using sampling (used for approximation in lines 1 and 4).
+4.1. Mixture of Rank-1 Tensors
+As we are concerned with discrete distributions, each potential φc can be represented by a multidimensional array, i.e. a tensor. Furthermore, a d-dimensional tensor
+T ∈ RN1 ×···×Nd can be decomposed into a weighted sum
+1
+Finding the treewidth of a graph is N P-hard; in practice we
+use various heuristics to construct the junction tree.
 
-=
+of outer products of vectors as
+T=
 
-−1/2
-gt v̂t
-,
+r
+X
 
-,
-
-(5)
-(6)
-
-where m̂t , v̂t are defined the same way as Adam in Table
-1. This change of the input has three advantages. First,
-this input contains no information about the absolute size of
-gradients, so our algorithm belongs to the second class automatically and hence is more robust. Second, this manipulation of gradients can be seen as a kind of normalization
-so that the input values are bounded by a constant, which
-is somewhat easier for a neural network to learn. Lastly, if
-our model outputs a constant times m̃t , it reduces to Adam.
-Similarly, if our model outputs a constant times g̃t , then
-it reduces to RMSprop. Hence, the hope is that by further optimizing the parameters of RNNprop, it is capable
-of achieving better performance than Adam and RMSprop
-with fixed learning rate.
-The input is preprocessed by a fully-connected layer with
-ELU (Exponential Linear Unit) as the activation function
-(Clevert et al., 2015) before being handled by the RNN.
-The central part of our model is the RNN, which is a twolayer coordinatewise LSTM that is same as DMoptimizer.
-The RNN outputs a single vector xout , and the increment
-is taken as
-∆θt = α tanh(xout ).
-
-(7)
+wk a1k ⊗ a2k ⊗ · · · ⊗ adk ,
 
 (4)
 
-where the initial value of x is also generated randomly.
-Without this trick, the RNN optimizer wanders around aimlessly on the non-convex loss surface of function f in the
-beginning stage of training. After we combine the optimizee with function g, since g has the good property of convexity, our RNN optimizer soon learns some basic knowledge of gradient descent from these additional optimizee
-coordinates. This knowledge is shared with other coordinates because the RNN optimizer processes its input coordinatewise. In this way, we can accelerate the training
-process of the RNN optimizer. As the training continues,
-the RNN optimizer further learns a better method with gradient decent as a baseline.
+k=1
 
-This formula can be viewed as a variation of gradient clipping so that all effective step sizes are bounded by the preset parameter α. In all our experiments, we just set a large
-enough value α = 0.1.
-m̃t g̃t
-
-Preprocessing
-
-α
-
-RNN
-
-Figure 1. The structure of our model RNNprop.
-
-∆θt
-
-Learning Gradient Descent: Better Generalization and Longer Horizons
-
-Figure 2. Performance on the base MLP. Left: RNNprop achieves comparable performance when allowed to run for 2000 steps. Right:
-RNNprop continues to decrease the loss even for 10000 steps, but the performance is slightly worse than some traditional algorithms.
-
-5. Experiments
-We trained two RNN optimizers, one to reproduce DMoptimizer in (Andrychowicz et al., 2016), the other to implement RNNprop with our new training tricks. Their performances were compared in a number of experiments. 1
-We use the same optimizee as in (Andrychowicz et al.,
-2016) to train these two optimizers, which is the crossentropy loss of a simple MLP on the MNIST dataset. For
-convenience, we address this MLP as the base MLP. It has
-one hidden layer of 20 hidden units and uses sigmoid as
-activation function. The value of f (θ) is computed using
-a minibatch of 128 random pictures. For each iteration
-during training, the optimizers are allowed to run for 100
-steps. Optimizers are trained using truncated Backpropagation Trough Time (BPTT). We split the 100 steps into 5
-periods of 20 steps. In each period, we initialize the initial parameter θ0 and initial hidden state h0 from the last
-period or generate them if it is the first
-Adam is
-Pperiod.
-T
-used to minimize the loss L(φ) = T1 t=1 wt f (θt ). We
-trained DMoptimizer using the loss with wt = 1 for all t
-as in (Andrychowicz et al., 2016). For RNNprop we set
-wT = 1 and wt = 0 for other t. In this way, the optimizer
-is not strictly required to produce a low loss at each step, so
-it can be more flexible. We also notice that this loss results
-in slightly better performance.
-The structure of our model RNNprop is shown in Section
-4.3. The RNN is a two-layer LSTM whose hidden state
-size is 20. To avoid division by zero, in actual experiments
-we add another term  = 10−8 , and the input is changed to
-m̃t
-g̃t
-
-1/2
-
-= m̂t (v̂t
+where wk ∈ R, aik ∈ RNi and ⊗ is the outer product,
+i.e.
+
+a1k ⊗ a2k ⊗ · · · ⊗ adk i ,...,i = a1k i · · · · · adk i . We
+1
+1
+d
+d
+denote the vector of weights {wk } as w. The smallest r
+for which an exact r-term decomposition exists is called
+the rank of T and a decomposition (4) using this r is a tensor rank decomposition. This decomposition is known by
+several names including CANDECOMP/PARAFAC (CP)
+decomposition and Hitchcock decomposition (Kolda &
+Bader, 2009). In this paper, we assume without loss of
+generality that the weights are non-negative and sum to 1,
+giving a mixture of rank-1 tensors. Such a mixture forms
+a probability distribution over rank-1 tensors, which we refer to as a tensor belief. We also assume that the decomposition is non-negative, i.e. the rank-1 tensors are nonnegative, although the method can be extended to allow
+negative values.
+For a (clique or cluster) potential function φs (Xs ) over
+|Xs | = Ns variables, (4) is equivalent to decomposing φs
+into a sum of fully-factorised terms, i.e.
+φs (Xs ) =
 =
 
-1/2
-gt (v̂t
+r
+X
+k=1
+r
+X
 
-+ )−1 ,
-−1
+wks ψks (Xs )
+s
+s
+wks ψk,1
+(Xs1 ) · · · ψk,N
+(XsNs ).
+s
 
-+ )
+(5)
 
+k=1
+
+This observation allows us to perform marginalisation and
+multiplication operations efficiently.
+4.2. Marginalisation
+Marginalising out a variable Xi from a cluster Xs simplifies in the same manner as if the distribution was fullyfactorised, namely
+!
+r
+X
+X
+X
+s
+s
+φs (Xs ) =
+wk
+ψk,j (Xi ) ·
+(6)
+Xi
+
+k=1
+
+Xi
+
+s
+s
+s
+ψk,1
+(Xs1 )ψk,2
+(Xs2 ) · · · ψk,N
+(XsNs )
+s
+|
+{z
+}
+s
+excluding ψk,j
+(Xi )
+
+P
+where we simply push the sum Xi inside and only evals
+uate it over the univariate factor ψk,j
+(Xi ). We can then
+absorb this sum into the weights {wks } and the result stays
+in decomposed form (5). To marginalise over multiple variables, we evaluate (6) for each variable in turn.
+4.3. Multiplication
+The key observation for multiplication is that a mixture of
+rank-1 tensors can be treated as a probability distribution
+
+Tensor Belief Propagation
+
+over the rank-1 tensors with expectation equal to the true
+function, by considering the weight of each rank-1 term
+wk as its probability.
+
+Proof. We give the proof for the case B 6= 0 here. The
+consistency proof for the case B = 0 can be found in the
+supplementary material.
+
+To multiply two potentials φi and φj , we repeatedly sample rank-1 terms from each multiplicand to build the product. We draw a sample of K pairs of indices {(kr , lr )}K
+r=1
+independently from wi and wj respectively, and use the
+approximation
+
+The errors in the unnormalised marginals are due to the
+errors in approximate pairwise multiplication defined by
+Equation (7). We first give bounds for the errors in all the
+pairwise multiplication by sampling operations, then derive
+the bounds for the errors in the unnormalised marginals.
+
+φi (Xi ) · φj (Xj ) ≈
+
+K
+1 X i
+ψ (Xi ) · ψljr (Xj ).
+K r=1 kr
+
+(7)
+
+The approximation is also a mixture of rank-1 tensors, with
+the rank-1 tensors being the ψki r (Xi ) · ψljr (Xj ), and their
+weights being the frequencies of the sampled (kr , lr ) pairs.
+This process is equivalent to drawing a sample of the same
+size from the distribution representing φi (Xi ) · φj (Xj ) and
+hence provides an unbiased estimate of the product function. Multiplication of each pair ψki r (Xi ) · ψljr (Xj ) can
+be performed efficiently due to their factored forms. It is
+possible to extend the method to allow multiplication of
+more potential functions simultaneously but we only use
+pairwise multiplication in this paper, repeating the process
+as necessary to multiply more functions.
+4.4. Theoretical Analysis
+For simplicity, we give results for binary MRFs. Extension
+to non-binary variables is straightforward. We assume that
+exact tensor decompositions are given for all initial clique
+potentials.
+Theorem 1. Consider a binary MRF with C max-cliques
+with potential functions represented as non-negative tensor
+decompositions.
+Consider the unnormalised
+Q
+P distribution
+D(X) = c∈cl(G) φc (Xc ). Let Di (Xi ) = X\Xi D(X)
+be the unnormalised marginal for variable Xi . Assume that
+the values of the rank-1 tensors in any mixture resulting
+from pairwise multiplication is upper bounded by M , and
+that the approximation target for any cell in any multiplication operation is lower bounded by B. Let D̃i (Xi ) be the
+estimates produced by TBP using a junction tree with an
+induced width T . With probability at least 1 − δ, for all i
+and xi ,
+(1 − )Di (xi ) ≤ D̃i (xi ) ≤ (1 + )Di (xi )
+if the sample size used for all multiplication operations is
+at least
+
+
+ 2
+2
+C M
+log C + T + log
 .
+Kmin (, δ) ∈ O
+2 B
+δ
+Furthermore, D̃i (Xi ) remains a consistent estimator for
+Di (Xi ) if B = 0.
+
+Recall that by the multiplicative Chernoff bound (see e.g.
+(Koller & Friedman, 2009)), for K i.i.d. random variables
+Y1 , . . . , YK in range [0, M ] with expected value µ, we have
+!
+ 2
+
+K
+ζ µK
+1 X
+Yi ∈
+/ [(1 − ζ)µ, (1 + ζ)µ] ≤ 2 exp −
+.
+P
+K i=1
+3M
+The number of pairwise multiplications required to initialize the cluster potentials {Φ̃t (Xt )} is at most C (line 1).
+The junction tree has at most C clusters, and thus at most
+2(C − 1) messages need to be computed. Each message
+requires at most C pairwise multiplications (line 4). Hence
+the total number of pairwise multiplications needed is at
+most 2C 2 . Each pairwise multiplication involves functions defined on at most T binary variables, and thus it simultaneously estimates at most 2T values. Hence at most
+2T +1 C 2 values are estimated by sampling in the algorithm.
+Since each estimate satisfies the Chernoff bound, we can
+apply a union bound to bound the probability that the estimate for any µj is outside [(1 − ζ)µj , (1 + ζ)µj ], giving
+Pζ
+
+K
+1 X j
+X ∈
+/ [(1 − ζ)µj , (1 + ζ)µj ] for
+K i=1 i
+!
+ 2
+
+ζ BK
+T +2 2
+any estimate j ≤ 2
+C exp −
+,
+3M
+
+where B is a lower bound on the minimum value of all cells
+estimated during the algorithm. If we set an upper-bound
+on this error probability of δ and rearrange for K, we have
+that with probability at least δ, all estimates are within a
+factor of (1 ± ζ) of their true values when
+K≥
+
+2T +2 C 2
+3 M
+ln
+.
+2
+ζ B
+δ
 
 (8)
+
+We now seek an expression for the sample size required
+for the unnormalised marginals to have small errors. First
+we argue that at most C + Q − 1 pairwise multiplications
+are used in the process of constructing the marginals at any
+node u, where Q is the number of clusters. This is true
+for the base case of a tree of size 1 as no messages need
+to be passed. As the inductive hypothesis, assume that the
+statement is true for trees of size less than n. The node u is
+
+Tensor Belief Propagation
+
+considered as the root of the tree and by the inductive hypothesis the number of multiplications used in each subtree
+i is at most Ci + Qi − 1 where Ci and Qi are the number
+of clique potentials and clusters associated with subtree i.
+Summing them up and noting that we need to perform at
+most one additional multiplication for each clique potential
+associated with u for initialisation, and one additional multiplication for each subtree, gives us the required result. To
+simplify analysis, we bound C + Q − 1 by 2C from here
+onwards.
+At worst, each pairwise multiplication results in an extra
+(1 ± ζ) factor in the bound. Since we are using a multiplicative bound, marginalisation operations have no effect
+on the bound. As we do no more than 2C multiplications,
+the final marginal estimates are all within a factor (1±ζ)2C
+of their true value.
+To bound the marginal so that it is within a factor (1 ± )
+of its true value for a chosen  > 0, we note that choosing
+implies (1 − ζ)2C ≥ 1 −  and (1 + ζ)2C ≤
+ζ = ln(1+)
+2C
+(1 + ):
+
+2C
+ln(1 + )
+(1 − ζ)2C = 1 −
 (9)
+2C
+
+ 2C
+≥ 1−
+≥1−
+2C
+2C
+
+ln(1 + )
+2C
+(10)
+(1 + ζ) = 1 +
+2C
+≤ exp (ln(1 + )) = 1 + .
+In (9) we use Bernoulli’s inequality together with ln(1 +
+) ≤ , and in (10) we use (1 + x)r ≤ exp(rx).
+Substituting this ζ into (8), we have that all marginal estimates are accurate within factor (1 ± ) with probability at
+least 1 − δ, when
+K≥
 
-The parameters β1 and β2 for computing mt and gt are
+12C 2
+M
+2T +2 C 2
+ln
+2
+(ln(1 + )) B
+δ
+
+(11)
+
+Using the fact that ln(1 + ) ≥  · ln 2 for 0 ≤  ≤ 1, and
+24
+ln 2 < 35, we can relax this bound to
+
+
+35C 2 M
+2
+K≥ 2
+log C + T + log
+.
+
+B
+δ
+
+Corollary 1. Under the same conditions as Theorem 1,
+with probability at least 1 − δ, the normalised marginal estimates p̃i (xi ) satisfy
+
+Proof. Suppose the unnormalised marginals have relative
+error bounded by (1 ± ), i.e.
+(1 − )Di (xi ) ≤ D̃i (xi ) ≤ (1 + )Di (xi )
+for all i and xi . Then we have
+D̃i (xi )
+(1 + )Di (xi )
+1+
+p̃i (xi ) = P
+pi (xi ).
+≤ P
+=
+(1
+−
+)D
+(x
+)
+1−
+i
+i
+D̃
+(x
+)
+i
+i
+xi
+xi
+
+To bound the relative error on p̃i (xi ) to (1 + γ), we set
+1+
+γ
+= 1 + γ =⇒  =
+.
+1−
+γ+2
+2
+ 2
+ 
+
+3
 1
-Our code can be found at https://github.com/
-vfleaking/rnnprop.
+<
+=
+O
+for γ < 1, the
+Since 12 = γ+2
+γ
+γ
+γ2
+increase in Kmin required to bound the normalised estimates rather than the unnormalised estimates is at most a
+constant. Thus,
+ 2
+
+
+C M
+1
+0
+Kmin (γ, δ) ∈ O
+log C + T + log
+.
+γ2 B
+δ
+as required. The negative side of the bound is similar.
+Interestingly, the sample size does not grow exponentially with the induced width, and hence the treewidth
+of the graph. As the inference problem is N P-hard,
+we expect the ratio M/B to be large in difficult problems. The M/B ratio comes from bounding
+Pr the relative
+error when sampling a mixture φ(x) =
+k=1 wk ψk (x).
+A more refined bound can be obtained by bounding
+maxk maxx ψk (x)/φ(x) instead; this bound would not
+grow as quickly if ψk (x) is always small whenever φ(x)
+is small. Understanding the properties of function classes
+where these bounds are small may help us understand when
+TBP works well.
+Theorem 1 suggests that that it may be useful to reweight
+the rank-1 tensors in a multiplicand to give a smaller
+M/B ratio. The following proposition gives a reweighting
+scheme that minimises the maximum value of the rank-1
+tensors in a multiplicand, which leads to a smaller M with
+B fixed. Theorem 1 still holds with this reweighting.
+Pr
+Proposition
+1. Let φ(x) = k=1 wk ψk (x) where wk ≥
+Pr
+0,
+k=1 wk = 1 and ψk (x) ≥
+Pr0 for all x. Con(x), where
+sider a reweighted representation k=1 wk0 ψk0 P
+wk
+0
+0
+ψk0 (x) = w
+≥ 0, and
+0 ψk (x), each wk
+k wk =
+k
+0
+1. Then maxk maxx ψk (x) is minimized when wk0 ∝
+wk maxx ψk (x).
 
-simply set to 0.95. In preprocessing, the input is mapped to
-a 20-dim vector for each coordinate.
-When training RNNprop, we first apply Random Scaling
-to the optimizee function f and the convex function g respectively, where g is defined as Equation (4), and then we
-combine them together as introduced in Section 4.2. We set
-the dimension of the convex function g to be n = 20 and
-generate the vectors v and x from [−1, 1]n uniformly randomly. To generate each coordinate of the vector c in Random Scaling, we first generate a number p from [−L, L]
-uniformly randomly, and then take exp(p) as the value of
-that coordinate, where exp is the natural exponential function. This implementation is aimed to produce c of differ1
-ent order of magnitude, e.g., Pr[ 10
-≤ ci ≤ 19 ] = Pr[9 ≤
-ci ≤ 10]. We also tried other transformations including
-using uniform distribution, scaling the entire function directly, randomly dropping some coordinates, etc. This version of Random Scaling is selected after comprehensive
-comparison. In the experiments we set L = 3 for the function f and L = 1 for the function g.
-We save all the parameters of the RNN optimizers every
-1000 iterations when training. For DMoptimizer, we select the saved optimizer with the best performance on the
-validation task, same as in (Andrychowicz et al., 2016).
-Since RNNprop tends not to overfit to the training task because of the Random Scaling method, we simply select the
-saved optimizer with lowest average train loss, which is
-the moving average of the losses of the past 1000 iterations with decay factor 0.9. The selected optimizers are
-then tested on other different tasks. Their performances
-are compared with the best traditional optimization algorithms whose learning rates are carefully chosen and other
-hyperparameters are set to the default values in Tensorflow
-(Abadi et al., 2016). All the initial optimizee parameters
-used in the experiments are generated independently from
-the Gaussian distribution N (0, 0.1).
+(1 − γ)pi (xi ) ≤ p̃i (xi ) ≤ (1 + γ)pi (xi )
+for all i and xi , if the sample size used for all multiplication
+operations is at least
+ 2
+
+
+C M
+1
+0
+Kmin
+(γ, δ) ∈ O
+log
+C
++
+T
++
+log
+.
+γ2 B
+δ
 
-Learning Gradient Descent: Better Generalization and Longer Horizons
+Proof. Let ak = wk maxx ψk (x), and let v =
+ak
+0
+maxk maxx ψk0 (x) = maxk w
+0 . For any choice of w , we
+k
+P
+P
+a
+have v ≥ P k wk0 = k ak . The first inequality holds bek
+k
+cause vwk0 ≥ ak for any k by the definition of v. Since
 
-All figures shown in this section were plotted after running
-the optimization process multiple times with random initial values and data. We removed the outliers with exceedingly large loss value when plotting the loss curves. No loss
-value of RNNprop was removed when plotting the figures.
-5.1. Generalization to More Steps
-We first test optimizers on the task used in the training
-stage, which is to optimize the base MLP for 100 steps.
-Both DMoptimizer and RNNprop outperform all traditional optimization algorithms. DMoptimizer has better
-performance possibly because of overfitting. We then test
-optimizers to run for more steps on the base MLP. The left
-plot of Figure 2 indicates that RNNprop can achieve comparable performance with traditional algorithms for 2000
-steps while DMoptimizer fails.
-We also test the optimizers for much more steps: 10000
-steps, as shown in the right plot of Figure 2. It is clear
-that DMoptimizer loses the ability to decrease the loss after about 400 steps and its loss begins to increase dramatically. RNNprop, on the other hand, is able to decrease
-the loss continuously, though it slows down gradually and
-traditional algorithms overtake it. The main reason is that
-RNNprop is trained to run for only 100 steps, and 10000step training process may be significantly different from
-100-step training process. Additionally, traditional optimization algorithms are able to achieve good performance
-on both tasks because we explicitly adjusted their learning
-rates to adapt to these tasks.
-Figure 3 shows how the final loss after 10000 steps changes
-when using different learning rates. For example, Adam
-can outperform RNNprop only if its learning rate lies in
-the narrow interval from 0.004 to 0.01.
-For other optimizees, RNNprop shows similar ability to
-train for longer horizons. Due to space constraints, we do
-not discuss them in details.
-5.2. Generalization to Different Activation Functions
-We test the optimizers on the base MLP with different activation functions. As shown in Figure 4, if the activation
-function is changed from sigmoid to ReLU, RNNprop can
-still achieve better performance than traditional algorithms
-while DMoptimizer fails. For other activations, RNNprop
-also generalizes well as shown in Table 2.
-5.3. Generalization to Deeper MLP
-In deep neural networks, different layers may have different
-optimal learning rates, but traditional algorithms only have
-one global learning rate for all the parameters. Our RNN
-optimizer can achieve better performance benefited from
+Tensor Belief Propagation
 
-Figure 3. The final loss of different algorithms on the base MLP
-after 10000 steps. The colorful solid curves show how the final
-losses of traditional algorithms after 10000 steps change with different learning rates, and the horizontal dash line shows the final
-loss of RNNprop. We compute the final loss by freezing the final
-parameters of the optimizee and compute the average loss using
-all the data encountered during optimization process.
-Table 2. Performance on the base MLP with different activations.
-The numbers in table were computed after running the optimization processes for 100 times.
-Activation
+P
 
-Adam
+k ak is a constant lower bound for v, and this is clearly
+achieved by setting wk0 ∝ ak , we have the claimed result.
 
-DMoptimizer
+Note that with ψk (x) represented as a rank-1 tensor, the
+maximum value over x can be computed quickly with the
+help of the factored structure.
+Reweighting the rank-1 tensors as described in Proposition 1 and then sampling gives a form of importance sampling. Importance sampling is often formulated instead
+with the objective of minimizing the variance of the estimates. Since we expect lowering the variance of intermediate estimates to lead to lower variance on the final
+marginal estimates, we also examine the following alternative reweighting scheme.
+Pr
+Proposition
+2. Let φ(x) = k=1 wk ψk (x) where wk ≥
+Pr
+0, P
+k=1 wk = 1. Consider a reweighted representar
+wk
+0 0
+0
+tion
+0 ψk (x), each
+k=1 wk ψk (x), where ψk (x) = wk
+PK
+P
+1
+0
+0
+0
+wk ≥ 0, and k wk = 1. Let φ̃(x) = K i=1 ψK
+(x)
+i
+be an estimator for φ(x), where each Ki is drawn independently from the categorical distribution with parameters {w10 , . . . ,P
+wr0 }. Then φ̃(x) is unbiased, and the to0
+0
+tal p
+variance
+x Var[φ̃ (x)] is minimized when wk ∝
+P
+2
+wk
+x ψk (x) .
+Proof. Clearly φ̃(x) is an unbiased estimator for φ(x). The
+variance of this estimator is
+1
+0
+Var[φ̃(x)] = Var[ψK
+0 (x)]
+i
+K
+
+
+1
+2
+0
+2
+0
+=
+E[ψK
+(x)
+]
+−
+E[ψ
+(x)]
+Ki
+i
+K
+!
+1 X 0 0
+2
+2
+wk ψk (x) − φ(x)
+=
+K
+k
+!
+1 X 0 wk2
+=
+wk 0 2 ψk (x)2 − φ(x)2
+K
+wk
+k
+!
+1 X wk2
+2
+2
+=
+ψk (x) − φ(x) .
+K
+w0 k
 
-RNNprop
+The factored forms of rank-1 tensors again allows the importance reweighting to be computed efficiently.
+Propositions 1 and 2 could be applied directly to the algorithm by multiplying two potential functions fully before sampling. If each potential function has K terms, the
+multiplication would result in K 2 terms which is computationally expensive. We only partially exploit the results of
+Propositions 1 and 2 in our algorithm. When multiplying
+two potential functions, we draw K pairs of rank-1 tensors from their respective distributions and multiply them
+as described earlier but re-weight the resulting mixture using either Proposition 1 or 2. We call the former max-norm
+reweighting, and the latter min-variance reweighting.
 
-sigmoid
+5. Experiments
+We present experiments on grid-structured Ising models,
+random graphs with pairwise Ising potentials, and two
+real-world datasets from the UAI 2014 Inference Competition (Gogate, 2014). We test our algorithm against commonly used approximate inference methods, namely loopy
+belief propagation (labelled BP), mean-field (MF), treereweighted BP (TRW) and Gibbs sampling using existing
+implementations from the libDAI package (Mooij, 2010).
+TBP was implemented in C++ inside the libDAI framework using Eigen (Guennebaud et al., 2010) and all tests
+were executed on a single core of a 1.4 GHz Intel Core i5
+processor. In each experiment, we time the execution of
+TBP and allow Gibbs sampling the same wall-clock time.
+We run the other algorithms until convergence, which occurs quickly in each case (hence only the final performance
+is shown). Parameters used for BP, MF, TRW and Gibbs are
+given in the supplementary material. To build the junction
+tree, we use the min-fill heuristic2 implemented in libDAI.
+5.1. Grid-structured Ising Models
+Figure 1 gives results for 10 × 10 Ising models. The N × N
+Ising model is a planar grid-structured MRF described by
+the joint distribution
 
-0.31
+k
 
-0.24
+Since K and φ(x) are constant, we have
+X
+{wk0 }∗ = argmin
+Var[φ̃0 (x)]
+0}
+{wk
 
-0.29
+= argmin
+0}
+{wk
 
-ReLU
+wk0
 
-0.28
+P
 
-1.05
+
+
+X
+X
+1
+wij xi xj +
+bi xi 
+p(x1 , . . . , xN 2 ) = exp 
+Z
+i
+(i,j)
 
-0.27
+x
 
-ELU
+XX 1
+(wk ψk (x))2 ,
+wk0
+x
 
-0.26
+0
+k wk
 
-13.51
+k
 
-0.24
+where each
+≥ 0,
+= 1. A straightforward application of the method of Lagrange multipliers yields
+pP
+2
+wk
+x ψk (x)
+0
+.
+w k = P pP
+2
+l wl
+x ψl (x)
 
-tanh
+where (i, j) runs over all edges in the grid. Each variable Xi takes value either 1 or −1. In our experiments,
+we choose the wij uniformly from [−2, 2] (mixed interactions) or [0, 2] (attractive interactions), and the b uniformly
+from [−1, 1]. We use a symmetric rank-2 tensor decomposition for the pairwise potentials. We measure performance
+2
 
-0.31
+Min-fill repeatedly eliminates variables that result in the lowest number of additional edges in the graph (Koller & Friedman,
+2009).
 
-0.50
+Tensor Belief Propagation
+Attractive interactions
 
-0.28
+0.5
 
-its more adaptive behavior.
-We tested the optimizers on deeper MLPs. More hidden
-layers are added to the base MLP, all of which have 20 hidden units and use sigmoid as activation function. As shown
-in Figure 6, RNNprop can always outstrip traditional algorithms until the MLP becomes too deep and none of them
-can decrease its loss in 100 steps. Figure 5 shows the loss
-curves on the MLP with 5 hidden layers as an example.
-5.4. Generalization to Different Structures
-5.4.1. CNN
-The CNN optimizees are the cross-entropy losses of convolutional neural networks (CNN) with similar structure
-as VGGNet (Simonyan & Zisserman, 2015) on dataset
-MNIST or dataset CIFAR-10. All convolutional layers use
-3×3 filters and the window of each max-pooling layer is of
-size 2 × 2 with stride 2. We use c to denote a convolutional
-layer, p to denote a max-pooling layer and f to denote a
-fully-connected layer. Three CNNs are used in the experiments: CNN with structure c-c-p-f on MNIST, CNN
+TBP (NONE)
+TBP (MAX)
+TBP (VAR)
 
-Learning Gradient Descent: Better Generalization and Longer Horizons
+TBP (NONE)
+TBP (MAX)
+TBP (VAR)
 
-Figure 4. RNNprop slightly outperforms traditional algorithms on
-the base MLP with activation replaced with ReLU.
+0.4
 
-Figure 6. Performance on the base MLP with different number of
-hidden layers. Among all traditional algorithms we only list the
-performance of Adam since it achieves lowest loss.
-Table 3. Performance on the task with different settings of LSTM.
-We list the final loss of RNNprop and best traditional optimization
-algorithms on the task with 2-layer LSTM and on the task with
-smaller noise. The numbers in table were computed after running
-the optimization processes for 100 times.
+0.3
 
-Figure 5. RNNprop significantly outperforms traditional algorithms on the base MLP with 5 hidden layers.
+0.2
 
-with structure c-c-p-c-c-p-f-f on MNIST and CNN
-with structure c-c-p-f on CIFAR-10.
-The results are shown in Figure 7. RNNprop can outperform traditional algorithms on CNN with structure
-c-c-p-f on dataset MNIST. On the other two CNNs,
-only the best traditional algorithm outperforms RNNprop.
-Even though (Andrychowicz et al., 2016) showed that
-DMoptimizer that is trained on CNNs can train CNNs
-faster than traditional algorithms, in our experiments
-DMoptimizer fails to train any of the CNNs when the training set is fixed to the base MLP.
-5.4.2. LSTM
-The optimizers are also tested on the mean squared loss
-of an LSTM with hidden state size 20 on a simple task:
-given a sequence f (0), . . . , f (9) with additive noise, the
-LSTM needs to predict the value of f (10). Here f (x) =
-A sin(ωx + φ). When generating the dataset, we uniformly
-randomly choose A ∼ U (0, 10), ω ∼ U (0, π/2), φ ∼
-U (0, 2π), and we draw the noise from the Gaussian distribution N (0, 0.1).
+0.1
 
-Experiment
+0.0
 
-Adam
+Mixed interactions
 
-Adagrad
+0.5
+TRW
+Gibbs
 
-DMoptimizer
+Marginal error
 
-RNNprop
+Marginal error
 
-Default
+0.4
 
-0.62
+MF
+BP
 
-0.54
+MF
+BP
 
-26.43
+TRW
+Gibbs
 
-0.55
+0.3
 
-2 Layers
+0.2
 
-0.44
+0.1
 
-0.65
+1
 
-5.06
+2
 
-0.28
+3
 
-Small Noise
+4
 
-0.39
+5
 
-0.50
+10
+10
+10
+10
+10
+Sample size K (TBP); matched running time (Gibbs)
 
-22.04
+0.0
 
-0.36
+1
 
-Even though the task is completely different from the task
-that is used for training, RNNprop still has comparable or
-even better performance than traditional algorithms, which
-may be due to the fact the structure inside LSTM is similar
-to that of the base MLP with sigmoid in between.
-We also adjust the settings of the task. As shown in Figure 3, RNNprop still achieve good results when we use
-a smaller noise from the distribution N (0, 0.01) or use a
-two-layer LSTM instead of one-layer.
-5.5. Control Experiment
-To assess the effectiveness of each contribution separately,
-we also trained three more RNN optimizers: DMoptimizer
-trained with the two tricks and two RNNprop, each trained
-with one of the two tricks respectively.
-Recall that the trick of combining with convex function
-aims to accelerate the training of RNN optimizers. We test
-the performance of RNNprop whose own parameters are
-trained for different numbers of iterations, with or without
-this trick. The result is shown in Table 4. With this trick
-RNN optimizer can achieve a good result with fewer iterations of training.
+2
 
-Learning Gradient Descent: Better Generalization and Longer Horizons
+3
 
-Figure 7. Performance on different CNNs. Left: The CNN has 2 convolutional layer, 1 pooling layer and 1 fully-connected layer and is
-on dataset MNIST. Center: The CNN has 4 convolutional layer, 2 pooling layer and 2 fully-connected layer and is on dataset MNIST.
-Right: The CNN has 2 convolutional layer, 1 pooling layer and 1 fully-connected layer and is on dataset CIFAR-10.
+4
 
-Figure 8. Performance on a sequence prediction problem implemented by LSTM.
+5
 
-To assess the other two contributions, we select the trained
-optimizers in the same way as RNNprop. In Figure 9, we
-test their performances on the base MLP with activation
-replaced with ReLU for 1000 steps. From the figure, we
-conclude that Random Scaling is the most effective trick.
-Table 4. Comparison between RNNprop with or without combination with convex functions. We test them on the base MLP and
-the base MLP with activation replaced with ReLU. The 2nd column shows the number of iterations used to train optimizers. The
-4th column shows the final loss produced by RNNprop with all
-training tricks, while the last column shows the final loss produced
-by RNNprop trained without combination with convex functions.
-Optimizee
+10
+10
+10
+10
+10
+Sample size K (TBP); matched running time (Gibbs)
 
-#Iter
+Figure 1: Marginal error of TBP for various sample sizes K on 10 × 10 Ising models compared with other approximate
+inference methods (NONE = no reweighting, MAX = max-norm reweighting, VAR = min-variance reweighting).
+by the mean L1 error of marginal estimates over the N 2
+variables,
+1
+N2
 
-Adam
+N2
+X
 
-RNNprop
+|Pexact (Xi = 1) − Papprox (Xi = 1)|.
 
-No CC
+i=1
 
-Base MLP
+Exact marginals were obtained using the exact junction tree
+algorithm (possible because the grid size is small). Results
+are all averages over 100 model instances generated randomly with the specified parameters; error bars show standard error. We give a description of the tensor decomposition and additional results for a range of grid sizes N and
+interaction strengths wij in the supplementary material.
+As we increase the number of samples used for multiplication K, and hence running time, the performance of TBP
+improves as expected. On both attractive and mixed interaction models, loopy BP, mean-field and tree-reweighted
+BP perform poorly. Gibbs sampling performs poorly on
+models with attractive interactions but performs better on
+models with mixed interactions. This is expected since
+models with mixed interactions mix faster. Reweighting
+gives a noticeable improvement over not using reweighting;
+both max-norm reweighting and min-variance reweighting
+give very similar results (in Figure 1, they not easily differentiated). For the remainder of our experiments, we show
+results for max-norm reweighting only.
+5.2. Random Pairwise MRFs
+We also test TBP on random binary N -node MRFs with
+pairwise Ising potentials. We construct the graphs by independently adding each edge (i, j) with probability 0.5, with
+the requirement that the resulting graph is connected. Pairwise potentials are of the same form as Ising models (i.e.
+exp[wij xi xj ]), where interaction strengths wij are chosen
+uniformly from [0, 2] (attractive) or [−2, 2] (mixed) and the
 
-5k
-10k
-15k
+bi are chosen uniformly from [−1, 1].
+Figure 2a shows the performance of TBP with increasing sample size K on 15-node models. Similar to gridstructured Ising models, TBP performs well as the sample
+size is increased. Notably, TBP performs very well on attractive models where other methods perform poorly.
+Figure 2b shows the performance of the algorithms as the
+graph size is increased to 30 nodes. Interestingly, TBP
+starts to fail for mixed interaction models as the graph size
+is increased but remains very effective for attractive interaction models while other methods perform poorly.
+5.3. UAI Competition Problems
+Finally, we show results of TBP on two real-world datasets
+from the UAI 2014 Inference Competition, namely the
+Promedus and Linkage datasets. We chose these two problems following Zhu & Ermon (2015). To compute the initial tensor rank decompositions, we use the non-negative
+cp nmu method from Bader et al. (2015), an iterative optimisation method based on (Lee & Seung, 2001). The initial potential functions are decomposed into mixtures with
+r components. We show results for r = 2 and r = 4. We
+measure performance by the mean L1 error over all states
+and all variables
+N
+1 XX
+|Pexact (Xi = xi ) − Papprox (Xi = xi )|,
+N Si i=1 x
+i
 
-0.31
-0.31
-0.31
+where Si is the number of states of variable Xi . Results are
+averages over all problem instances in (Gogate, 2014).
+We see that TBP outperforms Gibbs sampling on both
+problems3 . On the Linkage dataset, using r = 2 mix3
+We omit results for BP, MF and TRW for these problems because the libDAI package was unable to run them.
 
-0.33
-0.31
+Tensor Belief Propagation
+Attractive interactions
+TBP (MAX)
+MF
+
+0.6
+
+BP
+TRW
+
+Mixed interactions
+Gibbs
+
+TBP (MAX)
+MF
+
+0.6
+
+Attractive interactions
+
+0.5
+
+BP
+TRW
+
+Gibbs
+
+TBP (100000)
+MF
+
+BP
+TRW
+
+TBP (100000)
+MF
+
+0.4
+
+0.4
+0.3
+
+0.2
+
+0.2
+
+0.1
+
+0.1
+
+Marginal error
+
+0.3
+
+Marginal error
+
+0.4
+
+0.3
+
+0.2
+
+0.1
+
+0.0
+
+BP
+TRW
+
+Gibbs
+
+0.4
+
+0.5
+Marginal error
+
+Marginal error
+
+0.5
+
+Mixed interactions
+
+0.5
+Gibbs
+
+1
+
+2
+
+4
+
+3
+
+0.0
+
+5
+
+10
+10
+10
+10
+10
+Sample size K (TP); matched running time (Gibbs)
+
+1
+
+2
+
+4
+
+3
+
+5
+
+10
+10
+10
+10
+10
+Sample size K (TP); matched running time (Gibbs)
+
+0.0
+
+0.3
+
+0.2
+
+0.1
+
+10
+
+15
+
+20
+25
+Number of variables
+
+0.0
+
+30
+
+10
+
+15
+
+20
+25
+Number of variables
+
+30
+
+(b) Effect of graph size N
+
+(a) Effect of sample size K for N = 15 nodes
+
+Figure 2: Performance of TBP on random pairwise MRFs compared with other approximate inference algorithms.
+Linkage
+
+Promedus
+
+TBP (r=2)
+
+TBP (r=4)
+
+gibbs
+
 0.30
 
-0.33
-0.32
-0.33
-
-ReLU
-
-5k
-10k
-15k
-
-0.28
-0.28
-0.28
-
 0.30
-0.29
-0.27
 
-0.31
-0.31
-0.32
+0.25
 
-Figure 9. Comparison between RNNprop trained with two tricks,
-RNNprop trained without Random Scaling, DMoptimizer,
-DMoptimizer trained with two tricks. All optimizers are tested
-on the base MLP with activation replaced with ReLU for 1000
-steps.
+0.25
+Marginal error
 
-6. Conclusion
-In this paper, we present a new learning-to-learn model
-with several useful tricks. We show that our new optimizer has better generalization ability than the state-of-art
-learning-to-learn optimizers. After trained using a simple MLP, our new optimizer achieves better or comparable
-performance with traditional optimization algorithms when
-training more complex neural networks or when training
-for longer horizons.
-We believe it is possible to further improve the generalization ability of our optimizer. Indeed, on some tasks in our
-experiments, our optimizer did not outperform the best traditional optimization algorithms, in particular when training for much longer horizon or when training neural networks on different datasets. In the future, we aim to further develop a more generic optimizer with more elaborate
-designing, so that it can achieve better performance on a
-wider range of tasks that are analogous with the optimizee
-used in training.
+Marginal error
 
-Learning Gradient Descent: Better Generalization and Longer Horizons
+gibbs
+
+0.20
+0.15
+
+0.15
+0.10
+
+0.05
+
+0.05
+
+1
+
+2
+
+3
+
+4
+
+5
+
+10
+10
+10
+10
+10
+Sample size K (TBP); matched running time (Gibbs)
+
+TBP (r=4)
+
+0.20
+
+0.10
+
+0.00
+
+TBP (r=2)
+
+0.00
+
+1
+
+2
+
+3
+
+4
+
+5
+
+10
+10
+10
+10
+10
+Sample size K (TBP); matched running time (Gibbs)
+
+Figure 3: Marginal error of TBP vs Gibbs sampling on UAI 2014 Inference Competition problems for various sample sizes
+K.
+ture components for the initial decompositions performs
+best and increasing r does not improve performance. On
+the Promedus dataset r = 4 performs better; in this case,
+increasing r may improve the accuracy of the decomposition of the initial potential functions. For reference, the
+marginal error achieved by the random projection method
+of Zhu & Ermon (2015) is 0.09 ± 0.02 for Linkage and
+0.21 ± 0.06 for Promedus. TBP with K = 105 achieved
+error of 0.08±0.01 for Linkage and 0.12±0.01 for Promedus despite using substantially less running time 4 .
+
+6. Conclusion and Future Work
+We proposed a new sampling-based approximate inference
+algorithm, tensor belief propagation, which uses a mixtureof-rank-1-tensors representation to approximate cluster potentials and messages in the junction tree algorithm. It
+4
+TBP with K = 105 takes an average across all problem
+instances of approximately 10 minutes (Linkage) and 3 minutes
+(Promedus) per problem on our machine, and does not differ substantially for r = 2 vs r = 4. The results described by Zhu &
+Ermon (2015) were comparable in running time to 10 million iterations of Gibbs sampling, which we estimate would take several
+hours on our machine without parallelism.
+
+gives consistent estimators, and performs well on a range
+of problems against well-known algorithms.
+In this paper, we have not addressed how to perform the initial tensor decomposition. There exist well-known optimisation algorithms for this problem to minimize Euclidean
+error (Kolda & Bader, 2009), though it is not clear that this
+is the best objective for the purpose of TBP. We are currently investigating the best way of formulating and solving
+this optimisation problem to yield accurate results during
+inference. Further, when constructing the junction tree, it
+is not clear whether min-fill and other well-known heuristics remain appropriate for TBP. In particular, these cost
+functions aim to minimise the induced width of the junction tree which is no longer directly relevant to the performance of the algorithm. Further work may investigate other
+heuristics, for example with the goal of minimising cluster
+variance.
+Finally, approximate inference algorithms have applications in learning (for example, in the gradient computations when training restricted Boltzmann machines) and
+thus TBP may improve learning as well as inference in
+some applications.
+
+Tensor Belief Propagation
+
+Acknowledgements
+We thank the anonymous reviewers for their helpful comments. This work is supported by NUS AcRF Tier 1
+grant R-252-000-639-114 and a QUT Vice-Chancellor’s
+Research Fellowship Grant.
 
 References
-Abadi, M., Agarwal, A., Barham, P., Brevdo, E., Chen, Z.,
-Citro, C., Corrado, G.S., Davis, A., Dean, J., Devin,
-M., et al. Tensorflow: Large-scale machine learning
-on heterogeneous distributed systems. arXiv preprint
-arXiv:1603.04467, 2016.
-Andrychowicz, M., Denil, M., Gómez, S., Hoffman, M. W.,
-Pfau, D., Schaul, T., and de Freitas, N. Learning to
-learn by gradient descent by gradient descent. In Lee,
-D. D., Sugiyama, M., Luxburg, U. V., Guyon, I., and
-Garnett, R. (eds.), Advances in Neural Information Processing Systems 29, pp. 3981–3989. Curran Associates,
-Inc., 2016.
-Brazdil, P., Carrier, C.G., Soares, C., and Vilalta, R. Metalearning: Applications to Data Mining. Springer Publishing Company, Incorporated, 1 edition, 2008. ISBN
-3540732624, 9783540732624.
-Chen, Y., Hoffman, M.W., Colmenarejo, S.G., Denil, M.,
-Lillicrap, T.P., and de Freitas, N. Learning to learn
-for global optimization of black box functions. arXiv
-preprint arXiv:1611.03824, 2016.
+Andrieu, Christophe, De Freitas, Nando, Doucet, Arnaud,
+and Jordan, Michael I. An introduction to MCMC
+for machine learning. Machine learning, 50(1-2):5–43,
+2003.
+Bader, Brett W., Kolda, Tamara G., et al. MATLAB Tensor
+Toolbox Version 2.6. http://www.sandia.gov/
+˜tgkolda/TensorToolbox/, February 2015.
+Chavira, Mark and Darwiche, Adnan. Compiling Bayesian
+Networks with Local Structure. In IJCAI, 2005.
+Darwiche, Adnan. A Differential Approach to Inference in
+Bayesian Networks. In Uncertainty in Artificial Intelligence (UAI), 2000.
+Gogate, Vibhav.
+UAI 2014 Inference Competition.
+http://www.hlt.utdallas.edu/˜vgogate/
+uai14-competition/index.html, 2014.
+Gogate, Vibhav and Domingos, Pedro. Structured Message
+Passing. In Uncertainty in Artificial Intelligence (UAI),
+2013.
+Guennebaud, Gaël, Jacob, Benoı̂t, et al. Eigen v3. http:
+//eigen.tuxfamily.org, 2010.
+Ihler, Alexander T and McAllester, David A. Particle Belief
+Propagation. In AISTATS, pp. 256–263, 2009.
+Jensen, Finn Verner, Olesen, Kristian G, and Andersen,
+Stig Kjaer. An algebra of Bayesian belief universes for
+knowledge-based systems. Networks, 20(5):637–659,
+1990.
+Kolda, Tamara G and Bader, Brett W. Tensor decompositions and applications. SIAM review, 51(3):455–500,
+2009.
+Koller, D. and Friedman, N. Probabilistic Graphical Models: Principles and Techniques. Adaptive Computation
+and Machine Learning. MIT Press, 2009.
+Koller, Daphne, Lerner, Uri, and Angelov, Dragomir. A
+general algorithm for approximate inference and its application to hybrid Bayes nets. In Proceedings of the
+Fifteenth conference on Uncertainty in artificial intelligence, pp. 324–333. Morgan Kaufmann Publishers Inc.,
+1999.
 
-Li, K. and Malik, J. Learning to optimize. In International
-Conference on Learning Representations, 2017.
-Naik, D.K. and Mammone, R.J. Meta-neural networks that
-learn by learning. In International Joint Conference on
-Neural Networks, volume 1, pp. 437–442. IEEE, 1992.
-Parikh, N. and Boyd, S. Proximal algorithms. Foundations
-and Trends® in Optimization, 1(3):127–239, 2014.
-Prokhorov, D.V., Feldkarnp, L.A., and Tyukin, I.Y. Adaptive behavior with fixed weights in rnn: an overview. In
-International Joint Conference on Neural Networks, pp.
-2018–2022, 2002.
-Schmidhuber, J., Zhao, J., and Wiering, M. Simple Principles of Metalearning. Istituto Dalle Molle Di Studi
-Sull’Intelligenza Artificiale, 1999.
-Simonyan, K. and Zisserman, A. Very deep convolutional
-networks for large-scale image recognition. In International Conference on Learning Representations, 2015.
-Thrun, S. and Pratt, L. Learning to Learn. Springer US,
-1998.
-
-Clevert, D.A., Unterthiner, T., and Hochreiter, S. Fast
-and accurate deep network learning by exponential linear units (elus). arXiv preprint arXiv:1511.07289, 2015.
-
-Tieleman, T. and Hinton, G. Lecture 6.5-rmsprop: Divide
-the gradient by a running average of its recent magnitude. COURSERA: Neural Networks for Machine Learning, 4(2), 2012.
-
-Cotter, N.E. and Conwell, P.R. Fixed-weight networks can
-learn. In IJCNN International Joint Conference on Neural Networks, pp. 553–559, 1990.
-
-Tseng, P. An incremental gradient (-projection) method
-with momentum term and adaptive stepsize rule. SIAM
-Journal on Optimization, 8(2):506–531, 1998.
-
-Daniel, C., Taylor, J., and Nowozin, S. Learning step size
-controllers for robust neural network training. In AAAI
-Conference on Artificial Intelligence, 2016.
-
-Vilalta, R. and Drissi, Y. A perspective view and survey
-of meta-learning. Artificial Intelligence Review, 18(2):
-77–95, 2002.
-
-Duchi, J., Hazan, E., and Singer, Y. Adaptive subgradient
-methods for online learning and stochastic optimization.
-Journal of Machine Learning Research, 12(Jul):2121–
-2159, 2011.
-Hansen, S. Using deep q-learning to control optimization hyperparameters. arXiv preprint arXiv:1602.04062,
-2016.
-
-Wang, J.X., Kurthnelson, Z., Tirumala, D., Soyer, H.,
-Leibo, J.Z., Munos, R., Blundell, C., Kumaran, D., and
-Botvinick, M. Learning to reinforcement learn. arXiv
-preprint arXiv:1611.05763, 2016.
-Younger, A.S., Conwell, P.R., and Cotter, N.E. Fixedweight on-line learning. IEEE Transactions on Neural
-Networks, 10(2):272–83, 1999.
-
-Hochreiter, S. and Schmidhuber, J. Long short-term memory. Neural computation, 9(8):1735–1780, 1997.
-
-Younger, A.S., Hochreiter, S., and Conwell, P.R. Metalearning with backpropagation. In International Joint
-Conference on Neural Networks, volume 3. IEEE, 2001.
-
-Hochreiter, S., Younger, A., and Conwell, P. Learning to
-learn using gradient descent. International Conference
-on Artificial Neural Networks, pp. 87–94, 2001.
-
-Zeiler, M.D. Adadelta: an adaptive learning rate method.
-arXiv preprint arXiv:1212.5701, 2012.
-
-Kingma, D. and Ba, J. Adam: A method for stochastic
-optimization. In International Conference on Learning
-Representations, 2015.
+Lauritzen, Steffen L and Spiegelhalter, David J. Local computations with probabilities on graphical structures and
+their application to expert systems. Journal of the Royal
+Statistical Society. Series B (Methodological), pp. 157–
+224, 1988.
+Lee, Daniel D and Seung, H Sebastian. Algorithms for
+non-negative matrix factorization. In Advances in Neural
+Information Processing Systems (NIPS), pp. 556–562,
+2001.
+McAuley, Julian J. and Caetano, Tibério S. Faster Algorithms for Max-Product Message-Passing. Journal of
+Machine Learning Research, 12:1349–1388, 2011.
+Minka, Thomas P. Expectation propagation for approximate Bayesian inference. In Proceedings of the Seventeenth conference on Uncertainty in Artificial Intelligence, pp. 362–369. Morgan Kaufmann Publishers Inc.,
+2001.
+Mooij, Joris M. libDAI: A Free and Open Source C++
+Library for Discrete Approximate Inference in Graphical Models. Journal of Machine Learning Research, 11:
+2169–2173, August 2010.
+Park, James D. and Darwiche, Adnan. A Differential Semantics for Jointree Algorithms. In Advances in Neural
+Information Processing Systems (NIPS), 2002.
+Pearl, Judea. Reverend Bayes on inference engines: A distributed hierarchical approach. In AAAI, pp. 133–136,
+1982.
+Shafer, Glenn R and Shenoy, Prakash P. Probability propagation. Annals of Mathematics and Artificial Intelligence, 2(1-4):327–351, 1990.
+Sudderth, Erik B, Ihler, Alexander T, Isard, Michael, Freeman, William T, and Willsky, Alan S. Nonparametric
+Belief Propagation. Communications of the ACM, 53
+(10):95–103, 2010.
+Wainwright, Martin J and Jordan, Michael I. Graphical
+models, exponential families, and variational inference.
+Foundations and Trends in Machine Learning, 1(1-2):1–
+305, 2008.
+Xue, Yexiang, Ermon, Stefano, Lebras, Ronan, Gomes,
+Carla P, and Selman, Bart. Variable Elimination in
+Fourier Domain. In Proc. 33rd International Conference
+on Machine Learning, 2016.
+Zhu, Michael and Ermon, Stefano. A Hybrid Approach
+for Probabilistic Inference using Random Projections. In
+ICML, pp. 2039–2047, 2015.
 
 

@@ -1,420 +1,998 @@
-DARLA: Improving Zero-Shot Transfer in Reinforcement Learning
+Variational Dropout Sparsifies Deep Neural Networks
 
-A. Supplementary Materials
-A.1. The Reinforcement Learning Paradigm
-The reinforcement learning (RL) paradigm consists of an agent receiving a sequence of observations sot which are some function of
-environment states st 2 S and may be accompanied by rewards
-rt+1 2 R conditional on the actions at 2 A, chosen at each time
-step t (Sutton & Barto, 1998). We assume that these interactions
-can be modelled as a Markov Decision Process (MDP) (Puterman,
-1994) defined as a tuple D ⌘ (S, A, T , R, ). T = p(s|st , at )
-is a transition function that models the distribution of all possible
-next states given action at is taken in state st for all st 2 S and
-a
-at 2 A. Each transition st !t st+1 may be accompanied by a
-reward signal rt+1 (st , at , st+1 ). The goal of the agent is to learn
-a policy ⇡(at |st ), a probability distribution over actions at 2 A,
-that maximises the expected return i.e. the discounted sum of fuP
-ture rewards Rt = E[ T⌧ =1t ⌧ 1 rt+⌧ ]. T is the time step at
-which each episode ends, and 2 [0, 1) is the discount factor
-that progressively down-weights future rewards. Given a policy
-⇡(a|s), one can define the value function V⇡ (s) = E[Rt |st =
-s, ⇡], which is the expected return from state s following policy ⇡.
-The action-value function Q⇡ (s, a) = E[Rt |st = s, at = a, ⇡]
-is the expected return for taking action a in state s at time t, and
-then following policy ⇡ from time t + 1 onward.
+Dmitry Molchanov 1 2 * Arsenii Ashukha 3 4 * Dmitry Vetrov 3 1
 
-A.2. Further task details
-A.2.1. D EEP M IND L AB
-As described in Sec 3.1, in each source episode of DeepMind Lab
-the agent was presented with one of three possible room/object
-type conjunctions, chosen at random. These are marked DS in
-Fig 2. The setup was a seek-avoid style task, where one of the
-two object types in the room gave a reward of +1 and the other
-gave a reward of -1. The agent was allowed to pick up objects for
-60 seconds after which the episode would terminate and a new one
-would begin; if the agent was able to pick up all the ‘good’ objects
-in less than 60 seconds, a new episode was begun immediately.
-The agent was spawned in a random location in the room at the
-start of each new episode.
-During transfer, the agent was placed into the held out conjunction
-of object types and room background; see DT in Fig 2.
-Visual pre-training was performed in other conjunctions of object
-type and room background denoted DU in Fig 2.
-The observation size of frames in the DeepMind Lab task was
-84x84x3 (HxW xC).
+Abstract
+We explore a recently proposed Variational
+Dropout technique that provided an elegant
+Bayesian interpretation to Gaussian Dropout. We
+extend Variational Dropout to the case when
+dropout rates are unbounded, propose a way to
+reduce the variance of the gradient estimator
+and report first experimental results with individual dropout rates per weight. Interestingly, it
+leads to extremely sparse solutions both in fullyconnected and convolutional layers. This effect
+is similar to automatic relevance determination
+effect in empirical Bayes but has a number of advantages. We reduce the number of parameters
+up to 280 times on LeNet architectures and up to
+68 times on VGG-like networks with a negligible
+decrease of accuracy.
 
-A.2.2. M U J O C O /JACO A RM E XPERIMENTS
-As described in Sec 3.2, the source task consisted of an agent
-learning to control a simulated arm in order to reach toward an
-object. A shaping reward was used, with a maximum value of
-1 when the centre of the object fell between the pinch and grip
-sites of the end effector, or within a 10cm distance of the two.
-Distances on the x and y dimensions counted double compared to
-distances on the z dimension.
-During each episode the object was placed at a random drop point
-within a 40x40cm area, and the arm was set to a random initial start position high above the work-space, independent of the
-object’s position. Each episode lasted for 150 steps, or 7.5 seconds, with a control step of 50ms. Observations soU were sampled
+1. Introduction
+Deep neural networks (DNNs) are a widely popular family
+of models which is currently state-of-the-art in many important problems (Szegedy et al., 2016; Silver et al., 2016).
+However, DNNs often have many more parameters than the
+number of the training instances. This makes them prone
+to overfitting (Hinton et al., 2012; Zhang et al., 2016) and
+necessitates using regularization. A commonly used regularizer is Binary Dropout (Hinton et al., 2012) that prevents
+co-adaptation of neurons by randomly dropping them during training. An equally effective alternative is Gaussian
+Dropout (Srivastava et al., 2014) that multiplies the outputs
+of the neurons by Gaussian random noise.
+Dropout requires specifying the dropout rates which are the
+*
+1
+Equal contribution
+Yandex, Russia 2 Skolkovo Institute of Science and Technology, Skolkovo Innovation Center, Moscow, Russia 3 National Research University Higher
+School of Economics, Moscow, Russia 4 Moscow Institute of
+Physics and Technology, Moscow, Russia. Correspondence
+to: Dmitry Molchanov <dmitry.molchanov@skolkovotech.ru>,
+Arsenii Ashukha <ars.ashuha@gmail.com>, Dmitry Vetrov
+<vetrovd@yandex.ru>.
 
-randomly across episodes. Overall, 4 million frames of dimensions 64x64x3 (HxW xC) were used for this stage of the curriculum. For each episode the camera position and orientation were
-randomly sampled from an isotropic normal distribution centred
-around the approximate position and orientation of the real camera, with standard deviation 0.01. No precise measurements were
-used to match the two. Work-space table colour was sampled
-uniformly between 5% and +5% around the midpoint, independently for each RGB channel; object colours were sampled
-uniformly at random in RGB space, rejecting colours which fell
-within a ball around 10 held-out intensities (radius 10% of range);
-the latter were only used for simulated transfer experiments, i.e.
-in DT in the sim2sim experiments. Additionally, Gaussian noise
-with standard deviation 0.01 was added to the observations soT in
-the sim2sim task.
-For the real Jaco arm and its MuJoCo simulation counterpart, each
-of the nine joints could independently take 11 different actions (a
-linear discretisation of the continuous velocity action space). In
-simulation Gaussian noise with standard deviation 0.1 was added
-to each discrete velocity output; delays in the real setup between
-observations and action execution were simulated by randomly
-mixing velocity outputs from two previous steps instead of emitting the last output directly. Speed ranges were between 50%
-and 50% of the Jaco arm’s top speed on joints 1 through 6 starting at the base, while the fingers could use a full range. For safety
-reasons the speed ranges have been reduced by a factor of 0.3
-while evaluating agents on the Jaco arm, without significant performance degradation.
+Proceedings of the 34 th International Conference on Machine
+Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
+by the author(s).
 
-A.3. Vision model details
-A.3.1. D ENOISING AUTOENCODER FOR -VAE
-A denoising autoencoder (DAE) was used as a model to provide
-the feature space for the -VAE reconstruction loss to be computed over (for motivation, see Sec. 2.3.1). The DAE was trained
-with occlusion-style masking noise in the vein of (Pathak et al.,
-2016), with the aim for the DAE to learn a semantic representation
-of the input frames. Concretely, two values were independently
-sampled from U [0, W ] and two from U [0, H] where W and H
-were the width and height of the input frames. These four values
-determined the corners of the rectangular mask applied; all pixels
-that fell within the mask were set to zero.
-The DAE architecture consisted of four convolutional layers, each
-with kernel size 4 and stride 2 in both the height and width dimensions. The number of filters learnt for each layer was {32,
-32, 64, 64} respectively. The bottleneck layer consisted of a fully
-connected layer of size 100 neurons. This was followed by four
-deconvolutional layers, again with kernel sizes 4, strides 2, and
-{64, 64, 32, 32} filters. The padding algorithm used was ‘SAME’
-in TensorFlow (Abadi et al., 2015). ReLU non-linearities were
-used throughout.
-The model was trained with loss given by the L2 distance of the
-outputs from the original, un-noised inputs. The optimiser used
-was Adam (Kingma & Ba, 2014) with a learning rate of 1e-3.
+probabilities of dropping a neuron. The dropout rates are
+typically optimized using grid search. To avoid the exponential complexity of optimizing multiple hyperparameters, the dropout rates are usually shared for all layers.
+Recently it was shown that dropout can be seen as a special
+case of Bayesian regularization (Gal & Ghahramani, 2015;
+Kingma et al., 2015). It is an important theoretical result
+that justifies dropout and at the same time allows us to tune
+individual dropout rates for each weight, neuron or layer in
+a Bayesian way.
+Instead of injecting noise we can regularize a model by
+reducing the number of its parameters. This technique is
+especially attractive in the case of deep neural networks.
+Modern neural networks contain hundreds of millions of
+parameters (Szegedy et al., 2015; He et al., 2015) and require a lot of computational and memory resources. It restricts us from using deep neural networks when those resources are limited. Inducing sparsity during training of
+DNNs leads to regularization, compression, and acceleration of the resulting model (Han et al., 2015a; Scardapane
+et al., 2016).
+Sparse Bayesian Learning (Tipping, 2001) provides a principled framework for training of sparse models without the
+manual tuning of hyperparameters. Unfortunately, this approach does not extend straightforwardly to DNNs. During past several years, a number of papers (Hoffman et al.,
+2013; Kingma & Welling, 2013; Rezende et al., 2014) on
+scalable variational inference have appeared. These techniques make it possible to train Bayesian Deep Neural
+Networks using stochastic optimization and provide us an
+opportunity to transfer Bayesian regularization techniques
+from simple models to DNNs.
+In this paper, we study Variational Dropout (Kingma et al.,
+2015) in the case when each weight of a model has its
+individual dropout rate. We propose Sparse Variational
+Dropout that extends Variational Dropout to all possible
+values of dropout rates and leads to a sparse solution. To
+achieve this goal, we provide a new approximation of the
+KL-divergence term in Variational Dropout objective that is
+tight on the full domain. We also propose a way to greatly
+reduce the variance of the stochastic gradient estimator and
+show that it leads to a much faster convergence and a better
+value of the objective function. We show theoretically that
 
-A.3.2. -VAE WITH P ERCEPTUAL S IMILARITY L OSS
-After training a DAE, as detailed in the previous section6 , a
--VAEDAE was trained with perceptual similarity loss given by
+Variational Dropout Sparsifies Deep Neural Networks
+
+Sparse Variational Dropout applied to linear models can
+lead to a sparse solution. Like classical Sparse Bayesian
+models, our method provides the Automatic Relevance Determination effect, but overcomes certain disadvantages of
+empirical Bayes.
+
+Gredilla, 2014). Soft Weights Sharing (Ullrich et al., 2017)
+uses an approach, similar to Sparse Bayesian Learning
+framework, to obtain a sparse and quantized Bayesian Deep
+Neural Network, but utilizes a more flexible family of prior
+distributions.
+
+Our experiments show that Sparse Variational Dropout
+leads to a high level of sparsity in fully-connected and convolutional layers of Deep Neural Networks. Our method
+achieves a state-of-the-art sparsity level on LeNet architectures and scales on larger networks like VGG with negligible performance drop. Also we show that our method fails
+to overfit on randomly labeled data unlike Binary Dropout
+networks.
+
+Variational Dropout (Kingma et al., 2015) is an elegant
+interpretation of Gaussian Dropout as a special case of
+Bayesian regularization. This technique allows us to tune
+dropout rate and can, in theory, be used to set individual dropout rates for each layer, neuron or even weight.
+However, that paper uses a limited family for posterior approximation that does not allow for ARD effect. Other
+Bayesian interpretations of dropout training have also appeared during past several years (Maeda, 2014; Gal &
+Ghahramani, 2015; Srinivas & Babu, 2016). Generalized
+Dropout (Srinivas & Babu, 2016) provides a way to tune
+individual dropout rates for neurons, but uses a biased gradient estimator. Also, the posterior distribution is modelled
+by a delta function, so the resulting neural network is effectively not Bayesian. Variational Spike-and-Slab Neural
+Networks (Louizos, 2015) is yet another Bayesian interpretation of Binary Dropout that allows for tuning of individual dropout rates and also leads to a sparse solution. Unfortunately, this procedure does not scale well with model
+width and depth.
+
+2. Related Work
+Deep Neural Nets are prone to overfitting and regularization is used to address this problem. Several successful
+techniques have been proposed for DNN regularization,
+among them are Dropout (Srivastava et al., 2014), DropConnect (Wan et al., 2013), Max Norm Constraint (Srivastava et al., 2014), Batch Normalization (Ioffe & Szegedy,
+2015), etc.
+Another way to regularize deep model is to reduce the number of parameters. One possible approach is to use tensor decompositions (Novikov et al., 2015; Garipov et al.,
+2016). Another approach is to induce sparsity into weight
+matrices. Most recent works on sparse neural networks
+use pruning (Han et al., 2015b), elastic net regularization
+(Lebedev & Lempitsky, 2015; Liu et al., 2015; Scardapane
+et al., 2016; Wen et al., 2016) or composite techniques (Han
+et al., 2015a; Guo et al., 2016; Ullrich et al., 2017).
+Sparsity can also be obtained by using the Sparse Bayesian
+Learning framework (Tipping, 2001). Automatic Relevance Determination was introduced in (Neal, 1996;
+MacKay et al., 1994), where small neural networks were
+trained with ARD regularization on the input layer. This
+approach was later studied on linear models like the Relevance Vector Machine (Tipping, 2001) and other kernel
+methods (Van Gestel et al., 2001). In the Relevance Tagging Machine model (Molchanov et al., 2015) Beta prior
+distribution is used to obtain the ARD effect in a similar
+setting.
+Recent works on Bayesian DNNs (Kingma & Welling,
+2013; Rezende et al., 2014; Scardapane et al., 2016) provide different ways to train deep models with a huge number of parameters in a Bayesian way. These techniques can
+be applied to improve latent variables models (Kingma &
+Welling, 2013), to prevent overfitting and to obtain model
+uncertainty (Gal & Ghahramani, 2015). Recently several works on efficient training of Sparse Bayesian Models
+have appeared (Challis & Barber, 2013; Titsias & Lázaro-
+
+3. Preliminaries
+We begin by describing the Bayesian Inference and
+Stochastic Variational Inference frameworks. Then we describe Variational Dropout, a recently proposed Bayesian
+regularization technique (Kingma et al., 2015).
+3.1. Bayesian Inference
+Consider a dataset D which is constructed from N pairs of
+objects (xn , yn )N
+n=1 . Our goal is to tune the parameters w
+of a model p(y | x, w) that predicts y given x and w. In
+Bayesian Learning we usually have some prior knowledge
+about weights w, which is expressed in terms of a prior
+distribution p(w). After data D arrives, this prior distribution is transformed into a posterior distribution p(w | D) =
+p(D | w)p(w)/p(D). This process is called Bayesian Inference. Computing posterior distribution using the Bayes
+rule usually involves computation of intractable multidimensional integrals, so we need to use approximation techniques.
+One of such techniques is Variational Inference. In this approach the posterior distribution p(w | D) is approximated
+by a parametric distribution qϕ (w). The quality of this approximation is measured in terms of the Kullback-Leibler
+divergence DKL (qϕ (w) ∥ p(w | D)). The optimal value of
+variational parameters ϕ can be found by maximization of
+
+Variational Dropout Sparsifies Deep Neural Networks
+
+the variational lower bound:
+L(ϕ) = LD (ϕ) − DKL (qϕ (w) ∥ p(w)) → max
+ϕ∈Φ
+
+LD (ϕ) =
+
+N
+∑
+
+Eqϕ (w) [log p(yn | xn , w)]
+
+(1)
+
+B = (A ⊙ Ξ)W, with ξmi ∼ p(ξ)
+(2)
+
+n=1
+
+It consists of two parts, the expected log-likelihood LD (ϕ)
+and the KL-divergence DKL (qϕ (w) ∥ p(w)), which acts as
+a regularization term.
+3.2. Stochastic Variational Inference
+In the case of complex models expectations in (1) and (2)
+are intractable. Therefore the variational lower bound (1)
+and its gradients can not be computed exactly. However, it
+is still possible to estimate them using sampling and optimize the variational lower bound using stochastic optimization.
+We follow (Kingma & Welling, 2013) and use the Reparameterization Trick to obtain an unbiased differentiable
+minibatch-based Monte Carlo estimator of the expected
+log-likelihood (3). The main idea is to represent the parametric noise qϕ (w) as a deterministic differentiable function w = f (ϕ, ϵ) of a non-parametric noise ϵ ∼ p(ϵ).
+This trick allows us to obtain an unbiased estimate of
+∇ϕ LD (qϕ ). Here we denote objects from a mini-batch as
+(x̃m , ỹm )M
+m=1 .
+L(ϕ) ≃ LSGVB (ϕ) = LSGVB
+D (ϕ) − DKL (qϕ (w)∥p(w)) (3)
+LD (ϕ) ≃ LSGVB
+D (ϕ) =
+∇ϕ LD (ϕ) ≃
+
+M
+N ∑
+log p(ỹm |x̃m , f (ϕ, ϵm )) (4)
+M m=1
+
+M
+N ∑
+∇ϕ log p(ỹm |x̃m , f (ϕ, ϵm ))
+M m=1
+
+noise Ξ to the layer input A at each iteration of training
+procedure (Hinton et al., 2012).
+
+(5)
+
+The Local Reparameterization Trick is another technique
+that reduces the variance of this gradient estimator even further (Kingma et al., 2015). The idea is to sample separate
+weight matrices for each data-point inside mini-batch. It is
+computationally hard to do it straight-forwardly, but it can
+be done efficiently by moving the noise from weights to
+activations (Wang & Manning, 2013; Kingma et al., 2015).
+3.3. Variational Dropout
+In this section we consider a single fully-connected layer
+with I input neurons and O output neurons before a nonlinearity. We denote an output matrix as B M ×O , input matrix as AM ×I and a weight matrix as W I×O . We index
+the elements of these matrices as bmj , ami and wij respectively. Then B = AW .
+Dropout is one of the most popular regularization methods
+for deep neural networks. It injects a multiplicative random
+
+(6)
+
+The original version of dropout, so-called Bernoulli or Binary Dropout, was presented with ξmi ∼ Bernoulli(1 − p)
+(Hinton et al., 2012). It means that each element of the input matrix is put to zero with probability p, also known
+as a dropout rate. Later the same authors reported that
+Gaussian Dropout with continuous noise ξmi ∼ N (1, α =
+p
+1−p ) works as well and is similar to Binary Dropout with
+dropout rate p (Srivastava et al., 2014). It is beneficial
+to use continuous noise instead of discrete one because
+multiplying the inputs by a Gaussian noise is equivalent
+to putting Gaussian noise on the weights. This procedure can be used to obtain a posterior distribution over
+the model’s weights (Wang & Manning, 2013; Kingma
+et al., 2015). That is, putting multiplicative Gaussian noise
+ξij ∼ N (1, α) on a weight wij is equivalent to sampling
+2
+of wij from q(wij | θij , α) = N (wij | θij , αθij
+). Now wij
+becomes a random variable parametrized by θij .
+wij = θij ξij = θij (1 +
+
+√
+2
+αϵij ) ∼ N (wij | θij , αθij
+)
+
+ϵij ∼ N (0, 1)
+
+(7)
+
+Gaussian Dropout training is equivalent to stochastic optimization of the expected log likelihood (2) in the case
+when we use the reparameterization trick and draw a single
+sample W ∼ q(W | θ, α) per minibatch to estimate the expectation. Variational Dropout extends this technique and
+explicitly uses q(W | θ, α) as an approximate posterior distribution for a model with a special prior on the weights.
+The parameters θ and α of the distribution q(W | θ, α) are
+tuned via stochastic variational inference, i.e. ϕ = (θ, α)
+are the variational parameters, as denoted in Section 3.2.
+The prior distribution p(W ) is chosen to be improper logscale uniform to make the Variational Dropout with fixed α
+equivalent to Gaussian Dropout (Kingma et al., 2015).
+p(log |wij |) = const ⇔ p(|wij |) ∝
+
+1
+|wij |
+
+(8)
+
+In this model, it is the only prior distribution that makes
+variational inference consistent with Gaussian Dropout
+(Kingma et al., 2015). When parameter α is fixed, the
+DKL (q(W | θ, α) ∥ p(W )) term in the variational lower
+bound (1) does not depend on θ (Kingma et al., 2015).
+Maximization of the variational lower bound (1) then becomes equivalent to maximization of the expected loglikelihood (2) with fixed parameter α. It means that Gaussian Dropout training is exactly equivalent to Variational
+Dropout with fixed α. However, Variational Dropout provides a way to train dropout rate α by optimizing the variational lower bound (1). Interestingly, dropout rate α now
+
+Variational Dropout Sparsifies Deep Neural Networks
+
+0
+
+−1
+
+Lower bound, α ≤ 1 [Kingma et al.]
+
+Approximation, α ≤ 1 [Kingma et al.]
+Our approximation
+True −DKL by sampling
+α=1
+
+4.1. Additive Noise Reparameterization
+Training Neural Networks with Variational Dropout is difficult when dropout rates αij are large because of a huge
+variance of stochastic gradients (Kingma et al., 2015). The
+cause of large gradient variance arises from multiplicative
+noise. To see it clearly, we can rewrite the gradient of LSGVB
+w.r.t. θij as follows.
+(9)
+
+In the case of original parametrization (θ, α) the second
+multiplier in (9) is very noisy if αij is large.
+
+(10)
+
+−6
+
+−4
+
+−2
+
+0
+
+2
+
+4
+
 6
 
-In principle, the -VAEDAE could also have been trained
-end-to-end in one pass, but we did not experiment with this.
+log α
 
-DARLA: Improving Zero-Shot Transfer in Reinforcement Learning
-Eq. 2, repeated here:
-L(✓, ; x, z, ) =Eq
+Figure 1: Different approximations of KL divergence: blue
+and green ones (Kingma et al., 2015) are tight only for α ≤
+1; black one is the true value, estimated by sampling; red
+one is our approximation.
+∂w
 
-The optimizer used was Adam with a learning rate of 1e-4.
-(z|x)
+From (11) we can see that ∂θijij now has no injected noise,
+2
+but the distribution over wij ∼ q(wij | θij , σij
+) remains
+exactly the same. The objective function and the posterior approximating family are unaltered. The only thing
+that changed is the parametrization of the approximate posterior. However, the variance of a stochastic gradient is
+greatly reduced. Using this trick, we avoid the problem of
+large gradient variance and can train the model within the
+full range of αij ∈ (0, +∞).
+It should be noted that the Local Reparametrization Trick
+does not depend on parametrization, so it can also be applied here to reduce the variance even further. In our experiments, we use both Additive Noise Reparameterization
+and the Local Reparameterization Trick. We provide the final expressions for the outputs of fully-connected and convolutional layers for our model in Section 4.4.
+4.2. Approximation of the KL Divergence
+As the prior and the approximate posterior are fully factorized, the full KL-divergence term in the lower bound (1)
+can be decomposed into a sum:
+DKL (q(W | θ, α)∥ p(W )) =
+∑
+=
+DKL (q(wij | θij , αij ) ∥ p(wij ))
 
-kJ(x̂)
+ϵij ∼ N (0, 1)
+We propose a trick that allows us to drastically reduce the
+variance of this term in the case when αij is large. The idea
+√
+is to replace the multiplicative noise term 1+ αij ·ϵij with
+an exactly equivalent additive noise term σij · ϵij , where
+2
+2
+σij
+= αij θij
+is treated as a new independent variable. After this trick we will optimize the variational lower bound
+w.r.t. (θ, σ). However, we will still use α throughout the
+paper, as it has a nice interpretation as a dropout rate.
+√
+wij = θij (1 + αij · ϵij ) = θij + σij · ϵij
+∂wij
+= 1,
+ϵij ∼ N (0, 1)
+∂θij
 
-J(x)k22
-
-DKL (q (z|x)||p(z))
-
-(3)
-
-Specifically, the input was passed through the -VAE and a sampled7 reconstruction was passed through the pre-trained DAE up
-to a designated layer. The L2 distance of this representation from
-the representation of the original input passed through the same
-layers of the DAE was then computed, and this formed the training loss for the -VAE part of the -VAEDAE 8 . The DAE
-weights remained frozen throughout.
-The -VAE architecture consisted of an encoder of four convolutional layers, each with kernel size 4, and stride 2 in the height
-and width dimensions. The number of filters learnt for each layer
-was {32, 32, 64, 64} respectively. This was followed by a fully
-connected layer of size 256 neurons. The latent layer comprised
-64 neurons parametrising 32 (marginally) independent Gaussian
-distributions. The decoder architecture was simply the reverse of
-the encoder, utilising deconvolutional layers. The decoder used
-was Gaussian, so that the number of output channels was 2C,
-where C was the number of channels that the input frames had.
-The padding algorithm used was ‘SAME’ in TensorFlow. ReLU
-non-linearities were used throughout.
-The model was trained with the loss given by Eq. 3. Specifically,
-the disentangled model used for DARLA was trained with a hyperparameter value of 1 and the layer of the DAE used to compute
-the perceptual similarity loss was the last deconvolutional layer.
-The entangled model used for DARLAENT was trained with a
-hyperparameter value of 0.1 with the last deconvolutional layer of
-the DAE was used to compute the perceptual similarity loss.
-The optimiser used was Adam with a learning rate of 1e-4.
-
-A.3.3. -VAE
-For the MuJoCo/Jaco tasks, a standard -VAE was used rather
-than the -VAEDAE used for DeepMind Lab. The architecture of
-the VAE encoder, decoder and the latent size were exactly as described in the previous section A.3.2. for the the disentangled VAE in DARLA was 175. for the entangled model DARLAENT
-was 1, corresponding to the standard VAE of (Kingma & Welling,
-2014).
-
-A.4. Reinforcement Learning Algorithm Details
-A.4.1. D EEP M IND L AB
-The action space in the DeepMind Lab task consisted of 8 discrete
-actions.
-DQN: in DQN, the convolutional (or ‘vision’) part of the Q-net
-was replaced with the encoder of the -VAEDAE from stage 1
-and frozen. DQN takes four consecutive frames as input in order
-to capture some aspect of environment dynamics in the agent’s
-state. In order to match this in our setup with a pre-trained vision
-stack FU , we passed each observation frame so{1..4} through the
-pre-trained model sz{1..4} = FU (so{1..4} ) and then concatenated
-the outputs together to form the k-dimensional (where k = 4|sz |)
-input to the policy network. In this case the size of sz was 64 for
-DARLA as well as DARLAENT , DARLADAE and DARLAFT .
-On top of the frozen convolutional stack, two ‘policy’ layers of
-512 neurons each were used, with a final linear layer of 8 neurons
-corresponding to the size of the action space in the DeepMind
-Lab task. ReLU non-linearities were used throughout. All other
-hyperparameters were as reported in (Mnih et al., 2015).
-A3C: in A3C, as with DQN, the convolutional part of the network that is shared between the policy net and the value net was
-replaced with the encoder of the -VAEDAE in DeepMind Lab
-tasks. All other hyperparameters were as reported in (Mnih et al.,
-2016).
-Episodic Control: for the Episodic Controller-based DARLA we
-used mostly the same hyperparameters as in the original paper by
-(Blundell et al., 2016). We explored the following hyperparameter
-settings: number of nearest neighbours 2 {10, 50}, return horizon 2 {100, 400, 800, 1800, 500000}, kernel type 2 {inverse,
-gaussian}, kernel width 2 {1e 6, 1e 5, 1e 4, 1e 3, 1e
-2, 1e 1, 0.5, 0.99} and we tried training EC with and without
-Peng’s Q( ) (Peng, 1993). In practice we found that none of the
-explored hyperparameter choices significantly influenced the results of our experiments. The final hyperparameters used for all
-experiments reported in the paper were the following: number of
-nearest neighbours: 10, return horizon: 400, kernel type: inverse,
-kernel width: 1e-6 and no Peng’s Q( ) (Peng, 1993).
-
-The optimizer used was Adam with a learning rate of 1e-4.
-
-UNREAL: We used a vanilla version of UNREAL, with parameters as reported in (Jaderberg et al., 2017).
-
-A.3.4. D ENOISING AUTOENCODER FOR BASELINE
-
-A.4.2. M U J O C O /JACO A RM E XPERIMENTS
-
-For the baseline model DARLADAE , we trained a denoising autoencoder with occlusion-style masking noise as described in Appendix Section A.3.1. The architecture used matched that exactly
-of the -VAE described in Appendix Section A.3.2 - however, all
-stochastic nodes were replaced with deterministic neurons.
-
-For the real Jaco arm and its MuJoCo simulation, each of the nine
-joints could independently take 11 different actions (a linear discretisation of the continuous velocity action space). Therefore the
-action space size was 99.
-
-7
-
-It is more typical to use the mean of the reconstruction distribution, but this does not induce any pressure on the Gaussians
-parametrising the decoder to reduce their variances. Hence full
-samples were used instead.
-8
-The representations were taken after passing through the
-layer but before passing through the following non-linearity. We
-also briefly experimented with taking the L2 loss post-activation
-but did not find a significant difference.
-
-DARLA for MuJoCo/Jaco was based on feedforward A3C (Mnih
-et al., 2016). We closely followed the simulation training setup of
-(Rusu et al., 2016) for feed-forward networks using raw visualinput only. In place of the usual conv-stack, however, we used the
-encoder of the -VAE as described in Appendix A.3.3. This was
-followed by a linear layer with 512 units, a ReLU non-linearity
-and a collection of 9 linear and softmax layers for the 9 independent policy outputs, as well as a single value output layer that
-outputted the value function.
-
-DARLA: Improving Zero-Shot Transfer in Reinforcement Learning
-consisted of the following steps:
-0.457
-
-Transfer metric score:
-0.196
-
-0.065
-
-1) Train the model under consideration on observations soU to
-learn FU , as described in stage 1 of the DARLA pipeline.
-
-2) Learn a linear model L : SVz ! M ⇥ N from the representations szV = FV (soV ), where M 2 {0, 1} corresponds to the
-set of possible rooms and N 2 {0, 1, 2, 3} corresponds to the set
-of possible objects9 . Therefore we are learning a low-VC dimension classifier to predict the room and the object class from the
-latent representation of the model. Crucially, the linear model L
-is trained on only a subset of the Cartesian product M ⇥N e.g. on
-{{0, 0}, {0, 3}, {1, 1}, {1, 2}}. In practice, we utilised a softmax
-classifier each for M and N and trained this using backpropagation with a cross-entropy loss, keeping the unsupervised model
-(and therefore FU ) fixed.
-3) The trained linear model L’s accuracy is evaluated on the held
-out subset of the Cartesian product M ⇥ N .
-
-Although the above procedure only measures disentangling up to
-linearity, and only does so for the latents of object type and room
-background, we nevertheless found that the metric was highly correlated with disentanglement as determined via visual inspection
-(see Fig. 6).
-
-A.6. Background on RL Algorithms
-Figure 6. Traversals of the latent corresponding to room background for models with different transfer metric scores (shown
-top). Note that in the entangled model, many other objects appear
-and blue hat changes shape in addition to the background changing. For the model with middling transfer score, both the object
-type and background alter; whereas for the disentangled model,
-very little apart from the background changes.
-
-A.5. Disentanglement Evaluation
-A.5.1. V ISUAL H EURISTIC D ETAILS
-In order to choose the optimal value of for the -VAE -DAE
-models and evaluate the fitness of the representations szU learnt in
-stage 1 of our pipeline (in terms of disentanglement achieved), we
-used the visual inspection heuristic described in (Higgins et al.,
-2017). The heuristic involved clustering trained -VAE based
-models based on the number of informative latents (estimated as
-the number of latents zi with average inferred standard deviation
-below 0.75). For each cluster we examined the degree of learnt
-disentanglement by running inference on a number of seed images, then traversing each latent unit z{i} one at a time over three
-standard deviations away from its average inferred mean while
-keeping all other latents z{\i} fixed to their inferred values. This
-allowed us to visually examine whether each individual latent unit
-zi learnt to control a single interpretable factor of variation in the
-data. A similar heuristic has been the de rigueur method for exhibiting disentanglement in the disentanglement literature (Chen
-et al., 2016; Kulkarni et al., 2015).
-
-A.5.2. T RANSFER M ETRIC D ETAILS
-In the case of DeepMind Lab, we were able to use the ground truth
-labels corresponding to the two factors of variation of the object
-type and the background to design a proxy to the disentanglement
-metric proposed in (Higgins et al., 2017). The procedure used
-
-In this Appendix, we provide background on the different RL algorithms that the DARLA framework was tested on in this paper.
-
-A.6.1. DQN
-(DQN) (Mnih et al., 2015) is a variant of the Q-learning algorithm
-(Watkins, 1989) that utilises deep learning. It uses a neural network to parametrise an approximation for the action-value function Q(s, a; ✓) using parameters ✓. These parameters are updated
-by minimising
-loss
-⇥ the mean-squared error of a 1-step lookahead
-⇤
-LQ = E (rt + maxa0 Q(s0 , a0 ; ✓ ) Q(s, a; ✓))2 , where
-✓ are parameters corresponding to a frozen network and optimisation is performed with respect to ✓, with ✓ being synced to
-✓ at regular intervals.
-
-A.6.2. A3C
-Asynchronous Advantage Actor-Critic (A3C) (Mnih et al., 2016)
-is an asynchronous implementation of the advantage actor-critic
-paradigm (Sutton & Barto, 1998; Degris & Sutton, 2012), where
-separate threads run in parallel and perform updates to shared parameters. The different threads each hold their own instance of
-the environment and have different exploration policies, thereby
-decorrelating parameter updates without the need for experience
-replay.
-A3C uses neural networks to approximate both policy ⇡(a|s; ✓)
-and value V⇡ (s; ✓) functions using parameters ✓ using nstep look-ahead loss (Peng & Williams, 1996). The algorithm is trained using an advantage actor-critic loss function with an entropy regularisation penalty: LA3C ⇡
-LV R + L⇡
-Es⇠⇡ [↵H(⇡(a|s; ✓))], where H is entropy.
-The parameter updates are performed after every tmax actions or when a terminal state is reached.
-LV R =
-9
-For the purposes of this metric, we utilised rooms with only
-single objects, which we denote by the subscript V e.g. the observation set SVo .
-
-DARLA: Improving Zero-Shot Transfer in Reinforcement Learning
-⇥
-⇤
-Es⇠⇡ (Rt:t+n + n V (st+n+1 ; ✓) V (st ; ✓))2 and L⇡ =
-⇡
-⇡
-Es⇠⇡ [log ⇡(a|s; ✓)(Q (s, a; ✓) V (s; ✓))]. Unlike DQN,
-A3C uses an LSTM core to encode its history and therefore has
-a longer term memory permitting it to perform better in partially
-observed environments. In the version of A3C used in this paper for the DeepMind Lab task, the policy net additionally takes
-the last action at 1 and last reward rt 1 as inputs along with the
-observation sot , as introduced in (Jaderberg et al., 2017).
-
-A.6.3. UNREAL
-The UNREAL agent (Jaderberg et al., 2017) takes as a base an
-LSTM A3C agent (Mnih et al., 2016) and augments it with a
-number of unsupervised auxiliary tasks that make use of the rich
-perceptual data available to the agent besides the (sometimes very
-sparse) extrinsic reward signals. This auxiliary learning tends to
-improve the representation learnt by the agent. While training the
-base agent, its observations, rewards, and actions are stored in a
-replay buffer, which is used by the auxiliary learning tasks. The
-tasks include: 1) pixel control the agent learns how to control the
-environment by training auxiliary policies to maximally change
-pixel intensities in different parts of the input; 2) reward prediction - given a replay buffer of observations within a short time
-period of an extrinsic reward, the agent has to predict the reward
-obtained during the next unobserved timestep using a sequence of
-three preceding steps; 3) value function replay - extra training of
-the value function to promote faster value iteration.
-
-Figure 7. Source task training curves for DQN. Curves show average and standard deviation over 20 random seeds.
-
-A.6.4. E PISODIC C ONTROL
-In its simplest form EC is a lookup table of states and actions
-denoted as QEC (s, a). In each state EC picks the action with
-the highest QEC value. At the end of each episode QEC (s, a)
-is set to Rt if (st , at ) 2
-/ QEC , where Rt is the discounted reEC
-turn. Otherwise Q (s, a) = max QEC (s, a), Rt . In order
-to generalise its policy to novel states that are not in QEC , EC
-EC (s, a) =
-uses a non-parametric nearest neighbours search Qd
-Pk
-EC i
-i
 1
-(s , a), where s , i = 1, ..., k are k states with the
-i=1 Q
-k
-smallest distance to the novel state s. Like DQN, EC takes a concatenation of four frames as input.
 
-Figure 8. Source task performance training curves for A3C and
-UNREAL. DARLA shows accelerated learning of the task compared to other architectures. Results show average and standard
-deviation over 20 random seeds, each using 16 workers.
+−3
 
-The EC algorithm is proposed as a model of fast hippocampal
-instance-based learning in the brain (Marr, 1971; Sutherland &
-Rudy, 1989), while the deep RL algorithms described above are
-more analogous to slow cortical learning that relies on generalised
-statistical summaries of the input distribution (McClelland et al.,
-1995; Norman & O’Reilly, 2003; Tulving et al., 1991).
+In the original paper, authors reported difficulties in training the model with large values of dropout rates α (Kingma
+et al., 2015) and only considered the case of α ≤ 1, which
+corresponds to a binary dropout rate p ≤ 0.5. However,
+the case of large αij is very exciting (here we mean separate αij per weight). High dropout rate αij → +∞ corresponds to a binary dropout rate that approaches p = 1. It
+effectively means that the corresponding weight or neuron
+is always ignored and can be removed from the model. In
+this work, we consider the case of individual αij for each
+weight of the model.
 
-A.7. Source Task Performance Results
-The focus of this paper is primarily on zero-shot domain adaptation performance. However, it is also interesting to analyse the
-effect of the DARLA approach on source domain policy performance. In order to compare the models’ behaviour on the source
-task, we examined the training curves (see Figures 7-10) and
-noted in particular their:
-1. Asymptotic task performance, i.e. the rewards per episode
-at the point where ⇡S has converged for the agent under
-consideration.
-2. Data efficiency, i.e. how quickly the training curve was able
-to achieve convergence.
+√
+wij = θij (1 + αij · ϵij ),
+∂wij
+√
+= 1 + αij · ϵij ,
+∂θij
 
-Figure 9. Source task training curves for EC. Results show average and standard deviation over 20 random seeds.
-We note the following consistent trends across the results:
-1. Using DARLA provided an initial boost in learning performance, which depended on the degree of disentanglement of
-the representation. This was particularly observable in A3C,
+2
 
-DARLA: Improving Zero-Shot Transfer in Reinforcement Learning
+−2
 
-Figure 10. Training curves for various baselines on the source
-MuJoCo reaching task
-see Fig. 8.
-2. Baseline algorithms where F could be fine-tuned to the
-source task were able to achieve higher asymptotic performance. This was particularly notable on DQN and A3C (see
-Figs. 7 and 8) in DeepMind Lab. However, in both those
-cases, DARLA was able to learn very reasonable policies
-on the source task which were on the order of 20% lower
-than the fine-tuned models – arguably a worthwhile sacrifice for a subsequent median 270% improvement in target
-domain performance noted in the main text.
-3. Allowing DARLA to fine-tune its vision module
-(DARLAFT ) boosted its source task learning speed,
-and allowed the agent to asymptote at the same level as
-the baseline algorithms. As discussed in the main text, this
-comes at the cost of significantly reduced domain transfer
-performance on A3C. For DQN, however, finetuning
-appears to offer the best of both worlds.
-4. Perhaps most relevantly for this paper, even if solely examining source task performance, DARLA outperforms both
-DARLAENT and DARLADAE on both asymptotic performance and data efficiency – suggesting that disentangled
-representations have wider applicability in RL beyond the
-zero-shot domain adaptation that is the focus of this paper.
+4. Sparse Variational Dropout
+
+∂LSGVB
+∂LSGVB ∂wij
+=
+·
+∂θij
+∂wij
+∂θij
+
+3
+
+−DKL
+
+becomes a variational parameter and not a hyperparameter.
+In theory, it allows us to train individual dropout rates αij
+for each layer, neuron or even weight (Kingma et al., 2015).
+However, no experimental results concerning the training
+of individual dropout rates were reported in the original paper. Also, the approximate posterior family was manually
+restricted to the case α ≤ 1.
+
+(11)
+
+(12)
+
+ij
+
+The log-scale uniform prior distribution is an improper
+prior, so the KL divergence can only be calculated up to
+an additive constant C (Kingma et al., 2015).
+−DKL (q(wij | θij , αij ) ∥ p(wij )) =
+1
+= log αij − Eϵ∼N (1,αij ) log |ϵ| + C
+2
+
+(13)
+
+In the Variational Dropout model this term is intractable, as
+the expectation Eϵ∼N (1,αij ) log |ϵ| in (13) cannot be computed analytically (Kingma et al., 2015). However, this
+
+Variational Dropout Sparsifies Deep Neural Networks
+
+term can be sampled and then approximated. Two different
+approximations were provided in the original paper, however they are accurate only for small values of the dropout
+rate α (α ≤ 1). We propose another approximation (14)
+that is tight for all values of alpha. Here σ(·) denotes the
+sigmoid function. Different approximations and the true
+value of −DKL are presented in Fig. 1. Original −DKL
+was obtained by averaging over 107 samples of ϵ with less
+than 2 × 10−3 variance of the estimation.
+−DKL (q(wij | θij , αij ) ∥ p(wij )) ≈
+−1
+≈ k1 σ(k2 + k3 log αij )) − 0.5 log(1 + αij
+) + C (14)
+
+k1 = 0.63576
+
+k2 = 1.87320
+
+k3 = 1.48695
+
+We used the following intuition to obtain this formula. The
+negative KL-divergence goes to a constant as log αij goes
+to infinity, and tends to 0.5 log αij as log αij goes to minus
+−1
+infinity. We model this behaviour with −0.5 log(1 + αij
+).
+−1
+We found that the remainder −DKL + 0.5 log(1 + αij
+)
+looks very similar to a sigmoid function of log αij , so we fit
+its linear transformation k1 σ(k2 + k3 log αij ) to this curve.
+We observe that this approximation is extremely accurate
+(less than 0.009 maximum absolute deviation on the full
+range of log αij ∈ (−∞, +∞); the original approximation
+(Kingma et al., 2015) has 0.04 maximum absolute deviation with log αij ∈ (−∞, 0]).
+One should notice that as α approaches infinity, the KLdivergence approaches a constant. As in this model the
+KL-divergence is defined up to an additive constant, it is
+convenient to choose C = −k1 so that the KL-divergence
+goes to zero when α goes to infinity. It allows us to compare values of LSGVB for neural networks of different sizes.
+4.3. Sparsity
+From the Fig. 1 one can see that −DKL term increases
+with the growth of α. It means that this regularization term
+favors large values of α.
+The case of αij → ∞ corresponds to a Binary Dropout
+p
+rate pij → 1 (recall α = 1−p
+). Intuitively it means that the
+corresponding weight is almost always dropped from the
+model. Therefore its value does not influence the model
+during the training phase and is put to zero during the testing phase.
+We can also look at this situation from another angle. Infinitely large αij corresponds to infinitely large multiplicative noise in wij . It means that the value of this weight
+will be completely random and its magnitude will be unbounded. It will corrupt the model prediction and decrease
+the expected log likelihood. Therefore it is beneficial to
+put the corresponding weight θij to zero in such a way that
+2
+αij θij
+goes to zero as well. It means that q(wij | θij , αij )
+
+is effectively a delta function, centered at zero δ(wij ).
+θij → 0,
+
+2
+αij θij
+→0
+
+⇓
+
+(15)
+
+q(wij | θij , αij ) → N (wij | 0, 0) = δ(wij )
+In the case of linear regression this fact can be shown analytically. We denote a data matrix as X N ×D and α, θ ∈
+RD . If α is fixed, the optimal value of θ can also be obtained in a closed form.
+θ = (X ⊤ X + diag(X ⊤ X)diag(α))−1 X ⊤ y
+
+(16)
+
+Assume that (X ⊤ X)ii ̸= 0, so that i-th feature is not a
+constant zero. Then from (16) it follows that θi = Θ(αi−1 )
+when αi → +∞, so both θi and αi θi2 tend to 0.
+4.4. Sparse Variational Dropout for Fully-Connected
+and Convolutional Layers
+Finally we optimize the stochastic gradient variational
+lower bound (3) with our approximation of KL-divergence
+(14). We apply Sparse Variational Dropout to both convolutional and fully-connected layers. To reduce the variance
+of LSGVB we use a combination of the Local Reparameterization Trick and Additive Noise Reparameterization. In
+order to improve convergence, optimization is performed
+w.r.t. (θ, log σ 2 ).
+For a fully connected layer we use the same notation as in
+Section 3.3. In this case, Sparse Variational Dropout with
+the Local Reparameterization Trick and Additive Noise
+Reparameterization can be computed as follows:
+bmj ∼ N (γmj , δmj )
+γmj =
+
+I
+∑
+i=1
+
+ami θij ,
+
+δmj =
+
+I
+∑
+
+2
+a2mi σij
+
+(17)
+
+i=1
+
+Now consider a convolutional layer. Take a single input
+×C
+tensor AH×W
+, a single filter wkh×w×C and correspondm
+′
+×W ′
+ing output matrix bH
+. This filter has corresponding
+mk
+variational parameters θkh×w×C and σkh×w×C . Note that in
+this case Am , θk and σk are tensors. Because of linearity of convolutional layers, it is possible to apply the Local
+Reparameterization Trick. Sparse Variational Dropout for
+convolutional layers then can be expressed in a way, similar to (17). Here we use (·)2 as an element-wise operation,
+∗ denotes the convolution operation, vec(·) denotes reshaping of a matrix/tensor into a vector.
+vec(bmk ) ∼ N (γmk , δmk )
+γmk = vec(Am ∗θk ), δmk = diag(vec(A2m ∗σk2 ))
+
+(18)
+
+These formulae can be used for the implementation of
+Sparse Variational Dropout layers. Lasagne and PyTorch
+
+Variational Dropout Sparsifies Deep Neural Networks
+
+source code of Sparse Variational Dropout layers is available at https://goo.gl/2D4tFW. Both forward and
+backward passes through Sparse VD layers take twice as
+much time as passes through original layers.
+4.5. Relation to RVM
+The Relevance Vector Machine (RVM, (Tipping, 2001)) is
+a classical example of a Sparse Bayesian model. The RVM
+is essentially a Bayesian treatment of L2 -regularized linear or logistic regression, where each weight has a separate
+regularization parameter αi . These parameters are tuned
+by empirical Bayes. During training, a large portion of
+parameters αi goes to infinity, and corresponding features
+are excluded from the model since those weights become
+zero. This effect is known as Automatic Relevance Determination (ARD) and is a popular way to construct sparse
+Bayesian models.
+Empirical Bayes is a somewhat counter-intuitive procedure
+since we optimize prior distribution w.r.t. the observed
+data. Such trick has a risk of overfitting, and indeed it
+was reported in (Cawley, 2010). However, in our work
+the ARD-effect is achieved by straightforward variational
+inference rather than by empirical Bayes. Similarly to the
+RVM, in Sparse VD dropout rates αi are responsible for
+the ARD-effect. However, in Sparse VD αi are parameters of the approximate posterior distribution rather than
+parameters of the prior distribution. In our work, the prior
+distribution is fixed and does not have any parameters, and
+we tune αi to obtain a more accurate approximation of the
+posterior distribution p(w | D). Therefore there is no risk of
+additional overfitting from model selection unlike the case
+of empirical Bayes.
+That said, despite this difference, the analytical solution
+for maximum a posteriori estimation is very similar for the
+RVM-regression
+wM AP = (X ⊤ X + diag(α))−1 X ⊤ y
+
+(19)
+
+and Sparse Variational Dropout regression
+θ = (X ⊤ X + diag(X ⊤ X)diag(α))−1 X ⊤ y
+
+(20)
+
+Interestingly, the expression for Binary Dropout-regularized linear regression is exactly the same as (20) if we subpi
+stitute αi with 1−p
+(Srivastava et al., 2014).
+i
+
+5. Experiments
+We perform experiments on classification tasks and use different neural network architectures including architectures
+with a combination of batch normalization and dropout layers. We explore the relevance determination performance
+of our algorithm as well as the classification accuracy of the
+
+resulting sparse model. Our experiments show that Sparse
+Variational Dropout leads to extremely sparse models.
+In order to make a Sparse Variational Dropout analog to
+an existing architecture, we only need to remove existing
+dropout layers and replace all dense and convolutional layers with their Sparse Variational Dropout counterparts as
+described in Section 4.4 and use LSGVB as the objective
+function. The value of the variational lower bound can be
+used to choose among several local optima.
+5.1. General Empirical Observations
+We provide a general intuition about training of Sparse
+Bayesian DNNs using Sparse Variational Dropout.
+As it is impossible for the weights to converge exactly to
+zero in a stochastic setting, we explicitly put weights with
+high corresponding dropout rates to 0 during testing. In
+our experiments with neural networks, we use the value
+log α = 3 as a threshold. This value corresponds to a Binary Dropout rate p > 0.95. Unlike most other methods
+(Han et al., 2015b; Wen et al., 2016), this trick usually does
+not hurt the performance of our model. It means that Sparse
+VD does not require finetuning after thresholding.
+Training our model from a random initialization is troublesome, as a lot of weights become pruned away early during
+training, before they could possibly learn a useful representation of the data. In this case we obtain a higher sparsity
+level, but also a high accuracy drop. The same problem is
+reported by (Sønderby et al., 2016) and is a common problem for Bayesian DNNs. One way to resolve this problem
+is to start from a pre-trained network. This trick provides a
+fair sparsity level with almost no drop of accuracy. Here by
+pre-training we mean training of the original architecture
+without Sparse Variational Dropout until full convergence.
+Another way to approach this problem is to use warm-up,
+as described by (Sønderby et al., 2016). The idea is to
+rescale the KL-divergence term during training by a scalar
+term βt , individual for each training epoch. During the first
+epochs we used βt = 0, then increased βt linearly from 0
+to 1 and after that used βt = 1. The final objective function
+remains the same, but the optimization trajectory becomes
+different. In some sense it is equivalent to choosing a better
+initial guess for the parameters.
+We use the final value of the variational lower bound to
+choose the initialization strategy. We observe that the initialization does not matter much on simple models like
+LeNets, but in the case of more complex models like VGG,
+the difference is significant.
+On most architectures we observe that the number of
+epochs required for convergence from a random initialization is roughly the same as for the original network. How-
+
+Variational Dropout Sparsifies Deep Neural Networks
+Network Method
+Error %
+Original
+1.64
+Pruning
+1.59
+LeNet-300-100 DNS
+1.99
+SWS
+1.94
+(ours) Sparse VD 1.92
+Original
+0.80
+Pruning
+0.77
+LeNet-5-Caffe DNS
+0.91
+SWS
+0.97
+(ours) Sparse VD 0.75
+
+Sparsity per Layer %
+92.0 − 91.0 − 74.0
+98.2 − 98.2 − 94.5
+98.9 − 97.2 − 62.0
+34 − 88 − 92.0 − 81
+86 − 97 − 99.3 − 96
+67 − 98 − 99.8 − 95
+
+|W|
+|W̸=0 |
+
+1
+12
+56
+23
+68
+1
+12
+111
+200
+280
+
+Figure 2: Original parameterization vs Additive Noise
+Reparameterization. Additive Noise Reparameterization
+leads to a much faster convergence, a better value of the
+variational lower bound and a higher sparsity level.
+
+Table 1: Comparison of different sparsity-inducing techniques (Pruning (Han et al., 2015b;a), DNS (Guo et al.,
+2016), SWS (Ullrich et al., 2017)) on LeNet architectures.
+Our method provides the highest level of sparsity with a
+similar accuracy.
+
+ever, we only need to make a several epochs (10-30) in order for our method to converge from a pre-trained network.
+
+that we only consider the level of sparsity and not the final
+compression ratio.
+
+We train all networks using Adam (Kingma & Ba, 2014).
+When we start from a random initialization, we train for
+200 epochs and linearly decay the learning rate from 10−4
+to zero. When we start from a pre-trained model, we finetune for 10-30 epochs with learning rate 10−5 .
+5.2. Variance Reduction
+To see how Additive Noise Reparameterization reduces the
+variance, we compare it with the original parameterization. We used a fully-connected architecture with two layers with 1000 neurons each. Both models were trained with
+identical random initializations and with the same learning
+rate, equal to 10−4 . We did not rescale the KL term during
+training. It is interesting that the original version of Variational Dropout with our approximation of KL-divergence
+and with no restriction on alphas also provides a sparse solution. However, our method has much better convergence
+rate and provides higher sparsity and a better value of the
+variational lower bound.
+5.3. LeNet-300-100 and LeNet5 on MNIST
+We compare our method with other methods of training
+sparse neural networks on the MNIST dataset using a fullyconnected architecture LeNet-300-100 and a convolutional
+architecture LeNet-5-Caffe1 . These networks were trained
+from a random initialization and without data augmentation. We consider pruning (Han et al., 2015b;a), Dynamic
+Network Surgery (Guo et al., 2016) and Soft Weight Sharing (Ullrich et al., 2017). In these architectures, our method
+achieves a state-of-the-art level of sparsity, while its accuracy is comparable to other methods. It should be noted
+1
+A modified version of LeNet5 from (LeCun et al., 1998).
+Caffe Model specification: https://goo.gl/4yI3dL
+
+5.4. VGG-like on CIFAR-10 and CIFAR-100
+To demonstrate that our method scales to large modern architectures, we apply it to a VGG-like network (Zagoruyko,
+2015) adapted for the CIFAR-10 (Krizhevsky & Hinton,
+2009) dataset. The network consists of 13 convolutional
+and two fully-connected layers, each layer followed by
+pre-activation batch normalization and Binary Dropout.
+We experiment with different sizes of this architecture
+by scaling the number of units in each network by k ∈
+{0.25, 0.5, 1.0, 1.5}. We use CIFAR-10 and CIFAR-100
+for evaluation. The reported error of this architecture on
+the CIFAR-10 dataset with k = 1 is 7.55%. As no pretrained weights are available, we train our own network and
+achieve 7.3% error. Sparse VD also achieves 7.3% error for
+k = 1, but retains 48× less weights.
+We observe underfitting while training our model from a
+random initialization, so we pre-train the network with Binary Dropout and L2 regularization. It should be noted that
+most modern DNN compression techniques also can be applied only to pre-trained networks and work best with networks, trained with L2 regularization (Han et al., 2015b).
+Our method achieves over 65x sparsification on the CIFAR10 dataset with no accuracy drop and up to 41x sparsification on CIFAR-100 with a moderate accuracy drop.
+5.5. Random Labels
+Recently is was shown that the CNNs are capable of memorizing the data even with random labeling (Zhang et al.,
+2016). The standard dropout as well as other regularization techniques did not prevent this behaviour. Following
+that work, we also experiment with the random labeling
+of data. We use a fully-connected network on the MNIST
+
+Variational Dropout Sparsifies Deep Neural Networks
+
+(a) Results on the CIFAR-10 dataset
+
+(b) Results on the CIFAR-100 dataset
+
+Figure 3: Accuracy and sparsity level for VGG-like architectures of different sizes. The number of neurons and filters scales
+as k. Dense networks were trained with Binary Dropout, and Sparse VD networks were trained with Sparse Variational
+Dropout on all layers. The overall sparsity level, achieved by our method, is reported as a dashed line. The accuracy drop
+is negligible in most cases, and the sparsity level is high, especially in larger networks.
+dataset and VGG-like networks on CIFAR-10. We put Binary Dropout (BD) with dropout rate p = 0.5 on all fullyconnected layers of these networks. We observe that these
+architectures can fit a random labeling even with Binary
+Dropout. However, our model decides to drop every single
+weight and provide a constant prediction. It is still possible
+to make our model learn random labeling by initializing it
+with a network, pre-trained on this random labeling, and
+then finetuning it. However, the variational lower bound
+L(θ, α) in this case is lower than in the case of 100% sparsity. These observations may mean that Sparse VD implicitly penalizes memorization and favors generalization.
+However, this still requires a more thorough investigation.
+
+6. Discussion
+The “Occam’s razor” principle states that unnecessarily
+complex should not be preferred to simpler ones (MacKay,
+1992). Automatic Relevance Determination is effectively
+a Bayesian implementation of this principle that occurs in
+different cases. Previously, it was mostly studied in the case
+of factorized Gaussian prior in linear models, Gaussian
+Processes, etc. In the Relevance Tagging Machine model
+(Molchanov et al., 2015) the same effect was achieved using Beta distributions as a prior. Finally, in this work, the
+ARD-effect is reproduced in an entirely different setting.
+We consider a fixed prior and train the model using variational inference. In this case, the ARD effect is caused
+by the particular combination of the approximate posterior
+distribution family and prior distribution, and not by model
+selection. This way we can abandon the empirical Bayes
+approach that is known to overfit (Cawley, 2010).
+We observed that if we allow Variational Dropout to drop
+irrelevant weights automatically, it ends up cutting most
+of the model weights. This result correlates with results
+of other works on training of sparse neural networks (Han
+et al., 2015a; Wen et al., 2016; Ullrich et al., 2017; So-
+
+ravit Changpinyo, 2017). All these works can be viewed
+as a kind of regularization of neural networks, as they restrict the model complexity. Further investigation of such
+redundancy may lead to an understanding of generalization
+properties of DNNs and explain the phenomenon, observed
+by (Zhang et al., 2016). According to that paper, although
+modern DNNs generalize well in practice, they can also
+easily learn a random labeling of data. Interestingly, it is
+not the case for our model, as a network with zero weights
+has a higher value of objective than a trained network.
+In this paper we study only the level of sparsity and do not
+report the actual network compression. However, our approach can be combined with other modern techniques of
+network compression, e.g. quantization and Huffman coding (Han et al., 2015a; Ullrich et al., 2017), as they use sparsification as an intermediate step. As our method provides a
+higher level of sparsity, we believe that it can improve these
+techniques even further. Another possible direction for future research is to find a way to obtain structured sparsity
+using our framework. As reported by (Wen et al., 2016),
+structured sparsity is crucial to acceleration of DNNs.
+
+Acknowledgements
+We would like to thank Michael Figurnov, Ekaterina
+Lobacheva and Max Welling for valuable feedback.
+Dmitry Molchanov was supported by the Ministry of
+Education and Science of the Russian Federation (grant
+14.756.31.0001), Arsenii Ashukha was supported by HSE
+International lab of Deep Learning and Bayesian Methods which is funded by the Russian Academic Excellence
+Project ’5-100’, Dmitry Vetrov was supported by the Russian Science Foundation grant 17-11-01027. We would
+also like to thank the Department of Algorithms and Theory
+of Programming, Faculty of Innovation and High Technology in Moscow Institute of Physics and Technology for the
+provided computational resources.
+
+Variational Dropout Sparsifies Deep Neural Networks
+
+References
+Cawley, Nicola L. C. Talbot. On over-fitting in model selection and subsequent selection bias in performance evaluation. Journal of Machine Learning Research, 11(Jul):
+2079–2107, 2010.
+
+Kingma, Diederik P, Salimans, Tim, and Welling, Max.
+Variational dropout and the local reparameterization
+trick. In Cortes, C., Lawrence, N. D., Lee, D. D.,
+Sugiyama, M., and Garnett, R. (eds.), Advances in Neural Information Processing Systems 28, pp. 2575–2583.
+Curran Associates, Inc., 2015.
+
+Challis, E and Barber, D. Gaussian kullback-leibler approximate inference. Journal of Machine Learning Research, 14:2239–2286, 2013.
+
+Krizhevsky, Alex and Hinton, Geoffrey. Learning multiple
+layers of features from tiny images. 2009.
+
+Gal, Yarin and Ghahramani, Zoubin. Dropout as a bayesian
+approximation: Insights and applications. In Deep
+Learning Workshop, ICML, 2015.
+
+Lebedev, Vadim and Lempitsky, Victor.
+Fast convnets using group-wise brain damage. arXiv preprint
+arXiv:1506.02515, 2015.
+
+Garipov, Timur, Podoprikhin, Dmitry, Novikov, Alexander,
+and Vetrov, Dmitry. Ultimate tensorization: compressing convolutional and fc layers alike. arXiv preprint
+arXiv:1611.03214, 2016.
+
+LeCun, Yann, Bottou, Léon, Bengio, Yoshua, and Haffner,
+Patrick. Gradient-based learning applied to document
+recognition. Proceedings of the IEEE, 86(11):2278–
+2324, 1998.
+
+Guo, Yiwen, Yao, Anbang, and Chen, Yurong. Dynamic
+network surgery for efficient dnns. In Advances In
+Neural Information Processing Systems, pp. 1379–1387,
+2016.
+
+Liu, Baoyuan, Wang, Min, Foroosh, Hassan, Tappen, Marshall, and Pensky, Marianna. Sparse convolutional neural networks. In Proceedings of the IEEE Conference on
+Computer Vision and Pattern Recognition, pp. 806–814,
+2015.
+
+Han, Song, Mao, Huizi, and Dally, William J. Deep compression: Compressing deep neural networks with pruning, trained quantization and huffman coding. arXiv
+preprint arXiv:1510.00149, 2015a.
+
+Louizos, Christos. Smart regularization of deep architectures. 2015.
+
+Han, Song, Pool, Jeff, Tran, John, and Dally, William.
+Learning both weights and connections for efficient neural network. In Advances in Neural Information Processing Systems, pp. 1135–1143, 2015b.
+He, Kaiming, Zhang, Xiangyu, Ren, Shaoqing, and Sun,
+Jian. Deep residual learning for image recognition. arXiv
+preprint arXiv:1512.03385, 2015.
+Hinton, Geoffrey E, Srivastava, Nitish, Krizhevsky, Alex,
+Sutskever, Ilya, and Salakhutdinov, Ruslan R. Improving
+neural networks by preventing co-adaptation of feature
+detectors. Technical report, 2012.
+Hoffman, Matthew D, Blei, David M, Wang, Chong, and
+Paisley, John William. Stochastic variational inference.
+Journal of Machine Learning Research, 14(1):1303–
+1347, 2013.
+Ioffe, Sergey and Szegedy, Christian. Batch normalization:
+Accelerating deep network training by reducing internal
+covariate shift. arXiv preprint arXiv:1502.03167, 2015.
+
+MacKay, David JC. Bayesian interpolation. Neural computation, 4(3):415–447, 1992.
+MacKay, David JC et al. Bayesian nonlinear modeling for
+the prediction competition. ASHRAE transactions, 100
+(2):1053–1062, 1994.
+Maeda, Shin-ichi. A bayesian encourages dropout. arXiv
+preprint arXiv:1412.7003, 2014.
+Molchanov, Dmitry, Kondrashkin, Dmitry, and Vetrov,
+Dmitry. Relevance tagging machine. Machine Learning and Data Analysis, 1(13):1877–1887, 2015.
+Neal, Radford M. Bayesian learning for neural networks,
+volume 118. Springer Science & Business Media, 1996.
+Novikov, Alexander, Podoprikhin, Dmitrii, Osokin, Anton,
+and Vetrov, Dmitry P. Tensorizing neural networks. In
+Advances in Neural Information Processing Systems, pp.
+442–450, 2015.
+
+Adam: A
+arXiv preprint
+
+Rezende, Danilo Jimenez, Mohamed, Shakir, and Wierstra, Daan. Stochastic backpropagation and approximate inference in deep generative models. arXiv preprint
+arXiv:1401.4082, 2014.
+
+Kingma, Diederik P and Welling, Max. Auto-encoding
+variational bayes. arXiv preprint arXiv:1312.6114,
+2013.
+
+Scardapane, Simone, Comminiello, Danilo, Hussain, Amir,
+and Uncini, Aurelio. Group sparse regularization for
+deep neural networks. arXiv preprint arXiv:1607.00485,
+2016.
+
+Kingma, Diederik and Ba, Jimmy.
+method for stochastic optimization.
+arXiv:1412.6980, 2014.
+
+Variational Dropout Sparsifies Deep Neural Networks
+
+Silver, David, Huang, Aja, Maddison, Chris J, Guez,
+Arthur, Sifre, Laurent, Van Den Driessche, George,
+Schrittwieser, Julian, Antonoglou, Ioannis, Panneershelvam, Veda, Lanctot, Marc, et al. Mastering the game of
+go with deep neural networks and tree search. Nature,
+529(7587):484–489, 2016.
+Sønderby, Casper Kaae, Raiko, Tapani, Maaløe, Lars,
+Sønderby, Søren Kaae, and Winther, Ole. How to Train
+Deep Variational Autoencoders and Probabilistic Ladder Networks. 2016.
+Soravit Changpinyo, Mark Sandler, Andrey Zhmoginov.
+The power of sparsity in convolutional neural networks.
+In Under review on ICLR 2017, 2017.
+
+Wan, Li, Zeiler, Matthew, Zhang, Sixin, Cun, Yann L, and
+Fergus, Rob. Regularization of neural networks using
+dropconnect. In Proceedings of the 30th International
+Conference on Machine Learning (ICML-13), pp. 1058–
+1066, 2013.
+Wang, Sida I and Manning, Christopher D. Fast dropout
+training. In ICML (2), pp. 118–126, 2013.
+Wen, Wei, Wu, Chunpeng, Wang, Yandan, Chen, Yiran,
+and Li, Hai. Learning structured sparsity in deep neural
+networks. In Lee, D. D., Sugiyama, M., Luxburg, U. V.,
+Guyon, I., and Garnett, R. (eds.), Advances in Neural Information Processing Systems 29, pp. 2074–2082. Curran Associates, Inc., 2016.
+
+Srinivas, Suraj and Babu, R Venkatesh. Generalized
+dropout. arXiv preprint arXiv:1611.06791, 2016.
+
+Zagoruyko, Sergey.
+92.45 on cifar-10 in torch,
+2015. URL http://torch.ch/blog/2015/07/
+30/cifar.html.
+
+Srivastava, Nitish, Hinton, Geoffrey E, Krizhevsky, Alex,
+Sutskever, Ilya, and Salakhutdinov, Ruslan. Dropout:
+a simple way to prevent neural networks from overfitting. Journal of Machine Learning Research, 15(1):
+1929–1958, 2014.
+
+Zhang, Chiyuan, Bengio, Samy, Hardt, Moritz, Recht, Benjamin, and Vinyals, Oriol. Understanding deep learning requires rethinking generalization. arXiv preprint
+arXiv:1611.03530, 2016.
+
+Szegedy, Christian, Liu, Wei, Jia, Yangqing, Sermanet,
+Pierre, Reed, Scott, Anguelov, Dragomir, Erhan, Dumitru, Vanhoucke, Vincent, and Rabinovich, Andrew.
+Going deeper with convolutions. In Proceedings of
+the IEEE Conference on Computer Vision and Pattern
+Recognition, pp. 1–9, 2015.
+Szegedy, Christian, Ioffe, Sergey, Vanhoucke, Vincent, and
+Alemi, Alex. Inception-v4, inception-resnet and the impact of residual connections on learning. arXiv preprint
+arXiv:1602.07261, 2016.
+Tipping, Michael E. Sparse bayesian learning and the relevance vector machine. Journal of machine learning research, 1(Jun):211–244, 2001.
+Titsias, Michalis and Lázaro-Gredilla, Miguel. Doubly
+stochastic variational bayes for non-conjugate inference.
+Proceedings of The 31st International Conference on
+Machine Learning, 32:1971–1979, 2014.
+Ullrich, Karen, Meeds, Edward, and Welling, Max. Soft
+weight-sharing for neural network compression. arXiv
+preprint arXiv:1702.04008, 2017.
+Van Gestel, Tony, Suykens, JAK, De Moor, Bart, and Vandewalle, Joos. Automatic relevance determination for
+least squares support vector machine regression. In Neural Networks, 2001. Proceedings. IJCNN’01. International Joint Conference on, volume 4, pp. 2416–2421.
+IEEE, 2001.
 
 

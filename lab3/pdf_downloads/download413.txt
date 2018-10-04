@@ -1,1093 +1,990 @@
-Efficient Orthogonal Parametrisation of Recurrent Neural Networks
-Using Householder Reflections
+Adversarial Feature Matching for Text Generation
 
-Zakaria Mhammedi 1 2 Andrew Hellicar 2 Ashfaqur Rahman 2 James Bailey 1
+Yizhe Zhang 1 Zhe Gan 1 Kai Fan 1 Zhi Chen 1 Ricardo Henao 1 Dinghan Shen 1 Lawrence Carin 1
 
 Abstract
-The problem of learning long-term dependencies
-in sequences using Recurrent Neural Networks
-(RNNs) is still a major challenge. Recent methods have been suggested to solve this problem
-by constraining the transition matrix to be unitary during training which ensures that its norm
-is equal to one and prevents exploding gradients.
-These methods either have limited expressiveness or scale poorly with the size of the network
-when compared with the simple RNN case, especially when using stochastic gradient descent
-with a small mini-batch size. Our contributions
-are as follows; we first show that constraining the
-transition matrix to be unitary is a special case of
-an orthogonal constraint. Then we present a new
-parametrisation of the transition matrix which allows efficient training of an RNN while ensuring
-that the matrix is always orthogonal. Our results
-show that the orthogonal constraint on the transition matrix applied through our parametrisation
-gives similar benefits to the unitary constraint,
-without the time complexity limitations.
+The Generative Adversarial Network (GAN) has
+achieved great success in generating realistic (realvalued) synthetic data. However, convergence
+issues and difficulties dealing with discrete data
+hinder the applicability of GAN to text. We propose a framework for generating realistic text via
+adversarial training. We employ a long shortterm memory network as generator, and a convolutional network as discriminator. Instead of
+using the standard objective of GAN, we propose
+matching the high-dimensional latent feature distributions of real and synthetic sentences, via a
+kernelized discrepancy metric. This eases adversarial training by alleviating the mode-collapsing
+problem. Our experiments show superior performance in quantitative evaluation, and demonstrate
+that our model can generate realistic-looking sentences.
 
 1. Introduction
-Recurrent Neural Networks (RNNs) have been successfully
-used in many applications involving time series. This is because RNNs are well suited for sequential data as they process inputs one element at a time and store relevant information in their hidden state. In practice, however, training
-simple RNNs (sRNN) can be challenging due to the problem of exploding and vanishing gradients (Hochreiter et al.,
-2001). It has been shown that exploding gradients can occur when the transition matrix of an RNN has a spectral
-norm larger than one (Glorot & Bengio, 2010). This results
-1
+Generating meaningful and coherent sentences is central to
+many natural language processing applications. The general idea is to estimate a distribution over sentences from
+a corpus, then use it to sample realistic-looking sentences.
+This task is important because it enables generation of novel
+sentences that preserve the semantic and syntactic properties
+of real-world sentences, while being potentially different
+from any of the examples used to estimate the model. For
+instance, in the context of dialog generation, it is desirable
+to generate answers that are more diverse and less generic
+(Li et al., 2016).
+One simple approach consists of first learning a latent
+space to represent (fixed-length) sentences using an encoderdecoder (autoencoder) framework based on Recurrent Neural Networks (RNNs) (Cho et al., 2014; Sutskever et al.,
+2014), then generate synthetic sentences by decoding ran1
+Duke University, Durham, NC, 27708. Correspondence to:
+Yizhe Zhang <yizhe.zhang@duke.edu>.
 
-The University of Melbourne, Parkville, Australia 2 Data61,
-CSIRO, Australia. Correspondence to: Zakaria Mhammedi
-<zak.mhammedi@data61.csiro.au>.
 Proceedings of the 34 th International Conference on Machine
-Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
-by the author(s).
+Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017 by
+the author(s).
 
-in an error surface, associated with some objective function, having very steep walls (Pascanu et al., 2013). On the
-other hand, when the spectral norm of the transition matrix
-is less than one, the information at one time step tend to
-vanish quickly after a few time steps. This makes it challenging to learn long-term dependencies in sequential data.
-Different methods have been suggested to solve either the
-vanishing or exploding gradient problem. The LSTM has
-been specifically designed to help with the vanishing gradient (Hochreiter & Schmidhuber, 1997). This is achieved
-by using gate vectors which allow a linear flow of information through the hidden state. However, the LSTM
-does not directly address the exploding gradient problem.
-One approach to solving this issue is to clip the gradients
-(Mikolov, 2012) when their norm exceeds some threshold value. However, this adds an extra hyperparameter to
-the model. Furthermore, if exploding gradients can occur
-within some parameter search space, the associated error
-surface will still have steep walls. This can make training
-challenging even with gradient clipping.
-Another way to approach this problem is to improve the
-shape of the error surface directly by making it smoother,
-which can be achieved by constraining the spectral norm of
-the transition matrix to be less than or equal to one. However, a value of exactly one is best for the vanishing gradient problem. A good choice of the activation function
-between hidden states is also crucial in this case. These
-ideas have been investigated in recent works. In particular, the unitary RNN (Arjovsky et al., 2016) uses a special parametrisation to constrain the transition matrix to be
-unitary, and hence, of norm one. This parametrisation and
-other similar ones (Hyland & Rätsch, 2017; Wisdom et al.,
-2016) have some advantages and drawbacks which we will
-discuss in more details in the next section.
-The main contributions of this work are as follows:
-• We first show that constraining the search space of the
-transition matrix of an RNN to the set of unitary matrices U(n) is equivalent to limiting the search space
-to a subset of O(2n) (O(2n) is the set of 2n × 2n orthogonal matrices) of a new RNN with twice the hidden size. This suggests that it may not be necessary to
+dom samples from this latent space. However, this approach
+often fails to generate realistic sentences from arbitrary
+latent representations. The reason for this is that, when mapping sentences to their latent representations using an autoencoder, the mappings usually cover a small but structured
+region of the latent space, which corresponds to a manifold
+embedding (Bowman et al., 2016). In practice, most regions
+of the latent space do not necessarily map (decode) to realistic sentences. Consequently, randomly sampling latent
+representations often yields nonsensical sentences. Recent
+work by Bowman et al. (2016) has attempted to generate
+more diverse sentences via RNN-based variational autoencoders. However, they did not address the fundamental
+problem that the posterior distribution over latent variables
+does not appropriately cover the latent space.
+Another underlying challenge of generating realistic text
+relates to the nature of the RNN. During inference, the
+RNN generates words in sequence from previously generated words, contrary to learning, where ground-truth words
+are used every time. As a result, error accumulates proportional to the length of the sequence, i.e., the first few words
+look reasonable, however, quality deteriorates quickly as
+the sentence progresses. Bengio et al. (2015) coined this
+phenomenon exposure bias. Toward addressing this problem, Bengio et al. (2015) proposed the scheduled sampling
+approach. However, Huszár (2015) showed that scheduled
+sampling is a fundamentally inconsistent training strategy,
+in that it produces largely unstable results in practice.
+The Generative Adversarial Network (GAN) (Goodfellow
+et al., 2014) is an appealing and natural answer to the above
+issues. GAN matches the distributions of synthetic and real
+data by introducing an adversarial game between a generator and a discriminator. The GAN objective seeks to
+constitute a generator, that functionally maps samples from
+a given (simple) prior distribution, to synthetic data that appear to be realistic. The GAN setup explicitly seeks that the
+latent representations from real data (via encoding) be distributed in a manner consistent with the specified prior (e.g.,
+Gaussian or uniform). Due to the nature of adversarial training, the discriminator compares real and synthetic sentences,
+rather than their individual words, which in principle should
+alleviate the exposure-bias issue. Recent work (Lamb et al.,
+2016) has incorporated an additional discriminator to train a
+sequence-to-sequence language model that better preserves
 
-Efficient Orthogonal Parametrisation of Recurrent Neural Networks
+Adversarial Feature Matching for Text Generation
 
-work with complex matrices.
-• We present a simple way to parametrise orthogonal transition matrices of RNNs using Householder
-matrices, and we derive the expressions of the
-back-propagated gradients with respect to the new
-parametrisation. This new parametrisation can also be
-used in other deep architectures.
-• We develop an algorithm to compute the backpropagated gradients efficiently. Using this algorithm,
-we show that the worst case time complexity of one
-gradient step is of the same order as that of the sRNN.
+long-term dependencies.
+Effort has also been made to generate realistic-looking sentences via adversarial training. For instance, by borrowing
+ideas from reinforcement learning, Yu et al. (2017); Li et al.
+(2017) treat the sentence generation as a sequential decision
+making process. Despite the success of these methods, two
+fundamental problems of the GAN framework limit their
+use in practice: (i) the generator tends to produce a single
+observation for multiple latent representations, i.e., mode
+collapsing (Metz et al., 2017), and (ii) the generator’s contribution to the learning signal is insubstantial when the
+discriminator is close to its local optimum, i.e., vanishing
+gradient behavior (Arjovsky & Bottou, 2017).
+In this paper we propose a new framework, TextGAN, to
+alleviate the problems associated with generating realisticlooking sentences via GAN. Specifically, the Long ShortTerm Memory (LSTM) (Hochreiter & Schmidhuber, 1997)
+RNN is used as generator, and the Convolutional Neural
+Network (CNN) (Kim, 2014) is used as discriminator. We
+consider a kernel-based moment-matching scheme over a
+Reproducing Kernel Hilbert Space (RKHS), to force the empirical distributions of real and synthetic sentences to have
+matched moments in latent-feature space. As a consequence,
+our approach ameliorates the mode-collapsing issue associated with standard GAN training. This strategy encourages
+the model to learn representations that are both informative
+of the original sentences (via the autoencoder) and discriminative w.r.t. synthetic sentences (via the discriminator). We
+also propose several complementary techniques, including
+initialization strategies and discretization approximations
+to ease GAN training, and to achieve superior performance
+compared to related approaches.
 
-2. Related Work
-Throughout this work we will refer to elements of the following sRNN architecture.
-h(t) = φ(W h(t−1) + V x(t) ),
-o
+2. Model
+2.1. Generative Adversarial Networks
+GAN (Goodfellow et al., 2014) aims to obtain the equilibrium of the following optimization objective
+LGAN = Ex∼px log D(x) + Ez∼pz log[1 − D(G(z))], (1)
+where LGAN is maximized w.r.t. D(·) and minimized w.r.t.
+G(·). Note that the first term of (1) does not depend on
+G(·). Observed (real) data, x, are sampled from empirical
+distribution px (·). The latent code, z, that feeds into the
+generator, G(z), is drawn from a simple prior distribution
+pz (·). When the discriminator is optimal, solving this adversarial game is equivalent to minimizing the Jenson-Shannon
+Divergence (JSD) (Arjovsky & Bottou, 2017) between the
+real data distribution px (·) and the synthetic data distribution px̃ (·) , p(G(z)) , where z ∼ pz (·) (Goodfellow et al.,
+2014). However, in most cases, the saddle-point solution of
+the objective in (1) is intractable. Therefore, a procedure to
 
-(t)
+D/E
 
-(t)
+G
 
-=Yh ,
+z
 
-(1)
+s̃
+LSTM
+
+Real/
+Syn.
+
+f̃
+MMD
+
+s
+
+f
+
+ẑ
+CNN
+
+Figure 1. Model scheme of TextGAN. Latent codes z are fed
+through a generator G(·), to produce synthetic sentence s̃. Synthetic and real sentences (s̃ and s) are fed into a binary discriminator D(·), for real vs. fake (synthetic) prediction, and also for
+latent code reconstruction ẑ. f˜ and f represent features of s̃ and
+s, respectively.
+
+iteratively update D(·) and G(·) is often applied.
+Arjovsky & Bottou (2017) pointed out that the standard
+GAN objective in (1) suffers from an unstably weak learning
+signal when the discriminator gets close to local optimal,
+due to the gradient-vanishing effect. This is because the
+JSD implied by the original GAN loss becomes a constant
+if px (·) and px̃ (·) share no support, thus minimizing the
+JSD yields no learning signal. This problem also exists in
+the recently proposed energy-based GAN (EBGAN) (Zhao
+et al., 2017), as the distance metric implied by EBGAN
+is the Total Variance Distance (TVD), which has the same
+issue w.r.t. JSD, as shown by Arjovsky et al. (2017).
+2.2. TextGAN
+Given a sentence corpus S, instead of directly optimizing the
+objective from standard GAN in (1), we adopt an approach
+that is similar to the feature matching scheme of Salimans
+et al. (2016). Specifically, we consider the objective
+LD = LGAN − λr Lrecon + λm LM M D2
+
 (2)
 
-where W , V and Y are the hidden-to-hidden, input-tohidden, and hidden-to-output weight matrices. h(t−1) and
-h(t) are the hidden vectors at time steps t − 1 and t respectively. Finally, φ is a non-linear activation function. We
-have omitted the bias terms for simplicity.
-Recent research explored how the initialisation of the transition matrix W influences training and the ability to learn
-long-term dependencies. In particular, initialisation with
-the identity or an orthogonal matrix can greatly improve
-performance (Le et al., 2015). In addition to these initialisation methods, one study also considered removing the
-non-linearity between the hidden-to-hidden connections
-(Henaff et al., 2016), i.e. the term W h(t−1) in Equation (1)
-is outside the activation function φ. This method showed
-good results when compared to the LSTM on pathological
-problems exhibiting long-term dependencies.
-After training a model for a few iterations using gradient
-descent, nothing guarantees that the initial structures of the
-transition matrix will be held. In fact, its spectral norm can
-deviate from one, and exploding and vanishing gradients
-can be a problem again. It is possible to constrain the transition matrix to be orthogonal during training using special
-parametrisations (Arjovsky et al., 2016; Hyland & Rätsch,
-2017), which ensure that its spectral norm is always equal
-to one. The unitary RNN (uRNN) (Arjovsky et al., 2016)
-is one example where the hidden matrix W ∈ Cn×n is the
-product of elementary matrices, consisting of reflection, diagonal, and Fourier transform matrices. When the size of
-hidden layer is equal to n, the transition matrix has a total of
-only 7n parameters. Another advantage of this parametrisation is computational efficiency - the matrix-vector product W v, for some vector v, can be calculated in time complexity O(n log n). However, it has been shown that this
-
-parametrisation does not allow the transition matrix to span
-the full unitary group (Wisdom et al., 2016) when the size
-of the hidden layer is greater than 7. This may limit the
-expressiveness of the model.
-Another interesting parametrisation (Hyland & Rätsch,
-2017) has been suggested which takes advantage of the algebraic properties of the unitary group U(n). The idea is
-to use the corresponding matrix Lie algebra u(n) of skew
-hermitian matrices. In particular,
-thei transition matrix can
-hP 2
-n
-be written as W = exp
-i=1 λi Ti , where exp is the ex2
-
-ponential matrix map and {Ti }ni=1 are predefined n × n
-matrices forming a bases of the Lie algebra u(n). The
-learning parameters are the weights {λi }. The fact that the
-matrix Lie algebra u(n) is closed and connected ensures
-that the exponential mapping from u(n) to U(n) is surjective. Therefore, with this parametrisation the search space
-of the transition matrix spans the whole unitary group. This
-is one advantage over the original unitary parametrisation
-(Arjovsky et al., 2016). However, the cost of computing
-the matrix exponential to get W is O(n3 ), where n is the
-dimension of the hidden state. .
-Another method (Wisdom et al., 2016) performs optimisation directly of the Stiefel manifold using the Cayley
-transformation. The corresponding model was called fullcapacity unitary RNN. Using this approach, the transition
-matrix can span the full set of unitary matrices. However,
-this method involves a matrix inverse as well as matrixmatrix products which have time complexity O(n3 ). This
-can be problematic for large neural networks when using
-stochastic gradient descent with a small mini-batch size.
-A more recent study (Vorontsov et al., 2017) investigated
-the effect of soft versus hard orthogonal constraints on the
-performance of RNNs. The soft constraint was applied by
-specifying an allowable range for the maximum singular
-value of the transition matrix. To this end, the transition
-matrix was factorised as W = U SV 0 , where U and V are
-orthogonal matrices and S is a diagonal matrix containing
-the singular values of W . A soft orthogonal constraint consists of specifying small allowable intervals around 1 for
-the diagonal elements of S. Similarly to (Wisdom et al.,
-2016), the matrices U and V were updated at each training
-iteration using the Cayley transformation, which involves a
-matrix inverse, to ensure that they remain orthogonal.
-All the methods discussed above, except for the original
-unitary RNN, involve a step that requires at least a O(n3 )
-time complexity. All of them, except for one, require the
-use of complex matrices. Table 1 summarises the time
-complexities of various methods, including our approach,
-for one stochastic gradient step. In the next section, we
-show that imposing a unitary constraint on a transition matrix W ∈ Cn×n is equivalent to imposing a special orthog-
-
-Efficient Orthogonal Parametrisation of Recurrent Neural Networks
-
-onal constraint on a new RNN with twice the hidden size.
-Furthermore, since the norm of orthogonal matrices is also
-always one, using the latter has the same theoretical benefits as using unitary matrices when it comes to the exploding gradient problem.
-
-3. Complex unitary versus orthogonal
-We can show that when the transition matrix W ∈ Cn×n of
-an RNN is unitary, there exists an equivalent representation
-of this RNN involving an orthogonal matrix Ŵ ∈ R2n×2n .
-In fact, consider a complex unitary transition matrix W =
-A + iB ∈ Cn×n , where A and B are now real-valued matrices in Rn×n . We also define the following new variables
-
-
-
-
-
-
-< h(t) 
-< (V )
-A −B
-(t)
-∀t, ĥ =
-, V̂ =
-, Ŵ =
-,
-= (V )
-B A
-= h(t)
-
-it follows that Ŵ Ŵ 0 = I. Also note that Ŵ has a special
-structure - it is a block-matrix.
-The discussion above shows that using a complex, unitary
-transition matrix in Cn×n is equivalent to using an orthogonal matrix, belonging to a subset of O(2n), in a new RNN
-with twice the hidden size. This is why in this work we
-focus mainly on parametrising orthogonal matrices.
-
-4. Parametrisation of the transition matrix
-Before discussing the details of our parametrisation, we
-first introduce a few notations. For n, k ∈ N and 2 ≤ k ≤
-n, let Hk : Rk → Rn×n be defined as
-#
-"
-In−k
-0
-,
-(6)
-Hk (u) =
-uu0
-0
-Ik − 2 kuk
-2
-
-where < and = denote the real and imaginary parts of a
-complex number. Note that ĥ(t) ∈ R2n , Ŵ ∈ R2n×2n ,
-and V̂ ∈ R2n×nx , where nx is the dimension of the input
-vector x(t) in Equation (1).
-
-where Ik denotes the k-dimensional identity matrix. For
-u ∈ Rk , Hk (u) is the Householder Matrix in O(n) representing the reflection about the hyperplane orthogonal to
-the vector (00n−k , u0 )0 ∈ Rn and passing through the origin, where 0n−k denotes the zero vector in Rn−k .
-
-Assuming that the activation function φ applies to the real
-and imaginary parts separately, it is easy to show that the
-update equation of the complex hidden state h(t) of the unitary RNN has the following real space representation
-
-We also define the mapping H1 : R → Rn×n as
-
-
-In−1 0
-H1 (u) =
-.
-0
-u
-
-ĥ(t) = φ(Ŵ ĥ(t−1) + V̂ x(t) ).
+LG = LM M D2
 
 (3)
 
-Even when the activation function φ does not apply to the
-real and imaginary parts separately, it is still possible to find
-an equivalent representation in the real space. Consider the
-activation function proposed by (Arjovsky et al., 2016)
-
-z
-, if |z| + b > 0
-(|z| + b) |z|
-(4)
-σmodRelU (z) =
-0,
-otherwise
-2n
+LGAN = Es∼S log D(s) + Ez∼pz log[1 − D(G(z))]
+Lrecon = ||ẑ − z||2 ,
+where LD and LG are iteratively maximized w.r.t D(·) and
+minimized w.r.t. G(·), respectively. LGAN is the standard
+objective of GAN in (1). Lrecon is the Euclidean distance
+between the reconstructed latent code, ẑ, and the original
+code, z, drawn from prior distribution pz (·). We denote the
+synthetic sentences as s̃ , G(z), where z ∼ pz (·). LM M D2
+represents the Maximum Mean Discrepancy (MMD) (Gretton et al., 2012) between the empirical distribution of sentence embeddings f˜ and f , for synthetic and real data,
+respectively. The model framework is illustrated in Figure 1
+and detailed below.
+We first consider LG in (3). The generator G(·) attempts to
+adjust itself to produce synthetic sentence s̃, with features
 
-where b is a bias vector. For a hidden state ĥ ∈ R , the
-equivalent activation function in the real space representation is given by
-q 2 2
-q
- aqi +aki +bk̃i
-h
-i
+Adversarial Feature Matching for Text Generation
+
+f˜, encoded by D(·), to mimic the real sentence features f
+(also encoded by D(·)). This is achieved by matching the
+empirical distributions of f˜ and f via the MMD objective.
+
+ination ability, and reconstruction and moment matching
+precision, respectively. We argue that this framework has
+several advantages over the standard GAN objective in (1).
+
+Concisely, MMD measures the mean squared difference
+between two sets of samples X and Y, where X =
+{xi }i=1:Nx , xi ∈ Rd , Y = {yi }i=1:Ny , yi ∈ Rd , d is the
+dimensionality of the samples, and Nx and Ny are sample
+sizes for X and Y, respectively. The MMD metric characterizes the differences between X and Y over a Reproducing
+Kernel Hilbert Space (RKHS), H, associated with kernel
+function k(·) : Rd × Rd 7→ R. The kernel can be written
+as an inner product over H: k(x, x0 ) = hk(x, ·), k(x0 , ·)iH ,
+and φ(x) , k(x, ·) ∈ H is denoted as the feature mapping
+(Gretton et al., 2012). Formally, the MMD for two empirical
+distributions X and Y is given by
+
+The original GAN objective has been shown to be prone to
+mode collapsing, especially when the so-called log D alternative for the generator loss is used (Metz et al., 2017), i.e.,
+replacing the second term of (1) by −Ez∼pz log[D(G(z))].
+This is because when log D is used, fake-looking samples
+are penalized more severely than less diverse samples (Arjovsky & Bottou, 2017), thus grossly underestimating the
+variance of latent features. The loss in (3), on the other hand,
+forces the generator to produce highly diverse sentences to
+match the variation of real sentences, by latent moment
+matching, thus alleviating the mode-collapsing problem.
+We believe that leveraging MMD is general enough to be
+useful as a framework in other data domains, e.g., images.
+Presumably, the discrete nature of text data makes standard GAN prone to mode-collapsing. This is manifested
+by close neighbors in latent code space producing the same
+text output. In our approach, MMD and feature matching
+are introduced to alleviate mode collapsing with text data
+as motivating domain. However, whether such an objective
+is free from the convergence issues of the standard GAN,
+due to vanishing gradient from the generator, is known to
+be problem specific (Arjovsky & Bottou, 2017).
+
+LM M D2 = ||Ex∼X φ(x) − Ey∼Y φ(y)||2H
+
+(4)
+
+= Ex∼X Ex0 ∼X [k(x, x0 )]
++ Ey∼Y Ey0 ∼Y [k(y, y 0 )] − 2Ex∼X Ey∼Y [k(x, y)].
+Note that LM M D2 reaches its minimum when the two empirical distributions X and Y (in general) match exactly. For
+example, with a polynomial kernel, k(x, y) = (xT y + c)L ,
+minimizing LM M D2 can be understood as matching moments of two empirical distributions up to order L. With
+a universal kernel like the Gaussian kernel, k(x, y) =
+2
+exp(− ||x−y||
+), with bandwidth σ, minimizing the MMD
+2σ
+objective will match moments of all orders (Gretton et al.,
+2012). Here, we use MMD to match the empirical distribution of f˜ and f using a Gaussian kernel.
+The adversarial discriminator D(·) associated with the loss
+in (2) aims to produce sentence features that are most discriminative, representative and challenging. These aims
+are explicitly represented as the three components of (2),
+namely, (i) LGAN requires f˜ and f to be discriminative of
+real and synthesized sentences; (ii) Lrecon requires f˜ and
+f to preserve maximum reconstruction information for the
+latent code z that generates synthetic sentences; and (iii)
+LM M D2 forces D(·) to select the most challenging features
+for the generator to match.
+In the situation for which simple features are enough for the
+discrimination/reconstruction task, this additional loss seeks
+to estimate complex features that are difficult for the current
+generator, thus improving in terms of generation ability. In
+our experience, we find the reconstruction and MMD loss
+in D serve as regularizer to the binary classification loss, in
+that by adding these losses, discriminator features tend to
+be more spread-out in the feature space.
+In summary, the adversarial game associated with (2) and
+(3) is the following: D(·) attempts to select informative
+sentence features, while G(·) aims to match these features.
+Parameters λr and λm act as trade-off between discrim-
+
+Arjovsky & Bottou (2017) demonstrated that JSD yields
+weak gradient signals when the real and synthetic data
+are far apart. To deliver stable gradients, a smoother distance metric over the data domain is required. In (4),
+we are essentially employing a Neural Network (NN) embedding via Gaussian kernel for matching s and s̃, i.e.,
+ks (s, s0 ) = φ(g(s))T φ(g(s0 )), where g(·) denotes the NN
+embedding that maps from the data to the feature domain.
+Under the assumption that g(·) is a bijective mapping, i.e.,
+distinct sentences have different embedded feature vectors,
+in the Supplementary Material we prove that if the original kernel function k(x, y) = φ(x)T φ(y) is universal, the
+composed kernel ks (s, s0 ) is also universal. As shown in
+Gretton et al. (2012), the MMD is a proper metric when the
+kernel is universal. In fact, if the kernel function is universal,
+the MMD metric will be no worse than TVD in terms of
+vanishing gradients (Arjovsky et al., 2017). However, if the
+bandwidth of the kernel is too small, much smaller than the
+average distance between data points, the vanishing gradient
+problem remains (Arjovsky et al., 2017).
+Additionally, seeking to match the sentence features provides a more achievable and informative objective than directly trying to mislead the discriminator as in standard
+GAN. Specifically, the loss in (3) implies a clearer aim for
+the generator, as it requires matching the latent features
+(distribution-wise) as opposed to uniquely trying to fake a
+binary classifier.
+
+Adversarial Feature Matching for Text Generation
+
+Note that if the latent features from real and synthetic data
+have similar distributions it is unlikely that the discriminator,
+that uses these features as inputs, will be able to tell them
+apart. Implementation-wise, the updating signal from the
+generator does not need to propagate all the way back from
+the discriminator, but rather directly from the features layer,
+thus less prone to fading. We believe there may be other
+possible approaches for text generation using GAN, however, we hope to provide a first attempt toward overcoming
+some of the difficulties associated with it.
+2.3. Alternative (data efficient) objectives
+
+This
+
+Convolving Max-pooling
+Fully
+(Feature layer) connected
+MLP
+
+is
 a
-,
-if
-a2i + a2ki + bk̃i > 0
-i
-a2i +a2k
-φ̂(a) =
-i
-
-i
-0,
-otherwise
-where ki = ((i + n) mod 2n) and k̃i = (i mod n) for all
-i ∈ {1, . . . , 2n}. The activation function φ̂ is no longer
-applied to hidden units independently.
-Now we will show that the matrix Ŵ is orthogonal. By
-definition of a unitary matrix, we have W W ∗ = I where
-the ∗ represents the conjugate transpose. This implies that
-AA0 + BB 0 = I and BA0 − AB 0 = 0. And since we have
- 0
-
-AA + BB 0 AB 0 − BA0
-0
-Ŵ Ŵ =
-,
+
+f
+
+very
+good
+english
+movie
+
+G
+
+One limitation of the proposed approach is that the dimensionality of features f˜ and f could be much larger than
+the size of the subset of data (minibatch) used during learning, hence the empirical distribution may not be sufficiently
+representative. In fact, a reliable Gaussian kernel MMD twosample test generally requires the size of the minibatch to
+be proportional to the number of dimensions (Ramdas et al.,
+2014). To alleviate this issue, we consider two strategies.
+Compressing network We map f˜ and f into a lowerdimensional feature space using a compressing network with
+fully connected layers, also learned by D(·). This is sensible because the discriminator will still encourage the most
+challenging features to be abstracted (compressed) from the
+original features f˜ and f . This approach provides significant computational savings, as computation of the MMD in
+(4) scales with O(d2 df ), where df denotes the dimensionality of the feature vector. However, a lower-dimensional
+mapping may miss valuable information. Besides, finding
+the optimal mapping dimension may be difficult in practice.
+There exists a tradeoff between fast estimation and a richer
+feature vector, by setting df appropriately.
+Gaussian covariance matching We could also avoid using the kernel trick, as was used in (4). Instead, we can
+(c)
+replace LM M D2 by LG (below), where we accumulate
+(Gaussian) sufficient statistics from multiple minibatches,
+thus alleviating the inadequate-minibatch-size issue. Specifically,
+(c)
+
+LG = tr(Σ̃−1 Σ + Σ−1 Σ̃)
++ (µ̃ − µ)T (Σ̃−1 + Σ−1 )(µ̃ − µ) ,
+
+Sentence as a T by k matrix
+
 (5)
-BA0 − AB 0 AA0 + BB 0
+
+where Σ̃ and Σ represent the covariance matrices of synthetic and real sentence feature vectors f˜ and f , respectively.
+µ̃ and µ denote the mean vectors of f˜ and f , respectively.
+By setting Σ̃ = Σ = I, (5) reduces to the first-moment
+feature matching technique from Salimans et al. (2016).
+(c)
+Note that this loss LG is an upper bound of the JSD (omitting constant, proved in the Supplementary Material) between two multivariate Gaussian distribution N (µ, Σ) and
+
+Z
+
+h1
+
+…
+
+hL
+
+y1
+
+…
+
+yL
+
+LSTM
+
+Figure 2. Top: CNN-based sentence discriminator/encoder. Bottom: LSTM sentence generator.
+
+N (µ̃, Σ̃), which is more tractable than directly minimizing JSD. The feature vectors used in (5) are the neural net
+outputs before applying any non-linear activation function.
+We note that the Gaussian assumption may still be strong
+in many cases. In practice, we use a moving average of
+the most recent m minibatches for estimating all sufficient
+statistics Σ̃, Σ, µ̃ and µ. Further, Σ̃ and Σ are initialized to
+be I to prevent numerical problems.
+2.4. Model specification
+Let wt denote the t-th word in sentence s. Each word wt is
+embedded into a k-dimensional word vector xt = We [wt ],
+where We ∈ Rk×V is a (learned) word embedding matrix,
+V is the vocabulary size, and notation We [v] denotes the
+v-th column of matrix We .
+CNN discriminator We use the CNN architecture in Kim
+(2014); Collobert et al. (2011) for sentence encoding. It
+consists of a convolution layer and a max-pooling operation
+over the entire sentence for each feature map. A sentence
+of length T (padded where necessary) is represented as a
+matrix X ∈ Rk×T , by concatenating its word embeddings
+as columns, i.e., the t-th column of X is xt .
+As shown in Figure 2(top), a convolution operation involves
+a filter Wc ∈ Rk×h , applied to a window of h words to
+produce a new feature. Following Collobert et al. (2011), we
+induce a latent feature map c = γ(X ∗ Wc + b) ∈ RT −h+1 ,
+where γ(·) is a nonlinear activation function (we use the
+hyperbolic tangent, tanh), b ∈ RT −h+1 is a bias vector,
+
+Adversarial Feature Matching for Text Generation
+
+and ∗ denotes the convolutional operator. We then apply
+a max-over-time pooling operation (Collobert et al., 2011)
+to the feature map and take its maximum value, i.e., ĉ =
+max{c}, as the feature corresponding to this particular filter.
+Convolving the same filter with the h-gram at every position
+in the sentence allows features to be extracted independently
+of their position in the sentence. This pooling scheme tries
+to capture the most salient feature, i.e., the one with the
+highest value, for each feature map, effectively filtering
+out less informative compositions of words. Further, this
+pooling scheme also guarantees that the extracted features
+are independent of the length of the input sentence.
+The above process describes how one feature is extracted
+from one filter. In practice, the model uses multiple filters
+with varying window sizes. Each filter can be considered
+as a linguistic feature detector that learns to recognize a
+specific class of h-grams. Assume we have m window
+sizes, and for each window size, we use p filters, then we
+obtain a mp-dimensional vector f to represent a sentence.
+On top of this mp-dimensional feature vector, we specify
+a softmax layer to map the input sentence to an output
+D(X) ∈ [0, 1], representing the probability of X being from
+the data distribution (real), rather than from the adversarial
+generator (synthesized).
+There are other CNN architectures in the literature (Kalchbrenner et al., 2014; Hu et al., 2014; Johnson & Zhang,
+2015). We adopt the CNN model of Kim (2014); Collobert
+et al. (2011) due to its simplicity and excellent performance
+on sentence classification tasks.
+LSTM generator We specify an LSTM generator to
+translate a latent code vector, z, into a synthetic sentence s̃.
+This is illustrated in Figure 2(bottom). The probability of a
+length-T sentence, s̃, given the encoded feature vector, z, is
+defined as
+p(s̃|z) = p(w̃1 |z)
+
+T
+Y
+
+p(w̃t |w̃<t , z) ,
+
+(6)
+
+t=2
+
+where w̃t denotes the t-th generated token. Specifically,
+we generate the first word w̃1 , deterministically from z,
+with (w̃1 |z) = argmax(Vh1 ), where h1 = tanh(Cz).
+Bias terms are omitted for simplicity. All other words
+in the sentence are sequentially generated using the RNN,
+based on previously generated words, until the end-sentence
+symbol is generated. The t-th word w̃t is generated as
+(w̃t |w̃<t , z) = argmax(Vht ), where < t , {1, . . . , t − 1},
+and the hidden units ht are recursively updated through
+ht = U(yt−1 , ht−1 , z). V is a weight matrix used for computing a distribution over words. The input yt−1 for the t-th
+step is the embedding vector of the previous generated word
+w̃t−1 , i.e.,
+yt−1 = We [w̃t−1 ] .
 
 (7)
 
-Note that H1 (u) is not necessarily a Householder reflection. However, when u ∈ {1, −1}, H1 (u) is orthogonal.
-Finally, for n, k ∈ N and 1 ≤ k ≤ n, we define
-Mk : Rk × · · · × Rn → Rn×n
-(uk , . . . , un ) 7→ Hn (un ) . . . Hk (uk ).
-We propose to parametrise the transition matrix W of an
-RNN using the mappings {Mk }. When using m reflection
-vectors {ui }, the parametrisation can be expressed as
-W = Mn−m+1 (un−m+1 , . . . , un )
-= Hn (un ) . . . Hn−m+1 (un−m+1 ),
+The synthetic sentence s̃ = [w̃1 , · · · , w̃L ] is deterministically obtained given z by concatenating the generated words.
+In experiments, the transition function, U(·), is implemented
+with an LSTM (Hochreiter & Schmidhuber, 1997). Details
+are provided in the Supplementary Material.
+2.5. Training Techniques
+Soft-argmax approximation To train the generator G(·),
+which contains discrete variables, direct application of the
+gradient estimation may be difficult (Yu et al., 2017). Scorefunction-based approaches, such as the REINFORCE algorithm (Williams, 1992), achieve unbiased gradient estimation for discrete variables using Monte Carlo estimation.
+However, in our experiments, we found that the variance
+of the gradient estimation is very large, which is consistent
+with Maddison et al. (2017). Here we consider a soft-argmax
+operator (Zhang et al., 2016), similar to the Gumbel-softmax
+(Gumbel & Lieblein, 1954; Jang et al., 2017), when performing learning, as an approximation to (7):
+yt−1 = We softmax(Vht−1  L) .
 
 (8)
 
-where ui ∈ Ri for i ∈ {n − m + 1, . . . , n}.
-For the particular case where m = n in the above
-parametrisation, we have the following result.
-Theorem 1. The image of M1 includes the set of all n × n
-orthogonal matrices, i.e. O(n) ⊂ M1 [R × · · · × Rn ].
-Note that Theorem 1 would not be valid if H1 (·) was
-a standard Householder reflection. In fact, in the
- two0
-dimensional case, for instance, the matrix 10 −1
-cannot
-be expressed as the product of exactly two standard Householder matrices.
-The parametrisation in (8) has the following advantages:
+where  represents the element-wise product. Note that
+when L → ∞, this approximation approaches (7).
+Pre-training Previous literature (Goodfellow et al., 2014;
+Salimans et al., 2016) has discussed the fundamental difficulty of training GANs using gradient-based methods. In
+general, gradient descent optimization schemes may fail to
+converge to the equilibrium by moving along the orbit trajectory among saddle points (Salimans et al., 2016). Intuitively,
+good initialization can facilitate convergence. Toward this
+end, we initialize the LSTM parameters of the generator
+by pre-training a standard CNN-LSTM autoencoder (Gan
+et al., 2016). For the discriminator/encoder initialization,
+we use a permutation training strategy. For each sentence
+in the corpus, we randomly swap two words to construct a
+slightly tweaked sentence counterpart. The discriminator is
+pre-trained to distinguish the tweaked sentences from the
+true sentences. The swapping operation is preferred here
+because it constitutes a much more challenging task for
+the discriminator to learn, compared to adding or deleting
+words, where the structure of real sentences is more strongly
+disrupted, thus making it easier for the discriminator. The
+permutation pre-training is important because it requires the
+discriminator to learn features characteristic of sentences’
+long dependencies. We empirically found this provides a
+better initialization (compared to no pre-training) for the
+discriminator to learn good features.
+We also utilized other training techniques to stabilize training, such as soft-labeling (Salimans et al., 2016). Details of
+these are provided in the Supplementary Material.
 
-Efficient Orthogonal Parametrisation of Recurrent Neural Networks
+Adversarial Feature Matching for Text Generation
 
-Methods
-uRNN (Arjovsky et al., 2016)
+3. Related Work
+Generative Moment Matching Networks (GMMNs) (Dziugaite et al., 2015; Li et al., 2015) are closely related to our
+approach. However, these methods either directly match the
+empirical distribution in the data domain, or extract features
+using a pre-trained autoencoder (Li et al., 2015). If the goal
+is to perform matching in the data domain when generating
+sentences, the dimensionality of input data would be T × k
+(higher than 10,000 in our case). Note that the minibatch
+size required to obtain reasonable statistical power grows
+linearly with the number of dimension (Ramdas et al., 2014),
+and the computational cost of MMD grows quadratically
+with the size of data points. Therefore, directly applying
+GMMNs is often computationally prohibitive. Furthermore,
+directly matching in the data domain via GMMNs implies
+word-by-word discrepancy, which yields less smooth gradients. This happens because a word-by-word discrepancy
+ignores sentence structure. For example, two sentences “a
+boy is swimming” and “boy is swimming” will be far apart
+in a word-by-word metric, when they are indeed close in a
+sentence-by-sentence feature space.
+A two-step method, where a feature encoder is generated
+first as in Li et al. (2015) helps alleviate the problems above.
+However, in Li et al. (2015) the feature encoder is fixed once
+pre-trained, limiting the potential to adjust features during
+the training phase. Alternatively, our approach matches the
+real and synthetic data on a sentence feature space, where
+features are dynamically and adversarially adapted to focus
+on the most challenging features for the generator to mimic.
+In addition, features are designed to maintain both discrimination and reconstruction ability, instead of merely focusing
+on reconstruction as in Li et al. (2015).
+Recent work considered combining autoencoders or variational autoencoders (Kingma & Welling, 2014) with GAN
+(Zhao et al., 2017; Larsen et al., 2016; Makhzani et al.,
+2015; Mescheder et al., 2017; Wang & Liu, 2016). They
+demonstrated superior performance on image generation.
+Our approach is similar to these approaches; however, we
+attempt to learn the reconstruction of the latent code, instead of the input data (sentences). Donahue et al. (2017)
+learned a reverse mapping from data space to latent space.
+In our approach we enforce the discriminator and encoder to
+share a latent structure, with the aim of learning a representation for both discrimination and latent code reconstruction.
+Chen et al. (2016) maximized the mutual information between the generated data and the latent codes by leveraging
+a network-adapted variational proposal distribution. In our
+case, we minimize the distance between the original and
+reconstructed latent codes.
+Our approach attempts to minimize a NN-based embedded
+MMD distance of two empirical distributions. Aside from
+MMD, kernel-based discrepancy metrics such as kernelized
 
-Constraint on the
-transition matrix
-kW k = 1
+Stein discrepancy (Liu et al., 2016; Wang & Liu, 2016) have
+been shown to be computationally tractable, while maintaining statistical power. We leave the investigation of using
+Stein for moment matching as a promising future direction. Wasserstein GAN (Arjovsky et al., 2017) considers an
+Earth-Mover (EM) distance of the real data and synthetic
+data distribution, instead of the JSD as in standard GAN
+(Goodfellow et al., 2014) or TVD as in Zhao et al. (2017).
+The EM metric yields stable gradients, thus avoiding the collapsing mode and vanishing gradient problem of the latter
+two. We note that our approach is equivalent to minimizing
+a MMD loss over the data domain, however, with a NNbased embedded Gaussian kernel. As shown in Arjovsky
+et al. (2017), MMD is a proper metric when the kernel is
+universal. Because of the similarity of the conditions, our approach enjoys the advantages of Wasserstein GAN, namely,
+ameliorating the gradient vanishing problems.
 
-Time complexity of one
-online gradient step
-O(T n log(n))
+4. Experiments
+Data and Experimental Setup Our model is trained using a combination of two datasets: (i) the BookCorpus
+dataset (Zhu et al., 2015), which consists of 70 million sentences from over 7000 books; and (ii) the ArXiv dataset,
+which consists of 5 million sentences from abstracts of papers from various subjects, obtained from the arXiv website.
+The motivation for merging two different corpora is to investigate whether the model can generate sentences that
+integrate both scientific and informal writing styles. We randomly choose 0.5 million sentences from BookCorpus and
+0.5 million sentences from arXiv to construct training and
+validation sets, i.e., 1 million sentences for each. For testing,
+we randomly select 25,000 sentences from both corpus, for
+a total of 50,000 sentences.
+We train the generator and discriminator/encoder iteratively.
+Provided that the LSTM generator typically involves more
+parameters and is more difficult to train than the CNN discriminator, we perform one optimization step for the discriminator for every K = 5 steps of the generator. We use a
+mixture of 5 isotropic Gaussian (RBF) kernels with different
+bandwidths σ as in Li et al. (2015). Bandwidth parameters
+are selected to be close to the median distance (in our case
+around 20) of feature vectors encoded from real sentences.
+λr and λm are selected based on the performance on the
+validation set. The validation performance is evaluated by
+loss of generator and corpus-level BLEU score (Papineni
+et al., 2002), described below.
+For the CNN discriminator/encoder, we use filter windows
+(h) of sizes {3,4,5} with 300 feature maps each, hence each
+sentence is represented as a 900-dimensional vector. The
+dimensionality of z and ẑ is also 900. The feature vector is
+then fed into a 900-200-2 fully connected network for the
+discriminator and 900-900-900 for encoder, with sigmoid
 
-kW k = 1
+Adversarial Feature Matching for Text Generation
 
-O(T n2 + n3 )
-
-Search space of the
-transition matrix
-A subset of U(n)
-when n > 7
-The full U(n) set
-
-kW k = 1
-
-O(T n2 + n3 )
-
-The full U(n) set
-
-kW k = 1
-
-O(T nm)
-where m ≤ n
-
-The full O(n) set
-when m = n
-
-Full-capacity uRNN
-(Wisdom et al., 2016)
-Unitary RNN
-(Hyland & Rätsch, 2017)
-oRNN
-(Our approach)
-
-Table 1. Table showing the time complexities associated with one stochastic gradient step (mini-batch size =1) for different methods,
-when the size of the hidden layer of an RNN is n and the input sequence has length T .
-
-1. The parametrisation is smooth* , which is convenient
-for training with gradient descent. It is also flexible - a
-good trade-off between expressiveness and speed can
-be found by tuning the number of reflection vectors.
-2. The time and space complexities involved in one gradient calculation are, in the worst case, the same as
-that of the sRNN with the same number of hidden
-units. This is discussed in the following subsections.
-
-at each time step t. Note that in Equation (10) h(t−1) is
-taken as a constant
-with respect to U . Furthermore, we
-PT
-∂L
-∂L
-= t=1 ∂U
-have ∂U
-(t) , where T is the length of the input
-sequence. The gradient flow through the RNN at time step
-t is shown in Figure 1.
-
-3. When m < n, the matrix W is always orthogonal, as
-long as the reflection vectors are nonzero. For m = n,
-the only additional requirement for W to be orthogonal is that u1 ∈ {−1, 1}.
-4. When m = n, the transition matrix can span the whole
-set of n × n orthogonal matrices. In this case, the total
-number of parameters needed for W is n(n + 1)/2.
-This results in only n redundant parameters since the
-orthogonal set O(n) is a n(n − 1)/2 manifold.
-4.1. Back-propagation algorithm
-Let ui ∈ Ri . Let U := (un | . . . |un−m+1 ) ∈ Rn×m be
-the parameter matrix constructed from the reflection vectors {ui }. In particular, the j-th column of U can be expressed using the zero vector 0j−1 ∈ Rj−1 as
-
-
-0j−1
-U∗,j =
-∈ Rn , 1 ≤ j ≤ m.
-(9)
-un−j+1
-Let L be a scalar loss function and C (t) := W h(t−1) , where
-W is constructed using the {ui } vectors following Equation (8). In order to back-propagate the gradients through
-time, we need to compute the following partial derivatives
- (t) 0
-∂L
-∂C
-∂L
-:=
-,
-(10)
-∂U
-∂U (t)
-∂C (t)
-
-0
-∂L
-∂C (t)
-∂L
-=
-,
-(11)
-(t−1)
-(t−1)
-∂h
-∂h
-∂C (t)
-* except
-
-on a subset of zero Lebesgue measure.
-
-Figure 1. Gradient
-P flow through the RNN at time step t. Note that
-we have L = Tt=1 Lt (ot , yt ), where {yt } are target outputs.
-
-Before describing the algorithm to compute the back∂L
-∂L
-propagated gradients ∂U
-(t) and ∂h(t−1) , we first derive their
-∂L
-(t−1)
-expressions as a function of U , h
-and ∂C
-(t) using the
-compact WY representation (Joffrain et al., 2006) of the
-product of Householder reflections.
-Proposition 1. Let n, m ∈ N s.t. m ≤ n − 1. Let ui ∈
-Ri and U = (un | . . . |un−m+1 ) be the matrix defined in
-Equation (9). We have
-1
-T := striu(U 0 U ) + diag(U 0 U ),
-(12)
-2
-Hn (un ) . . . Hn−m+1 (un−m+1 ) = I − U T −1 U 0 , (13)
-where striu(U 0 U ), and diag(U 0 U ) represent the strictly upper part and the diagonal of the matrix U 0 U , respectively.
-Equation (13) is the compact WY representation of the
-product of Householder reflections. For the particular case
-where m = n, the RHS of Equation (13) should be replaced by I − U T −1 U 0 H1 (u1 ), where H1 is defined in
-(7) and U = (un | . . . |u2 ).
-The following theorem gives the expressions of the gradi∂L
-∂L
-(t−1)
-ents ∂U
-.
-(t) and ∂h(t−1) when m ≤ n − 1 and h = h
-
-Efficient Orthogonal Parametrisation of Recurrent Neural Networks
-
-Algorithm 1 Local forward and backward propagations at
-time step t. For a matrix A, A∗,k denotes the k-th column.
-∂L
-1: Inputs: h(t−1) , ∂C
-, U = (un | . . . |un−m+1 ).
-∂L
-(t)
-2: Outputs: ∂U (t) , ∂h∂L
-= W h(t−1)
-(t−1) , C
-
-3:
-4:
-5:
-6:
-7:
-8:
-9:
-10:
-11:
-12:
-13:
-14:
-15:
-16:
-17:
-18:
-
-Require: G ∈ Rn×m , g ∈ Rn , H ∈ Rn×(m+1)
-2
-2
-N ← (kun k , . . . , kun−m+1 k )
-H∗,m+1 ← h(t−1)
-∂L
-g ← ∂C
-for k = m to 1 do {Local Forward Propagation}
-0
-h̃k ← N2k U∗,k
-H∗,k+1
-H∗,k ← H∗,k+1 − h̃k U∗,k
-end for
-for k = 1 to m do {Local Backward Propagation}
-0
-g
-C̃k ← N2k U∗,k
-g ← g − C̃k U∗,k
-G∗,k ← −h̃k g − C̃k H∗,k+1
-end for
-C (t) ← H∗,1
-∂L
-←g
-∂h(t−1)
-∂L
-←
-G
-∂U (t)
-
-Theorem 2. Let n, m ∈ N s.t. m ≤ n−1. Let U ∈ Rn×m ,
-h ∈ Rn , and C = (I − U T −1 U 0 )h, where T is defined in
-Equation (12). If L is a scalar loss function which depends
-on C, then we have
-∂L
-∂L 0
-=U [(h̃C̃ 0 ) ◦ B 0 + (C̃ h̃0 ) ◦ B] −
-h̃ − hC̃ 0 , (14)
-∂U
-∂C
-∂L ∂L
-=
-− U C̃,
-(15)
-∂h ∂C
-∂L
-, and B =
-where h̃ = T −1 U 0 h, C̃ = (T 0 )−1 U 0 ∂C
-1
-striu(J) + 2 I, with J being the m × m matrix of all ones
-and ◦ the Hadamard product.
-
-The proof of Equations (14) and (15) is provided in Appendix A. Based on Theorem 2, Algorithm 1 performs the
-one-step forward-propagation (FP) and back-propagation
-∂L
-∂L
-(BP) required to compute C (t) , ∂U
-(t) , and ∂h(t−1) . See
-Appendix B for more detail about how this algorithm is derived using Theorem 2.
-In the next section we analyse the time and space complexities of this algorithm.
-4.2. Time and Space complexity
-At each time step t, the flop count required by Algorithm
-1 is (13n + 2)m; 6nm for the one-step FP and (7n + 2)m
-for the one-step BP. Note that the vector N only needs to
-be calculated at one time step. This reduces the flop count
-at the remaining time steps to (11n + 3)m. The fact that
-the matrix U has all zeros in its upper triangular part can be
-used to further reduce the total flop count to (11n − 3m +
-
-Model
-oRNN (n, m)
-sRNN (n)
-
-Flop counts
-FP
-BP
-(4n − m + 2)m (7n − 2m + 3)m
-2n2 − n
-3n2 − n
-
-Table 2. Summary of the flop counts due to the computations of
-one-step FP and BP through the hidden-to-hidden connections.
-The BP flop counts for the oRNN case assumes that the H matrices (see Algorithm 1) are not locally generated during the BP
-steps. Otherwise, the flop count would be (11n − 3m + 5)m.
-
-5)m; (4n − m + 2)m for the one-step FP and (7n − 2m +
-3)m for the one-step BP. See Appendix C for more details.
-Note that if the values of the matrices H, defined in Algorithm 1, are first stored during a “global” FP (i.e. through
-all time steps), then used in the BP steps, the time complexity† for a global FP and BP using one input sequence
-of length T are, respectively, ≈ 3n2 T and ≈ 5n2 T , when
-m ≈ n and n  1. In contrast with the sRNN case with
-n hidden units, the global FP and BP have time complexities ≈ 2n2 T and ≈ 3n2 T . Hence, when m ≈ n, the FP
-and BP steps using our parametrisation require only about
-twice more flops than the sRNN case with the same number
-of hidden units.
-Note, however, that storing the values of the matrices H at
-all time steps requires the storage of mnT values for one
-sequence of length T , compared with nT when only the
-hidden states {h(t) }t=1 are stored. When m  1 this may
-not be practical. One solution to this problem is to generate
-the matrices H locally at each BP step using U and h(t−1) .
-This results in a global BP complexity of (11n − 3m +
-5)mT . Table 2 summarises the flop counts for the FP and
-BP steps. Note that these flop counts are for the case when
-m ≤ n − 1. When m = n, the complexity added due to the
-multiplication by H1 (u1 ) is negligible.
-4.3. Extension to the Unitary case
-Although we decided to focus on the set of real-valued orthogonal matrices, for the reasons given in Section 3, our
-parametrisation can readily be modified to apply to the general unitary case.
-Let Ĥk : Ck → Cn×n , 2 ≤ k ≤ n, be defined by Equation
-(6) where the transpose sign 0 is replaced by the conjugate
-transpose ∗ . Furthermore, let Ĥ1 : Rn → Cn×n be defined
-as Ĥ1 (θ) = diag(eiθ1 , . . . , eiθn ). With the new mappings
-{Ĥk }k=n
-k=1 , we have the following corollary.
-†
-We considered only the time complexity due to computations
-through the hidden-to-hidden connections of the network.
-
-Efficient Orthogonal Parametrisation of Recurrent Neural Networks
-
-Corollary 1. Let M̂1 be the mapping defined as
+Real sent. feature mean
 
 1
 
-M̂1 : Rn × C2 × · · · × Cn → Cn×n
+Table 1. Quantitative results using BLEU-2,3,4 and KDE.
+0.5
 
-LSTM
-
-oRNN
-
-sRNN
-
-274 511 1066
-
-244 519 1026
-
-267 501 1051
-
-# param
-
-# param
-
-# param
-
-0.8
-
-The image of M̂1 spans the full set of unitary matrices
-U(n) and any point on its image is a unitary matrix.
-
-NMSE
-
-(θ, u2 , . . . , un ) 7→Ĥn (un ) . . . Ĥ2 (u2 )Ĥ1 (θ).
-0.6
-
-0.4
-
-0.2
-
-5. Experiments
-All RNN models were implemented using the python library theano (Theano Development Team, 2016). For efficiency, we implemented the one-step FP and BP algorithms described in Algorithm 1 using C code‡ . We tested
-the new parametrisation on five different datasets all having
-long-term dependencies. We call our parametrised network
-oRNN (for orthogonal RNN). We set its activation function
-x
-, x). To
-to the leaky_ReLU defined as φ(x) = max( 10
-ensure that the transition matrix of the oRNN is always orthogonal, we set the scalar u1 to -1 if u1 ≤ 0 and 1 otherwise after each gradient update. Note that the parameter
-matrix U in Equation (9) has all zeros in its upper triangular
-part. Therefore, after calculating the gradient of a loss with
-∂L
-respect to U (i.e. ∂U
-), the values in the upper triangular
-part are set to zero.
-For all experiments, we used the adam method for stochastic gradient descent (Kingma & Ba, 2014). We initialised
-all the parameters using uniform distributions similar to
-(Arjovsky et al., 2016). The biases of all models were set
-to zero, except for the forget bias of the LSTM, which we
-set to 5 to facilitate the learning of long-term dependencies
-(Koutnı́k et al., 2014).
-5.1. Sequence generation
-In this experiment, we followed a similar setting to
-(Koutnı́k et al., 2014) where we trained RNNs to encode
-song excerpts. We used the track Manyrista from album
-Musica Deposita by Cuprum. We extracted five consecutive excerpts around the beginning of the song, each having 800 data points and corresponding to 18ms with a
-44.1Hz sampling frequency. We trained an sRNN, LSTM,
-and oRNN for 5000 epochs on each of the pieces with
-five random seeds. For each run, the lowest Normalised
-Mean Squared Error (NMSE) during the 5000 epochs was
-recorded. For each model, we tested three different hidden
-sizes. The total number of parameters Np corresponding
-to these hidden sizes was approximately equal to 250, 500,
-and 1000. For the oRNN, we set the number of reflection
-vectors to the hidden size for each case, so that the transition matrix is allowed to span the full set of orthogonal
-‡
-Our implementation can be found at https://github.
-com/zmhammedi/Orthogonal_RNN.
+AE
+VAE
+seqGAN
+textGAN(MM)
+textGAN(CM)
+textGAN(MMD)
+textGAN(MMD-L)
 
 0
 
-Figure 2. Sequence generation task: The plots show the NMSE
-distributions for the different models with respect to the total number of parameters for the sequence generation task. The horizontal
-red lines represent the medians of the NMSE over 25 data points
-(i.e. five seeds for each of the five song excerpts). The solid
-rectangles and the dashed bars represent the [25% − 75%] and
-[9% − 91%] confidence intervals respectively.
-1
-0
-True data
-
-LSTM
-
-True data
-
-oRNN
-
-True data
-
-sRNN
+-0.5
 
 -1
-1
-0
--1
-1
-0
 -1
 
-200
+-0.5
 
-400
-
-600
-
-800
-
-Figure 3. Sequence generation task: The RNN-generated sequences against the true data for one of the five excerpts used.
-We only displayed the best performing models for Np ' 1000.
-
-matrices. The results are shown in Figures 2 and 3. All the
-learning rates were set to 10−3 . The orthogonal parametrisation outperformed the sRNN and performed on average
-better than the LSTM.
-5.2. Addition Task
-In this experiment, we followed a similar setting to (Arjovsky et al., 2016), where the goal of the RNN is to output
-the sum of two elements in the first dimension of a twodimensional sequence. The location of the two elements
-to be summed are specified by the entries in the second
-dimension of the input sequence. In particular, the first dimension of every input sequence consists of random numbers between 0 and 1. The second dimension has all zeros
-except for two elements equal to 1. The first unit entry
-
-Efficient Orthogonal Parametrisation of Recurrent Neural Networks
-
-T = 400
+0
 
 0.5
 
-T = 800
+BLEU-4
+0.01±0.01
+0.02±0.02
+0.04±0.04
+0.09±0.04
+0.12±0.03
+0.13±0.05
+0.11±0.05
 
-LSTM
-sRNN
-oRNN
+BLEU-3
+0.11±0.02
+0.16±0.03
+0.30±0.08
+0.42±0.04
+0.49±0.06
+0.49±0.06
+0.52±0.07
 
-0.4
+BLEU-2
+0.39±0.02
+0.54±0.03
+0.67±0.04
+0.77±0.03
+0.84±0.02
+0.83±0.04
+0.85±0.04
 
-LSTM
-sRNN
-oRNN
-
-1
-
-0.8
-0.7
-0.6
-0.5
-oRNN n=256, m=32, mBS=1, LR=10-4
-
-0.3
-
-0.4
-
-5
-
-10
-
-15
-
-20
-
-epochs
-0.2
-
-Figure 5. MNIST experiment: Validation accuracy of the oRNN
-in Table 3 as a function of the number of epochs. mBS and LR in
-the legend stand for mini-batch size and learning rate respectively.
-
-0.1
-0
-
-0
-
-20
-
-40
-
-x 100 iterations
-
-0
-
-20
-
-40
-
-60
-
-80
-
-x 100 iterations
-
-Figure 4. Addition task: For each lag T , the red curves represent
-two runs of the oRNN model with two different random initialisation seeds. LSTM and sRNN did not beat the baseline MSE.
-
-We trained an oRNN with n = 128 hidden units and
-m = 16 reflections. We trained an LSTM and sRNN with
-hidden sizes 28 and 54, respectively, corresponding to a total number of parameters ≈ 3600 (i.e. same as the oRNN
-model). We chose a batch size of 50, and after each iteration, a new set of sequences was generated randomly. The
-learning rate for the oRNN was set to 0.01. Figure 4 displays the results for both lags.
-The oRNN was able to beat the baseline MSE in less than
-5000 iterations for both lags and for two different random
-initialisation seeds. This is in line with the results of the
-unitary RNN (Arjovsky et al., 2016).
-5.3. Pixel MNIST
-In this experiment, we used the MNIST image dataset.
-We split the dataset into training (55000 instances), validation (5000 instances), and test sets (10000 instances). We
-trained oRNNs with n ∈ {128, 256} and m ∈ {16, 32, 64},
-where n and m are the number of hidden units and reflections vectors respectively, to minimise the cross-entropy
-error function. We experimented with (mini-batch size,
-learning rate) ∈ {(1, 10−4 ), (50, 10−3 )}.
-Table 3 compares the test performance of our best model
-against results available in the literature for unitary/orthogonal RNNs. Despite having fewer total number of parameters, our model performed better than three out the four
-models selected for comparison (all having ≥ 16K parameters). Figure 5 shows the validation accuracy as a function
-of the number of epochs of our oRNN model in Table 3.
+KDE(nats)
+2727±42
+1892±25
+2019±53
+1823±50
+1686±41
+1688±38
+1684±44
 
 1
 
-MNIST convergence plots for oRNN
+Syn. sent. feature mean
 
-0.9
+Figure 3. Moment matching comparison. Left: expectations of
+latent features from real vs. synthetic data. Right: elements of
+Σ̃i,j,f vs. Σ̃i,j,f˜, for real and synthetic data, respectively.
 
-Accuracy
+activation units connecting the intermediate layers and softmax/tanh units for the top layer of discriminator/encoder.
+We did not observe performance changes by adding dropout.
+For the LSTM sentence generator, we use one hidden layer
+of 500 units.
+Gradients are clipped if the norm of the parameter vector
+exceeds 5 (Sutskever et al., 2014). Adam (Kingma & Ba,
+2015) with learning rate 5 × 10−5 for both discriminator
+and generator is utilized for optimization. The size of the
+minibatch is set to 256.
+Both the generator and the discriminator are pre-trained
+using the strategies described in Section 2. We also employed a warm-up training during the first two epochs, as
+we found it improves convergence during the initial stage
+of learning. Specifically, we use a mean-matching objective
+for the generator loss, i.e., ||Ef −Ef˜||2 , as in Salimans et al.
+(2016). Further details of the experimental design are provided in the the Supplementary Material. All experiments
+are implemented in Theano (Bastien et al., 2012), using one
+NVIDIA GeForce GTX TITAN X GPU with 12GB memory.
+The model was trained for 50 epochs in roughly 3 days.
+Learning curves are shown in the Supplementary Material.
+Matching feature distributions We first examine the
+generator’s ability to produce synthetic features similar to
+those obtained from real data. For this purpose, we calculate the empirical expectation of the 900-dimensional sentence feature vector over 2,000 real sentences and 2,000 synthetic sentences. As shown in Figure 3(left), the expectation
+of these 900 feature dimensions from synthetic sentences
+matches well with the feature expectation from the real sentences. We also compared the estimated covariance matrix
+elements Σ̃i,j,f (including 900 ∗ 899/2 off-diagonal elements and 900 diagonal elements) from real data against the
+covariance matrix elements Σ̃i,j,f˜ estimated from synthetic
+data, in Figure 3(right). We observe that the covariance
+structure of the 900-dimensional features from real and synthetic sentences in general match well. The full covariance
+matrices for real and synthetic sentences are provided in
 
-MSE
+the Supplementary Material. We observe that the (mapped)
+synthetic features nicely cover the real sentence features
+density, while “completing” other areas of low density.
+Quantitative comparison We evaluate the generatedsentence quality using the BLEU score (Papineni et al.,
+2002) and Kernel Density Estimation (KDE), as in Goodfellow et al. (2014); Nowozin et al. (2016). For comparison, we consider textGAN with 4 different loss objectives:
+Mean Matching (MM) as in Salimans et al. (2016), Covariance Matching (CM) as in (5), MMD and MMD with
+compressed network (MMD-L), by mapping the original
+900-dimensional features to 200-dimensional, as described
+in Section 2.3. We also compare to a baseline autoencoder (AE) model. The AE uses a CNN as encoder and
+an LSTM as decoder, where the CNN and LSTM network
+structures are set to be identical as the CNN and LSTM used
+in textGAN. We finally consider a Variational Autoencoder
+(VAE) implemented as in Bowman et al. (2016). To train
+the VAE model, we use annealing to gradually increase the
+KL divergence between the prior and approximated posterior. The details are provided in the the Supplementary
+Material. We also compare with seqGAN (Yu et al., 2017).
+For seqGAN we follow the authors’ guidelines of running
+350 pre-training epochs followed by 50 discriminator training epochs, to generate 320 sentences. For AE, VAE and
+textGAN, we first uniformly sample 320 latent codes from
+the latent code space, and use the corresponding generator
+(or decoder, in the AE/VAE case) to generate sentences.
+For BLEU score evaluation, we follow the strategy in Yu
+et al. (2017) of using the entire test set as the reference. For
+KDE evaluation, the lengths of the generated sentences are
+different, thus we first embed all the sentences to a 900dimensional vector. Since no standard sentence encoder
+is available, we use the encoder learned from AE. The covariance matrix for the Parzen kernel in KDE is set to be
+the covariance of feature vectors for real tested sentences.
+Despite the fact that the KDE approach, as a log-likelihood
+estimator tends to have high variance (Theis et al., 2016),
+the KDE score tracks well with our BLEU score evaluation.
+The results are shown in Table 1. MMD and MMD-L generally score higher in sentences quality. MMD-L seems better
+at capturing 2-grams (BLEU-2), while MMD outperforms
+MMD-L in 4-grams (BLEU-4). We also observed that when
+using CM, the generated sentences tend to be shorter than
 
-MNIST convergence plot
+Adversarial Feature Matching for Text Generation
+Table 2. Sentences generated by textGAN.
+a
+b
+c
+d
+e
+f
 
-0.9
+we show the joint likelihood estimator ( in a large number of estimating
+variables embedded on the subspace learning ) .
+this problem achieves less interesting choices of convergence guarantees
+on turing machine learning .
+in hidden markov relational spaces , the random walk feature
+decomposition is unique generalized parametric mappings.
+i see those primitives specifying a deterministic probabilistic machine
+learning algorithm .
+i wanted in alone in a gene expression dataset which do n’t form phantom
+action values .
+as opposite to a set of fuzzy modelling algorithm , pruning is performed
+using a template representing network structures .
 
-Accuracy
+MMD (not shown).
 
-is located in the first half of the sequence, and the second
-one in the second half. We tested two different sequence
-lengths T = 400, 800. All models were trained to minimise the Mean Squared Error (MSE). The baseline MSE
-for this task is 0.167; for a model that always outputs one.
-
-0.8
-0.7
-(n,m,mBS,LR)=(256,16,1,10 -4 )
-(n,m,mBS,LR)=(256,32,1,10 -4 )
-(n,m,mBS,LR)=(256,64,1,10 -4 )
-(n,m,mBS,LR)=(128,32,50,10-3 )
-(n,m,mBS,LR)=(128,64,50,10-3 )
-
-0.6
-0.5
-0.4
-
-2
-
-4
-
-6
-
-epochs
-
-Figure 6. MNIST experiment: Effect of varying the number of reflection vectors m on the validation accuracy and speed of convergence. mBS (resp, LR) stands for mini-batch size (resp, learning
-rate).
-
-Figure 6 shows the effect of varying the number of reflection vectors m on the performance.
-5.4. Penn Tree Bank
-In this experiment, we tested the oRNN on the task of character level prediction using the Penn Tree Bank Corpus.
-The data was split into training (5017K characters), validation (393K characters), and test sets (442K characters).
-The total number of unique characters in the corpus was 49.
-The vocabulary size was 10K and any other words were replaced by the special token <unk>. The number of characters per instance (i.e. char/line) in the training data ranged
-between 2 and 518 with an average of 118 char/line. We
-trained an oRNN and LSTM with hidden units 512 and 183
-respectively, corresponding to a total of ≈ 180K parameters, for 20 epochs. We set the number of reflections to 510
-
-Efficient Orthogonal Parametrisation of Recurrent Neural Networks
-
-Model
-oRNN
-RNN (Vorontsov et al., 2017)
-uRNN (Arjovsky et al., 2016)
-RC uRNN (Wisdom et al., 2016)
-FC uRNN (Wisdom et al., 2016)
-
-hidden size
-(# reflections)
-256 (m=32)
-128
-512
-512
-116
-
-Number of
-parameters
-≈11K
-≈35K
-≈16K
-≈16K
-≈16K
-
-validation
-accuracy
-97.0 %
+Table 3. Intermediate sentences produced from linear transition
+between two points (A and B) in the latent feature space. Each
+sentence is generated from a latent point on a linear path.
+A
 -
 
-test
-accuracy
-97.2 %
-94.1 %
-95.1 %
-97.5 %
-92.8 %
+-
 
-5-step1-step
+Generated sentences Table 2 shows six sentences generated by textGAN. Note that the generated sentences seem
+to be able to produce novel phrases by imagining concept
+combinations, e.g., in Table 2(b,c,f), or to borrow words
+from a different corpus to compose novel sentences, e.g., in
+Table 2(d,e). In many cases, it learns to automatically match
+the parentheses and quotation marks, e.g., in Table 2(a), and
+can synthesize relatively long sentences, e.g., in 2(a,f). In
+general, the synthetic sentences seem syntactically reasonable. However, the semantic meaning is less well preserved
+especially in sentence of more than 20 words, e.g., in Table 2(e,f).
+We observe that the discriminator can still sufficiently distinguish the synthetic sentences from the real ones (the
+probability to predict synthetic data as real is around 0.05),
+even when the synthetic sentences seems to perserve reasonable grammatical structure and use proper wording. It
+is likely that the CNN is able to accurately characterize
+the semantic meaning and differentiate sentences, while the
+generator may get trapped into a local optimum, where any
+slight modification would result in a higher loss (3) for the
+generator. Presumably, long-range distance features are not
+difficult to abstract by the discriminator/encoder, however,
+is less likely to be imitated by the generator. One promising
+direction is to leverage reinforcement learning strategies as
+in Yu et al. (2017), where the updating for LSTM can be
+more effectively steered. Nevertheless, investigation on how
+to improve the the long-range behavior is left as interesting
+future work.
+Latent feature space trajectories Following Bowman
+et al. (2016), we further empirically evaluate whether the
+latent variable space can “densely” encode sentences. We
+visualize the transition from one sentence to another by constructing a linear path between two randomly selected points
+in latent feature space, to then generate the intermediate sentences along the linear trajectory. For comparison, a baseline autoencoder (AE) is trained for 20 epochs. The results
+for textGAN and AE are presented in Table 3. Compared
+to AE, the sentences produced by textGAN are generally
 
-Table 3. Results summary for the MNIST digit classification experiment and comparison with the uRNN results available in the literature.
-’FC’ and ’RC’ stand for Full-Capacity and Restricted Capacity respectively. The oRNN with n = 256 was trained using a mini-batch
-size of 1 and a learning rate of 10−4 .
+B
 
-Model (nh )
-oRNN (512)
-LSTM (184)
-oRNN (512)
-LSTM (183)
+textGAN
+AE
+our methods apply novel approaches to solve modeling tasks .
+our methods apply novel apour methods apply to train UNK
+proaches to solve modeling .
+models involving complex .
+our methods apply two different
+our methods solve use to train ) .
+approaches to solve computing .
+our methods achieves some differour approach show UNK to models
+ent approaches to solve computexist .
+ing .
+our methods achieves the best exthat supervised algorithms show to
+pert structure detection .
+UNK speed .
+the methods have been different
+that address algorithms to handle )
+related tasks .
+.
+the guy is the minimum of UNK .
+that address versions to be used in
+.
+the guy is n’t easy tonight .
+i believe the means of this attempt
+to cope .
+i believe the guy is n’t smart
+i believe it ’s we be used to get .
+okay?
+i believe the guy is n’t smart .
+i believe it i ’m a way to belong .
+i believe i ’m going to get out .
 
-# params
-183K
-181K
-183K
-180K
+more syntactically and semantically reasonable. The transition suggest “smoothness” and interpretability, however, the
+wording choices and sentence structure showed dramatic
+changes in some regions in the latent feature space. This
+seems to indicate that local “transition smoothness” varies
+from region to region.
 
-valid cost
-1.73
-1.69
-3.85
-3.81
+5. Conclusion
+We have introduced a novel approach for text generation
+using adversarial training, termed TextGAN, and have discussed several techniques to specify and train such a model.
+We demonstrated that the proposed model delivers superior
+performance compared to related approaches, can produce
+realistic sentences, and that the learned latent representation space can “smoothly” encode plausible sentences. We
+quantitatively evaluate the proposed methods with baseline
+models and existing methods. The results indicate superior
+performance of TextGAN.
+In future work, we will attempt to apply conditional GAN
+models (Mirza & Osindero, 2014) to disentangle the latent
+representations for different writing styles. This would enable a smooth lexical and grammatical transition between
+different writing styles. It would be also interesting to generate text by conditioning on observed images (Pu et al., 2016).
+In addition, we plan to leverage an additional refining stage
+where a reverse-order LSTM (Graves & Schmidhuber, 2005)
+is applied after the sentence is first generated, to produce
+sentences with better long-term semantical interpretation.
 
-test cost
-1.68
-1.68
-3.85
-3.8
+Acknowledgments
+This research was supported by ARO, DARPA, DOE, NGA,
+ONR and NSF.
 
-(i.e. the real representation of modReLU defined in Equation (4)) on the oRNN. This did not improve the performance compared to the leaky_ReLU case suggesting that
-the block structure of the uRNN transition matrix, when expressed in the real space (see Section 3), may confer special
-benefits in some cases.
-
-Table 4. Results summary for the Penn Tree bank experiment.
-
-6. Discussion
-for the oRNN. The learning rate was set to 0.0001 for both
-models with a mini-batch size of 1.
-Similarly to (Pascanu et al., 2013) we considered two tasks:
-one where the model predicts one character ahead and the
-other where it predicts a character five steps ahead. It
-was suggested that solving the later task would require the
-learning of longer term correlations in the data rather than
-the shorter ones. Table 4 summarises the test results. The
-oRNN and LSTM performed similarly to each other on the
-one-step head prediction task. Whereas on the five-step
-ahead prediction task, the LSTM was better. The performance of both models on this task was close to the state of
-the art result for RNNs 3.74 bpc (Pascanu et al., 2013).
-Nevertheless, our oRNN still outperformed the results of
-(Vorontsov et al., 2017) which used both soft and hard orthogonality constraints on the transition matrix. Their RNN
-was trained on 99% of the data (sentences with ≤ 300 characters) and had the same number of hidden units as the
-oRNN in our experiment. The lowest test cost achieved
-was 2.20(bpc) for the one-step-ahead prediction task.
-5.5. Copying task
-We tested our model on the copy task described in details in
-(Gers et al., 2001; Arjovsky et al., 2016). Using an oRNN
-with the leaky_ReLU we were not able to reproduce the
-same performance as the uRNN (Arjovsky et al., 2016;
-Wisdom et al., 2016). However, we were able to achieve
-a comparable performance when using the OPLU activation
-function (Chernodub & Nowicki, 2016), which is a normpreserving activation function. In order to explore whether
-the poor performance of the oRNN was only due to the activation function, we tested the same activation as the uRNN
-
-In this work, we presented a new parametrisation of
-the transition matrix of a recurrent neural network using Householder reflections. This method allows an easy
-and computationally efficient way to enforce an orthogonal constraint on the transition matrix which then ensures
-that exploding gradients do not occur during training. Our
-method could also be applied to other deep neural architectures to enforce orthogonality between hidden layers. Note
-that a “soft” orthogonal constraint could also be applied
-using our parametrisation by, for example, allowing u1 to
-vary continuously between -1 and 1.
-It is important to note that our method is particularly advantageous for stochastic gradient descent when the minibatch size is close to 1. In fact, if B is the mini-batch size
-and T is the average length of the input sequences, then
-a network with n hidden units trained using other methods (Vorontsov et al., 2017; Wisdom et al., 2016; Hyland
-& Rätsch, 2017) that enforce orthogonality (see Section 2),
-would have time complexity O(BT n2 +n3 ). Clearly when
-BT  n this becomes O(BT n2 ), which is the same time
-complexity as that of the sRNN and oRNN (with m = n).
-In contrast with the case of fully connected deep forward
-networks with no weight sharing between layers (# layer
-= L), the time complexity using our method is O(BLnm)
-whereas other methods discussed in this work (see Section
-2) would have time complexity O(BLn2 + Ln3 ). The latter methods are less efficient in this case since B  n is
-less likely to be the case compared with BT  n when
-using SGD.
-From a performance point of view, further experiments
-should be performed to better understand the difference between the unitary versus orthogonal constraint.
-
-Efficient Orthogonal Parametrisation of Recurrent Neural Networks
-
-Acknowledgment
-The authors would like to acknowledge Department of
-State Growth Tasmania for partially funding this work
-through SenseT. We would also like to thank Christfried
-Webers for his valuable feedback.
+Adversarial Feature Matching for Text Generation
 
 References
-Arjovsky, Martin, Shah, Amar, and Bengio, Yoshua. Unitary evolution recurrent neural networks. In International Conference on Machine Learning (ICML), 2016.
-Chernodub, Artem and Nowicki, Dimitri. Norm-preserving
-orthogonal permutation linear unit activation functions
-(oplu). arXiv preprint arXiv:1604.02313, 2016.
-Gers, F. A., Eck, D., and Schmidhuber, J. Applying
-LSTM to time series predictable through time-window
-approaches. In Dorffner, Gerg (ed.), Artificial Neural
-Networks – ICANN 2001 (Proceedings), pp. 669–676,
-Berlin, 2001. Springer.
-Glorot, Xavier and Bengio, Yoshua. Understanding the difficulty of training deep feedforward neural networks. In
-Aistats, volume 9, pp. 249–256, 2010.
-Henaff, Mikael, Szlam, Arthur, and LeCun, Yann. Orthogonal rnns and long-memory tasks. arXiv preprint
-arXiv:1602.06662, 2016.
-Hochreiter, Sepp and Schmidhuber, Jürgen. Long shortterm memory. Neural computation, 9(8):1735–1780,
-1997.
-Hochreiter, Sepp, Bengio, Yoshua, Frasconi, Paolo, and
-Schmidhuber, Jürgen. Gradient flow in recurrent nets:
-the difficulty of learning long-term dependencies, 2001.
-Hyland, Stephanie L. and Rätsch, Gunnar. Learning
-unitary operators with help from u(n).
-In Proceedings of the Thirty-First AAAI Conference on
-Artificial Intelligence, February 4-9, 2017, San Francisco, California, USA., pp. 2050–2058, 2017. URL
-http://aaai.org/ocs/index.php/AAAI/
-AAAI17/paper/view/14930.
-Joffrain, Thierry, Low, Tze Meng, Quintana-Ortı́, Enrique S, Geijn, Robert van de, and Zee, Field G Van. Accumulating householder transformations, revisited. ACM
-Transactions on Mathematical Software (TOMS), 32(2):
-169–179, 2006.
-Kingma, Diederik P. and Ba, Jimmy. Adam: A method
-for stochastic optimization. CoRR, abs/1412.6980, 2014.
-URL http://arxiv.org/abs/1412.6980.
+Arjovsky, Martin and Bottou, Léon. Towards principled methods
+for training generative adversarial networks. In ICLR, 2017.
+Arjovsky, Martin, Chintala, Soumith, and Bottou, Léon. Wasserstein gan. In ICML, 2017.
+Bastien, F., Lamblin, P., Pascanu, R., Bergstra, J., Goodfellow, I., Bergeron, A., Bouchard, N., Warde-Farley, D., and
+Bengio, Y. Theano: new features and speed improvements.
+arXiv:1211.5590, 2012.
+Bengio, Samy, Vinyals, Oriol, Jaitly, Navdeep, and Shazeer, Noam.
+Scheduled sampling for sequence prediction with recurrent neural networks. In NIPS, 2015.
+Bowman, Samuel R, Vilnis, Luke, Vinyals, Oriol, Dai, Andrew M,
+Jozefowicz, Rafal, and Bengio, Samy. Generating sentences
+from a continuous space. In CoNLL, 2016.
+Chen, Xi, Duan, Yan, Houthooft, Rein, Schulman, John, Sutskever,
+Ilya, and Abbeel, Pieter. Infogan: Interpretable representation
+learning by information maximizing generative adversarial nets.
+In NIPS, 2016.
 
-Koutnı́k, Jan, Greff, Klaus, Gomez, Faustino J., and
-Schmidhuber, Jürgen. A clockwork RNN. In Proceedings of the 31th International Conference on Machine
-Learning, ICML 2014, Beijing, China, 21-26 June 2014,
-pp. 1863–1871, 2014. URL http://jmlr.org/
-proceedings/papers/v32/koutnik14.html.
-Le, Quoc V., Jaitly, Navdeep, and Hinton, Geoffrey E. A
-simple way to initialize recurrent networks of rectified
-linear units. CoRR, abs/1504.00941, 2015. URL http:
-//arxiv.org/abs/1504.00941.
-Mikolov, Tomáš. Statistical language models based on
-neural networks. PhD thesis, Brno University of Technology, 2012.
-Pascanu, Razvan, Mikolov, Tomas, and Bengio, Yoshua.
-On the difficulty of training recurrent neural networks.
-ICML (3), 28:1310–1318, 2013.
-Theano Development Team. Theano: A Python framework
-for fast computation of mathematical expressions. arXiv
-e-prints, abs/1605.02688, May 2016. URL http://
-arxiv.org/abs/1605.02688.
-Vorontsov, Eugene, Trabelsi, Chiheb, Kadoury, Samuel,
-and Pal, Chris. On orthogonality and learning recurrent
-networks with long term dependencies. arXiv preprint
-arXiv:1702.00071, 2017.
-Wisdom, Scott, Powers, Thomas, Hershey, John R., Roux,
-Jonathan Le, and Atlas, Les E. Full-capacity unitary recurrent neural networks. In Advances in Neural Information Processing Systems 29: Annual Conference on
-Neural Information Processing Systems 2016, December
-5-10, 2016, Barcelona, Spain, pp. 4880–4888, 2016.
+Huszár, Ferenc. How (not) to train your generative model: Scheduled sampling, likelihood, adversary? arXiv:1511.05101, 2015.
+Ioffe, Sergey and Szegedy, Christian. Batch normalization: Accelerating deep network training by reducing internal covariate
+shift. In ICML, 2015.
+Jang, Eric, Gu, Shixiang, and Poole, Ben. Categorical reparameterization with gumbel-softmax. In ICLR, 2017.
+Johnson, R. and Zhang, T. Effective use of word order for text
+categorization with convolutional neural networks. In NAACL
+HLT, 2015.
+Kalchbrenner, N., Grefenstette, E., and Blunsom, P. A convolutional neural network for modelling sentences. In ACL, 2014.
+Kim, Y. Convolutional neural networks for sentence classification.
+In EMNLP, 2014.
+Kingma, D. and Ba, J. Adam: A method for stochastic optimization. In ICLR, 2015.
+Kingma, Diederik P and Welling, Max. Auto-encoding variational
+bayes. In ICLR, 2014.
+
+Cho, K., Van Merriënboer, B., Gulcehre, C., Bahdanau, D.,
+Bougares, F., Schwenk, H., and Bengio, Y. Learning phrase representations using rnn encoder-decoder for statistical machine
+translation. In EMNLP, 2014.
+
+Lamb, Alex M, GOYAL, Anirudh Goyal ALIAS PARTH, Zhang,
+Ying, Zhang, Saizheng, Courville, Aaron C, and Bengio,
+Yoshua. Professor forcing: A new algorithm for training recurrent networks. In NIPS, 2016.
+
+Collobert, R., Weston, J., Bottou, L., Karlen, M., Kavukcuoglu,
+K., and Kuksa, P. Natural language processing (almost) from
+scratch. In JMLR, 2011.
+
+Larsen, Anders Boesen Lindbo, Sønderby, Søren Kaae, Larochelle,
+Hugo, and Winther, Ole. Autoencoding beyond pixels using a
+learned similarity metric. In ICML, 2016.
+
+Donahue, Jeff, Krähenbühl, Philipp, and Darrell, Trevor. Adversarial feature learning. In ICLR, 2017.
+
+Li, Jiwei, Monroe, Will, Ritter, Alan, Galley, Michel, Gao, Jianfeng, and Jurafsky, Dan. Deep reinforcement learning for dialogue generation. In EMNLP, 2016.
+
+Dziugaite, Gintare Karolina, Roy, Daniel M, and Ghahramani,
+Zoubin. Training generative neural networks via maximum
+mean discrepancy optimization. arXiv:1505.03906, 2015.
+Gan, Zhe, Pu, Yunchen, Henao, Ricardo, Li, Chunyuan, He,
+Xiaodong, and Carin, Lawrence. Unsupervised learning of
+sentence representations using convolutional neural networks.
+arXiv preprint arXiv:1611.07897, 2016.
+Goodfellow, Ian, Pouget-Abadie, Jean, Mirza, Mehdi, Xu, Bing,
+Warde-Farley, David, Ozair, Sherjil, Courville, Aaron, and Bengio, Yoshua. Generative adversarial nets. In NIPS, 2014.
+Graves, Alex and Schmidhuber, Jürgen. Framewise phoneme
+classification with bidirectional lstm and other neural network
+architectures. Neural Networks, 2005.
+Gretton, Arthur, Borgwardt, Karsten M, Rasch, Malte J, Schölkopf,
+Bernhard, and Smola, Alexander. A kernel two-sample test.
+JMLR, 2012.
+Gumbel, Emil Julius and Lieblein, Julius. Statistical theory of
+extreme values and some practical applications: a series of
+lectures. 1954.
+Hochreiter, S. and Schmidhuber, J. Long short-term memory. In
+Neural computation, 1997.
+Hu, B., Lu, Z., Li, H., and Chen, Q. Convolutional neural network
+architectures for matching natural language sentences. In NIPS,
+2014.
+
+Li, Jiwei, Monroe, Will, Shi, Tianlin, Ritter, Alan, and Jurafsky, Dan. Adversarial learning for neural dialogue generation.
+arXiv:1701.06547, 2017.
+Li, Yujia, Swersky, Kevin, and Zemel, Richard S. Generative
+moment matching networks. In ICML, 2015.
+Liu, Qiang, Lee, Jason D, and Jordan, Michael I. A kernelized
+stein discrepancy for goodness-of-fit tests. In ICML, 2016.
+Maaten, Laurens van der and Hinton, Geoffrey. Visualizing data
+using t-sne. JMLR, 2008.
+Maddison, Chris J, Mnih, Andriy, and Teh, Yee Whye. The concrete distribution: A continuous relaxation of discrete random
+variables. In ICLR, 2017.
+Makhzani, Alireza, Shlens, Jonathon, Jaitly, Navdeep, Goodfellow, Ian, and Frey, Brendan. Adversarial autoencoders.
+arXiv:1511.05644, 2015.
+Mescheder, Lars, Nowozin, Sebastian, and Geiger, Andreas. Adversarial variational bayes: Unifying variational autoencoders
+and generative adversarial networks. In ICML, 2017.
+Metz, Luke, Poole, Ben, Pfau, David, and Sohl-Dickstein, Jascha.
+Unrolled generative adversarial networks. In ICLR, 2017.
+Micchelli, Charles A, Xu, Yuesheng, and Zhang, Haizhang. Universal kernels. JMLR, 2006.
+
+Adversarial Feature Matching for Text Generation
+Mirza, Mehdi and Osindero, Simon. Conditional generative adversarial nets. arXiv:1411.1784, 2014.
+Nowozin, Sebastian, Cseke, Botond, and Tomioka, Ryota. f-gan:
+Training generative neural samplers using variational divergence
+minimization. In NIPS, 2016.
+Papineni, Kishore, Roukos, Salim, Ward, Todd, and Zhu, Wei-Jing.
+Bleu: a method for automatic evaluation of machine translation.
+In ACL, 2002.
+Pu, Yunchen, Gan, Zhe, Henao, Ricardo, Yuan, Xin, Li, Chunyuan,
+Stevens, Andrew, and Carin, Lawrence. Variational autoencoder
+for deep learning of images, labels and captions. In NIPS, 2016.
+Ramdas, Aaditya, Reddi, Sashank J, Poczos, Barnabas, Singh,
+Aarti, and Wasserman, Larry. On the high-dimensional power
+of linear-time kernel two-sample testing under mean-difference
+alternatives. arXiv:1411.6314, 2014.
+Salimans, Tim, Goodfellow, Ian, Zaremba, Wojciech, Cheung,
+Vicki, Radford, Alec, and Chen, Xi. Improved techniques for
+training gans. In NIPS, 2016.
+Sutskever, I., Vinyals, O., and Le, Q. Sequence to sequence
+learning with neural networks. In NIPS, 2014.
+Theis, Lucas, Oord, Aäron van den, and Bethge, Matthias. A note
+on the evaluation of generative models. In ICLR, 2016.
+Wang, Dilin and Liu, Qiang. Learning to draw samples: With
+application to amortized mle for generative adversarial learning.
+arXiv:1611.01722, 2016.
+Williams, Ronald J. Simple statistical gradient-following algorithms for connectionist reinforcement learning. Machine learning, 1992.
+Yu, Lantao, Zhang, Weinan, Wang, Jun, and Yu, Yong. Seqgan:
+sequence generative adversarial nets with policy gradient. In
+AAAI, 2017.
+Zhang, Yizhe, Gan, Zhe, and Carin, Lawrence. Generating text via
+adversarial training. In NIPS Workshop on Adversarial Training,
+2016.
+Zhao, Junbo, Mathieu, Michael, and LeCun, Yann. Energy-based
+generative adversarial network. In ICLR, 2017.
+Zhu, Y., Kiros, R., Zemel, R., Salakhutdinov, R., Urtasun, R.,
+Torralba, A., and Fidler, S. Aligning books and movies: Towards
+story-like visual explanations by watching movies and reading
+books. In ICCV, 2015.
 
 

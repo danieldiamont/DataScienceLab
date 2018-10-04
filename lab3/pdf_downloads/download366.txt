@@ -1,1255 +1,3503 @@
-Fast k-Nearest Neighbour Search via Prioritized DCI
-Ke Li 1 Jitendra Malik 1
+Scalable Multi-Class Gaussian Process Classification
+using Expectation Propagation
+
+Carlos Villacampa-Calvo * 1 Daniel Hernández-Lobato * 1
 
 Abstract
-Most exact methods for k-nearest neighbour
-search suffer from the curse of dimensionality;
-that is, their query times exhibit exponential dependence on either the ambient or the intrinsic
-dimensionality. Dynamic Continuous Indexing
-(DCI) (Li & Malik, 2016) offers a promising way
-of circumventing the curse and successfully reduces the dependence of query time on intrinsic
-dimensionality from exponential to sublinear. In
-this paper, we propose a variant of DCI, which
-we call Prioritized DCI, and show a remarkable
-improvement in the dependence of query time on
-intrinsic dimensionality. In particular, a linear
-increase in intrinsic dimensionality, or equivalently, an exponential increase in the number of
-points near a query, can be mostly counteracted
-with just a linear increase in space. We also
-demonstrate empirically that Prioritized DCI significantly outperforms prior methods. In particular, relative to Locality-Sensitive Hashing (LSH),
-Prioritized DCI reduces the number of distance
-evaluations by a factor of 14 to 116 and the memory consumption by a factor of 21.
+This paper describes an expectation propagation
+(EP) method for multi-class classification with
+Gaussian processes that scales well to very large
+datasets. In such a method the estimate of the
+log-marginal-likelihood involves a sum across
+the data instances. This enables efficient training using stochastic gradients and mini-batches.
+When this type of training is used, the computational cost does not depend on the number of
+data instances N . Furthermore, extra assumptions in the approximate inference process make
+the memory cost independent of N . The consequence is that the proposed EP method can be
+used on datasets with millions of instances. We
+compare empirically this method with alternative
+approaches that approximate the required computations using variational inference. The results
+show that it performs similar or even better than
+these techniques, which sometimes give significantly worse predictive distributions in terms of
+the test log-likelihood. Besides this, the training
+process of the proposed approach also seems to
+converge in a smaller number of iterations.
 
 1. Introduction
-The method of k-nearest neighbours is a fundamental
-building block of many machine learning algorithms and
-also has broad applications beyond artificial intelligence,
-including in statistics, bioinformatics and database systems, e.g. (Biau et al., 2011; Behnam et al., 2013; Eldawy & Mokbel, 2015). Consequently, since the problem
-of nearest neighbour search was first posed by Minsky &
-Papert (1969), it has for decades intrigued the artificial intelligence and theoretical computer science communities
-alike. Unfortunately, the myriad efforts at devising efficient algorithms have encountered a recurring obstacle: the
-1
-University of California, Berkeley, CA 94720, United States.
-Correspondence to: Ke Li <ke.li@eecs.berkeley.edu>.
+Gaussian processes (GPs) are non-parametric models that
+can be used to address multi-class classification problems
+(Rasmussen & Williams, 2006). These models become
+more expressive as the number of data instances N grows.
+They are also very useful to introduce prior knowledge in
+the learning problem, as many properties of the model are
+specified by a covariance function. Moreover, GPs provide an estimate of the uncertainty in the predictions made
+which may be critical in some applications. Neverthe*
 
+Equal contribution 1 Universidad Autónoma de Madrid,
+Madrid, Spain. Correspondence to: Carlos Villacampa-Calvo
+<carlos.villacampa@uam.es>.
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-curse of dimensionality, which describes the phenomenon
-of query time complexity depending exponentially on dimensionality. As a result, even on datasets with moderately
-high dimensionality, practitioners often have resort to naı̈ve
-exhaustive search.
-Two notions of dimensionality are commonly considered.
-The more familiar notion, ambient dimensionality, refers to
-the dimensionality of the space data points are embedded
-in. On the other hand, intrinsic dimensionality1 characterizes the intrinsic properties of the data and measures the
-rate at which the number of points inside a ball grows as
-a function of its radius. More precisely, for a dataset with
-intrinsic dimension d0 , any ball of radius r contains at most
-0
-O(rd ) points. Intuitively, if the data points are uniformly
-distributed on a manifold, then the intrinsic dimensionality
-is roughly the dimensionality of the manifold.
-Most existing methods suffer from some form of curse
-of dimensionality. Early methods like k-d trees (Bentley,
-1975) and R-trees (Guttman, 1984) have query times that
-grow exponentially in ambient dimensionality. Later methods (Krauthgamer & Lee, 2004; Beygelzimer et al., 2006;
-Dasgupta & Freund, 2008) overcame the exponential dependence on ambient dimensionality, but have not been
-able to escape from an exponential dependence on intrinsic dimensionality. Indeed, since a linear increase in the
-intrinsic dimensionality results in an exponential increase
-in the number of points near a query, the problem seems
-fundamentally hard when intrinsic dimensionality is high.
-Recently, Li & Malik (2016) proposed an approach known
-as Dynamic Continuous Indexing (DCI) that successfully
-reduces the dependence on intrinsic dimensionality from
-exponential to sublinear, thereby making high-dimensional
-nearest neighbour search more practical. The key observation is that the difficulties encountered by many existing
-methods, including k-d trees and Locality-Sensitive Hashing (LSH) (Indyk & Motwani, 1998), may arise from their
-reliance on space partitioning, which is a popular divideand-conquer strategy. It works by partitioning the vector
-space into discrete cells and maintaining a data structure
-1
-
-The measure of intrinsic dimensionality used throughout
-this paper is the expansion dimension, also known as the KRdimension, which is defined as log2 c, where c is the expansion
-rate introduced in (Karger & Ruhl, 2002).
-
-Fast k-Nearest Neighbour Search via Prioritized DCI
-
-that keeps track of the points lying in each cell. At query
-time, these methods simply look up of the contents of the
-cell containing the query and possibly adjacent cells and
-perform brute-force search over points lying in these cells.
-While this works well in low-dimensional settings, would
-it work in high dimensions?
-Several limitations of this approach in high-dimensional
-space are identified in (Li & Malik, 2016). First, because
-the volume of space grows exponentially in dimensionality,
-either the number or the volumes of cells must grow exponentially. Second, the discretization of the space essentially
-limits the “field of view” of the algorithm, as it is unaware
-of points that lie in adjacent cells. This is especially problematic when the query lies near a cell boundary, as there
-could be points in adjacent cells that are much closer to
-the query. Third, as dimensionality increases, surface area
-grows faster than volume; as a result, points are increasingly likely to lie near cell boundaries. Fourth, when the
-dataset exhibits varying density across space, choosing a
-good partitioning is non-trivial. Furthermore, once chosen,
-the partitioning is fixed and cannot adapt to changes in density arising from updates to the dataset.
-In light of these observations, DCI is built on the idea
-of avoiding partitioning the vector space. Instead, it constructs a number of indices, each of which imposes an ordering of all data points. Each index is constructed so that
-two points with similar ranks in the associated ordering are
-nearby along a certain random direction. These indices are
-then combined to allow for retrieval of points that are close
-to the query along multiple random directions.
-In this paper, we propose a variant of DCI, which assigns a
-priority to each index that is used to determine which index
-to process in the upcoming iteration. For this reason, we
-will refer to this algorithm as Prioritized DCI. This simple
-change results in a significant improvement in the dependence of query time on intrinsic dimensionality. Specifically, we show a remarkable result: a linear increase in
-intrinsic dimensionality, which could mean an exponential
-increase in the number of points near a query, can be mostly
-counteracted with a corresponding linear increase in the
-number of indices. In other words, Prioritized DCI can
-make a dataset with high intrinsic dimensionality seem almost as easy as a dataset with low intrinsic dimensionality,
-with just a linear increase in space. To our knowledge, there
-had been no exact method that can cope with high intrinsic
-dimensionality; Prioritized DCI represents the first method
-that can do so.
-We also demonstrate empirically that Prioritized DCI significantly outperforms prior methods. In particular, compared to LSH, it achieves a 14- to 116-fold reduction in the
-number of distance evaluations and a 21-fold reduction in
-the memory usage.
-
-2. Related Work
-There is a vast literature on algorithms for nearest neighbour search. They can be divided into two categories:
-exact algorithms and approximate algorithms. Early exact algorithms are deterministic and store points in treebased data structures. Examples include k-d trees (Bentley, 1975), R-trees (Guttman, 1984) and X-trees (Berchtold
-et al., 1996; 1998), which divide the vector space into a
-hierarchy of half-spaces, hyper-rectangles or Voronoi polygons and keep track of the points that lie in each cell. While
-their query times are logarithmic in the size of the dataset,
-they exhibit exponential dependence on the ambient dimensionality. A different method (Meiser, 1993) partitions the
-space by intersecting multiple hyperplanes. It effectively
-trades off space for time and achieves polynomial query
-time in ambient dimensionality at the cost of exponential
-space complexity in ambient dimensionality.
-
-Spill Tree
-RP Tree
-Karger & Ruhl
-Navigating Net
-Cover Tree
-Rank Cover Tree
-
-DCI
-
-Prioritized DCI
-(Proposed Method)
-
-Figure 1. Visualization of the query time complexities of various
-exact algorithms as a function of the intrinsic dimensionality d0 .
-Each curve represents an example from a class of similar query
-time complexities. Algorithms that fall into each particular class
-are shown next to the corresponding curve.
-
-To avoid poor performance on worst-case configurations of
-the data, exact randomized algorithms have been proposed.
-Spill trees (Liu et al., 2004), RP trees (Dasgupta & Freund, 2008) and virtual spill trees (Dasgupta & Sinha, 2015)
-extend the ideas behind k-d trees by randomizing the orientations of hyperplanes that partition the space into halfspaces at each node of the tree. While randomization enables them to avoid exponential dependence on the ambient
-dimensionality, their query times still scale exponentially in
-the intrinsic dimensionality. Whereas these methods rely
-on space partitioning, other algorithms (Orchard, 1991;
-Clarkson, 1999; Karger & Ruhl, 2002) have been proposed
-that utilize local search strategies. These methods start with
-a random point and look in the neighbourhood of the current point to find a new point that is closer to the query
-than the original in each iteration. Like space partitioningbased approaches, the query time of (Karger & Ruhl, 2002)
-scales exponentially in the intrinsic dimensionality. While
-
-Fast k-Nearest Neighbour Search via Prioritized DCI
-Method
-Exact Algorithms:
-RP Tree
-Spill Tree
-Karger & Ruhl (2002)
-Navigating Net
-Cover Tree
-Rank Cover Tree
-DCI
-Prioritized DCI
-(Proposed Method)
-
-Query Time Complexity
-0
-
-O((d0 log d0 )d + log n)
-0
-O(d0d + log n)
-0
-O(23d log n)
-0
-2O(d ) log n
-0
-O(212d log n)
-0
-O(2O(d log h) n2/h ) for h 3
-0
-O(d max(log n, n1 1/d ))
-0
-O(d max(log n, n1 m/d )
-+(m log m) max(log n, n1
-for m 1
-
-1/d0
-
-))
-
-Approximate Algorithms:
-k-d Tree
-O((1/✏)d log n)
-BBD Tree
-O((6/✏)d log n)
-2
-LSH
-⇡ O(dn1/(1+✏) )
-Table 1. Query time complexities of various algorithms for 1-NN
-search. Ambient dimensionality, intrinsic dimensionality, dataset
-size and approximation ratio are denoted as d, d0 , n and 1 + ✏.
-A visualization of the growth of various time complexities as a
-function of the intrinsic dimensionality is shown in Figure 1.
-
-the query times of (Orchard, 1991; Clarkson, 1999) do not
-exhibit such undesirable dependence, their space complexities are quadratic in the size of the dataset, making them impractical for large datasets. A different class of algorithms
-performs search in a coarse-to-fine manner. Examples include navigating nets (Krauthgamer & Lee, 2004), cover
-trees (Beygelzimer et al., 2006) and rank cover trees (Houle
-& Nett, 2015), which maintain sets of subsampled data
-points at different levels of granularity and descend through
-the hierarchy of neighbourhoods of decreasing radii around
-the query. Unfortunately, the query times of these methods
-again scale exponentially in the intrinsic dimensionality.
-Due to the difficulties of devising efficient algorithms for
-the exact version of the problem, there has been extensive
-work on approximate algorithms. Under the approximate
-setting, returning any point whose distance to the query
-is within a factor of 1 + ✏ of the distance between the
-query and the true nearest neighbour is acceptable. Many
-of the same strategies are employed by approximate algorithms. Methods based on tree-based space partitioning (Arya et al., 1998) and local search (Arya & Mount,
-1993) have been developed; like many exact algorithms,
-their query times also scale exponentially in the ambient
-dimensionality. Locality-Sensitive Hashing (LSH) (Indyk
-& Motwani, 1998; Datar et al., 2004; Andoni & Indyk,
-2006) partitions the space into regular cells, whose shapes
-are implicitly defined by the choice of the hash function. It
-achieves a query time of O(dn⇢ ) using O(dn1+⇢ ) space,
-where d is the ambient dimensionality, n is the dataset
-size and ⇢ ⇡ 1/(1 + ✏)2 for large n in Euclidean space,
-
-though the dependence on intrinsic dimensionality is not
-made explicit. In practice, the performance of LSH degrades on datasets with large variations in density, due
-to the uneven distribution of points across cells. Consequently, various data-dependent hashing schemes have
-been proposed (Paulevé et al., 2010; Weiss et al., 2009; Andoni & Razenshteyn, 2015); unlike data-independent hashing schemes, however, they do not allow dynamic updates
-to the dataset. A related approach (Jégou et al., 2011) decomposes the space into mutually orthogonal axis-aligned
-subspaces and independently partitions each subspace. It
-has a query time linear in the dataset size and no known
-guarantee on the probability of correctness under the exact or approximate setting. A different approach (Anagnostopoulos et al., 2015) projects the data to a lower dimensional space that approximately preserves approximate
-nearest neighbour relationships and applies other approximate algorithms like BBD trees (Arya et al., 1998) to the
-projected data. Its query time is also linear in ambient dimensionality and sublinear in the dataset size. Unlike LSH,
-it uses space linear in the dataset size, at the cost of longer
-query time than LSH. Unfortunately, its query time is exponential in intrinsic dimensionality.
-Our work is most closely related to Dynamic Continuous
-Indexing (DCI) (Li & Malik, 2016), which is an exact randomized algorithm for Euclidean space whose query time
-is linear in ambient dimensionality, sublinear in dataset size
-and sublinear in intrinsic dimensionality and uses space linear in the dataset size. Rather than partitioning the vector space, it uses multiple global one-dimensional indices,
-each of which orders data points along a certain random
-direction and combines these indices to find points that are
-near the query along multiple random directions. The proposed algorithm builds on the ideas introduced by DCI and
-achieves a significant improvement in the dependence on
-intrinsic dimensionality.
-A summary of the query times of various prior algorithms
-and the proposed algorithm is presented in Table 1 and their
-growth as a function of intrinsic dimensionality is illustrated in Figure 1.
-
-3. Prioritized DCI
-DCI constructs a data structure consisting of multiple composite indices of data points, each of which in turn consists
-of a number of simple indices. Each simple index orders
-data points according to their projections along a particular random direction. Given a query, for every composite
-index, the algorithm finds points that are near the query in
-every constituent simple index, which are known as candidate points, and adds them to a set known as the candidate
-set. The true distances from the query to every candidate
-point are evaluated and the ones that are among the k clos-
-
-Fast k-Nearest Neighbour Search via Prioritized DCI
-
-est to the query are returned.
-
-made for each individual query.
-
-More concretely, each simple index is associated with a
-random direction and stores the projections of every data
-point along the direction. They are implemented using
-standard data structures that maintain one-dimensional ordered sequences of elements, like self-balancing binary
-search trees (Bayer, 1972; Guibas & Sedgewick, 1978)
-or skip lists (Pugh, 1990). At query time, the algorithm
-projects the query along the projection directions associated with each simple index and finds the position where
-the query would have been inserted in each simple index,
-which takes logarithmic time. It then iterates over, or visits, data points in each simple index in the order of their
-distances to the query under projection, which takes constant time for each iteration. As it iterates, it keeps track of
-how many times each data point has been visited across all
-simple indices of each composite index. If a data point has
-been visited in every constituent simple index, it is added
-to the candidate set and is said to have been retrieved from
-the composite index.
-
-Prioritized DCI differs from standard DCI in the order in
-which points from different simple indices are visited. In
-standard DCI, the algorithm cycles through all constituent
-simple indices of a composite index at regular intervals and
-visits exactly one point from each simple index in each
-pass. In Prioritized DCI, the algorithm assigns a priority
-to each constituent simple index; in each iteration, it visits
-the upcoming point from the simple index with the highest
-priority and updates the priority at the end of the iteration.
-The priority of a simple index is set to the negative absolute
-difference between the query projection and the next data
-point projection in the index.
-
-Algorithm 1 Data structure construction procedure
-Require: A dataset D of n points p1 , . . . , pn , the number of simple indices m that constitute a composite index and the number
-of composite indices L
-function C ONSTRUCT(D, m, L)
-{ujl }j2[m],l2[L]
-mL random unit vectors in Rd
-{Tjl }j2[m],l2[L]
-mL empty binary search trees or skip
-lists
-for j = 1 to m do
-for l = 1 to L do
-for i = 1 to n do
-pijl
-hpi , ujl i
-Insert (pijl , i) into Tjl with pijl being the key and
-i being the value
-end for
-end for
-end for
-return {(Tjl , ujl )}j2[m],l2[L]
-end function
-
-Algorithm 2 k-nearest neighbour querying procedure
-Require: Query point q in Rd , binary search trees/skip lists and
-their associated projection vectors {(Tjl , ujl )}j2[m],l2[L] , the
-number of points to retrieve k0 and the number of points to visit
-k1 in each composite index
-function Q UERY(q, {(Tjl , ujl )}j,l , k0 , k1 )
-Cl
-array of size n with entries initialized to 0 8l 2 [L]
-q jl
-hq, ujl i 8j 2 [m], l 2 [L]
-Sl
-; 8l 2 [L]
-Pl
-empty priority queue 8l 2 [L]
-for l = 1 to L do
-for j = 1 to m do
-(1)
-(1)
-(pjl , hjl )
-the node in Tjl whose key is the
-closest to q jl
-(1)
-
-(1)
-
-(i+1)
-
-which is denoted as (pjl
-priority
-
-DCI has a number of appealing properties compared to
-methods based on space partitioning. Because points are
-visited by rank rather than location in space, DCI performs
-well on datasets with large variations in data density. It
-naturally skips over sparse regions of the space and concentrates more on dense regions of the space. Since construction of the data structure does not depend on the dataset, the
-algorithm supports dynamic updates to the dataset, while
-being able to automatically adapt to changes in data density. Furthermore, because data points are represented in
-the indices as continuous values without being discretized,
-the granularity of discretization does not need to be chosen
-at construction time. Consequently, the same data structure
-can support queries at varying desired levels of accuracy,
-which allows a different speed-vs-accuracy trade-off to be
-
-(1)
-
-Insert (pjl , hjl ) with priority |pjl
-q jl |
-into Pl
-end for
-end for
-for i0 = 1 to k1 1 do
-for l = 1 to L do
-if |Sl | < k0 then
-(i)
-(i)
-(pjl , hjl )
-the node with the highest priority
-in Pl
-(i)
-(i)
-Remove (pjl , hjl ) from Pl and insert the node
-in Tjl whose key is the next closest to q jl ,
-
-(i)
-
-Cl [hjl ]
-
-(i+1)
-|pjl
-(i)
-Cl [hjl ]
-
-(i+1)
-
-, hjl
-
-), with
-
-q jl | into Pl
-
-+1
-
-(i)
-
-if Cl [hjl ] = m then
-(i)
-
-Sl
-Sl [ {hjl }
-end if
-end if
-end for
-end for
-S
-return k points in l2[L] Sl that are the closest in
-Euclidean distance in Rd to q
-end function
-
-Intuitively, this ensures data points are visited in the order
-of their distances to the query under projection. Because
-data points are only retrieved from a composite index when
-they have been visited in all constituent simple indices, data
-
-Fast k-Nearest Neighbour Search via Prioritized DCI
-Property
-
-Complexity
-
-Construction
-Query
-
-O(m(dn
-+ n log n))
-⇣
-0
-O dk max(log(n/k), (n/k)1 m/d )+
-⇣
-⌘⌘
-0
-mk log m max(log(n/k), (n/k)1 1/d )
-O(m(d + log n))
-O(m log n)
-O(mn)
-
-Insertion
-Deletion
-Space
-
-Table 2. Time and space complexities of Prioritized DCI.
-
-points are retrieved in the order of the maximum of their
-distances to the query along multiple projection directions.
-Since distance under projection forms a lower bound on the
-true distance, the maximum projected distance approaches
-the true distance as the number of projection directions increases. Hence, in the limit as the number of simple indices
-approaches infinity, data points are retrieved in the ideal order, that is, the order of their true distances to the query.
-
-time spent on evaluating true distances between candidate
-points and the query. Therefore, we need to find the number of candidate points that must be retrieved to ensure the
-algorithm succeeds with high probability. To this end, we
-derive an upper bound on the failure probability for any
-given number of candidate points. The algorithm fails if
-sufficiently many distant points are retrieved from each
-composite index before some of the true k-nearest neighbours. We decompose this event into multiple (dependent)
-events, each of which is the event that a particular distant
-point is retrieved before some true k-nearest neighbours.
-Since points are retrieved in the order of their maximum
-projected distance, this event happens when the maximum
-projected distance of the distant point is less than that of
-a true k-nearest neighbour. We start by finding an upper
-bound on the probability of this event. To simplify notation, we initially consider displacement vectors from the
-query to each data point, and so relationships between projected distances of triplets of points translate relationships
-between projected lengths of pairs of displacement vectors.
-
-The construction and querying procedures of Prioritized DCI are presented formally in Algorithms 1 and
-2.
-To ensure the algorithm retrieves the exact knearest neighbours with high probability, the analysis in the next section shows that one should choose
-0
-k0 2 ⌦(k max(log(n/k), (n/k)1 m/d )) and k1 2
-0
-⌦(mk max(log(n/k), (n/k)1 1/d )), where d0 denotes the
-intrinsic dimensionality. Though because this assumes
-worst-case configuration of data points, it may be overly
-conservative in practice; so, these parameters may be chosen by cross-validation.
-
-We start by examining the event that a vector under random one-dimensional projection satisfies some geometric
-constraint. We then find an upper bound on the probability that some combinations of these events occur, which is
-related to the failure probability of the algorithm.
-Lemma 1. Let v l , v s 2 Rd be such that v l 2 > v s 2 ,
-
-We summarize the time and space complexities of Prioritized DCI in Table 2. Notably, the first term of the query
-complexity, which dominates when the ambient dimensionality d is large, has a more favourable dependence on the intrinsic dimensionality d0 than the query complexity of standard DCI. In particular, a linear increase in the intrinsic dimensionality, which corresponds to an exponential increase
-in the expansion rate, can be mitigated by just a linear increase in the number of simple indices m. This suggests
-that Prioritized DCI can better handle datasets with high
-intrinsic dimensionality than standard DCI, which is confirmed by empirical evidence later in this paper.
-
-Proof. The event maxj hv l , u0j i  kv s k2 is equivalent to the event that hv l , u0j i  kv s k2 8j , which is
-the intersection of the events hv l , u0j i  kv s k2 . Because u0j ’s are drawn independently, these events are independent.
-
-u0j
-
-In high-dimensional space, query time is dominated by the
-
-be i.i.d. unit vectors in Rd drawn uniformly
-
-at random.
-2
-⇡
-
-1
-
-cos
-
-Then Pr maxj
-1
-
-v
-
-s
-2
-
-/ v
-
-M
-
-l
-
-hv l , u0j i
-
-2
-
-.
-
- vs
-
-2
-
-=
-
-Let ✓j be the angle between v l and u0j , so that hv l , u0j i =
-v l 2 cos ✓j . Since u0j is drawn uniformly, ✓j is uniformly
-distributed
-on [0, 2⇡]. Hence, ◆
-✓
-Pr max
-j
-
-=
-
-M
+less, in spite of these advantages, GPs scale poorly to large
+datasets because their training cost is O(N 3 ), where N is
+the number of instances. An additional challenge is that
+exact inference in these models is generally intractable and
+one has to resort to approximate methods in practice.
+Traditionally, GP classification has received more attention
+in the binary case than in the multi-class setting (Kuss &
+Rasmussen, 2005; Nickisch & Rasmussen, 2008). The reason is that approximate inference is more challenging in
+the multi-class case where there is one latent function per
+class. To this one has to add more complicated likelihood
+factors, which often have the form of softmax functions or
+intractable Gaussian integrals. In spite of these difficulties,
+there have been several works addressing multi-class GP
+classification (Williams & Barber, 1998; Kim & Ghahramani, 2006; Girolami & Rogers, 2006; Chai, 2012; Riihimäki et al., 2013). Nevertheless, most of the proposed
+methods do not scale well with the size of the training set.
+In the literature there have been some efforts to scale up
+GPs. These techniques often introduce a set of M  N
+inducing points whose location is learnt alongside with the
+other model hyper-parameters. The use of inducing points
+in the model can be understood as an approximate GP prior
+with a low-rank covariance structure (Quiñonero-Candela
+& Rasmussen, 2005). When inducing points are considered, the training cost can be reduced to O(N M 2 ). This
+allows to address datasets with several thousands of instances, but not millions. The reason is the difficulty of estimating the model hyper-parameters, which is often done
+by maximizing an estimate of the log-marginal-likelihood.
+Because such an estimate does not involve a sum across the
+data instances, one cannot rely on efficient methods for optimization based on stochastic gradients and mini-batches.
+A notable exception is the work of (Hensman et al., 2015a)
+which uses variational inference to approximate the calculations. Such a method allows for stochastic optimization and can address datasets with millions of instances. In
+this work we propose an alternative based on expectation
+propagation (EP) (Minka, 2001) and recent advances on
+binary GP classification (Hernández-Lobato & HernándezLobato, 2016). The proposed approach also allows for efficient training using mini-batches. This leads to a training
+
+Scalable Multi-Class Gaussian Process Classification using Expectation Propagation
+
+cost that is O(CM 3 ), where C is the number of classes.
+An experimental comparison with the variational approach
+and related methods from the literature shows that the proposed approach has benefits both in terms of the training
+speed and the accuracy of the predictive distribution.
+
+2. Scalable Multi-class Classification
+Here we describe multi-class Gaussian process classification and the proposed method. Such a method uses the expectation propagation algorithm whose original description
+is modified to be more efficient both in terms of memory
+and computational costs. For this, we consider stochastic
+gradients to update the hyper-parameters and an approximate likelihood that avoids one-dimensional quadratures.
+
+and p(f |y) is intractable. Thus, these computations must
+be approximated. Often, one computes a Gaussian approximation to p(f |y) (Kim & Ghahramani, 2006). This results
+in a non-parametric classifier with training cost O(N 3 ),
+where N is the number of data instances.
+To reduce the computational cost of the method described
+a typical approach is to consider a sparse representation
+for each GP. With this goal, one can introduce C datasets
+k
+of M  N inducting points X = (x1 , . . . , xkM )T ,
+k
+with associated values f = (f k (xk1 ), . . . , f k (xkM ))T for
+k = 1, . . . , C (Snelson & Ghahramani, 2006; Naishk
+Guzman & Holden, 2008). Given each X the prior for
+R
+k
+k
+k
+k
+f k is approximated as p(f k ) = p(f k |f )p(f |X )df ≈
+R QN
+k
+k
+k
+k
+k
+[ i=1 p(fik (xi )|f )]p(f |X )df = pFITC (f k |X ), in
+k
+
+2.1. Multi-class Gaussian Process Classification
+We consider a dataset of N instances in the form of a matrix of attributes X = (x1 , . . . , xN )T with labels y =
+(y1 , . . . , yN )T , where yi ∈ {1, . . . , C} and C > 2 is the
+total number of different classes. The task of interest is to
+predict the class label of a new data instance x? .
+A typical approach in multi-class Gaussian process
+(GP) classification is to assume the following labeling rule for yi given xi : yi = arg maxk f k (xi ),
+for k = 1, . . . , C, where each f k (·) is a non-linear
+latent function (Kim & Ghahramani, 2006). Define
+f k = (f k (x1 ), . . . , f k (xN ))T ∈ RN and fi =
+(f 1 (xi ), . . . , f C (xi ))T ∈ RC . The likelihood of f =
+QN
+(f 1 , . . . , f C )T ∈ RN ×C , p(y|f ) = i=1 p(yi |fi ), is then a
+product of N factors of the form:
 Y
+
+p(yi |fi ) =
+Θ f yi (xi ) − f k (xi ) ,
+(1)
+k6=yi
 
-Pr
+where Θ(·) is the Heaviside step function. This likelihood
+takes value one if f can explain the observed data and zero
+otherwise. Potential classification errors can be easily introduced in (1) by considering that each f k has been contaminated with Gaussian noise with variance σk2 . That is,
+f k (xi ) = fˆk (xi ) + ki , where ki ∼ N (0, σk2 ).
+In multi-class GP classification a GP prior is assumed
+for each function f k (·) (Rasmussen & Williams, 2006).
+Namely, f k ∼ GP(0, c(·, ·; ξ)), where c(·, ·; ξ k ) is some
+covariance function with hyper-parameters ξ k . Often these
+priors are assumed to be independent. That is, p(f ) =
+QC
+k
+k
+k=1 p(f ), where each p(f ) is a multivariate Gaussian distribution. The task of interest is to make inference about f and for that Bayes’ rule is used: p(f |y) =
+p(y|f )p(f )/p(y), where p(y) is a normalization constant
+(the marginal likelihood) which can be maximized to find
+good hyper-parameters ξ k , for k = 1, . . . , C. However, because the likelihood in (1) is non-Gaussian, evaluating p(y)
 
-j=1
-
-4. Analysis
-We analyze the time and space complexities of Prioritized
-DCI below and derive the stopping condition of the algorithm. Because the algorithm uses standard data structures,
-analysis of the construction time, insertion time, deletion
-time and space complexity is straightforward. Hence, this
-section focuses mostly on analyzing the query time.
-
-M
-j=1
-
+which the conditional Gaussian distribution p(f k |f )
+has been approximated by the factorizing distribution
+QN
+k
+k
+i=1 p(fi (xi )|f ). This approximation is known as the
+full independent training conditional (FITC) (QuiñoneroCandela & Rasmussen, 2005), and it leads to a Gausk
+sian prior pFITC (f k |X ) with a low-rank covariance matrix.
+This allows for approximate inference with cost O(N M 2 ).
+k
+The inducing points {X }C
+k=1 can be regarded as hyperparameters and can be learnt by maximizing the estimate
+of the marginal likelihood p(y).
+2.2. Method Specification and Expectation Propagation
+The formulation of the previous section is limited because
+the estimate of the log-marginal-likelihood log p(y) cannot
+be expressed as a sum across the data instances. This makes
+infeasible the use of efficient methods based on stochastic
+optimization for finding the model hyper-parameters.
+A recent work focusing on the binary case has shown that it
+is possible to obtain an estimate of log p(y) that involves a
+k
+sum across the data instances if the values f associated
+to the inducing points are not marginalized (HernándezLobato & Hernández-Lobato, 2016). We follow that
+work and consider the posterior approximation p(f |y) ≈
+R
+1
+C
+p(f |f )q(f )df , where f = (f , . . . , f )T , p(f |f ) =
+QC
+QC
+k
+k
+k k
+k=1 p(f |f ), we have defined p(f ) =
+k=1 p(f |X ),
+and q is a Gaussian approximation to p(f |y). This distribution q is obtained in three steps. First, we use on the exact
+posterior the FITC approximation:
+R
+p(y|f )p(f |f )df p(f )
+p(f |y) =
+p(y)
+R
+p(y|f )pFITC (f |f )df p(f )
+≈
+p(y)
+QN
+[ i=1 φi (f )]p(f )
 =
-
-=
-
-hv l , u0j i
-
-o
-
- kv s k2
-
-hv l , u0j i  kv s k2
-
-⌘
-
-✓
-◆
-kv s k2
-Pr |cos ✓j | 
-kv l k2
-j=1
-M
-Y
-
-M ✓
-Y
-
-j=1
-
-=
-
-⇣
-
-n
-
-✓
-
-1
-
-✓
-
-2Pr ✓j 2 cos
-2
-cos
-⇡
-
-1
-
-✓
-
-kv s k2
-kv l k2
-
-✓
-
-kv s k2
-kv l k2
-◆◆M
-
-1
-
-◆
-
-,⇡
-
-cos
-
-1
-
-✓
-
-kv s k2
-kv l k2
-
-◆ ◆◆
-
-Fast k-Nearest Neighbour Search via Prioritized DCI
-N
-
-Lemma 2. For any set of events {Ei }i=1 , the probability
-PN
-that at least k 0 of them happen is at most k10 i=1 Pr (Ei ).
-
-Proof. For any set T ✓ [N ], define ẼT to be the intersection of events indexed by TTand complements
-of events not
-T
-E
-indexed
-by
-T
 ,
-i.e.
-Ẽ
-=
-E
-\
+(2)
+p(y)
+
+Scalable Multi-Class Gaussian Process Classification using Expectation Propagation
+
+QN QC
+where we have defined pFITC (f |f ) = i=1 k=1 p(f k (xi )
+QC
+k
+k
+|f ) ≈ p(f |f ) = k=1 p(f k |f ) and
+
+R Q
+φi (f ) = [ k6=yi Θ f yi (xi ) − f k (xi ) ]
+QC
+k
+(3)
+× [ k=1 p(f k (xi )|f )]dfi ,
+k
+
+with p(f k (xi )|f ) = N (f k (xi )|mki , vik ), where
+mki = (kk
+ski =
+
+k
+
+−1 k
+f ,
+k)
+X X
+(kk k )T (Kk k k )−1 kk k
+xi X
+X X
+xi X
+
+)T (Kk k
+
+xi X
+k
+κxi xi −
+
+(4)
+.
+
+(5)
+
+In the previous expressions N (·|µ, σ 2 ) is the p.d.f. of a
+Gaussian with mean µ and variance σ 2 . Furthermore, kkx Xk
+i
+
+k
+
+is a vector with the covariances between f k (xi ) and f ;
+Kk k k is a M × M matrix with the cross covariances beX X
+k
+tween f ; and, finally, κkxi xi is the prior variance of f k (xi ).
+A practical difficulty is that the integral in (3) is intractable.
+Although it can be evaluated using one-dimensional
+quadrature techniques (Hernández-Lobato et al., 2011), in
+this paper we follow a different approach. For that, we note
+that (3) is simply the probability that f yi (xi ) > f k (xi ) for
+k 6= yi , given f . Let fiyi = f yi (xi ) and fik = f k (xi ). The
+second step consists in approximating (3) as follows:
+p(
+
 T
-i
-i . Observe
-i2T
-i
-2T
+
+k6=yi
+
+f yi > f k ) =p(f yi > f 1 |S1 ) × p(f yi > f 2 |S2 )×
+
+· · · × p(f yi > f yi −1 |Syi −1 ) × p(f yi > f yi +1 |Syi +1 )×
+Q
+Q
+· · · ≈ k6=yi p(f yi > f k ) = k6=yi Φ(αik ) ,
+(6)
+
+where Sj =
+
+T
+
+k∈{1,...,j}∪{y
 /
-n o
-that
-T
+i}
 
-are disjoint and that for any I ✓ [N ],
-S
-0
-i2I Ei =S T ◆I ẼT . The
-T event that at least k of Ei ’s
-happen is I✓[N ]:|I|=k0 i2I Ei , which is equivalent to
-S
-S
-S
-I✓[N ]:|I|=k0
-T ◆I ẼT =
-T ✓[N ]:|T | k0 ẼT . We will
-henceforth use T to denote {T ✓ [N ] : |T | k 0 }. Since
-T is a finite set, we can impose an ordering on its elements
-and denote the S
-lth element as Tl . The event can therefore
-|T |
-be rewritten as l=1 ẼTl .
-⇣S
-⌘
-|T |
-0
-Define Ei,j
-to be Ei \
-We claim
-l=j+1 ẼTl .
-⇣
-⌘
-PN
-Pj
-0
-0
-that
+f yi > f k , Φ(·) is the c.d.f.
+q
+
 k
-for all j 2
-i=1 Pr Ei,j
-l=1 Pr ẼTl
-ẼT
-
-T ✓[N ]
-
-{0, . . . , |T |}. We will show this by induction on j.
-
-For j = 0, the claim is vacuously true because probabili0
-ties are non-negative. For j > 0, we observe that Ei,j
-=
-⇣
-⌘ ⇣
-⌘
-⇣
-⌘
-0
-0
-0
-0
-Ei,j \ ẼTj [ Ei,j \ ẼTj = Ei,j 1 [ Ei,j \ ẼTj
-0
-0
-for all i. Since Ei,j
-\ ẼTj and Ei,j
-\ ẼTj are disjoint,
-⇣
-⌘
-0
-0
-0
-Pr Ei,j = Pr Ei,j 1 + Pr Ei,j \ ẼTj .
-P
-0
-Consider the quantity
-which is
-i,j ,
-i2Tj Pr E
-⇣
-⇣
-⌘⌘
-P
-0
-0
-by the above
-i2Tj Pr Ei,j 1 + Pr Ei,j \ ẼTj
-
-observation.
-For each
-i 2⇣ Tj , ẼTj ✓⌘ Ei , and so
-⇣S
-⌘
-S|T |
-|T |
-0
-ẼTj \
-l=j+1 ẼTl ✓ Ei \
-l=j+1 ẼTl = Ei,j . Ben
-o|T |
-⇣S
-⌘
-|T |
-cause ẼTl
-are disjoint, ẼTj \
-l=j+1 ẼTl = ẼTj .
-l=j
-
-0
-0
-Hence, ẼTj ✓ Ei,j
-and so Ei,j
-\ Ẽ = ẼTj . Thus,
-⇣
-⌘ PTj
-P
-0
-0
-i2Tj Pr Ei,j = |Tj | Pr ẼTj +
-i2Tj Pr Ei,j 1 .
-⇣
-⌘
-PN
-0
-It follows that
-Pr
-E
-=
-|T
-|
-Pr
-Ẽ
-+
-j
-Tj
-i,j
-i=1
-P
-P
-0
-0
-+
-.
-Because
-i2Tj Pr Ei,j 1
-i2T
-/ j Pr Ei,j
-⇣
-⌘
-0
-0
-0
-Pr Ei,j
-= Pr Ei,j
-+ Pr Ei,j
-\ ẼTj
-1
-PN
-0
-0
-Pr Ei,j
-and |Tj |
-k0 ,
-i=1 Pr Ei,j
-⇣ 1⌘
-P
-N
-0
-k 0 Pr ẼTj +
-By the inductive
-i=1 Pr Ei,j 1 .
-⌘
-PN
-Pj 1 ⇣
-0
-hypothesis,
-k 0 l=1 Pr ẼTl .
-i=1 Pr Ei,j 1
-⇣
-⌘
-PN
-Pj
-0
-Therefore, i=1 Pr Ei,j
-k 0 l=1 Pr ẼTl , which
-concludes the induction argument.
-
-The lemma is a special case of ⇣this claim
-when
-⌘
-⇣S j = |T⌘|,
-P|T |
-|T |
-0
-since Ei,|T | = Ei and l=1 Pr ẼTl = Pr
-l=1 ẼTl .
-
-Combining the above yields the following theorem, the
-proof of which is found in the supplementary material.
-N
-
-N0
-
-Theorem 1. Let vil i=1 and vis0 i0 =1 be sets of vectors such that vil 2 >
-vis0 2 8i 2 [N ], i0 2
-[N 0 ]. Furthermore, let u0ij i2[N ],j2[M ] be random uniformly distributed unit vectors such that u0i1 , . . . , u0iM
-are independent for any given i. Consider the events
-N
-9vis0 s.t. maxj hvil , u0ij i  vis0 2 i=1 . The probability that at least k 0 of these events occur is at
-PN
-M
-s
-most k10 i=1 1 ⇡2 cos 1 vmax
-/ vil 2
-, where
-2
-s
-s
-0
-0
-vmax
-=
-max
-v
-.
-Furthermore,
-if
 k
-=
-N , it is
-0
-i
-2
-n i 2
-o
-M
-2
-1
-s
-l
-vmax 2 / vi 2
-.
-at most mini2[N ] 1 ⇡ cos
-We now apply the results above to analyze specific properties of the algorithm. For convenience, instead of working
-directly with intrinsic dimensionality, we will analyze the
-query time in terms of a related quantity, global relative
-sparsity, as defined in (Li & Malik, 2016). We reproduce
-its definition below for completeness.
-Definition 1. Given a dataset D ✓ Rd , let Bp (r) be the
-set of points in D that are within a ball of radius r around
-a point p. A dataset D has global relative sparsity of (⌧, )
-if for all r and p 2 Rd such that |Bp (r)| ⌧ , |Bp ( r)| 
-2 |Bp (r)|, where
-1.
-Global relative sparsity is related to the expansion
-rate (Karger & Ruhl, 2002) and intrinsic dimensionality in
-the following way: a dataset with global relative sparsity
-of (⌧, ) has (⌧, 2(1/ log2 ) )-expansion and intrinsic dimensionality of 1/ log2 .
-Below we derive two upper bounds on the probability that
-some of the true k-nearest neighbours are missing from the
-set of candidate points retrieved from a given composite
-index, which are in expressed in terms of k0 and k1 respectively. These results inform us how k0 and k1 should be
-chosen to ensure the querying procedure returns the correct
-results with high probability. In the results that follow, we
-use {p(i) }ni=1 to denote a re-ordering of the points {pi }ni=1
-so that p(i) is the ith closest point to the query q. Proofs are
-found in the supplementary material.
-Lemma 3. Consider points in the order they are retrieved from a composite index that consists of m
-simple indices.
-The probability that there are at
-least n0 points that are not the true k-nearest neighbours P
-but are retrieved before some of them is at most
-m
-n
-1
-2
-1
-p(k) q 2 / p(i) q 2
-.
-i=2k+1 1
-n0 k
-⇡ cos
-Lemma 4. Consider point projections in a composite
-index that consists of m simple indices in the order they
-are visited. The probability that n0 point projections that
-are not of the true k-nearest neighbours are visited before
-all true P
-k-nearest neighbours have been retrieved is at most
-n
-m
-2
-1
-p(k) q 2 / p(i) q 2 .
-i=2k+1 1
-n0 mk
-⇡ cos
+of a standard Gaussian and αik = (myi
+syi
+i − mi )/
+i + si ,
 
-Fast k-Nearest Neighbour Search via Prioritized DCI
+myi
+i ,
 
-Lemma
-relative
-P
+mki , syi i
 
-5.
-On
-a
-dataset
 with
-global
-sparsity
-(k, ),
-the
-quantity
-m
+and ski defined in (5). We have omitted in (6) the dependence on f to improve the readability.
+The quality of this approximation is supported by the good
+experimental results obtained in Section 4. When (6) is replaced in (2) we get an approximate posterior distribution
+in which we can evaluate all the likelihood factors:
+QN Q
+[ i=1 k6=yk φki (f )]p(f )
+p(f |y) ≈
+,
+(7)
+p(y)
+where we have defined φki (f ) = Φ(αik ).
+The r.h.s. of (7) is intractable due to the non-Gaussian form
+of the likelihood factors. The third and last step uses expectation propagation (EP) (Minka, 2001) to get a Gaussian
+approximation q to (7). This approximation is obtained by
+replacing each φki with an approximate Gaussian factor φ̃ki :
 n
-2
+o
+yi
+yi
+yi yi
+i
+φ̃ki (f ) = s̃i,k exp − 12 (f )T Ṽi,k
+f + (f )T m̃yi,k
+×
+n
+o
+k
+k
+k
+exp − 12 (f )T Ṽi,k f + (f )T m̃i,k ,
+(8)
+
+2,yi yi
+yi
+1,yi yi
+i
+= Ci,k
+υi , Ṽi,k =
+where Ṽi,k
+= Ci,k
+υi (υiyi )T , m̃yi,k
 1
-p(k) q 2 / p(i) q 2
-is
-i=2k+1 1
-⇡ cos
-at most O k max(log(n/k), (n/k)1 m log2 ) .
-Lemma 6. For a dataset with global relative sparsity (k, ) and a given composite index consisting of m simple indices, there is some k0 2
-⌦(k max(log(n/k), (n/k)1 m log2 )) such that the probability that the candidate points retrieved from the composite
-index do not include some of the true k-nearest neighbours
-is at most some constant ↵0 < 1.
-Lemma 7. For a dataset with global relative sparsity (k, ) and a given composite index consisting of m simple indices, there is some k1 2
-⌦(mk max(log(n/k), (n/k)1 log2 )) such that the probability that the candidate points retrieved from the composite
-index do not include some of the true k-nearest neighbours
-is at most some constant ↵1 < 1.
-Theorem 2. For a dataset with global relative sparsity (k, ), for any ✏ > 0, there is some L,
-k0 2 ⌦(k max(log(n/k), (n/k)1 m log2 )) and k1 2
-⌦(mk max(log(n/k), (n/k)1 log2 )) such that the algorithm returns the correct set of k-nearest neighbours with
-probability of at least 1 ✏.
-Now that we have found a choice of k0 and k1 that suffices
-to ensure correctness with high probability, we can derive
-a bound on the query time that guarantees correctness. We
-then analyze the time complexity for construction, insertion and deletion and the space complexity. Proofs of the
-following are found in the supplementary material.
-Theorem 3. For a given
-⇣ number of simple indices m,0 the
-algorithm takes O dk max(log(n/k), (n/k)1 m/d )+
-⇣
-⌘⌘
+k
+k T
+2
+k
+Ci,k υi (υi ) , m̃i,k = Ci,k υi , and we have defined υik =
+1,yi
+2,yi
+k
+−1
+1
+2
+(kkx Xk )T (KX
+. In (8) Ci,k
+, Ci,k
+, Ci,k
+, Ci,k
+and
+k k)
+X
+i
+s̃i,k are free parameters adjusted by EP. Because the precision matrices in (8) are one-rank (see the supplementary material for details), we only have to store in memory O(M ) parameters for each φ̃ki . The posterior approximation q is obtained by replacing in (7) each exact factor
+φi,k by the corresponding approximate factor φ̃i,k . That is,
+QN Q
+q(f ) = i=1 k6=yi φ̃ki (f )p(f )/Zq , where Zq is a normalization constant that approximates the marginal likelihood
+p(y). Because all the factors involved in the computation
+of q are Gaussian, and we assume independence among the
+latent functions of different classes in (8), q is a product of
+C multivariate Gaussians (on per class) on M dimensions.
+
+In EP each φ̃ki is updated until convergence as follows:
+First, φki is removed from q by computing q \i,k ∝ q/φ̃ki .
+Because the Gaussian family is closed under the product
+and division operations, q \i,k is also Gaussian with parameters given by the equations in (Roweis, 1999). Then,
+−1 k \i,k
+the Kullback-Leibler divergence between Zi,k
+φi q
+and
+−1 k \i,k
+q, i.e, KL[Zi,k φi q |q], is minimized with respect to q,
+where Zi,k is the normalization constant of φki q \i,k . This
+−1 k \i,k
+is done by matching the moments of Zi,k
+φi q . These
+moments can be obtained from the derivatives of Zi,k with
+respect to the parameters of q \i,k (Seeger, 2006). After updating q, the new approximate factor is φ̃i,k = Zi,k q/q \i,k .
+We update all the approximate factors at the same time, and
+reconstruct q afterwards by computing the product of all the
+φ̃ki and the prior, as in (Hernández-Lobato et al., 2011).
+The EP approximation to the marginal likelihood is the normalization constant of q, Zq . The log of its value is:
+log Zq = g(θ) − g(θprior ) +
+
+PN P
+i=1
+
+k6=yk
+
+log s̃i,k , (9)
+
+where log s̃i,k = log Zi,k + g(θ \i,k ) − g(θ); θ, θ \i,k , and
+θprior are the natural parameters of q, q \i,k and the prior, respectively; and g(θ) is the log-normalizer of a multi-variate
+Gaussian distribution with natural parameters θ.
+It is possible to show that if EP converges, the gradient of
+log Zq w.r.t the parameters of each φ̃i,k is zero. Thus, the
+gradient of log Zq w.r.t. a hyper-parameter ξjk of the k-th
+covariance function (including the inducing points) is:
+N
+∂θprior X X log Zi,k
+∂ log Zq
+T
+= (η T − ηprior
+)
++
+,
+k
+k
+∂ξj
+∂ξj
+∂ξjk
+i=1 k6=y
+
+(10)
+
+i
+
+where η and ηprior are the expected sufficient statistics under q and the prior, respectively. Importantly, only the direct dependency of log Zi,k on ξjk has to be taken into account. See (Seeger, 2006). The dependency through θ \i,k ,
+i.e., the natural parameters of q \i,k can be ignored.
+
+Scalable Multi-Class Gaussian Process Classification using Expectation Propagation
+
+After obtaining q and finding the model hyper-parameters
+by maximizing log Zq , one can get an approximate predictive distribution for the label y? of a new instance x? :
+R
+(11)
+p(y? |x? , y) = p(y? |f? , f )q(f )df df? ,
+where
+we have defined f? = (f 1 (x? ), . . . , f C (x? ))T , and
+R
+p(y? |f? , f )df? has the same form as the likelihood factor
+in (3). The resulting integral in (11) is again intractable.
+However, it can be approximated using a one-dimensional
+quadrature. See the supplementary material.
+Because some simplifications occur when computing the
+derivatives of log Zq w.r.t the inducing points, the total
+training time of EP is O(N M 2 ) while the total memory
+cost is O(N M C) (Snelson, 2007).
+2.3. Scalable Expectation Propagation
+Traditionally, for finding the model hyper-parameters with
+EP one re-runs EP until convergence (using the previous
+solution as the starting point), after each gradient ascent
+update of the hyper-parameters. The reason for this is that
+(10) is only true if EP has converged (i.e., the approximate
+factors do not change any more). This approach is particularly inefficient initially, when there are strong changes to
+the model hyper-parameters, and EP may require several
+iterations to converge. Recently, a more efficient method
+has been proposed in (Hernández-Lobato & HernándezLobato, 2016). In that work the authors suggest to update both the approximate factors and the model hyperparameters at the same time. Because we do not wait for
+EP to converge, one should ideally add to (10) extra terms
+to get the gradient. These terms account for the mismatch
+−1 k \i,k
+between the moments of Zi,k
+φi q
+and q. However, according to (Hernández-Lobato & Hernández-Lobato, 2016)
+these extra terms can be ignored and one can simply use
+(10) for an inner update of the hyper-parameters.
+-300
+
+methods: (i) re-running EP until convergence each time and
+using (10) to update the hyper-parameters (EP-outer); (ii)
+updating at the same time the approximate factors φ̃ki and
+the hyper-parameters with (10) (EP-inner-approx); and (iii)
+the same approach as the previous one, but using the exact
+gradient for the update instead of (10) (EP-inner-exact). All
+approaches successfully maximize log Zq . However, the
+inner updates are more efficient as they do not wait until
+EP converges. Moreover, using the approximate gradient
+is faster (it is cheaper to compute), and it gives almost the
+same results as the exact gradient.
+2.3.1. S TOCHASTIC E XPECTATION P ROPAGATION
+The memory cost of EP can be significantly reduced by a
+technique called stochastic EP (SEP) (Li et al., 2015). In
+SEP all the approximate factors φ̃ki are tied. This means
+that instead of storing their individual
+what is
+QN parameters,
+Q
+stored is their product, i.e., φ̃ = i=1 k6=yk φ̃ki . A consequence of this is that we no longer have direct access to
+their individual parameters. This only affects the computation of the cavity distribution q \i,k which now is obtained
+1
+in an approximate way q \i,k ∝ q/φ̃ n , where n is the to1
+tal number of factors and φ̃ n approximates each individual
+factor. Thus, SEP reduces the memory costs of EP by a factor of n. All the other steps are carried out as in the original
+EP algorithm, including the computation of log Zq and its
+gradients. Figure 2 shows the differences between EP and
+SEP on a toy example. When SEP is used in the proposed
+method, the memory cost is reduced to O(CM 2 ).
+EP
+
+SEP
+
+Figure 2. (top) EP approximation of a distribution over the variable θ with complicated likelihood factors, but tractable prior.
+(bottom) SEP approximation of the same distribution.
+
+2.3.2. T RAINING U SING M INI - BATCHES
+
+-500
+
+Both the estimate of the log-marginal-likelihood in (9)
+and its gradient in (10) contain a sum across the data instances. This allows to write an EP algorithm that processes mini-batches of data, as in (Hernández-Lobato &
+Hernández-Lobato, 2016). For this, the data are split in
+mini-batches Mj of size S  N , where N is the number
+of instances. Given a mini-batch Mj , we process all the
+approximate factors corresponding to that mini-batch, i.e.,
+{{φ̃ki }k6=yi : (xi , yi ) ∈ Mj }. Then, we update the model
+hyper-parameters using a stochastic approximation of (10):
+
+log Zq
+
+-400
+
+-600
+
+-700
+
+EP - Inner - Approx. Gradient
+EP - Inner - Exact Gradient
+EP - Outer Update
+
+-800
 0
-mk log m max(log(n/k), (n/k)1 1/d )
-time to re-
 
-trieve the k-nearest neighbours at query time, where d0 denotes the intrinsic dimensionality.
-Theorem 4. For a given number of simple indices m, the
-algorithm takes O(m(dn + n log n)) time to preprocess the
-data points in D at construction time.
-Theorem 5. The algorithm requires O(m(d + log n)) time
-to insert a new data point and O(m log n) time to delete a
-data point.
-Theorem 6. The algorithm requires O(mn) space in addition to the space used to store the data.
+500
 
-5. Experiments
-We compare the performance of Prioritized DCI to that
-of standard DCI (Li & Malik, 2016), product quantization (Jégou et al., 2011) and LSH (Datar et al., 2004),
-which is perhaps the algorithm that is most widely used
+1000
 
-in high-dimensional settings. Because LSH operates under the approximate setting, in which the performance metric of interest is how close the returned points are to the
-query rather than whether they are the true k-nearest neighbours. All algorithms are evaluated in terms of the time
-they would need to achieve varying levels of approximation quality.
-Evaluation is performed on two datasets, CIFAR100 (Krizhevsky & Hinton, 2009) and MNIST (LeCun
-et al., 1998). CIFAR-100 consists of 60, 000 colour images of 100 types of objects in natural scenes and MNIST
-consists of 70, 000 grayscale images of handwritten digits.
-The images in CIFAR-100 have a size of 32 ⇥ 32 and three
-colour channels, and the images in MNIST have a size of
-28 ⇥ 28 and a single colour channel. We reshape each image into a vector whose entries represent pixel intensities
-at different locations and colour channels in the image. So,
-each vector has a dimensionality of 32 ⇥ 32 ⇥ 3 = 3072 for
-CIFAR-100 and 28 ⇥ 28 = 784 for MNIST. Note that the
-dimensionalities under consideration are much higher than
-those typically used to evaluate prior methods.
-For the purposes of nearest neighbour search, MNIST is a
-more challenging dataset than CIFAR-100. This is because
-images in MNIST are concentrated around a few modes;
-consequently, data points form dense clusters, leading to
-higher intrinsic dimensionality. On the other hand, images in CIFAR-100 are more diverse, and so data points
-are more dispersed in space. Intuitively, it is much harder
-to find the closest digit to a query among 6999 other digits
-of the same category that are all plausible near neighbours
-than to find the most similar natural image among a few
-other natural images with similar appearance. Later results
-show that all algorithms need fewer distance evaluations to
-achieve the same level of approximation quality on CIFAR100 than on MNIST.
-We evaluate performance of all algorithms using crossvalidation, where we randomly choose ten different splits
-of query vs. data points. Each split consists of 100 points
-from the dataset that serve as queries, with the remainder
-designated as data points. We use each algorithm to retrieve
-the 25 nearest neighbours at varying levels of approximation quality and report mean performance and standard deviation over all splits.
-Approximation quality is measured using the approximation ratio, which is defined to be the ratio of the radius of
-the ball containing the set of true k-nearest neighbours to
-the radius of the ball containing the set of approximate knearest neighbours returned by the algorithm. The closer
-the approximation ratio is to 1, the higher the approximation quality. In high dimensions, the time taken to compute
-true distances between the query and the candidate points
-dominates query time, so the number of distance evalua-
+Training Time in Seconds
 
-Fast k-Nearest Neighbour Search via Prioritized DCI
+1500
 
-(a)
+2000
 
-(b)
+Figure 1. Estimate of p(y) on the Vehicle dataset as a function of
+the training time for the proposed EP method when considering
+three different schemes to update the model hyper-parameters.
 
-(c)
+Figure 1 shows, for the Vehicle dataset from UCI repository
+(Lichman, 2013), the estimate of the marginal likelihood
+log Zq with respect to the training time, for 250 updates of
+the hyper-parameters, and M = N/5. We compare three
 
-Figure 2. Comparison of the number of distance evaluations needed by different algorithms to achieve varying levels of approximation
-quality on (a) CIFAR-100 and (b,c) MNIST. Each curve represents the mean over ten folds and the shaded area represents ±1 standard
-deviation. Lower values are better. (c) Close-up view of the figure in (b).
+X X log Zi,k
+∂θprior
+∂ log Zq
+T
+≈ (η T − ηprior
+)
++ρ
+, (12)
+k
+k
+∂ξj
+∂ξj
+∂ξjk
+i∈M k6=y
+j
 
-tions can be used as an implementation-independent proxy
-for the query time.
-For LSH, we used 24 hashes per table and 100 tables, which
-we found to achieve the best approximation quality given
-the memory constraints. For product quantization, we used
-a data-independent codebook with 256 entries so that the
-algorithm supports dynamic updates. For standard DCI, we
-used the same hyparameter settings used in (Li & Malik,
-2016) (m = 25 and L = 2 on CIFAR-100 and m = 15 and
-L = 3 on MNIST). For Prioritized DCI, we used two different settings: one that matches the hyperparameter settings
-of standard DCI, and another that uses less space (m = 10
-and L = 2 on both CIFAR-100 and MNIST).
-We plot the number of distance evaluations that each algorithm requires to achieve each desired level of approximation ratio in Figure 2. As shown, on CIFAR-100, under the
-same hyperparameter setting used by standard DCI, Prioritized DCI requires 87.2% to 92.5% fewer distance evaluations than standard DCI, 91.7% to 92.8% fewer distance
-evaluations than product quantization, and 90.9% to 93.8%
-fewer distance evaluations than LSH to achieve same levels
-approximation quality, which represents a 14-fold reduction in the number of distance evaluations relative to LSH
-on average. Under the more space-efficient hyperparameter
-setting, Prioritized DCI achieves a 6-fold reduction compared to LSH. On MNIST, under the same hyperparameter setting used by standard DCI, Prioritized DCI requires
-96.4% to 97.0% fewer distance evaluations than standard
-DCI, 87.1% to 89.8% fewer distance evaluations than product quantization, and 98.8% to 99.3% fewer distance evaluations than LSH, which represents a 116-fold reduction
-relative to LSH on average. Under the more space-efficient
-hyperparameter setting, Prioritized DCI achieves a 32-fold
-reduction compared to LSH.
-We compare the space efficiency of Prioritized DCI to that
+i
 
-of standard DCI and LSH. As shown in Figure 3 in the
-supplementary material, compared to LSH, Prioritized DCI
-uses 95.5% less space on CIFAR-100 and 95.3% less space
-on MNIST under the same hyperparameter settings used
-by standard DCI. This represents a 22-fold reduction in
-memory consumption on CIFAR-100 and a 21-fold reduction on MNIST. Under the more space-efficient hyperparameter setting, Prioritized DCI uses 98.2% less space on
-CIFAR-100 and 97.9% less space on MNIST relative to
-LSH, which represents a 55-fold reduction on CIFAR-100
-and a 48-fold reduction on MNIST.
-In terms of wall-clock time, our implementation of Prioritized DCI takes 1.18 seconds to construct the data structure
-and execute 100 queries on MNIST, compared to 104.71
-seconds taken by LSH.
+where ρ = N/|Mj |. We reconstruct q after each update
+of the approximate factors and each update of the hyper-
 
-6. Conclusion
-In this paper, we presented a new exact randomized algorithm for k-nearest neighbour search, which we refer to as
-Prioritized DCI. We showed that Prioritized DCI achieves
-a significant improvement in terms of the dependence of
-query time complexity on intrinsic dimensionality compared to standard DCI. Specifically, Prioritized DCI can to
-a large extent counteract a linear increase in the intrinsic
-dimensionality, or equivalently, an exponential increase in
-the number of points near a query, using just a linear increase in the number of simple indices. Empirical results
-validated the effectiveness of Prioritized DCI in practice,
-demonstrating the advantages of Prioritized DCI over prior
-methods in terms of speed and memory usage.
-Acknowledgements. This work was supported by
-DARPA W911NF-16-1-0552. Ke Li thanks the Natural
-Sciences and Engineering Research Council of Canada
-(NSERC) for fellowship support.
+Scalable Multi-Class Gaussian Process Classification using Expectation Propagation
 
-Fast k-Nearest Neighbour Search via Prioritized DCI
+parameters. When using mini-batches of data, we update
+more frequently q and the hyper-parameters. The consequence is that the training cost is O(CM 3 ), assuming a
+constant number of updates until convergence. This training scheme can handle datasets with millions of instances.
+
+3. Related Work
+The likelihood used in (1) was first considered for multiclass Gaussian process classification in (Kim & Ghahramani, 2006). That work considers full non-parametric GP
+priors, which lead to a training cost that is O(CN 3 ). The
+consequence is that it can only address small classification problems. It is, however, straight forward to replace
+the non-parametric GP priors with the FITC approximate
+k
+priors pFITC (f k |X ) (Quiñonero-Candela & Rasmussen,
+2005). These priors are obtained by marginalizing the lak
+k
+tent variables f associated to the inducing points X , as
+indicated in Section 2.1. This allows to address datasets
+with a few thousand instances. This is precisely the approach followed in (Naish-Guzman & Holden, 2008) to
+address binary GP classification problems. We refer to
+such an approach as the generalized FITC approximation (GFITC). Nevertheless, such an approach cannot use
+stochastic optimization. The reason is that the estimate
+of the log-marginal-likelihood (needed for hyper-parameter
+estimation) does not contain a sum across the instances.
+Thus, GFITC cannot scale well to very large datasets. Nevertheless, unlike the proposed approach, it can run expectation propagation over the exact likelihood factors in (1). In
+GFITC we follow the traditional approach and run EP until
+convergence before updating the hyper-parameters.
+Multi-class GP classification for potentially huge datasets
+has also been considered in (Hensman et al., 2015b) using
+variational inference (VI). However, such an approach cannot use the likelihood in (1) since its logarithm is not well
+defined (note that it takes value zero for some values of fi ).
+As an alternative, Hensman et al. (2015b) have considered
+the robust likelihood of (Hernández-Lobato et al., 2011):
+p(yi |fi ) = (1 − )
+
+Q
+
+k6=yi
+
+
+Θ f yi (xi ) − f k (xi ) +
+
+
+C
+
+, (13)
+
+where  is the probability of a labeling error (in that case,
+yi is chosen at random from the potential class labels). In
+(Hensman et al., 2015b) it is suggested to set  = 10−3 .
+We now describe the VI approach in detail. Using (13)
+Rand the definitions of Section 2, we know that p(y|f ) =
+p(y|f )p(f |f )df . If we take the log and use Jensen’s inequality we get the bound log p(y|f ) ≥ Ep(f |f ) [log p(y|f )].
+Consider now a Gaussian approximation q to p(f |y). Then,
+R
+log p(y) = q(f )p(y|f )p(f )/q(f )df
+≥ Eq(f ) [log p(y|f )] − KL[q(f )||p(f )] , (14)
+where we have used Jensen’s inequality and KL is the Kull-
+
+back Leibler divergence. If we use the first bound we get
+log p(y) ≥ Eq(f ) [Ep(f |f ) [log p(y|f )]]KL[q(f )||p(f )]
+≥ Eq(f ) [log p(y|f )] − KL[q(f )||p(f )]
+P
+≥ N
+i=1 Eq(fi ) [log p(yi |fi )] − KL[q(f )||p(f )] , (15)
+
+R
+where q(f ) =
+p(f |f )q(f )df and the corresponding
+marginal over fi = (f 1 (xi ), . . . , f C (xi ))T is q(fi ) =
+QC
+k
+k k
+k=1 N (f (xi )|m̂i , ŝi ). Note that q(fi ) is Gaussian because q(f ) involves a Gaussian convolution. As in the proposed approach, q(f ) is assumed to be a Gaussian factoriz1
+C
+ing over the latent functions f , . . . , f . However, its mean
+k C
+and covariance parameters, i.e., {mk }C
+k=1 and {S }k=1 are
+found by maximizing (15). The parameters of q(fi ) are:
+m̂ki = (kkx
+
+k
+iX
+
+)T (KkXk Xk )−1 mk ,
+
+ŝki = κkxi xi − (kkx
++
+
+k
+iX
+
+(16)
+
+k
+−1 k
+)T (KX
+kx
+k k)
+X
+
+k
+iX
+
+(kkx Xk )T (KkXk Xk )−1 Sk (KkXk Xk )−1 kkx Xk
+i
+i
+
+.
+
+(17)
+
+Hensman et al. (2015b) consider Markov chain Monte
+Carlo (MCMC) to sample the hyper-parameters. Here we
+simply maximize (15) to find the hyper-parameters and the
+inducing points. The reason for this is that in very large
+datasets MCMC is not expected to give much better results.
+We refer to the described approach as VI. The objective in
+(15) contains a sum across the data instances. Thus, VI
+also allows for stochastic optimization and it results in the
+same cost as the proposed approach. However, the expectations in (15) must be approximated using one-dimensional
+quadratures. This is a drawback with respect to the proposed method which is free of any quadrature. Finally,
+there are some methods related to the VI approach just described. Dezfouli & Bonilla (2015) assume that q can be
+a mixture of Gaussians, and Chai (2012) uses a soft-max
+likelihood (but does not consider stochastic optimization).
+Both works need to introduce extra approximations.
+In the literature there are other research works addressing multi-class Gaussian process classification. Some examples include (Williams & Barber, 1998; Girolami &
+Rogers, 2006; Hernández-Lobato et al., 2011; Henao &
+Winther, 2012; Riihimäki et al., 2013). These works
+employ expectation propagation, variational inference or
+the Laplace approximation to approximate the computations. Nevertheless, the corresponding estimate of the logmarginal-likelihood cannot be expressed as a sum across
+the data instances. This avoids using efficient techniques
+for optimization based on stochastic gradients. Thus, one
+cannot address very large datasets with these methods.
+
+4. Experiments
+We evaluate the performance of the method proposed in
+Section 2.2. We consider two versions of it. A first
+
+Scalable Multi-Class Gaussian Process Classification using Expectation Propagation
+
+one, using expectation propagation (EP). A second, using the memory efficient stochastic EP (SEP). EP and SEP
+are compared with the methods described in Section 3.
+Namely, GFITC and VI. All methods are codified in the
+R language (the source code is in the supplementary material), and they consider the same initial values for the model
+hyper-parameters (including the inducing points, that are
+chosen at random from the training instances). The hyperparameters are optimized by maximizing the estimate of
+the marginal likelihood. A Gaussian covariance function
+with automatic relevance determination, an amplitude parameter and an additive noise parameter is employed.
+
+fastest method (between 2 and 3 times faster than GFITC).
+VI is slower as a consequence of the quadratures required
+by this method. VI also gives much worse results in some
+datasets, e.g., Glass, Svmguide2 and Waveform. This is related to the optimization of Eq(fi ) [log p(yi |fi )] in (15), instead of log Eq(fi ) [p(yi |fi )], which is closer
+P to the data loglikelihood. In the EP objective in (9), k6=yi log Zi,k is
+probably more similar to log Eq(fi ) [p(yi |fi )]. This explains
+the much better results obtained by EP and SEP.
+Table 2. Average negative test log likelihood for each method and
+average training time in seconds on UCI repository datasets.
+
+Table 1. Characteristics of the datasets from the UCI Repository.
+Dataset
+#Instances #Attributes #Classes
+Glass
+214
+9
+6
+New-thyroid
+215
+5
+3
+Satellite
+6435
+36
+6
+Svmguide2
+391
+20
+3
+Vehicle
+846
+18
+4
+Vowel
+540
+10
+6
+Waveform
+1000
+21
+3
+Wine
+178
+13
+3
+
+Table 2 shows, for each value of M , the average negative
+test log-likelihood of each method with the corresponding error bars (test errors are shown in the supplementary material). The average training time of each method
+is also displayed. The best method (the lower the better) for each dataset is highlighted in bold face. We observe that the proposed approach, EP, obtains very similar results to those of GFITC, and sometimes it obtains
+the best results. The memory efficient version of EP, SEP,
+seems to provide similar results without reducing the performance. Regarding the computational cost, SEP is the
+
+M = 10%
+M = 20%
+
+We evaluate the performance of each method on 8 datasets
+from the UCI repository (Lichman, 2013). The characteristics of the datasets are displayed in Table 4.1. We use batch
+training in each method (i.e., we go through all the data to
+compute the gradients). Batch training does not scale to
+large datasets. However, it is preferred on small datasets
+like the ones considered here. We use 90% of the data for
+training and 10% for testing, expect for Satellite which is
+fairly big, where we use 20% for training and 80% for testing. In Waveform, which is synthetic, we generate 1000
+instances and split them in 30% for training and 70% for
+testing. Finally, in Vowel we consider only the points that
+belong to the 6 first classes. All methods are trained for
+250 iterations using gradient ascent (GFITC and VI use lBFGS, EP and SEP use an adaptive learning rate described
+in the supplementary material). We consider three values
+for M , the number of inducing points. Namely 5%, 10%
+and 20% of the number of training instances. We report
+averages over 20 repetitions of the experiments.
+
+M = 5%
+
+4.1. Performance on Datasets from the UCI Repository
+
+Problem
+Glass
+New-thyroid
+Satellite
+Svmguide2
+Vehicle
+Vowel
+Waveform
+Wine
+Avg. Time
+Glass
+New-thyroid
+Satellite
+Svmguide2
+Vehicle
+Vowel
+Waveform
+Wine
+Avg. Time
+Glass
+New-thyroid
+Satellite
+Svmguide2
+Vehicle
+Vowel
+Waveform
+Wine
+Avg. Time
+
+GFITC
+
+0.61 ± 0.05
+0.06 ± 0.01
+0.33 ± 0.00
+0.63 ± 0.06
+0.32 ± 0.01
+0.16 ± 0.01
+0.42 ± 0.01
+0.08 ± 0.02
+131 ± 3.11
+0.58 ± 0.05
+0.07 ± 0.01
+0.34 ± 0.00
+0.67 ± 0.05
+0.33 ± 0.01
+0.14 ± 0.01
+0.42 ± 0.01
+0.07 ± 0.01
+264 ± 6.91
+0.6 ± 0.07
+0.07 ± 0.01
+0.34 ± 0.01
+0.67 ± 0.05
+0.33 ± 0.01
+0.12 ± 0.01
+0.43 ± 0.01
+0.07 ± 0.01
+683 ± 17.3
+
+EP
+0.78 ± 0.06
+0.11 ± 0.03
+0.31 ± 0.00
+0.63 ± 0.06
+0.34 ± 0.02
+0.25 ± 0.01
+0.36 ± 0.00
+0.07 ± 0.01
+53.8 ± 0.19
+0.74 ± 0.06
+0.06 ± 0.01
+0.30 ± 0.00
+0.67 ± 0.05
+0.33 ± 0.02
+0.19 ± 0.01
+0.36 ± 0.01
+0.06 ± 0.01
+102 ± 0.64
+0.75 ± 0.06
+0.06 ± 0.01
+0.30 ± 0.00
+0.65 ± 0.06
+0.33 ± 0.02
+0.16 ± 0.01
+0.37 ± 0.01
+0.05 ± 0.01
+228 ± 0.78
+
+SEP
+0.77 ± 0.07
+0.06 ± 0.01
+0.33 ± 0.00
+0.67 ± 0.06
+0.34 ± 0.02
+0.25 ± 0.01
+0.39 ± 0.01
+0.08 ± 0.01
+48.5 ± 0.97
+0.79 ± 0.07
+0.06 ± 0.01
+0.34 ± 0.00
+0.74 ± 0.07
+0.34 ± 0.02
+0.19 ± 0.01
+0.41 ± 0.01
+0.07 ± 0.01
+96.6 ± 1.99
+0.81 ± 0.07
+0.05 ± 0.01
+0.36 ± 0.00
+0.74 ± 0.07
+0.34 ± 0.02
+0.18 ± 0.01
+0.45 ± 0.01
+0.06 ± 0.01
+216 ± 2.88
+
+VI
+2.45 ± 0.14
+0.09 ± 0.02
+0.61 ± 0.01
+1.03 ± 0.08
+0.76 ± 0.05
+0.41 ± 0.05
+0.89 ± 0.02
+0.08 ± 0.02
+157 ± 0.59
+2.18 ± 0.14
+0.05 ± 0.01
+0.58 ± 0.01
+0.90 ± 0.10
+0.72 ± 0.04
+0.30 ± 0.04
+0.85 ± 0.01
+0.07 ± 0.01
+179 ± 0.78
+2.30 ± 0.15
+0.05 ± 0.01
+0.53 ± 0.01
+0.94 ± 0.08
+0.63 ± 0.04
+0.15 ± 0.03
+0.80 ± 0.01
+0.06 ± 0.02
+248 ± 0.66
+
+4.2. Analysis of Inducing Point Learning
+We generate a synthetic two dimensional problem with
+three classes by sampling the latent functions from the
+GP prior and applying the rule yi = arg maxk f k (xi ).
+The distribution of xi is uniform in the box [−2.5, 2.5] ×
+[−2.5, 2.5]. We consider 1000 training instances and a
+growing number of inducing points, i.e., M = 1 to M =
+256. The initial location of the inducing points is chosen at
+random and it is the same for all the methods. We are interested in the location of the inducing points after training.
+Thus, we set the other hyper-parameters to their true values
+(specified before generating the data) and we keep them
+fixed. All methods but VI are trained using batch methods
+during 2000 iterations. VI is trained using stochastic gradients for 2000 epochs (the batch version often gets stuck
+in local optima). We use ADAM with the default settings
+(Kingma & Ba, 2015), and 100 as the mini-batch size.
+
+Scalable Multi-Class Gaussian Process Classification using Expectation Propagation
+M =1
+
+M =2
+
+M =4
+
+M =8
+
+●
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+GFITC
+
+M = 16
+
+●
+●
+
+●
+
+●
+
+●
+●
+●
+
+●
+
+●
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+EP
+
+●
+
+●
+●
+
+●
+
+●
+
+●
+
+●
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+●
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+SEP
+
+●
+
+●
+
+●
+
+●
+
+●
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+●
+
+●
+
+●
+●
+
+●
+
+●
+
+●
+
+●●
+
+●
+●
+
+●
+
+●●
+
+●
+
+VI
+
+●
+●
+
+●
+
+●
+
+●
+●
+●
+●
+●
+
+●
+
+●
+
+●●
+●
+
+●
+●
+●
+
+●
+●●
+●
+
+●
+
+●
+● ●
+
+●
+●
+
+●
+
+●
+
+●
+
+● ●
+●
+●
+
+●
+●
+
+● ●
+●
+
+●
+●
+
+●
+
+● ●
+●●
+●
+●
+
+●
+
+●
+
+●
+
+● ●
+●
+
+●
+●
+
+●
+
+●
+●
+
+●
+
+●
+●
+●
+
+●
+●
+
+●
+●
+
+●
+
+●
+
+●
+●
+●
+●● ● ●
+●●● ●
+●
+●
+●●
+●
+●●
+●●
+
+●
+●●
+
+●
+●
+
+●
+
+●
+
+●●
+
+●
+●
+
+●
+
+●
+●
+
+●
+
+●●
+●
+
+●
+
+●
+
+●
+●
+
+●
+
+●
+●
+
+●
+
+●
+●
+
+●
+●
+●
+●●
+●
+●
+●●
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+●
+
+●●
+●
+
+●
+●
+●
+
+●
+●
+
+●
+●
+●
+●● ●● ●
+●
+●
+●
+●
+●
+●
+●
+●
+● ●
+●
+●
+●
+●●
+●
+
+●
+
+●
+
+●
+
+●
+●
+●
+● ●
+
+●
+●
+●
+
+●
+
+●
+●
+
+●
+●
+
+●
+●
+
+●
+
+●
+●
+
+●
+●
+●
+●
+●●
+●
+●
+●
+●
+●
+●
+●
+●
+●
+●
+
+●
+
+●
+●
+
+●
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+●
+
+●●
+●
+
+●
+
+●
+●
+●
+●
+●
+●●
+●
+●
+●
+●
+●
+● ●●●● ●
+●
+●
+●
+●●
+●● ●
+●●●
+●
+●
+●●●●●●
+●
+●●
+●
+●
+●●
+●●
+●
+●● ●●
+●
+●
+●●
+●
+●
+●
+●
+●●● ●●
+●
+●
+●
+●
+●
+●
+●
+●
+●●
+● ●●
+●
+●
+●●
+●●
+● ●
+●● ●
+● ●
+●
+●●
+●
+●●
+●●
+●
+●
+●
+●
+●
+●
+●
+●
+●
+●
+●
+●
+● ●●
+●
+●●
+●
+●
+●
+●
+●
+●
+●
+●
+●
+●
+●
+●
+●
+●
+●
+●
+●
+●
+●
+
+●●
+●
+
+●
+●
+●● ●
+●
+●
+● ●
+● ●
+●
+●
+●
+●
+●
+●
+●
+●●●
+●
+●●
+●
+●
+●
+●
+●
+●
+●
+●●
+●
+●
+●
+●
+● ●
+●●
+●
+●●●
+● ●
+●
+●
+●
+●
+● ●●
+●● ●
+●
+●
+●●
+
+●●
+●●
+●
+●
+
+●
+●
+●●
+● ●
+●
+●
+● ●
+●●● ●●●
+●
+●
+●●
+●● ●
+●
+● ● ●
+●
+●
+●
+●
+●●
+●
+●
+●
+●
+● ●●
+●
+● ● ● ●
+● ● ●●
+●● ● ●
+●
+● ●
+●
+●
+●
+●
+● ●●
+●● ● ●
+● ●● ● ● ● ●
+●
+●
+● ●●
+●
+●
+●
+●
+●
+●
+●
+●
+●
+● ●
+●
+●●●
+●
+● ●
+● ●●
+●●
+●●
+● ● ●
+●
+● ●
+●
+●● ●
+●●
+●● ●
+●
+●
+● ●●
+●●
+●● ●
+●
+●
+●●
+●●
+●
+●
+●●
+● ●●
+●
+●
+●●
+●
+●●
+●● ●
+●
+● ●●
+●
+●
+●
+●
+●
+●
+●
+●
+●
+●● ●●●
+●
+●●
+●
+●
+●
+●
+●
+
+●
+
+●●
+
+●
+
+●
+
+● ●
+●
+
+●
+●
+
+●
+●
+●
+●
+●
+●
+●●● ●
+●
+●●●
+●●
+●
+●
+●
+●
+●●
+●
+●
+●
+●
+●
+●
+●● ●
+●●●●
+●●
+●
+●
+●● ●●●
+● ●
+●
+●
+●
+●
+● ●●
+●
+●
+●
+●●
+●
+●
+● ●
+●
+●
+●
+●
+●
+●
+●
+●
+●●
+●
+●
+●
+●●
+●
+●
+●●
+●
+●●● ●
+●
+●●
+●
+
+●
+
+●
+●
+●
+●
+
+●
+
+●
+●
+
+●
+●
+●
+●
+
+●
+
+● ●
+
+●
+●●●
+●
+●
+●●●
+●●
+●
+● ●●
+●●●●●
+●
+●
+●
+●
+
+●
+
+●
+●
+
+●
+
+●
+
+●
+●
+●
+● ●
+●
+●●●
+●
+● ● ●
+● ●●●●●
+●
+●●
+●●●
+●
+
+●●
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+●●
+●
+●
+●
+●● ●
+●
+●
+●
+●
+●
+●●
+● ●
+●
+●
+● ●
+●●
+●
+●
+●
+●
+●
+●
+●
+
+●
+●
+●
+●●
+●
+
+●
+●
+
+●
+
+●●
+●
+●
+●
+●
+
+●
+
+●
+
+●●
+
+● ●
+●
+
+●
+●
+
+●
+
+●
+
+●●
+
+●
+
+●
+●
+●
+●
+●
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+●
+●
+
+●
+●●
+●
+
+●
+
+●
+●
+●
+
+● ●
+●
+●●● ●
+●
+● ●
+●
+●
+● ●●
+● ●
+●
+●●
+● ●●
+●
+●
+●
+● ●● ● ● ●
+●
+●
+● ●
+● ●
+
+●
+●
+
+●
+
+●
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+●●
+
+●
+
+●
+
+●
+
+●
+
+●
+●
+●
+●
+
+●
+
+●●●
+●
+
+●
+●
+● ●
+
+●
+●
+●
+
+●
+
+●
+●
+
+●
+
+●
+●● ●
+●●
+●
+●
+
+●
+
+●
+
+●
+
+●●
+
+●
+
+●
+● ● ●
+
+●
+
+●
+
+●●
+
+●
+
+●
+
+●
+
+●
+●
+●
+
+●
+
+●
+
+●
+
+●
+
+● ●
+●
+●●
+●
+●●
+●
+
+●
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+●
+
+●
+
+●●
+●
+
+● ●
+●
+●
+●
+
+●
+
+●
+
+●
+
+●
+
+●●
+
+●
+
+●
+
+●
+
+●
+●
+
+●
+
+●
+
+●
+
+●
+
+●●●
+
+●
+
+●
+●
+
+●
+●
+
+●
+
+●
+
+●
+
+●●
+
+●
+
+●
+
+●
+
+●
+●
+
+●
+
+●
+
+●
+●●
+●
+
+●
+●
+
+●
+
+●
+
+●
+●
+●
+
+●
+●
+●●
+●
+●
+●
+
+●
+
+●
+
+●
+
+●
+●
+●
+●
+●
+
+●
+
+●
+●
+
+●
+
+●
+●
+
+●
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+●
+
+●
+
+●
+
+● ●
+
+●
+●
+
+●
+●
+
+●
+●
+●
+● ●
+
+●
+●
+
+●
+●
+
+●
+
+●●
+
+●
+●
+
+●
+
+● ●
+
+●
+●
+●
+
+●
+●
+
+●
+●
+
+●●
+
+●
+●
+
+● ●
+
+●
+
+●
+
+● ●
+
+●
+
+●
+●
+
+●
+
+●●
+●
+
+●
+
+●
+●
+
+●
+
+●
+●
+
+●
+●
+
+●
+●
+
+●
+
+●
+
+●
+●
+
+●
+
+●
+
+●
+
+●
+●
+●
+
+●
+●●
+
+●
+
+●
+
+●
+
+●
+
+●
+●
+●
+●
+
+●
+●
+
+●
+●
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+● ●
+●
+
+●
+
+●
+
+●
+
+●
+
+●●
+●
+
+●
+
+●
+●
+●
+
+●
+●
+
+●
+
+●
+
+●
+
+●
+●
+
+●●
+
+●
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+●
+
+●
+●
+
+●
+
+●●
+
+●
+●
+
+●
+
+●
+
+●●
+
+●
+
+●
+●
+
+●
+●
+
+●
+●
+
+●
+●●
+
+M = 256
+●
+
+●
+●
+
+●
+
+●
+
+●
+●
+
+●
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+●
+
+●
+●
+
+●
+● ●
+
+●
+●
+
+●
+
+●
+
+M = 128
+●
+
+●
+●
+
+●
+●
+
+●
+
+●
+
+●
+●
+
+●
+●●
+
+●
+
+●●
+●
+
+●
+●
+●
+
+●
+●
+●
+
+●
+
+● ● ●
+
+●
+
+●
+
+●
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+●
+●
+
+●
+●
+
+●
+
+●
+●
+
+●●
+
+●
+●
+
+●
+
+●
+
+●
+●
+●
+
+●
+
+●
+
+● ●
+
+● ●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+●
+●
+
+●
+●
+
+●
+
+M = 64
+
+● ●
+
+●
+
+●
+
+●
+
+●●
+
+●
+●
+
+●
+
+●
+
+●
+●
+
+●
+
+●●
+●
+
+●
+
+●
+●
+
+●
+
+●
+
+●
+●
+●
+
+M = 32
+
+● ●
+●
+
+●
+
+●
+
+●
+
+●● ●
+●
+●●
+●
+●
+●●
+●
+●
+●
+●
+
+●
+● ●
+● ●
+●
+● ●
+●
+●
+●
+● ●
+●●
+●●●
+●
+
+●
+
+●
+●
+
+● ●
+●
+●
+●●
+●
+●
+●
+●●
+●●
+●
+●
+●
+●
+●
+●● ●● ●
+●
+●
+●
+
+●
+
+●
+
+●
+●
+● ●
+●●
+●
+●
+●●
+●
+●
+●●● ● ● ● ● ● ●●
+●
+●● ●
+● ●●
+●● ●●●
+●
+●
+●
+●
+●
+●
+●
+●
+●●
+●
+●
+● ● ● ● ●●●
+●
+●
+●
+●
+●
+●
+● ●
+●
+● ●●●
+●
+●
+●●●
+●●●●
+●● ● ● ● ● ● ●
+●
+●
+●
+●
+●●●
+●
+●
+●●●
+● ●
+●● ●
+● ●●
+●● ●
+● ●●●
+●
+●
+●●●
+●●
+●●
+●
+●
+●
+● ●● ●
+● ●●
+● ●●
+●
+●
+●
+●●
+●
+●
+●
+●
+●
+●
+●
+●
+●●●●
+●
+● ●
+●
+●
+●●●
+●●
+●
+●
+●●●●
+● ●
+●
+●●●
+●●● ●●●
+● ● ●●
+●
+●●
+●
+●
+●
+●
+● ●●●●
+●●
+●
+●
+●●
+●
+● ●
+●
+●
+●● ●
+●
+● ●●●●●● ●●
+●●
+●
+●●
+●
+● ● ●●
+●
+●
+●●
+●● ●●
+●
+●
+●●●
+● ●●
+● ●●
+●
+●
+●●
+●
+●
+●
+●
+●
+●
+●●●
+●
+●
+● ●●
+●
+●● ●
+●
+●●
+●
+● ●
+●●●●
+● ● ● ●●
+●
+●●●
+● ●
+●●
+●
+●
+● ●
+●
+●
+●
+●
+● ● ●●
+● ●
+●●
+● ●●
+●
+●
+●
+
+●
+
+●
+●
+
+●
+
+●
+●
+
+●
+
+●
+●
+●● ● ●
+●
+●●
+●
+● ●●
+●
+●● ●●●●
+●
+●● ●
+●●
+●
+●●
+●●●●
+●●●
+●
+●●
+● ●
+●●
+●
+●
+●
+●
+●
+●
+●●●
+●
+●
+●
+●
+●
+●
+●
+●
+●● ●
+●
+●●
+●●
+●
+●
+●● ●
+●
+● ●● ● ●
+●
+●
+●●
+●
+●●
+●
+●
+●
+●●●
+●●
+● ●●
+●●
+●
+●●● ●
+●
+●
+●●
+●
+●
+●
+●
+●●
+● ●●
+●
+●
+●
+●●
+●●
+●●
+●●
+●●
+●●●
+●
+●
+●● ●
+●●
+●
+●
+●
+●
+●
+●
+●
+●● ●
+●
+●●●
+●
+●
+●
+●
+●
+●
+●
+●●●
+●
+●
+●●
+●
+●●
+●●
+●
+●
+●
+● ●
+●
+●
+●●
+● ●●
+●
+● ●●●
+●●
+●
+●
+●●
+●● ●●
+● ●
+●
+●
+●
+●
+●●●
+●●●
+●
+●
+●
+●●
+●
+●
+●
+●
+●●
+●
+●
+●
+●
+●
+●
+●●
+●
+●●●
+●● ●
+●●●
+●●
+●●
+●● ●●
+●
+●
+●●
+●●
+●
+●
+●
+●
+●●●
+●
+●
+●●
+●
+●
+●
+● ● ●●
+●●●
+● ●●
+●
+●
+●
+●
+● ● ●●●
+●
+●
+●
+● ● ●●
+●●
+●
+●● ●
+●●●
+●
+●●
+●
+●
+●
+●
+●
+●
+●
+●●
+●
+●●
+●
+●
+●
+●
+●
+●
+●●
+●
+●
+●
+●
+●●
+●
+●●●●●●● ●
+●●
+●
+●
+●
+●● ●●
+●
+●
+●
+●●●
+●
+●● ●
+● ●
+●●
+●
+●●
+●
+●●
+● ●●
+●
+●
+●
+●
+●●
+●
+●
+●●
+●
+●● ●●
+●
+●
+● ● ●●
+●
+●
+●
+●
+●
+●
+●
+●●
+●
+●
+●●●●
+●
+●
+●
+●●● ●
+●
+●
+●
+●●
+●
+●
+●● ●
+●●
+●
+●●
+●
+●
+●
+●
+●
+●●●●●
+●●
+● ●●
+●
+●● ●●
+●
+●
+●
+●
+●
+●
+●
+●
+●
+●
+●
+●●
+●
+●●
+● ●
+●
+● ●
+●
+●
+●
+●●
+●●
+● ●●
+●●●
+●
+●
+●
+●
+●●●●
+●
+●
+●
+●● ●
+●
+●
+●●
+●●
+●
+●●●
+●●
+●
+●
+●
+●●
+●●
+●
+●●
+●
+●●
+● ●
+●● ●●
+●● ●
+●●
+●●●
+●
+● ●
+●
+●
+●
+●●●
+●
+●
+●●
+●●
+●
+●
+● ●
+●
+●
+●
+●● ●
+●●
+●
+●● ● ● ●
+●
+●
+●●
+●
+●●
+●
+●
+●
+●
+●
+●●
+
+●
+●
+●
+
+Figure 3. Decision boundaries and location of the inducing points after training for each method. GFITC, EP and SEP seem to place
+the inducing points one on top of each other. By contrast, VI prefers to place them near the decision boundaries. Best seen in color.
+
+4.3. Performance as a Function of the Training Time
+Figure 4 shows the negative test log-likelihood of each
+method as a function of the training time on the Satellite
+dataset (EP results are not shown since it performs equal
+to SEP). Training is done as in Section 4.1. We consider
+a growing number of inducing points M = 4, 20, 100 and
+report averages over 100 repetitions of the experiments. In
+all methods we use batch training. We observe that SEP
+is the method with the best performance at the lowest cost.
+Again, it is faster than GFITC because it optimizes q and
+the hyper-parameters at the same time, while GFITC waits
+until EP has converged to update the hyper-parameters.
+VI is not very efficient for small values of M , due to the
+quadratures. It also takes more time to get a good estimate
+of q, which is updated by gradient descent and is less ef-
+
+ficient than the EP updates. Similar results are obtained
+in terms of the test error. See the supplementary material.
+However, in that case VI does not overfit the training data.
+Satellite Dataset
+
+1.0
+
+1.5
+
+GFITC M = 4
+GFITC M = 20
+GFITC M = 100
+SEP M = 4
+SEP M = 20
+SEP M = 100
+VI M = 4
+VI M = 20
+VI M = 100
+
+0.5
+
+Avg. Negative Test Log Likelihood
+
+Figure 3 shows the location learnt by each method for the
+inducing points. Blue, red and green points represent the
+training data, black lines are decision boundaries and black
+border points are the inducing points. As we increase the
+number of inducing points the methods become more accurate. However, GFITC, EP and SEP identify decision
+boundaries that are better with a smaller number of inducing points. VI fails in this task. This is probably because VI
+updates the inducing-points with a bad estimate of q during the initial iterations. VI uses gradient steps to update
+q, which is less efficient than the EP updates (free of any
+learning rate). GFITC, EP and SEP overlap the inducing
+points, which can be seen as a pruning mechanism (if two
+inducing points are equal, it is like having only one). This
+has already been observed in regression problems (Bauer
+et al., 2016). By contrast, VI places the inducing points
+near the decision boundaries. This agrees with previous
+results on binary classification (Hensman et al., 2015a).
+
+−1
+
+0
+
+1
+2
+Avg. Time in seconds in log10
+
+3
+
+4
+
+Figure 4. Negative test log-likelihood for GFITC, SEP and VI on
+Satellite as a function of the training time. Best seen in color.
+
+4.4. Performance When Using Stochastic Gradients
+In very large datasets batch training is infeasible, and one
+must use mini-batches to update q and to approximate the
+required gradients. We evaluate the performance of each
+method on the MNIST dataset (LeCun et al., 1998) with
+M = 200 inducing points and mini-batches with 200 instances. This dataset has 60, 000 instances for training and
+10, 000 for testing. The learning rate of each method is
+set using ADAM with the default parameters (Kingma &
+Ba, 2015). GFITC does not allow for stochastic optimization. Thus, it is ignored in the comparison. The test error
+and the negative test log-likelihood of each method is displayed in Figure 5 (top) as a function of the training time.
+In this larger dataset all methods perform similarly. However, EP and SEP take less time to converge than VI. SEP
+obtains a test error that is 2.08% and average negative test
+log-likelihood that is 0.0725. The results of VI are 2.02%
+and 0.0686, respectively. These results are similar to the
+
+MNIST
+
+0.60
+
+Methods
+
+EP
+SEP
+VI
+
+Test Error
+
+0.48
+
+MNIST
+
+2.30
+
+Methods
+
+EP
+SEP
+VI
+
+1.86
+1.42
+
+0.36
+
+0.98
+
+0.24
+
+0.54
+
+0.12
+
+0.10
+
+100
+10000
+Training Time in Seconds in a Log10 Scale
+
+100
+10000
+Training Time in Seconds in a Log10 Scale
+
+Airline Delays
+
+Airline Delays
+
+Methods
+
+EP
+Linear
+SEP
+VI
+
+0.60
+Test Error
+
+0.58
+
+Neg. Test Log−Likelihood
+
+0.00
+
+Neg. Test Log−Likelihood
+
+Scalable Multi-Class Gaussian Process Classification using Expectation Propagation
+
+1.15
+
+Methods
+
+EP
+Linear
+SEP
+VI
+
+1.10
+
+0.56
+0.54
+
+1.05
+
+0.52
+
+1.00
+
+0.50
+1e+01
+1e+03
+1e+05
+Training Time in Seconds in a Log10 Scale
+
+0.95
+
+1e+01
+1e+03
+1e+05
+Training Time in Seconds in a Log10 Scale
+
+Figure 5. Average test error and average negative test log-likelihood for each method on the MNIST (top) and the Airline (bottom)
+dataset. In the Airline dataset a linear model based on logistic regression is included in the comparison. Best seen in color.
+
+ones reported in (Hensman et al., 2015a) using M = 500.
+A last experiment considers all flights within the USA between 01/2008 and 04/2008 (http://stat-computing.
+org/dataexpo/2009). The task is to classify the flights
+according to their delay using three classes: On time, more
+than 5 minutes of delay, or more than 5 minutes before
+time. We consider 8 attributes: age of the aircraft, distance covered, airtime, departure time, arrival time, day
+of the week, day of the month and month. After removing all instances with missing data 2, 127, 068 instances remain, from which 10, 000 are used for testing and the rest
+for training. We use the same settings as on the MNIST
+dataset and evaluate each method. The results obtained
+are shown in Figure 5 (bottom). We also report the performance of a logistic regression classifier. Again, all methods perform similarly in terms of test error. However, EP
+and SEP converge faster and quickly outperform the linear
+model. Importantly, the negative test log-likelihood of VI
+starts increasing at some point, which is again probably due
+to the optimization of Eq(fi ) [log p(yi |fi )] in (15). The supplementary material has further evidence supporting this.
+
+5. Conclusions
+We have proposed the first method for multi-class classification with Gaussian processes, based on expectation propagation (EP), that scales well to very large datasets. Such
+a method uses the FITC approximation to reduce the number of latent variables in the model from O(N ) to O(M ),
+where M  N , and N is the number of data instances. For
+this, M inducing points are introduced for each latent function in the model. Importantly, the proposed method allows for stochastic optimization as the estimate of the log-
+
+marginal-likelihood involves a sum across the data. Moreover, we have also considered a stochastic version of EP
+(SEP) to reduce the memory usage. When mini-batches
+and stochastic gradients are used for training, the computational cost of the proposed approach is O(CM 3 ), with C
+the number of classes. The memory cost is O(CM 2 ).
+We have compared the proposed method with other approaches from the literature based on variational inference
+(VI) (Hensman et al., 2015b), and with the model considered by Kim & Ghahramani (2006), which has been combined with FITC approximate priors (GFITC) (QuiñoneroCandela & Rasmussen, 2005). The proposed approach
+outperforms GFITC in large datasets as this method does
+not allow for stochastic optimization, and in small datasets
+it produces similar results. The proposed method, SEP,
+is slightly faster than VI which also allows for stochastic
+optimization. In particular, VI requires one-dimensional
+quadratures which in small datasets are expensive. We have
+also observed that SEP converges faster than VI. This is
+probably because the EP updates, free of any learning rate,
+are more efficient for finding a good posterior approximation than the gradient ascent updates employed by VI.
+An important conclusion of this work is that VI sometimes
+gives bad predictive distributions in terms of the test loglikelihood. The EP and SEP methods do not seem to have
+this problem. Thus, if one cares about accurate predictive
+distributions, VI should be avoided in favor of the proposed
+methods. In our experiments we have also observed that
+the proposed approaches tend to place the inducing points
+one on top of each other, which can be seen as an inducing
+point pruning technique (Bauer et al., 2016). By contrast,
+VI tends to place them near the decision boundaries.
+
+Scalable Multi-Class Gaussian Process Classification using Expectation Propagation
+
+Acknowledgements
+The authors gratefully acknowledge the use of the facilities of Centro de Computación Cientı́fica (CCC) at
+Universidad Autónoma de Madrid. The authors also
+acknowledge financial support from Spanish Plan Nacional I+D+i, Grants TIN2013-42351-P, TIN2016-76406P, TIN2015-70308-REDT and TEC2016-81900-REDT
+(MINECO/FEDER EU), and from Comunidad de Madrid,
+Grant S2013/ICE-2845.
 
 References
-Anagnostopoulos, Evangelos, Emiris, Ioannis Z, and Psarros, Ioannis. Low-quality dimension reduction and
-high-dimensional approximate nearest neighbor. In 31st
-International Symposium on Computational Geometry
-(SoCG 2015), pp. 436–450, 2015.
-Andoni, Alexandr and Indyk, Piotr. Near-optimal hashing
-algorithms for approximate nearest neighbor in high dimensions. In Foundations of Computer Science, 2006.
-FOCS’06. 47th Annual IEEE Symposium on, pp. 459–
-468. IEEE, 2006.
-Andoni, Alexandr and Razenshteyn, Ilya. Optimal datadependent hashing for approximate near neighbors. In
-Proceedings of the Forty-Seventh Annual ACM on Symposium on Theory of Computing, pp. 793–801. ACM,
-2015.
-Arya, Sunil and Mount, David M. Approximate nearest
-neighbor queries in fixed dimensions. In SODA, volume 93, pp. 271–280, 1993.
-Arya, Sunil, Mount, David M, Netanyahu, Nathan S, Silverman, Ruth, and Wu, Angela Y. An optimal algorithm for approximate nearest neighbor searching fixed
-dimensions. Journal of the ACM (JACM), 45(6):891–
-923, 1998.
-Bayer, Rudolf. Symmetric binary b-trees: Data structure
-and maintenance algorithms. Acta informatica, 1(4):
-290–306, 1972.
-Behnam, Ehsan, Waterman, Michael S, and Smith, Andrew D. A geometric interpretation for local alignmentfree sequence comparison. Journal of Computational Biology, 20(7):471–485, 2013.
-Bentley, Jon Louis. Multidimensional binary search trees
-used for associative searching. Communications of the
-ACM, 18(9):509–517, 1975.
-Berchtold, Stefan, Keim, Daniel A., and peter Kriegel,
-Hans.
-The X-tree: An index structure for highdimensional data. In Very Large Data Bases, pp. 28–39,
-1996.
-Berchtold, Stefan, Ertl, Bernhard, Keim, Daniel A, Kriegel,
-H-P, and Seidl, Thomas. Fast nearest neighbor search
-in high-dimensional space. In Data Engineering, 1998.
-Proceedings., 14th International Conference on, pp.
-209–218. IEEE, 1998.
-Beygelzimer, Alina, Kakade, Sham, and Langford, John.
-Cover trees for nearest neighbor. In Proceedings of
-the 23rd International Conference on Machine Learning, pp. 97–104. ACM, 2006.
+Bauer, M., van der Wilk, M., and Rasmussen, C. E. Understanding probabilistic sparse Gaussian process approximations. In Advances in Neural Information Processing
+Systems 29, pp. 1533–1541. 2016.
+Chai, K. M. A. Variational multinomial logit Gaussian process. Journal of Machine Learning Research, 13:1745–
+1808, 2012.
+Dezfouli, A. and Bonilla, E. V. Scalable inference for
+Gaussian process models with black-box likelihoods. In
+Advances in Neural Information Processing Systems 28,
+pp. 1414–1422. 2015.
+Girolami, M. and Rogers, S. Variational Bayesian multinomial probit regression with Gaussian process priors.
+Neural Computation, 18:1790–1817, 2006.
+Henao, R. and Winther, O. Predictive active set selection
+methods for Gaussian processes. Neurocomputing, 80:
+10–18, 2012.
+Hensman, J., Matthews, A., and Ghahramani, Z. Scalable
+variational Gaussian process classification. In Proceedings of the Eighteenth International Conference on Artificial Intelligence and Statistics, pp. 351–360, 2015a.
+Hensman, J., Matthews, A. G., Filippone, M., and Ghahramani, Z. MCMC for variationally sparse Gaussian processes. In Advances in Neural Information Processing
+Systems 28, pp. 1648–1656. 2015b.
+Hernández-Lobato, D. and Hernández-Lobato, J. M. Scalable Gaussian process classification via expectation
+propagation. In Proceedings of the 19th International
+Conference on Artificial Intelligence and Statistics, pp.
+168–176, 2016.
+Hernández-Lobato, D., ández Lobato, J.M., and Dupont,
+P. Robust multi-class Gaussian process classification. In
+Advances in Neural Information Processing Systems 24,
+pp. 280–288, 2011.
 
-Biau, Gérard, Chazal, Frédéric, Cohen-Steiner, David, Devroye, Luc, Rodriguez, Carlos, et al. A weighted knearest neighbor density estimate for geometric inference. Electronic Journal of Statistics, 5:204–237, 2011.
-Clarkson, Kenneth L. Nearest neighbor queries in metric
-spaces. Discrete & Computational Geometry, 22(1):63–
-93, 1999.
-Dasgupta, Sanjoy and Freund, Yoav. Random projection
-trees and low dimensional manifolds. In Proceedings
-of the Fortieth Annual ACM Symposium on Theory of
-Computing, pp. 537–546. ACM, 2008.
-Dasgupta, Sanjoy and Sinha, Kaushik. Randomized partition trees for nearest neighbor search. Algorithmica, 72
-(1):237–263, 2015.
-Datar, Mayur, Immorlica, Nicole, Indyk, Piotr, and Mirrokni, Vahab S. Locality-sensitive hashing scheme based
-on p-stable distributions. In Proceedings of the twentieth annual symposium on Computational geometry, pp.
-253–262. ACM, 2004.
-Eldawy, Ahmed and Mokbel, Mohamed F. SpatialHadoop:
-A MapReduce framework for spatial data. In Data Engineering (ICDE), 2015 IEEE 31st International Conference on, pp. 1352–1363. IEEE, 2015.
-Guibas, Leo J and Sedgewick, Robert. A dichromatic
-framework for balanced trees. In Foundations of Computer Science, 1978., 19th Annual Symposium on, pp.
-8–21. IEEE, 1978.
-Guttman, Antonin. R-trees: a dynamic index structure
-for spatial searching. In Proceedings of the 1984 ACM
-SIGMOD International Conference on Management of
-Data, pp. 47–57, 1984.
-Houle, Michael E and Nett, Michael. Rank-based similarity
-search: Reducing the dimensional dependence. Pattern
-Analysis and Machine Intelligence, IEEE Transactions
-on, 37(1):136–150, 2015.
-Indyk, Piotr and Motwani, Rajeev. Approximate nearest
-neighbors: towards removing the curse of dimensionality. In Proceedings of the Thirtieth Annual ACM Symposium on Theory of Computing, pp. 604–613. ACM,
-1998.
-Jégou, Hervé, Douze, Matthijs, and Schmid, Cordelia.
-Product quantization for nearest neighbor search. Pattern Analysis and Machine Intelligence, IEEE Transactions on, 33(1):117–128, 2011.
-Karger, David R and Ruhl, Matthias. Finding nearest
-neighbors in growth-restricted metrics. In Proceedings
-of the Thiry-fourth Annual ACM Symposium on Theory
-of Computing, pp. 741–750. ACM, 2002.
-
-Fast k-Nearest Neighbour Search via Prioritized DCI
-
-Krauthgamer, Robert and Lee, James R. Navigating nets:
-simple algorithms for proximity search. In Proceedings
-of the Fifteenth Annual ACM-SIAM Symposium on Discrete Algorithms, pp. 798–807. Society for Industrial and
-Applied Mathematics, 2004.
-Krizhevsky, Alex and Hinton, Geoffrey. Learning multiple
-layers of features from tiny images. Technical report,
-University of Toronto, 2009.
+Kim, H.-C. and Ghahramani, Z. Bayesian Gaussian process
+classification with the EM-EP algorithm. IEEE Transactions on Pattern Analysis and Machine Intelligence, 28:
+1948–1959, 2006.
+Kingma, D. P. and Ba, J. ADAM: a method for stochastic
+optimization. In Inrernational Conference on Learning
+Representations, pp. 1–15, 2015.
+Kuss, M. and Rasmussen, C. E. Assessing approximate inference for binary Gaussian process classification. Journal of Machine Learning Research, 6:1679–1704, 2005.
 LeCun, Yann, Bottou, Léon, Bengio, Yoshua, and Haffner,
 Patrick. Gradient-based learning applied to document
-recognition. Proceedings of the IEEE, 86(11):2278–
-2324, 1998.
-Li, Ke and Malik, Jitendra. Fast k-nearest neighbour search
-via Dynamic Continuous Indexing. In International
-Conference on Machine Learning, pp. 671–679, 2016.
-Liu, Ting, Moore, Andrew W, Yang, Ke, and Gray, Alexander G. An investigation of practical approximate nearest
-neighbor algorithms. In Advances in Neural Information
-Processing Systems, pp. 825–832, 2004.
-Meiser, Stefan. Point location in arrangements of hyperplanes. Information and Computation, 106(2):286–303,
-1993.
-Minsky, Marvin and Papert, Seymour. Perceptrons: an introduction to computational geometry. pp. 222, 1969.
-Orchard, Michael T. A fast nearest-neighbor search algorithm. In Acoustics, Speech, and Signal Processing,
-1991. ICASSP-91., 1991 International Conference on,
-pp. 2297–2300. IEEE, 1991.
-Paulevé, Loı̈c, Jégou, Hervé, and Amsaleg, Laurent. Locality sensitive hashing: A comparison of hash function
-types and querying mechanisms. Pattern Recognition
-Letters, 31(11):1348–1358, 2010.
-Pugh, William. Skip lists: a probabilistic alternative to balanced trees. Communications of the ACM, 33(6):668–
-676, 1990.
-Weiss, Yair, Torralba, Antonio, and Fergus, Rob. Spectral
-hashing. In Advances in Neural Information Processing
-Systems, pp. 1753–1760, 2009.
+recognition. Proceedings of the IEEE, 86:2278–2324,
+1998.
+Li, Y., Hernández-Lobato, J. M., and Turner, R. E. Stochastic expectation propagation. In Advances in Neural Information Processing Systems 28, pp. 2323–2331. 2015.
+Lichman, M. UCI machine learning repository, 2013. URL
+http://archive.ics.uci.edu/ml.
+Minka, T.
+Expectation propagation for approximate
+Bayesian inference. In Proceedings of the 17th Annual
+Conference on Uncertainty in Artificial Intelligence, pp.
+362–36, 2001.
+Naish-Guzman, A. and Holden, S. The generalized FITC
+approximation. In Advances in Neural Information Processing Systems 20, pp. 1057–1064. 2008.
+Nickisch, H. and Rasmussen, C. E. Approximations for binary Gaussian process classification. Journal of Machine
+Learning Research, 9:2035–2078, 2008.
+Quiñonero-Candela, J. and Rasmussen, C. E. A unifying
+view of sparse approximate Gaussian process regression.
+Journal of Machine Learning Research, 6:1939–1959,
+2005.
+Rasmussen, C. E. and Williams, C. K. I. Gaussian Processes for Machine Learning (Adaptive Computation
+and Machine Learning). The MIT Press, 2006.
+Riihimäki, J., Jylänki, P., and Vehtari, A. Nested expectation propagation for Gaussian process classification with
+a multinomial probit likelihood. Journal of Machine
+Learning Research, 14:75–109, 2013.
+Roweis, S. Gaussian identities. Technical report, New York
+University, 1999.
+Seeger, M. Expectation propagation for exponential families. Technical report, Department of EECS, University
+of California, Berkeley, 2006.
+
+Scalable Multi-Class Gaussian Process Classification using Expectation Propagation
+
+Snelson, E. Flexible and efficient Gaussian process models
+for machine learning. PhD thesis, 2007.
+Snelson, E. and Ghahramani, Z. Sparse Gaussian processes
+using pseudo-inputs. In Advances in Neural Information
+Processing Systems 18, pp. 1257–1264, 2006.
+Williams, C. K. I. and Barber, D. Bayesian classification
+with Gaussian processes. IEEE Transactions on Pattern Analysis and Machine Intelligence, 20:1342–1351,
+1998.
 
 

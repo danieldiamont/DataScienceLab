@@ -1,955 +1,787 @@
-Input Convex Neural Networks
+A Closer Look at Memorization in Deep Networks
 
-Brandon Amos 1 Lei Xu 2 * J. Zico Kolter 1
+Devansh Arpit * 1 2 Stanisław Jastrz˛ebski * 3 Nicolas Ballas * 1 2 David Krueger * 1 2 Emmanuel Bengio 4
+Maxinder S. Kanwal 5 Tegan Maharaj 1 6 Asja Fischer 7 Aaron Courville 1 2 8 Yoshua Bengio 1 2 9
+Simon Lacoste-Julien 1 2
 
 Abstract
-This paper presents the input convex neural network architecture. These are scalar-valued (potentially deep) neural networks with constraints
-on the network parameters such that the output
-of the network is a convex function of (some
-of) the inputs. The networks allow for efficient
-inference via optimization over some inputs to
-the network given others, and can be applied to
-settings including structured prediction, data imputation, reinforcement learning, and others. In
-this paper we lay the basic groundwork for these
-models, proposing methods for inference, optimization and learning, and analyze their representational power. We show that many existing
-neural network architectures can be made inputconvex with a minor modification, and develop
-specialized optimization algorithms tailored to
-this setting. Finally, we highlight the performance of the methods on multi-label prediction,
-image completion, and reinforcement learning
-problems, where we show improvement over the
-existing state of the art in many cases.
+We examine the role of memorization in deep
+learning, drawing connections to capacity, generalization, and adversarial robustness. While
+deep networks are capable of memorizing noise
+data, our results suggest that they tend to prioritize learning simple patterns first. In our
+experiments, we expose qualitative differences
+in gradient-based optimization of deep neural
+networks (DNNs) on noise vs. real data. We
+also demonstrate that for appropriately tuned
+explicit regularization (e.g., dropout) we can
+degrade DNN training performance on noise
+datasets without compromising generalization on
+real data. Our analysis suggests that the notions
+of effective capacity which are dataset independent are unlikely to explain the generalization
+performance of deep networks when trained with
+gradient based methods because training data itself plays an important role in determining the
+degree of memorization.
 
 1. Introduction
-In this paper, we propose a new neural network architecture
-that we call the input convex neural network (ICNN).These
-are scalar-valued neural networks f (x, y; θ) where x and
-y denotes inputs to the function and θ denotes the parameters, built in such a way that the network is convex in (a
-subset of) inputs y.3 The fundamental benefit to these ICNNs is that we can optimize over the convex inputs to the
-network given some fixed value for other inputs. That is,
-given some fixed x (and possibly some fixed elements of
+The traditional view of generalization holds that a model
+with sufficient capacity (e.g. more parameters than training
+examples) will be able to “memorize” each example, overfitting the training set and yielding poor generalization to
+validation and test sets (Goodfellow et al., 2016). Yet deep
+neural networks (DNNs) often achieve excellent generalization performance with massively over-parameterized
+models. This phenomenon is not well-understood.
 *
-Work done while author was at Carnegie Mellon University. 1 School of Computer Science, Carnegie Mellon University. Pittsburgh, PA, USA 2 Department of Computer Science and
-Technology, Tsinghua University. Beijing, China. Correspondence to: Brandon Amos <bamos@cs.cmu.edu>, J. Zico Kolter
-<zkolter@cs.cmu.edu>.
 
+Equal contribution 1 Montréal Institute for Learning Algorithms, Canada 2 Université de Montréal, Canada 3 Jagiellonian
+University, Krakow, Poland 4 McGill University, Canada
+5
+University of California, Berkeley, USA 6 Polytechnique
+Montréal, Canada 7 University of Bonn, Bonn, Germany
+8
+CIFAR Fellow 9 CIFAR Senior Fellow. Correspondence to:
+<david.krueger@umontreal.ca>.
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-y) we can globally and efficiently (because the problem is
-convex) solve the optimization problem
-argmin f (x, y; θ).
+From a representation learning perspective, the generalization capabilities of DNNs are believed to stem from
+their incorporation of good generic priors (see, e.g., Bengio et al. (2009)). Lin & Tegmark (2016) further suggest
+that the priors of deep learning are well suited to the physical world. But while the priors of deep learning may help
+explain why DNNs learn to efficiently represent complex
+real-world functions, they are not restrictive enough to rule
+out memorization.
+On the contrary, deep nets are known to be universal approximators, capable of representing arbitrarily complex
+functions given sufficient capacity (Cybenko, 1989; Hornik
+et al., 1989). Furthermore, recent work has shown that the
+expressiveness of DNNs grows exponentially with depth
+(Montufar et al., 2014; Poole et al., 2016). These works,
+however, only examine the representational capacity, that
+is, the set of hypotheses a model is capable of expressing
+via some value of its parameters.
+Because DNN optimization is not well-understood, it is unclear which of these hypotheses can actually be reached by
+gradient-based training (Bottou, 1998). In this sense, optimization and generalization are entwined in DNNs. To account for this, we formalize a notion of the effective capacity (EC) of a learning algorithm A (defined by specifying
+both the model and the training procedure, e.g.,“train the
+LeNet architecture (LeCun et al., 1998) for 100 epochs using stochastic gradient descent (SGD) with a learning rate
+of 0.01”) as the set of hypotheses which can be reached
+by applying that learning algorithm on some dataset. Formally, using set-builder notation:
+EC(A) = {h | ∃D such that h ∈ A(D)} ,
+where A(D) represents the set of hypotheses that is reachable by A on a dataset D1 .
+One might suspect that DNNs effective capacity is sufficiently limited by gradient-based training and early stopping to resolve the apparent paradox between DNNs’ excellent generalization and their high representational capacity.
+However, the experiments of Zhang et al. (2017) suggest
+that this is not the case. They demonstrate that DNNs are
+1
+
+Since A can be stochastic, A(D) is a set.
+
+A Closer Look at Memorization in Deep Networks
+
+able to fit pure noise without even needing substantially
+longer training time. Thus even the effective capacity of
+DNNs may be too large, from the point of view of traditional learning theory.
+By demonstrating the ability of DNNs to “memorize” random noise, Zhang et al. (2017) also raise the question
+whether deep networks use similar memorization tactics on
+real datasets. Intuitively, a brute-force memorization approach to fitting data does not capitalize on patterns shared
+between training examples or features; the content of what
+is memorized is irrelevant. A paradigmatic example of
+a memorization algorithm is k-nearest neighbors (Fix &
+Hodges Jr, 1951). Like Zhang et al. (2017), we do not
+formally define memorization; rather, we investigate this
+intuitive notion of memorization by training DNNs to fit
+random data.
+Main Contributions
+We operationalize the definition of “memorization” as the
+behavior exhibited by DNNs trained on noise, and conduct
+a series of experiments that contrast the learning dynamics
+of DNNs on real vs. noise data. Thus, our analysis builds
+on the work of Zhang et al. (2017) and further investigates
+the role of memorization in DNNs.
+Our findings are summarized as follows:
+1. There are qualitative differences in DNN optimization
+behavior on real data vs. noise. In other words, DNNs
+do not just memorize real data (Section 3).
+2. DNNs learn simple patterns first, before memorizing
+(Section 4). In other words, DNN optimization is
+content-aware, taking advantage of patterns shared by
+multiple training examples.
+3. Regularization techniques can differentially hinder
+memorization in DNNs while preserving their ability
+to learn about real data (Section 5).
+
+2. Experiment Details
+We perform experiments on MNIST (LeCun et al., 1998)
+and CIFAR10 (Krizhevsky et al.) datasets. We investigate two classes of models: 2-layer multi-layer perceptrons (MLPs) with rectifier linear units (ReLUs) on MNIST
+and convolutional neural networks (CNNs) on CIFAR10.
+If not stated otherwise, the MLPs have 4096 hidden units
+per layer and are trained for 1000 epochs with SGD and
+learning rate 0.01. The CNNs are a small Alexnet-style
+CNN2 (as in Zhang et al. (2017)), and are trained using
+2
+Input → Crop(2,2) → Conv(200,5,5) → BN → ReLU →
+MaxPooling(3,3) → Conv(200,5,5) → BN→ ReLU→ MaxPool-
+
+SGD with momentum=0.9 and learning rate of 0.01, scheduled to drop by half every 15 epochs.
+Following Zhang et al. (2017), in many of our experiments
+we replace either (some portion of) the labels (with random
+labels), or the inputs (with i.i.d. Gaussian noise matching
+the real dataset’s mean and variance) for some fraction of
+the training set. We use randX and randY to denote datasets
+with (100%, unless specified) noisy inputs and labels (respectively).
+
+3. Qualitative Differences of DNNs Trained
+on Random vs. Real Data
+Zhang et al. (2017) empirically demonstrated that DNNs
+are capable of fitting random data, which implicitly necessitates some high degree of memorization. In this section,
+we investigate whether DNNs employ similar memorization strategy when trained on real data. In particular, our
+experiments highlight some qualitative differences between
+DNNs trained on real data vs. random data, supporting the
+fact that DNNs do not use brute-force memorization to fit
+real datasets.
+3.1. Easy Examples as Evidence of Patterns in Real
+Data
+A brute-force memorization approach to fitting data should
+apply equally well to different training examples. However, if a network is learning based on patterns in the data,
+some examples may fit these patterns better than others. We
+show that such “easy examples” (as well as correspondingly “hard examples”) are common in real, but not in
+random, datasets. Specifically, for each setting (real data,
+randX, randY), we train an MLP for a single epoch starting from 100 different random initializations and shufflings
+of the data. We find that, for real data, many examples
+are consistently classified (in)correctly after a single epoch,
+suggesting that different examples are significantly easier
+or harder in this sense. For noise data, the difference between examples is much less, indicating that these examples are fit (more) independently. Results are presented in
+Figure 1.
+For randX, apparent differences in difficulty are well modeled as random Binomial noise. For randY, this is not the
+case, indicating some use of shared patterns. Visualizing
+first-level features learned by a CNN supports this hypothesis (Figure 2).
+ing(3,3) → Dense(384) → BN → ReLU → Dense(192) → BN
+→ ReLU → Dense(#classes) → Softmax. Here Crop(. , .) crops
+height and width from both sides with respective values.
+
+A Closer Look at Memorization in Deep Networks
+
+We find that for real data, only a subset of the training set
+has high ḡx , while for random data, ḡx is high for virtually
+all examples. We also find a different behavior when each
+example is given a unique class; in this scenario, the network has to learn to identify each example uniquely, yet
+still behaves differently when given real data than when
+given random data as input.
+
+Figure 1. Average (over 100 experiments) misclassification rate
+for each of 1000 examples after one epoch of training. This measure of an example’s difficulty is much more variable in real data.
+We conjecture this is because the easier examples are explained
+by some simple patterns, which are reliably learned within the
+first epoch of training. We include 1000 points samples from a
+binomial distribution with n = 100 and p equal to the average
+estimated P(correct) for randX, and note that this curve closely
+resembles the randX curve, suggesting that random inputs are all
+equally difficult.
+
+Figure 2. Filters from first layer of network trained on CIFAR10
+(left) and randY (right).
+
+3.2. Loss-Sensitivity in Real vs. Random Data
+To further investigate the difference between real and fully
+random inputs, we propose a proxy measure of memorization via gradients. Since we cannot measure quantitatively
+how much each training sample x is memorized, we instead
+measure the effect of each sample on the average loss. That
+is, we measure the norm of the loss gradient with respect
+to a previous example x after t SGD updates. Let Lt be the
+loss after t updates; then the sensitivity measure is given by
+gxt
+
+= k∂Lt /∂xk1 .
+
+The parameter update from training on x influences all future Lt indirectly by changing the subsequent updates on
+different training examples. We denote the average over gxt
+after T steps as ḡx , and refer to it as loss-sensitivity. Note
+that we only report `1 -norm results, but that results stay
+very similar using `2 -norm and infinity norm.
+We compute gxt by unrolling t SGD steps and applying
+backpropagation over the unrolled computation graph, as
+done by Maclaurin et al. (2015). Unlike Maclaurin et al.
+(2015), we only use this procedure to compute gxt , and do
+not modify the training procedure in any way.
+
+We visualize (Figure 3) the spread of ḡx as training progresses by computing the Gini coefficient over x’s. The
+Gini coefficient (Gini, 1913) is a measure of the inequality
+among values of a frequency distribution; a coefficient of
+0 means exact equality (i.e., all values are the same), while
+a coefficient of 1 means maximal inequality among values.
+We observe that, when trained on real data, the network has
+a high ḡx for a few examples, while on random data the network is sensitive to most examples. The difference between
+the random data scenario, where we know the neural network needs to do memorization, and the real data scenario,
+where we’re trying to understand what happens, leads us to
+believe that this measure is indeed sensitive to memorization. Additionally, these results suggest that when being
+trained on real data, the neural network probably does not
+memorize, or at least not in the same manner it needs to for
+random data.
+In addition to the different behaviors for real and random
+data described above, we also consider
+a class specific lossPT
+sensitivity: ḡi,j = E(x,y) 1/T t |∂Lt (y = i)/∂xy=j |,
+where Lt (y = i) is the term in the crossentropy sum corresponding to class i. We observe that the loss-sensitivity
+w.r.t. class i for training examples of class j is higher when
+i = j, but more spread out for real data (see Figure 4).
+An interpretation of this is that for real data there are more
+interesting cross-category patterns that can be learned than
+for random data.
+Figure 3 and 4 were obtained by training a fully-connected
+network with 2 layers of 16 units on 1000 downscaled 14 ×
+14 MNIST digits using SGD.
+3.3. Capacity and Effective Capacity
+In this section, we investigate the impact of capacity and
+effective capacity on learning of datasets having different
+amounts of random input data or random labels.
+3.3.1. E FFECTS OF CAPACITY AND DATASET SIZE ON
+VALIDATION PERFORMANCES
+
+In a first experiment, we study how overall model capacity impacts the validation performances for datasets with
+different amounts of noise. On MNIST, we found that the
+optimal validation performance requires a higher capacity
+model in the presence of noise examples (see Figure 5).
+This trend was consistent for noise inputs on CIFAR10, but
+
+A Closer Look at Memorization in Deep Networks
+
+real data
+50% real data
+random data
+
+0.6
+0.5
+
+Gini coefficient of ḡx distribution
+
+Gini coefficient of ḡx distribution
+
+0.7
+
+0.4
+0.3
+0.2
+0.1
+
+10
+
+3
+
+4
+
+10
+number of SGD steps (log scale)
+
+10
+
+5
+
+real data
+random data
+
+0.24
+0.22
+0.20
+0.18
+0.16
+103
+
+104
+number of SGD steps (log scale)
+
+Figure 3. Plots of the Gini coefficient of ḡx over examples x (see section 3.2) as training progresses, for a 1000-example real dataset
+(14x14 MNIST) versus random data. On the left, Y is the normal class label; on the right, there are as many classes as examples, the
+network has to learn to map each example to a unique class.
+
+0
+
+2
+
+4
+
+6
+
+8
+
+0
+
+0
+
+0
+
+2
+
+2
+
+4
+
+4
+
+6
+
+6
+
+8
+
+8
+
+2
+
+4
+
+6
+
+8
+
+10−6
+
+10−7
+
+Figure 4. Plots of per-class gx (see previous figure; log scale), a
+cell i, j represents the average |∂L(y = i)/∂xy=j |, i.e. the losssensitivity of examples of class i w.r.t. training examples of class
+j. Left is real data, right is random data.
+
+we did not notice any relationship between capacity and
+validation performance on random labels on CIFAR10.
+This result contradicts the intuitions of traditional learning
+theory, which suggest that capacity should be restricted, in
+order to enforce the learning of (only) the most regular patterns. Given that DNNs can perfectly fit the training set in
+any case, we hypothesize that that higher capacity allows
+the network to fit the noise examples in a way that does
+not interfere with learning the real data. In contrast, if we
+were simply to remove noise examples, yielding a smaller
+(clean) dataset, a lower capacity model would be able to
+achieve optimal performance.
+3.3.2. E FFECTS OF CAPACITY AND DATASET SIZE ON
+TRAINING TIME
+
+Our next experiment measures time-to-convergence, i.e.
+how many epochs it takes to reach 100% training accuracy. Reducing the capacity or increasing the size of the
+dataset slows down training as well for real as for noise
+
+Figure 5. Performance as a function of capacity in 2-layer MLPs
+trained on (noisy versions of) MNIST. For real data, performance
+is already very close to maximal with 4096 hidden units, but when
+there is noise in the dataset, higher capacity is needed.
+
+data3 . However, the effect is more severe for datasets containing noise, as our experiments in this section show (see
+Figure 6).
+Effective capacity of a DNN can be increased by increasing the representational capacity (e.g. adding more hidden
+units) or training for longer. Thus, increasing the number of hidden units decreases the number of training iterations needed to fit the data, up to some limit. We observe stronger diminishing returns from increasing representational capacity for real data, indicating that this limit
+is lower, and a smaller representational capacity is sufficient, for real datasets.
+Increasing the number of examples (keeping representational capacity fixed) also increases the time needed to
+memorize the training set. In the limit, the representational capacity is simply insufficient, and memorization is
+not feasible. On the other hand, when the relationship between inputs and outputs is meaningful, new examples sim3
+Regularization can also increase time-to-convergence; see
+section 5.
+
+A Closer Look at Memorization in Deep Networks
+
+Figure 6. Time to convergence as a function of capacity with dataset size fixed to 50000 (left), or dataset size with capacity fixed to 4096
+units (right). “Noise level” denotes to the proportion of training points whose inputs are replaced by Gaussian noise. Because of the
+patterns underlying real data, having more capacity/data does not decrease/increase training time as much as it does for noise data.
+
+ply give more (possibly redundant) clues as to what the input → output mapping is. Thus, in the limit, an idealized
+learner should be able to predict unseen examples perfectly,
+absent noise. Our experiments demonstrate that time-toconvergence is not only longer on noise data (as noted by
+Zhang et al. (2017)), but also, increases substantially as a
+function of dataset size, relative to real data. Following the
+reasoning above, this suggests that our networks are learning to extract patterns in the data, rather than memorizing.
+
+4. DNNs Learn Patterns First
+This section aims at studying how the complexity of the hypotheses learned by DNNs evolve during training for real
+data vs. noise data. To achieve this goal, we build on the
+intuition that the number of different decision regions into
+which an input space is partitioned reflects the complexity
+of the learned hypothesis (Sokolic et al., 2016). This notion
+is similar in spirit to the degree to which a function can scatter random labels: a higher density of decision boundaries
+in the data space allows more samples to be scattered.
+Therefore, we estimate the complexity by measuring how
+densely points on the data manifold are present around the
+model’s decision boundaries. Intuitively, if we were to randomly sample points from the data distribution, a smaller
+fraction of points in the proximity of a decision boundary
+suggests that the learned hypothesis is simpler.
+4.1. Critical Sample Ratio (CSR)
+Here we introduce the notion of a critical sample, which
+we use to estimate the density of decision boundaries as
+discussed above. Critical samples are a subset of a dataset
+such that for each such sample x, there exists at least one
+adversarial example x̂ in the proximity of x. Specifically,
+consider a classification network’s output vector f (x) =
+
+(f1 (x), . . . , fk (x)) ∈ Rk for a given input sample x ∈ Rn
+from the data manifold. Formally we call a dataset sample
+x a critical sample if there exists a point x̂ such that,
+arg max fi (x) 6= arg max fj (x̂)
+i
+
+j
 
 (1)
 
-y
-
-Fundamentally, this formalism lets us perform inference
-in the network via optimization. That is, instead of making predictions in a neural network via a purely feedforward process, we can make predictions by optimizing a
-scalar function (which effectively plays the role of an energy function) over some inputs to the function given others. There are a number of potential use cases for these
-networks.
-Structured prediction As is perhaps apparent from our
-notation above, a key application of this work is in structured prediction. Given (typically high-dimensional) structured input and output spaces X × Y, we can build a network over (x, y) pairs that encodes the energy function
-for this pair, following typical energy-based learning formalisms (LeCun et al., 2006). Prediction involves finding
-the y ∈ Y that minimizes the energy for a given x, which
-is exactly the argmin problem in (1). In our setting, assuming that Y is a convex space (a common assumption in
-structured prediction), this optimization problem is convex.
-This is similar in nature to the structured prediction energy
-networks (SPENs) (Belanger & McCallum, 2016), which
-also use deep networks over the input and output spaces,
-with the difference being that in our setting f is convex in
-y, so the optimization can be performed globally.
-Data imputation Similar to structured prediction but
-slightly more generic, if we are given some space Y we
-can learn a network f (y; θ) (removing the additional x inputs, though these can be added as well) that, given an example with some subset I missing, imputes the likely values of these variables by solving the optimization problem
-as above ŷI = argminyI f (yI , yĪ ; θ) This could be used
-3
-
-We emphasize the term “input convex” since convexity in
-machine learning typically refers to convexity (of the loss minimization learning problem) in the parameters, which is not the
-case here. Note that in our notation, f needs only be a convex
-function in y, and may still be non-convex in the remaining inputs
-x. Training these neural networks remains a nonconvex problem,
-and the convexity is only being exploited at inference time.
-
-Input Convex Neural Networks
-
-e.g., in image inpainting where the goal is to fill in some
-arbitrary set of missing pixels given observed ones.
-Continuous action reinforcement learning Given a reinforcement learning problem with potentially continuous
-state and action spaces S × A, we can model the (negative) Q function, −Q(s, a; θ) as an input convex neural
-network. In this case the action selection procedure can
-be formulated as a convex optimization problem a? (s) =
-argmina −Q(s, a; θ).
-This paper lays the foundation for optimization, inference,
-and learning in these input convex models, and explores
-their performance in the applications above. Our main contributions are: we propose the ICNN architecture and a partially convex variant; we develop efficient optimization and
-inference procedures that are well-suited to the complexity
-of these specific models; we propose techniques for training these models, based upon either max-margin structured
-prediction or direct differentiation of the argmin operation;
-and we evaluate the system on multi-label prediction, image completion, and reinforcement learning domains; in
-many of these settings we show performance that improves
-upon the state of the art.
-
-2. Background and related work
-Energy-based learning The interplay between inference, optimization, and structured prediction has a long
-history in neural networks. Several early incarnations of
-neural networks were explicitly trained to produce structured sequences (e.g. (Simard & LeCun, 1991)), and there
-was an early appreciation that structured models like hidden Markov models could be combined with the outputs of
-neural networks (Bengio et al., 1994). Much of this earlier
-work is surveyed and synthesized by (LeCun et al., 2006),
-who give a tutorial on these energy based learning methods. In recent years, there has been a strong push to further incorporate structured prediction methods like conditional random fields as the “last layer” of a deep network
-architecture (Peng et al., 2009; Zheng et al., 2015; Chen
-et al., 2015). Several methods have proposed to build general neural networks over joint input and output spaces,
-and perform inference over outputs using generic optimization techniques such as Generative Adversarial Networks
-(GANs) (Goodfellow et al., 2014) and Structured Prediction Energy Networks (SPENs) (Belanger & McCallum,
-2016). SPENs provide a deep structure over input and
-output spaces that performs the inference in (1) as a nonconvex optimization problem.
-The current work is highly related to these past approaches,
-but also differs in a very particular way. To the best of
-our knowledge, each of these structured prediction methods based upon energy-based models operates in one of two
-
-ways, either: 1) the architecture is built in a very particular
-way such that optimization over the output is guaranteed to
-be “easy” (e.g. convex, or the result of running some inference procedure), usually by introducing a structured linear
-objective at the last layer of the network; or 2) no attempt is
-made to make the architecture “easy” to run inference over,
-and instead a general model is built over the output space.
-In contrast, our approach lies somewhere in between: by
-ensuring convexity of the resulting decision space, we are
-constraining the inference problem to be easy in some respect, but we specify very little about the architecture other
-than the constraints required to make it convex. In particular, as we will show, the network architecture over the variables to be optimized over can be deep and involve multiple
-non-linearities. The goal of the proposed work is to allow
-for complex functions over the output without needing to
-specify them manually (exactly analogous to how current
-deep neural networks treat their input space).
-Structured prediction and MAP inference Our work
-also draws some connection to MAP-inference-based
-learning and approximate inference. There are two broad
-classes of learning approaches in structured prediction:
-method that use probabilistic inference techniques (typically exploiting the fact that the gradient of log likelihood is
-given by the actual feature expectations minus their expectation under the learned model (Koller & Friedman, 2009,
-Ch 20)), and methods that rely solely upon MAP inference
-(such as max-margin structured prediction (Taskar et al.,
-2005; Tsochantaridis et al., 2005)). MAP inference in particular also has close connections to optimization, as various convex relaxations of the general MAP inference problem often perform well in theory and practice. The proposed methods can be viewed as an extreme case of this
-second class of algorithm, where inference is based solely
-upon a convex optimization problem that may not have any
-probabilistic semantics at all. Finally, although it is more
-abstract, we feel there is a philosophical similarity between
-our proposed approach and sum-product networks (Poon &
-Domingos, 2011); both settings define networks where inference is accomplished “easily” either by a sum-product
-message passing algorithm (by construction) or via convex
-optimization.
-Fitting convex functions Finally, the proposed work relates to a topic less considered in the machine learning literature, that of fitting convex functions to data (Boyd &
-Vandenberghe, 2004, pg. 338). Indeed our learning problem can be viewed as parameter estimation under a model
-that is guaranteed to be convex by its construction. The
-most similar work of which we are aware specifically fits
-sums of rectified half-planes to data (Magnani & Boyd,
-2009), which is similar to one layer of our rectified linear
-units. However, the actual training scheme is much differ-
-
-Input Convex Neural Networks
-
-Figure 1. A fully input convex neural network (FICNN).
-Figure 2. A partially input convex neural network (PICNN).
-
-ent, and our deep network architecture allows for a much
-richer class of representations, while still maintaining convexity.
-
-3. Convex neural network architectures
-Here we more formally present different ICNN architectures and prove their convexity properties given certain
-constraints on the parameter space. Our chief claim is that
-the class of (full and partial) input convex models is rich
-and lets us capture complex joint models over the input to
-a network.
-3.1. Fully input convex neural networks
-To begin, we consider a fully convex, k-layer, fully connected ICNN that we call a FICNN and is shown in Figure
-1. This model defines a neural network over the input y
-(i.e., omitting any x term in this function) using the architecture for i = 0, . . . , k − 1
-
-
-(z)
-(y)
-zi+1 = gi Wi zi + Wi y + bi , f (y; θ) = zk (2)
-(z)
-
-where zi denotes the layer activations (with z0 , W0 ≡ 0),
-(y)
-(z)
-θ = {W0:k−1 , W1:k−1 , b0:k−1 } are the parameters, and gi
-are non-linear activation functions. The central result on
-convexity of the network is the following:
-Proposition 1. The function f is convex in y provided that
-(z)
-all W1:k−1 are non-negative, and all functions gi are convex and non-decreasing.
-The proof is simple and follows from the fact that nonnegative sums of convex functions are also convex and that
-the composition of a convex and convex non-decreasing
-function is also convex (see e.g. Boyd & Vandenberghe
-(2004, 3.2.4)). The constraint that the gi be convex nondecreasing is not particularly restrictive, as current nonlinear activation units like the rectified linear unit or maxpooling unit already satisfy this constraint. The constraint
-that the W (z) terms be non-negative is somewhat restrictive, but because the bias terms and W (y) terms can be negative, the network still has substantial representation power,
-as we will shortly demonstrate empirically.
-One notable addition in the ICNN are the “passthrough”
-layers that directly connect the input y to hidden units in
-
-deeper layers. Such layers are unnecessary in traditional
-feedforward networks because previous hidden units can
-always be mapped to subsequent hidden units with the
-identity mapping; however, for ICNNs, the non-negativity
-constraint subsequent W (z) weights restricts the allowable
-use of hidden units that mirror the identity mapping, and
-so we explicitly include this additional passthrough. Some
-passthrough layers have been recently explored in the deep
-residual networks (He et al., 2015) and densely connected
-convolutional networks (Huang et al., 2016), though these
-differ from those of an ICNN as they pass through hidden
-layers deeper in the network, whereas to maintain convexity our passthrough layers can only apply to the input directly.
-Other linear operators like convolutions can be included
-in ICNNs without changing the convexity properties. Indeed, modern feedforward architectures such as AlexNet
-(Krizhevsky et al., 2012), VGG (Simonyan & Zisserman,
-2014), and GoogLeNet (Szegedy et al., 2015) with ReLUs (Nair & Hinton, 2010) can be made input convex with
-Proposition 1. In the experiment that follow, we will explore ICNNs with both fully connected and convolutional
-layers, and we provide more detail about these additional
-architectures in Section A of the supplement.
-3.2. Partially input convex architectures
-The FICNN provides joint convexity over the entire input
-to the function, which indeed may be a restriction on the
-allowable class of models. Furthermore, this full joint convexity is unnecessary in settings like structured prediction
-where the neural network is used to build a joint model over
-an input and output example space and only convexity over
-the outputs is necessary.
-In this section we propose an extension to the pure FICNN,
-the partially input convex neural network (PICNN), that is
-convex over only some inputs to the network (in general
-ICNNs will refer to this new class). As we will show, these
-networks generalize both traditional feedforward networks
-and FICNNs, and thus provide substantial representational
-benefits. We define a PICNN to be a network over (x, y)
-pairs f (x, y; θ) where f is convex in y but not convex in x.
-Figure 2 illustrates one potential k-layer PICNN architec-
-
-Input Convex Neural Networks
-
-ture defined by the recurrences
-ui+1 = g̃i (W̃i ui + b̃i )
-
-
-
-(z)
-(zu)
-(z)
-zi+1 = gi Wi
-zi ◦ [Wi ui + bi ]+ +
-
-
-
-(y)
-(yu)
-(y)
-(u)
-Wi
-y ◦ (Wi ui + bi ) + Wi ui + bi
-f (x, y; θ) = zk , u0 = x
-(3)
-where ui ∈ Rni and zi ∈ Rmi denote the hidden units
-for the “x-path” and “y-path”, where y ∈ Rp , and where
-◦ denotes the Hadamard product, the elementwise product
-between two vectors. The crucial element here is that unlike the FICNN, we only need the W (z) terms to be nonnegative, and we can introduce arbitrary products between
-the ui hidden units and the zi hidden units. The following proposition highlights the representational power of the
-PICNN.
-Proposition 2. A PICNN network with k layers can represent any FICNN with k layers and any purely feedforward
-network with k layers.
-Proof. To recover a FICNN we simply set the weights over
-the entire x path to be zero and set b(z) = b(y) = 1. We
-can recover a feedforward network by noting that a traditional feedforward network fˆ(x; θ) where f : X → Y, can
-be viewed as a network with an inner product f (x; θ)T y in
-its last layer (see e.g. (LeCun et al., 2006) for more details). Thus, a feedforward network can be represented as
-a PICNN by setting the x path to be exactly the feedforward component, then having the y path be all zero except
-(yu)
-(y)
-Wk−1 = I and Wk−1 = 1T .
-
-4. Inference in ICNNs
-Prediction in ICNNs (which we also refer to as inference),
-requires solving the convex optimization problem
-minimize f (x, y; θ)
-y∈Y
-
-(4)
-
-While the resulting tasks are convex optimization problems
-(and thus “easy” to solve in some sense), in practice this
-still involves the solution of a potentially very complex optimization problem. We discuss here several approaches for
-approximately solving these optimization problems. We
-can usually obtain reasonably accurate solutions in many
-settings using a procedure that only involves a small number of forward and backward passes through the network,
-and which thus has a complexity that is at most a constant
-factor worse than that for feedforward networks. The same
-consideration will apply to training such networks, which
-we will discuss in Section 5.
-
-Exact inference in ICNNs Although it is not a practical
-approach for solving the optimization tasks, the inference
-problem for the networks presented above (where the nonlinear are either ReLU or linear units) can be posed as as
-linear program. We show how to do this in Section B.
-4.1. Approximate inference in ICNNs
-Because of the impracticality of exact inference, we focus
-on approximate approaches to optimizing over the inputs to
-these networks, but ideally ones that still exploit the convexity of the resulting problem. We specifically focus on
-gradient-based approaches, which use the fact that we can
-easily compute the gradient of an ICNN with respect to its
-inputs, ∇y f (x, y; θ), using backpropagation.
-Gradient descent. The simplest gradient-based methods
-for solving (4) is just (projected sub-) gradient descent,
-or modifications such as those that use a momentum term
-(Polyak, 1964; Rumelhart et al., 1988), or spectral step
-size modifications (Barzilai & Borwein, 1988; Birgin et al.,
-2000). That is, we start with some initial ŷ and repeat the
-update
-ŷ ← PY (ŷ − α∇y f (x, ŷ; θ))
-(5)
-This method is appealing in its simplicity, but suffers from
-the typical problems of gradient descent on non-smooth objectives: we need to pick a step size and possibly use a
-sequence of decreasing step sizes, and don’t have an obvious method to assess how accurate of a current solution
-we have obtained (since an ICNN with ReLUs is piecewise linear, it will not have zero gradient at the solution).
-The method is also more challenging to integrate with
-some learning procedures, as we often need to differentiate
-through an entire chain of the gradient descent algorithm
-(Domke, 2012). Thus, while the method can sometimes
-work in practice, we have found that other approaches typically far outperform this method, and we will focus on alternative approximate approaches for the remainder of this
-section.
-4.2. Approximate inference via the bundle entropy
-method
-An alternative approach to gradient descent is the bundle
-method (Smola et al., 2008), also known as the epigraph
-cutting plane approach, which iteratively optimizes a piecewise lower bound on the function given by the maximum
-over a set of first-order approximations. However, as, the
-traditional bundle method is not well suited to our setting
-(we need to evaluate a number of gradients equal to the dimension of x, and solve a complex optimization problem at
-each step) we have developed a new optimization algorithm
-for this domain that we term the bundle entropy method.
-This algorithm specifically applies to the (common) case
-where Y is bounded, which we assume to be Y = [0, 1]n
-
-Input Convex Neural Networks
-
-(other upper or lower bounds can be attained through scaling). The method is also easily extensible to the setting
-where elements of Y belong to a higher-dimensional probability simplex as well.
-For this approach, we consider adding an additional “barrier” function to the optimization in the form of the negative
-entropy −H(y), where
-H(y) = −
-
-n
-X
-
-(yi log yi + (1 − yi ) log(1 − yi )).
-
-(6)
-
-and differentiating with respect to y and t gives the optimality conditions
-∇y L(y, t, λ) = 0 =⇒ y =
-
-1
-1 + exp(GT λ)
-
-∇t L(y, t, λ) = 0 =⇒ 1 λ = 1
-which in turn leads to the dual problem
-maximize (G1 + h)T λ − 1T log(1 + exp(GT λ))
-λ
-
-subject to λ ≥ 0, 1T λ = 1.
-
-i=1
-
-In other words, we instead want to solve the optimization
-problem argminy f (x, y; θ)−H(y) (with a possible additional scaling term). The negative entropy is a convex function, with the limits of limy→0 H(y) = limy→1 H(y) = 0,
-and negative values in the interior of this range. The function acts as a barrier because, although it does not approach
-infinity as it reaches the barrier of the feasible set, its gradient does approach infinity as it reaches the barrier, and
-thus the optimal solution will always lie in the interior of
-the unit hypercube Y.
-An appealing feature of the entropy regularization comes
-from its close connection with sigmoid units in typical neural networks. It follows easily from first-order optimality
-conditions that the optimization problem
-minimize cT y − H(y)
-y
-
-(7)
-
-is given by y ? = 1/(1 + exp(c)). Thus if we consider the “trivial” PICNN mentioned in Section 3.2, which
-simply consists of the function f (x, y; θ) = y T f˜(x; θ)
-for some purely feedforward network f˜(x; θ), then the
-entropy-regularized minimization problem gives a solution
-that is equivalent to simply taking the sigmoid of the neural
-network outputs. Thus, the move to ICNNs can be interpreted as providing a more structured joint energy functional over the linear function implicitly used by sigmoid
-layers.
-At each iteration of the bundle entropy method, we solve
-the optimization problem
-y k+1 , tk+1 := argmin {t − H(y) | Gy + h ≤ t1} (8)
-y,t
-
-where G ∈ Rk×n has rows equal to
-giT = ∇y f (x, y i ; θ)T
-
-(9)
-
-and h ∈ Rk has entries equal to
-hi = f (x, y i ; θ) − ∇y f (x, y i ; θ)T y i .
-
-(10)
-
-The Lagrangian of the optimization problem is
-L(y, t, λ) = t − H(y) + λT (Gy + h − t1)
-
-(11)
-
-(12)
-
-T
-
-(13)
-
-This is a smooth optimization problem over the unit simplex, and can be solved using a method like the Projected
-Newton method of (Bertsekas, 1982, pg. 241, eq. 97). A
-complete description of the bundle entropy method is given
-in Section D. For lower dimensional problems, the bundle
-entropy method often attains an exact solution after a relatively small number of iterations. And even for larger problems, we find that the approximate solutions generated by
-a very small number of iterations (we typically use 5 iterations), still substantially outperform gradient descent approaches. Further, because we maintain an explicit lower
-bound on the function, we can compute an optimality gap
-of our solution, though in practice just using a fixed number
-of iterations performs well.
-
-5. Learning ICNNs
-Generally speaking, ICNN learning shapes the objective’s
-energy function to produce the desired values when optimizing over the relevant inputs. That is, for a given input
-output pair (x, y ? ), our goal is to find ICNN parameters θ
-such that
-y ? ≈ argmin f˜(x, y; θ)
-(14)
-y
-
-where for the entirely of this section, we use the notation
-f˜ to denote the combination of the neural network function plus the regularization term such as −H(y), if it is
-included, i.e.
-f˜(x, y; θ) = f (x, y; θ) − H(y).
-
-(15)
-
-Although we only discuss the entropy regularization in this
-work, we emphasize that other regularizers are also possible. Depending on the setting, there are several different
-approaches we can use to ensure that the ICNN achieves
-the desired targets, and we consider three approaches below: direct functional fitting, max-margin structured prediction, and argmin differentiation.
-Direct functional fitting. We first note that in some domains, we do not need a specialized procedure for fitting
-ICNNs, but can use existing approaches that directly fit the
-ICNN. An example of this is the Q-learning setting. Given
-
-Input Convex Neural Networks
-
-some observed tuple (s, a, r, s0 ), Q learning updates the parameters θ with the gradient
-
-
-0 0
-Q(s, a) − r − γ max
-Q(s
-,
-a
-)
-∇θ Q(s, a),
-(16)
-0
-a
-
-where the maximization step is carried out with gradient
-descent or the bundle entropy method. These updates can
-be applied to ICNNs with the only additional requirement
-that we project the weights onto their feasible sets after this
-update (i.e., clip or project any W terms that are required
-to be positive). Section E gives a complete description of
-deep Q-learning with ICNNs.
-
-complished via implicit differentiation of the KKT optimality conditions. Although the derivation is somewhat involved, the final result is fairly compact, and is given by the
-following proposition (for simplicity, we will write ŷ below
-instead of ŷ(x; θ) when the notation should be clear):
-Proposition 3. The gradient of the neural network loss for
-predictions generated through the minimization process is
-k
-X
-(cλi ∇θ f (x, y i ; θ)+
-
-∇θ `(ŷ(x; θ), y ? ) =
-i
-
-i=1
-T
-
-∇θ ∇y f (x, y ; θ)
-Max-margin structured prediction. Although maxmargin structured prediction is a simple and well-studied
-approach (Tsochantaridis et al., 2005; Taskar et al., 2005),
-in our experiences using these methods within an ICNN,
-we had substantial difficulty choosing the proper margin scaling term (especially for domains with continuousvalued outputs), or allowing for losses other than the hinge
-loss. For this reason, Section F discusses max-margin
-structured prediction in more detail, but the majority of our
-experiments here focus on the next approach, which more
-directly encodes the loss suffered by the full structuredprediction pipeline.
-5.1. Argmin differentiation
-In our final proposed approach, that of argmin differentiation, we propose to directly minimize a loss function between true outputs and the outputs predicted by our model,
-where these predictions themselves are the result of an optimization problem. We explicitly consider the case where
-the approximate solution to the inference problem is attained via the previously-described bundle entropy method,
-typically run for some fixed (usually small) number of iterations. To simplify notation, in the following we will let
-ŷ(x; θ) = argmin min {t − H(y) | Gy + h ≤ t1}
-y
-
-t
-
-≈ argmin f˜(x, y; θ)
-
-(17)
-
-y
-
-refer to the approximate minimization over y that results
-from running the bundle entropy method, specifically at the
-last iteration of the method.
-Given some example (x, y ? ), our goal is to compute the
-gradient, with respect to the ICNN parameters, of the loss
-between y ? and ŷ(x; θ): `(ŷ(x; θ), y ? ). This is in some
-sense the most direct analogue to traditional neural network learning, since we typically optimize networks by
-minimizing some loss between the network’s (feedforward)
-predictions and the true desired labels. Doing this in the
-predictions-via-optimization setting requires that we differentiate “through” the argmin operator, which can be ac-
-
-y
-
-λi c +
-
-cλi
-
-ŷ(x; θ) − y
-
-(18)
-i
-
-
-
-)
-
-where y i denotes the solution returned by the ith iteration
-of the entropy bundle method, λ denotes the dual variable
-solution of the entropy bundle method, and where the c
-variables are determined by the solution to the linear system
- y  
-
-c
-0
-−∇ŷ `(ŷ, y ? )
-.
-−1   cλ  = 
-0
-0
-0
-ct
-(19)
-
-
-1
-1
-where H = diag ŷ + 1−ŷ .
-
-
-H
- G
-0
-
-GT
-0
-−1T
-
-The proof of this proposition is given in Section G, but we
-highlight a few key points here. The complexity of computing this gradient will be linear in k, which is the number
-of active constraints at the solution of the bundle entropy
-method. The inverse of this matrix can also be computed
-efficiently by just inverting the k × k matrix GH −1 GT via
-a variable elimination procedure, instead of by inverting
-the full matrix. The gradients ∇θ f (x, yi ; θ) are standard
-neural network gradients, and further, can be computed in
-the same forward/backward pass as we use to compute the
-gradients for the bundle entropy method. The main challenge of the method is to compute the terms of the form
-∇θ (∇y f (x, yi ; θ)T v) for some vector v. This quantity can
-be computed by most autodifferentiation tools (the gradient
-inner product ∇y f (x, yi ; θ)T v itself just becomes a graph
-computation than can be differentiated itself), or it can be
-computed by a finite difference approximation. The complexity of computing this entire gradient is a small constant
-multiple of computing k gradients with respect to θ.
-Given this ability to compute gradients with respect to an
-arbitrary loss function, we can fit the parameter using traditional stochastic gradient methods examples. Specifically, given an example (or a minibatch of examples) xi , yi ,
-we compute gradients ∇θ `(ŷ(xi ; θ), yi ) and update the parameters using e.g. the ADAM optimizer (Kingma & Ba,
-2014).
-
-Input Convex Neural Networks
-
-Method
-Feedforward net
-ICNN
-SPEN (Belanger & McCallum, 2016)
-
-Test Macro-F1
-0.396
-0.415
-0.422
-
-Table 1. Comparison of approaches on BibTeX multi-label classification task. (Higher is better.)
-
-6. Experiments
-Our experiments study the representational power of ICNNs to better understand the interplay between the model’s
-restrictiveness and accuracy. Specifically, we evaluate
-the method on multi-label classification on the BibTeX
-dataset (Katakis et al., 2008), image completion using
-the Olivetti face dataset (Samaria & Harter, 1994), and
-continuous action reinforcement learning in the OpenAI
-Gym (Brockman et al., 2016). We show that the methods compare favorably to the state of the art in many situations. The full source code for all experiments is available
-in the icml2017 branch at https://github.com/
-locuslab/icnn and our implementation is built using
-Python (Van Rossum & Drake Jr, 1995) with the numpy
-(Oliphant, 2006) and TensorFlow (Abadi et al., 2016) packages.
-6.1. Synthetic 2D example
-Though we do not discuss it here, Section I presents a simple synthetic classification experiment comparing FICNN
-and PICNN decision boundaries.
-6.2. Multi-Label Classification
-We first study how ICNNs perform on multi-label classification with the BibTeX dataset and benchmark presented in
-(Katakis et al., 2008). This benchmark maps text classification from an input space X of 1836 bag-of-works indicator
-(binary) features to an output space Y of 159 binary labels.
-We use the train/test split of 4880/2515 from (Katakis et al.,
-2008) and evaluate with the macro-F1 score (higher is better). We use the ARFF version of this dataset from Mulan (Tsoumakas et al., 2011). Our PICNN architecture for
-multi-label classification uses fully-connected layers with
-ReLU activation functions and batch normalization (Ioffe
-& Szegedy, 2015) along the input path. As a baseline, we
-use a fully-connected neural network with batch normalization and ReLU activation functions. Both architectures
-have the same structure (600 fully connected, 159 (#labels)
-fully connected). We optimize our PICNN with 30 iterations of gradient descent with a learning rate of 0.1 and a
-momentum of 0.3.
-Table 1 compares several different methods for this problem. Our PICNN’s final macro-F1 score of 0.415 outper-
-
-Figure 3. Example test set image completions of the ICNN with
-bundle entropy.
-
-forms our baseline feedforward network’s score of 0.396,
-which indicates PICNNs have the power to learn a robust
-structure over the output space. SPENs obtain a macro-F1
-score of 0.422 on this task (Belanger & McCallum, 2016)
-and pose an interesting comparison point to ICNNs as they
-have a similar (but not identical) deep structure that is nonconvex over the input space. The difference of 0.007 between ICNNs and SPENs could be due to differences in
-our experimental setups, architectures, and random experimental noise. More details are included in Section J.
-6.3. Image completion on the Olivetti faces
-As a test of the system on a structured prediction task over
-a much more complex output space Y, we apply a convolutional PICNN to face completion on the sklearn version
-(Pedregosa et al., 2011) of the Olivetti data set (Samaria &
-Harter, 1994), which contains 400 64x64 grayscale images.
-ICNNs for face completion should be invariant to translations and other transformations in the input space. To
-achieve this invariance, our PICNN is inspired by the DQN
-architecture in Mnih et al. (2015), which preserves this invariance in the different context of reinforcement learning. Specifically, our network is over (x, y) pairs where
-x (32x64) is the left half and y (32x64) is the right half of
-the image. The input and output paths are: 32x8x8 conv
-(stride 4x2), 64x4x4 conv (stride 2x2), 64x3x3 conv, 512
-fully connected.
-This experiment uses the same training/test splits and minimizes the mean squared error (MSE) as in Poon & Domingos (2011) so that our results can be directly compared to
-(a non-exhaustive list of) other techniques. We also explore
-the tradeoffs between the bundle entropy method and gradient descent and use a non-convex baseline to better understand the impacts of convexity. We use a learning rate
-of 0.01 and momentum of 0.9 with gradient descent for the
-inner optimization in the ICNN.
-
-Input Convex Neural Networks
-
-Method
-ICNN - Bundle Entropy
-ICNN - Gradient Decent
-ICNN - Nonconvex
-Sum-product (Poon & Domingos, 2011)
-
-MSE
-833.0
-872.0
-850.9
-942
-
-Table 2. Comparisons of reconstruction error on image completion.
-
-Table 2 shows the test MSEs for the different approaches.
-Example image completions are shown in Figure 3. These
-results show that the bundle entropy method can leverage
-more information from these five iterations than gradient
-descent, even when the convexity constraint is relaxed.
-The PICNN trained with back-optimization with the relaxed convexity constraint slightly outperforms the network
-with the convexity constraint, but not the network trained
-with the bundle-entropy method. This shows that for image completion with PICNNs, convexity does not seem to
-inhibit the representational power. Furthermore, this experiment suggests that a small number of inner optimization
-iterations (five in this case) is sufficient for good performance.
-6.4. Continuous Action Reinforcement Learning
-Finally, we present standard benchmarks in continuous action reinforcement learning from the OpenAI Gym (Brockman et al., 2016) that use the MuJoCo physics simulator
-(Todorov et al., 2012). We model the (negative) Q function,
-−Q(s, a; θ) as an ICNN and select actions with the convex
-optimization problem a? (s) = argmina −Q(s, a; θ). We
-use Q-learning to optimize the ICNN as described in Section 5 and Section E. At test time, the policy is selected by
-optimizing Q(s, a; θ). All of our experiments use a PICNN
-with two fully-connected layers that each have 200 hidden
-units. We compare to Deep Deterministic Policy Gradient
-(DDPG) (Lillicrap et al., 2015) and Normalized Advantage
-Functions (NAF) (Gu et al., 2016) as state-of-the-art offpolicy learning baselines.4
-Table 3 shows the maximum test reward achieved by the
-different algorithms on these tasks. Although no method
-strictly dominates the others, the ICNN approach has some
-clear advantages on tasks like HalfCheetah, Reacher, and
-HumanoidStandup, and performs comparably on many
-other tasks, though with also a few notable poor performances in Hopper and Walker2D. Nonetheless, given the
-strong baseline, and the fact that the method is literally
-just a drop-in replacement for a function approximator in
+s.t. kx − x̂k∞ ≤ r
+where r is a fixed box size. As in recent work on adversarial examples (Kurakin et al., 2016) the above definition
+depends only on the predicted label arg maxi fi (x) of x,
+and not the true label (as in earlier work on adversarial examples, such as Szegedy et al. (2013); Goodfellow et al.
+(2014)).
+Following the above argument relating complexity to decision boundaries, a higher number of critical samples indicates a more complex hypothesis. Thus, we measure complexity as the critical sample ratio (CSR), that is, the fraction of data-points in a set |D| for which we can find a critsamples
+.
+ical sample: #critical
+|D|
+To identify whether a given data point x is a critical samples, we search for an adversarial sample x̂ within a box
+of radius r. To perform this search, we propose using
+Langevin dynamics applied to the fast gradient sign method
+(FGSM, Goodfellow et al. (2014)) as shown in algorithm
+14 . We refer to this method as Langevin adversarial sample
+search (LASS). While the FGSM search algorithm can get
+stuck at a points with zero gradient, LASS explores the box
+more thoroughly. Specifically, a problem with first order
+gradient search methods (like FGSM) is that there might
+exist training points where the gradient is 0, but with a large
+2nd derivative corresponding to a large change in prediction
+in the neighborhood. The noise added by the LASS algorithm during the search enables escaping from such points.
 4
-Because there are not official DDPG or NAF implementations or results on the OpenAI gym tasks, we use the Simon Ramstedt’s DDPG implementation from https://github.com/
-SimonRamstedt/ddpg and have re-implemented NAF.
+In our experiments, we set α = 0.25, β = 0.2 and η is
+samples from standard normal distribution.
 
-Task
-Ant
-HalfCheetah
-Hopper
-Humanoid
-HumanoidStandup
-InvDoubPend
-InvPend
-Reacher
-Swimmer
-Walker2d
+A Closer Look at Memorization in Deep Networks
 
-DDPG
-1000.00
-2909.77
-1501.33
-524.09
-134265.96
-9358.81
-1000.00
--6.10
-49.79
-1604.18
+(a) Noise added on classification inputs.
 
-NAF
-999.03
-2575.16
-1100.43
-5000.68
-116399.05
-9359.59
-1000.00
--6.31
-69.71
-1007.25
+(b) Noise added on classification labels.
 
-ICNN
-1056.29
-3822.99
-831.00
-433.38
-141217.38
-9359.41
-1000.00
--5.08
-64.89
-298.21
+Figure 7. Accuracy (left in each pair, solid is train, dotted is validation) and Critical sample ratios (right in each pair) for MNIST.
 
-Table 3. Maximum test reward for ICNN algorithm versus alternatives on several OpenAI Gym tasks. (All tasks are v1.)
+(a) Noise added on classification inputs.
 
-Q-learning, these results are overall positive. NAF poses
-a particularly interesting comparison point to ICNNs. In
-particular, NAF decomposes the Q function in terms of
-the value function an an advantage function Q(s, a) =
-V (s) + A(s, a) where the advantage function is restricted
-to be concave quadratic in the actions, and thus always
-has a closed-form solution. In a sense, this closely mirrors the setup of the PICNN architecture: like NAF, we
-have a separate non-convex path for the s variables, and an
-overall function that is convex in a; however, the distinction is that while NAF requires that the convex portion be
-quadratic, the ICNN architecture allows any convex functional form. As our experiments show, this representational
-power does allow for better performance of the resulting
-system, though the trade-off, of course, is that determining
-the optimal action in an ICNN is substantially more computationally complex than for a quadratic.
+(b) Noise added on classification labels.
 
-7. Conclusion and future work
-This paper laid the groundwork for the input convex neural
-network model. By incorporating relatively simple constraints into existing network architectures, we can fit very
-general convex functions and the apply optimization as an
-inference procedure. Since many existing models already
-fit into this overall framework (e.g., CRF models perform
-an optimization over an output space where parameters are
-given by the output of a neural network), the proposed
-method presents an extension where the entire inference
-procedure is “learned” along with the network itself, without the need for explicitly building typical structured prediction architectures. This work explored only a small subset of the possible applications of these network, and the
-networks offer promising directions for many additional
-domains.
+Figure 8. Accuracy (left in each pair, solid is train, dotted is validation) and Critical sample ratios (right in each pair) for CIFAR10.
 
-Input Convex Neural Networks
+Algorithm 1 Langevin Adversarial Sample Search (LASS)
+Require: x ∈ Rn , α, β, r, noise process η
+Ensure: x̂
+1: converged = FALSE
+2: x̃ ← x; x̂ ← ∅
+3: while not converged or max iter reached do
+k (x)
+4:
+∆ = α · sign( ∂f∂x
+)+β·η
+5:
+x̃ ← x̃ + ∆
+6:
+for i ∈ [n]
+ do
+xi + r · sign(x̃i − xi ) if |x̃i − xi | > r
+7:
+x̃i ←
+x̃i
+otherwise
+8:
+end for
+9:
+if arg maxi f (x) 6= arg maxi f (x̃) then
+10:
+converged = TRUE
+11:
+x̂ ← x̃
+12:
+end if
+13: end while
 
-Acknowledgments
-BA is supported by the National Science Foundation
-Graduate Research Fellowship Program under Grant No.
-DGE1252522. We also thank David Belanger for helpful
-discussions.
+4.2. Critical Samples Throughout Training
+We now show that the number of critical samples is much
+higher for a deep network (specifically, a CNN) trained on
+noise data compared with real data. To do so, we mea-
+
+Figure 9. Critical sample ratio throughout training on CIFAR-10,
+random input (randX), and random label (randY) datasets.
+
+sure the number of critical samples in the validation set5 ,
+throughout training6 . Results are shown in Figure 9. A
+5
+We also measure the number of critical samples in the training sets. Since we train our models using log loss, training points
+are pushed away from the decision boundary even after the network learns to classify them correctly. This leads to an initial rise
+and then fall of the number of critical samples in the training sets.
+6
+We use a box size of 0.3, which is small enough in a 0-255
+pixel scale to be unnoticeable by a human evaluator. Different
+values for r were tested but did not change results qualitatively
+
+A Closer Look at Memorization in Deep Networks
+
+higher number of critical samples for models trained on
+noise data compared with those trained on real data suggests that the learned decision surface is more complex for
+noise data (randX and randY). We also observe that the
+CSR increases gradually with increasing number of epochs
+and then stabilizes. This suggests that the networks learn
+gradually more complex hypotheses during training for all
+three datasets.
+In our next experiment, we evaluate the performance and
+critical sample ratio of datasets with 20% to 80% of the
+training data replaced with either input or label noise. Results for MNIST and CIFAR-10 are shown in Figures 7
+and 8, respectively. For both randX and randY datasets,
+the CSR is higher for noisier datasets, reflecting the higher
+level of complexity of the learned prediction function. The
+final and maximum validation accuracies are also both
+lower for noisier datasets, indicating that the noise examples interfere somewhat with the networks ability to learn
+about the real data.
+More significantly, for randY datasets (Figures 7(b) and
+8(b)), the network achieves maximum accuracy on the validation set before achieving high accuracy on the training
+set. Thus the model first learns the simple and general patterns of the real data before fitting the noise (which results in decreasing validation accuracy). Furthermore, as
+the model moves from fitting real data to fitting noise, the
+CSR greatly increases, indicating the need for more complex hypotheses to explain the noise. Combining this result
+with our results from Section 3.1, we conclude that real
+data examples are easier to fit than noise.
+
+5. Effect of Regularization on Learning
+Here we demonstrate the ability of regularization to degrade training performance on data with random labels,
+while maintaining generalization performance on real data.
+Zhang et al. (2017) argue that explicit regularizations are
+not the main explanation of good generalization performance, rather SGD based optimization is largely responsible for it. Our findings extend their claim and indicate that
+explicit regularizations can substantially limit the speed of
+memorization of noise data without significantly impacting
+learning on real data.
+We compare the performance of CNNs trained on CIFAR10 and randY with the following regularizers: dropout
+(with dropout rates in range 0-0.9), input dropout (range 00.9), input Gaussian noise (with standard deviation in range
+0-5), hidden Gaussian noise (range 0-0.3), weight decay
+(range 0-1) and additionally dropout with adversarial training (with weighting factor in range 0.2-0.7 and dropout in
+and lead to the same conclusions
+
+Figure 10. Effect of different regularizers on train accuracy (on
+noise dataset) vs. validation accuracy (on real dataset). Flatter
+curves indicate that memorization (on noise) can be capped without sacrificing generalization (on real data).
+
+rate range 0.03-0.5).7 We train a separate model for every
+combination of dataset, regularization technique, and regularization parameter.
+The results are summarized in Figure 10. For each combination of dataset and regularization technique, the final
+training accuracy on randY (x-axis) is plotted against the
+best validation accuracy on CIFAR-10 from amongst the
+models trained with different regularization parameters (yaxis). Flat curves indicate that the corresponding regularization technique can reduce memorization when applied
+on random labeling, while resulting in the same validation accuracy on the clean validation set. Our results show
+that different regularizers target memorization behavior to
+different extent – dropout being the most effective. We
+find that dropout, especially coupled with adversarial training, is best at hindering memorization without reducing the
+model’s ability to learn. Figure 11 additionally shows this
+effect for selected experiments (i.e. selected hyperparameter values) in terms of train loss.
+
+6. Related Work
+Our work builds on the experiments and challenges the interpretations of Zhang et al. (2017). We make heavy use
+of their methodology of studying DNN training in the context of noise datasets. Zhang et al. (2017) show that DNNs
+can perfectly fit noise and thus that their generalization
+ability cannot be explained through traditional statistical
+learning theory (e.g., see (Vapnik & Vapnik, 1998; Bartlett
+et al., 2005)). We agree with this finding, but show in addition that the degree of memorization and generalization
+in DNNs depends not only on the architecture and training
+7
+We perform adversarial training using critical samples found
+by LASS algorithm with default parameters.
+
+A Closer Look at Memorization in Deep Networks
+
+the effect of noise samples on learning dynamics has a long
+tradition (Bishop, 1995; An, 1996), we are the first to examine relationships between the fraction of noise samples
+and other attributes of the learning algorithm, namely: capacity, training time and dataset size.
+
+Figure 11. Training curves for different regularization techniques
+on random label (left) and real (right) data. The vertical ordering
+of the curves is different for random labels than for real data, indicating differences in the propensity of different regularizers to
+slow-down memorization.
+
+procedure (including explicit regularizations), but also on
+the training data itself 8 .
+Another direction we investigate is the relationship between regularization and memorization. Zhang et al.
+(2017) argue that explicit and implicit regularizers (including SGD) might not explain or limit shattering of random
+data. In this work we show that regularizers (especially
+dropout) do control the speed at which DNNs memorize.
+This is interesting since dropout is also known to prevent
+catastrophic forgetting (Goodfellow et al., 2013) and thus
+in general it seems to help DNNs retain patterns.
+A number of arguments support the idea that SGD-based
+learning imparts a regularization effect, especially with a
+small batch size (Wilson & Martinez, 2003) or a small
+number of epochs (Hardt et al., 2015). Previous work also
+suggests that SGD prioritizes the learning of simple hypothesis first. Sjoberg et al. (1995) showed that, for linear
+models, SGD first learns models with small `2 parameter
+norm. More generally, the efficacy of early stopping shows
+that SGD first learns simpler models (Yao et al., 2007). We
+extend these results, showing that DNNs trained with SGD
+learn patterns before memorizing, even in the presence of
+noise examples.
+Various previous works have analyzed explanations for the
+generalization power of DNNs. Montavon et al. (2011) use
+kernel methods to analyze the complexity of deep learning architectures, and find that network priors (e.g. implemented by the network structure of a CNN or MLP) control the speed of learning at each layer. Neyshabur et al.
+(2014) note that the number of parameters does not control the effective capacity of a DNN, and that the reason
+for DNNs’ generalization is unknown. We supplement this
+result by showing how the impact of representational capacity changes with varying noise levels. While exploring
+8
+We conclude the latter part based on experimental findings in
+sections 3 and 4.2
+
+Multiple techniques for analyzing the training of DNNs
+have been proposed before, including looking at generalization error, trajectory length evolution (Raghu et al.,
+2016), analyzing Jacobians associated to different layers (Wang; Saxe et al., 2013), or the shape of the loss minima found by SGD (Im et al., 2016; Chaudhari et al., 2016;
+Keskar et al., 2016). Instead of measuring the sharpness
+of the loss for the learned hypothesis, we investigate the
+complexity of the learned hypothesis throughout training
+and across different datasets and regularizers, as measured
+by the critical sample ratio. Critical samples refer to real
+data-points that have adversarial examples (Szegedy et al.,
+2013; Goodfellow et al., 2014) nearby. Adversarial examples originally referred to imperceptibly perturbed datapoints that are confidently misclassified. (Miyato et al.,
+2015) define virtual adversarial examples via changes in
+the predictive distribution instead, thus extending the definition to unlabeled data-points. Kurakin et al. (2016) recommend using this definition when training on adversarial
+examples, and it is the definition we use.
+Two contemporary works perform in-depth explorations of
+topics related to our work. Bojanowski & Joulin (2017)
+show that predicting random noise targets can yield state
+of the art results in unsupervised learning, corroborating
+our findings in Section 3.1, especially Figure 2. Koh &
+Liang (2017) use influence functions to measure the impact
+on parameter changes during training, as in our Section 3.2.
+They explore several promising applications for this technique, including generation of adversarial training examples.
+
+7. Conclusion
+Our empirical exploration demonstrates qualitative differences in DNN optimization on noise vs. real data, all of
+which support the claim that DNNs trained with SGDvariants first use patterns, not brute force memorization, to
+fit real data. However, since DNNs have the demonstrated
+ability to fit noise, it is unclear why they find generalizable solutions on real data; we believe that the deep learning priors including distributed and hierarchical representations likely play an important role. Our analysis suggests
+that memorization and generalization in DNNs depend on
+network architecture and optimization procedure, but also
+on the data itself. We hope to encourage future research on
+how properties of datasets influence the behavior of deep
+learning algorithms, and suggest a data-dependent understanding of DNN capacity as a research goal.
+
+A Closer Look at Memorization in Deep Networks
+
+ACKNOWLEDGMENTS
+We thank Akram Erraqabi, Jason Jo and Ian Goodfellow
+for helpful discussions. SJ was supported by Grant No. DI
+2014/016644 from Ministry of Science and Higher Education, Poland. DA was supported by IVADO, CIFAR and
+NSERC. EB was financially supported by the Samsung Advanced Institute of Technology (SAIT). MSK and SJ were
+supported by MILA during the course of this work. We
+acknowledge the computing resources provided by ComputeCanada and CalculQuebec. Experiments were carried
+out using Theano (Theano Development Team, 2016) and
+Keras (Chollet et al., 2015).
+
+Goodfellow, Ian, Bengio, Yoshua, and Courville, Aaron.
+Deep Learning. MIT Press, 2016. http://www.
+deeplearningbook.org.
+Goodfellow, Ian J, Mirza, Mehdi, Xiao, Da, Courville,
+Aaron, and Bengio, Yoshua. An empirical investigation
+of catastrophic forgetting in gradient-based neural networks. arXiv preprint arXiv:1312.6211, 2013.
+Goodfellow, Ian J, Shlens, Jonathon, and Szegedy, Christian. Explaining and harnessing adversarial examples.
+arXiv preprint arXiv:1412.6572, 2014.
 
 References
-Abadi, Martın, Agarwal, Ashish, Barham, Paul, Brevdo,
-Eugene, Chen, Zhifeng, Citro, Craig, Corrado, Greg S,
-Davis, Andy, Dean, Jeffrey, Devin, Matthieu, et al. Tensorflow: Large-scale machine learning on heterogeneous
-distributed systems. arXiv preprint arXiv:1603.04467,
-2016.
-Barzilai, Jonathan and Borwein, Jonathan M. Two-point
-step size gradient methods. IMA Journal of Numerical
-Analysis, 8(1):141–148, 1988.
-Belanger, David and McCallum, Andrew. Structured prediction energy networks. In Proceedings of the International Conference on Machine Learning, 2016.
-Bengio, Yoshua, LeCun, Yann, and Henderson, Donnie.
-Globally trained handwritten word recognizer using spatial representation, convolutional neural networks, and
-hidden markov models. Advances in neural information
-processing systems, pp. 937–937, 1994.
-Bertsekas, Dimitri P. Projected newton methods for optimization problems with simple constraints. SIAM Journal on control and Optimization, 20(2):221–246, 1982.
-Birgin, Ernesto G, Martı́nez, José Mario, and Raydan, Marcos. Nonmonotone spectral projected gradient methods
-on convex sets. SIAM Journal on Optimization, 10(4):
-1196–1211, 2000.
-Boyd, Stephen and Vandenberghe, Lieven. Convex optimization. Cambridge university press, 2004.
-Boyd, Stephen, Parikh, Neal, Chu, Eric, Peleato, Borja, and
-Eckstein, Jonathan. Distributed optimization and statistical learning via the alternating direction method of mulR in Machine Learntipliers. Foundations and Trends
-ing, 3(1):1–122, 2011.
-Brockman, Greg, Cheung, Vicki, Pettersson, Ludwig,
-Schneider, Jonas, Schulman, John, Tang, Jie, and
-Zaremba, Wojciech. Openai gym. arXiv preprint
-arXiv:1606.01540, 2016.
-Chen, Liang-Chieh, Schwing, Alexander G, Yuille, Alan L,
-and Urtasun, Raquel. Learning deep structured models.
-In Proceedings of the International Conference on Machine Learning, 2015.
 
-Domke, Justin. Generic methods for optimization-based
-modeling. In Proceedings of the Conference on AI and
-Statistics, pp. 318–326, 2012.
-Duchi, John, Hazan, Elad, and Singer, Yoram. Adaptive
-subgradient methods for online learning and stochastic
-optimization. The Journal of Machine Learning Research, 12:2121–2159, 2011.
-Goodfellow, Ian, Pouget-Abadie, Jean, Mirza, Mehdi, Xu,
-Bing, Warde-Farley, David, Ozair, Sherjil, Courville,
-Aaron, and Bengio, Yoshua. Generative adversarial nets.
-In Advances in Neural Information Processing Systems,
-pp. 2672–2680, 2014.
-Gu, Shixiang, Lillicrap, Timothy, Sutskever, Ilya, and
-Levine, Sergey. Continuous deep q-learning with modelbased acceleration. In Proceedings of the International
-Conference on Machine Learning, 2016.
-He, Kaiming, Zhang, Xiangyu, Ren, Shaoqing, and Sun,
-Jian. Deep residual learning for image recognition. arXiv
-preprint arXiv:1512.03385, 2015.
-Huang, Gao, Liu, Zhuang, and Weinberger, Kilian Q.
-Densely connected convolutional networks.
-arXiv
-preprint arXiv:1608.06993, 2016.
-Ioffe, Sergey and Szegedy, Christian. Batch normalization:
-Accelerating deep network training by reducing internal
-covariate shift. In Proceedings of The 32nd International
-Conference on Machine Learning, pp. 448–456, 2015.
-Katakis, Ioannis, Tsoumakas, Grigorios, and Vlahavas,
-Ioannis. Multilabel text classification for automated
-tag suggestion. ECML PKDD discovery challenge, 75,
-2008.
-Kingma, Diederik and Ba, Jimmy.
-method for stochastic optimization.
-arXiv:1412.6980, 2014.
+Hardt, Moritz, Recht, Benjamin, and Singer, Yoram. Train
+faster, generalize better: Stability of stochastic gradient
+descent. arXiv preprint arXiv:1509.01240, 2015.
 
-Adam: A
+An, Guozhong. The effects of adding noise during backpropagation training on a generalization performance.
+Neural computation, 8(3):643–674, 1996.
+
+Hornik, Kurt, Stinchcombe, Maxwell, and White, Halbert.
+Multilayer feedforward networks are universal approximators. Neural networks, 2(5):359–366, 1989.
+
+Bartlett, Peter L, Bousquet, Olivier, Mendelson, Shahar,
+et al. Local rademacher complexities. The Annals of
+Statistics, 33(4):1497–1537, 2005.
+
+Im, Daniel Jiwoong, Tao, Michael, and Branson, Kristin.
+An empirical analysis of deep network loss surfaces.
+arXiv preprint arXiv:1612.04010, 2016.
+
+Bengio, Yoshua et al. Learning deep architectures for ai.
+Foundations and trends® in Machine Learning, 2(1):1–
+127, 2009.
+
+Keskar, Nitish Shirish, Mudigere, Dheevatsa, Nocedal,
+Jorge, Smelyanskiy, Mikhail, and Tang, Ping Tak Peter. On large-batch training for deep learning: Generalization gap and sharp minima. arXiv preprint
+arXiv:1609.04836, 2016.
+
+Bishop, Chris M. Training with noise is equivalent to
+tikhonov regularization. Neural computation, 7(1):108–
+116, 1995.
+Bojanowski, P. and Joulin, A. Unsupervised Learning by
+Predicting Noise. ArXiv e-prints, April 2017.
+Bottou, Léon. Online learning and stochastic approximations. On-line learning in neural networks, 17(9):142,
+1998.
+Chaudhari, Pratik, Choromanska, Anna, Soatto, Stefano, and LeCun, Yann.
+Entropy-sgd: Biasing
+gradient descent into wide valleys. arXiv preprint
+arXiv:1611.01838, 2016.
+Chollet, François et al. Keras. https://github.com/
+fchollet/keras, 2015.
+Cybenko, George. Approximation by superpositions of a
+sigmoidal function. Mathematics of Control, Signals,
+and Systems (MCSS), 2(4):303–314, 1989.
+Fix, Evelyn and Hodges Jr, Joseph L. Discriminatory analysis-nonparametric discrimination: consistency
+properties. Technical report, DTIC Document, 1951.
+Gini, Corrado. Variabilita e mutabilita. Journal of the
+Royal Statistical Society, 76(3), 1913.
+
+Koh, Pang Wei and Liang, Percy. Understanding blackbox predictions via influence functions. arXiv preprint
+arXiv:1703.04730, 2017.
+Krizhevsky, Alex, Nair, Vinod, and Hinton, Geoffrey. Cifar-10 (canadian institute for advanced research). URL http://www.cs.toronto.edu/
+~kriz/cifar.html.
+Kurakin, Alexey, Goodfellow, Ian, and Bengio, Samy. Adversarial examples in the physical world. arXiv preprint
+arXiv:1607.02533, 2016.
+LeCun, Yann, Cortes, Corinna, and Burges, Christopher JC. The mnist database of handwritten digits, 1998.
+Lin, Henry W and Tegmark, Max. Why does deep
+and cheap learning work so well?
 arXiv preprint
-
-Koller, Daphne and Friedman, Nir. Probabilistic graphical
-models: principles and techniques. MIT press, 2009.
-Krizhevsky, Alex, Sutskever, Ilya, and Hinton, Geoffrey E.
-Imagenet classification with deep convolutional neural
-networks. In Advances in neural information processing
-systems, pp. 1097–1105, 2012.
-LeCun, Yann, Chopra, Sumit, Hadsell, Raia, Ranzato, M,
-and Huang, F. A tutorial on energy-based learning. Predicting structured data, 1:0, 2006.
-Lillicrap, Timothy P, Hunt, Jonathan J, Pritzel, Alexander,
-Heess, Nicolas, Erez, Tom, Tassa, Yuval, Silver, David,
-and Wierstra, Daan. Continuous control with deep reinforcement learning. arXiv preprint arXiv:1509.02971,
+arXiv:1608.08225, 2016.
+Maclaurin, Dougal, Duvenaud, David K, and Adams,
+Ryan P. Gradient-based hyperparameter optimization
+through reversible learning. In ICML, pp. 2113–2122,
 2015.
+Miyato, Takeru, Maeda, Shin-ichi, Koyama, Masanori,
+Nakae, Ken, and Ishii, Shin. Distributional smoothing
+with virtual adversarial training. stat, 1050:25, 2015.
 
-Input Convex Neural Networks
+A Closer Look at Memorization in Deep Networks
 
-Magnani, Alessandro and Boyd, Stephen P. Convex
-piecewise-linear fitting. Optimization and Engineering,
-10(1):1–17, 2009.
+Montavon, Grégoire, Braun, Mikio L., and Müller, KlausRobert. Kernel analysis of deep networks. Journal of
+Machine Learning Research, 12, 2011.
+Montufar, Guido F, Pascanu, Razvan, Cho, Kyunghyun,
+and Bengio, Yoshua. On the number of linear regions
+of deep neural networks. In Ghahramani, Z., Welling,
+M., Cortes, C., Lawrence, N. D., and Weinberger, K. Q.
+(eds.), Advances in Neural Information Processing Systems 27, pp. 2924–2932. Curran Associates, Inc., 2014.
+Neyshabur, Behnam, Tomioka, Ryota, and Srebro, Nathan.
+In search of the real inductive bias: On the role of implicit regularization in deep learning. arXiv preprint
+arXiv:1412.6614, 2014.
+Poole, Ben, Lahiri, Subhaneil, Raghu, Maithreyi, SohlDickstein, Jascha, and Ganguli, Surya. Exponential
+expressivity in deep neural networks through transient
+chaos. In Lee, D. D., Sugiyama, M., Luxburg, U. V.,
+Guyon, I., and Garnett, R. (eds.), Advances in Neural Information Processing Systems 29, pp. 3360–3368. Curran Associates, Inc., 2016.
+Raghu, Maithra, Poole, Ben, Kleinberg, Jon, Ganguli,
+Surya, and Sohl-Dickstein, Jascha. On the expressive power of deep neural networks. arXiv preprint
+arXiv:1606.05336, 2016.
+Saxe, Andrew M, McClelland, James L, and Ganguli,
+Surya. Exact solutions to the nonlinear dynamics of
+learning in deep linear neural networks. arXiv preprint
+arXiv:1312.6120, 2013.
+Sjoberg, J., Sjoeberg, J., Sjöberg, J., and Ljung, L. Overtraining, regularization and searching for a minimum,
+with application to neural networks. International Journal of Control, 62:1391–1407, 1995.
+Sokolic, Jure, Giryes, Raja, Sapiro, Guillermo, and Rodrigues, Miguel RD. Robust large margin deep neural
+networks. arXiv preprint arXiv:1605.08254, 2016.
+Szegedy, Christian, Zaremba, Wojciech, Sutskever, Ilya,
+Bruna, Joan, Erhan, Dumitru, Goodfellow, Ian J., and
+Fergus, Rob. Intriguing properties of neural networks.
+CoRR, abs/1312.6199, 2013. URL http://arxiv.
+org/abs/1312.6199.
+Theano Development Team, and others. Theano: A Python
+framework for fast computation of mathematical expressions. arXiv e-prints, abs/1605.02688, May 2016.
+Vapnik, Vladimir Naumovich and Vapnik, Vlamimir. Statistical learning theory, volume 1. Wiley New York,
+1998.
 
-Simonyan, Karen and Zisserman, Andrew. Very deep convolutional networks for large-scale image recognition.
-arXiv preprint arXiv:1409.1556, 2014.
-
-Mnih, Volodymyr, Kavukcuoglu, Koray, Silver, David,
-Rusu, Andrei A, Veness, Joel, Bellemare, Marc G,
-Graves, Alex, Riedmiller, Martin, Fidjeland, Andreas K,
-Ostrovski, Georg, et al. Human-level control through
-deep reinforcement learning. Nature, 518(7540):529–
-533, 2015.
-
-Smola, Alex J., Vishwanathan, S.v.n., and Le, Quoc V.
-Bundle methods for machine learning. In Platt, J. C.,
-Koller, D., Singer, Y., and Roweis, S. T. (eds.), Advances
-in Neural Information Processing Systems 20, pp. 1377–
-1384. Curran Associates, Inc., 2008.
-
-Nair, Vinod and Hinton, Geoffrey E. Rectified linear units
-improve restricted boltzmann machines. In Proceedings
-of the 27th International Conference on Machine Learning (ICML-10), pp. 807–814, 2010.
-
-Szegedy, Christian, Liu, Wei, Jia, Yangqing, Sermanet,
-Pierre, Reed, Scott, Anguelov, Dragomir, Erhan, Dumitru, Vanhoucke, Vincent, and Rabinovich, Andrew.
-Going deeper with convolutions. In Proceedings of
-the IEEE Conference on Computer Vision and Pattern
-Recognition, pp. 1–9, 2015.
-
-Oliphant, Travis E. A guide to NumPy, volume 1. Trelgol
-Publishing USA, 2006.
-Pedregosa, Fabian, Varoquaux, Gaël, Gramfort, Alexandre, Michel, Vincent, Thirion, Bertrand, Grisel, Olivier,
-Blondel, Mathieu, Prettenhofer, Peter, Weiss, Ron,
-Dubourg, Vincent, et al. Scikit-learn: Machine learning
-in python. The Journal of Machine Learning Research,
-12:2825–2830, 2011.
-Peng, Jian, Bo, Liefeng, and Xu, Jinbo. Conditional neural fields. In Advances in neural information processing
-systems, pp. 1419–1427, 2009.
-Polyak, Boris T. Some methods of speeding up the convergence of iteration methods. USSR Computational Mathematics and Mathematical Physics, 4(5):1–17, 1964.
-Poon, Hoifung and Domingos, Pedro. Sum-product networks: A new deep architecture. In UAI 2011, Proceedings of the Twenty-Seventh Conference on Uncertainty
-in Artificial Intelligence, Barcelona, Spain, July 14-17,
-2011, pp. 337–346, 2011.
-Ratliff, Nathan D, Bagnell, J Andrew, and Zinkevich, Martin. (Approximate) subgradient methods for structured
-prediction. In International Conference on Artificial Intelligence and Statistics, pp. 380–387, 2007.
-Rumelhart, David E, Hinton, Geoffrey E, and Williams,
-Ronald J. Learning representations by back-propagating
-errors. Cognitive modeling, 5(3):1, 1988.
-Samaria, Ferdinando S and Harter, Andy C. Parameterisation of a stochastic model for human face identification.
-In Applications of Computer Vision, 1994., Proceedings
-of the Second IEEE Workshop on, pp. 138–142. IEEE,
-1994.
-Simard, Patrice and LeCun, Yann. Reverse tdnn: an architecture for trajectory generation. In Advances in Neural
-Information Processing Systems, pp. 579–588. Citeseer,
-1991.
-
-Taskar, Ben, Chatalbashev, Vassil, Koller, Daphne, and
-Guestrin, Carlos. Learning structured prediction models:
-A large margin approach. In Proceedings of the 22nd International Conference on Machine Learning, pp. 896–
-903. ACM, 2005.
-Todorov, Emanuel, Erez, Tom, and Tassa, Yuval. Mujoco: A physics engine for model-based control. In
-2012 IEEE/RSJ International Conference on Intelligent
-Robots and Systems, pp. 5026–5033. IEEE, 2012.
-Tsochantaridis, Ioannis, Joachims, Thorsten, Hofmann,
-Thomas, and Altun, Yasemin. Large margin methods for
-structured and interdependent output variables. Journal
-of Machine Learning Research, 6:1453–1484, 2005.
-Tsoumakas, Grigorios, Spyromitros-Xioufis, Eleftherios,
-Vilcek, Jozef, and Vlahavas, Ioannis. Mulan: A java
-library for multi-label learning. Journal of Machine
-Learning Research, 12(Jul):2411–2414, 2011.
-Van Rossum, Guido and Drake Jr, Fred L. Python reference manual. Centrum voor Wiskunde en Informatica
-Amsterdam, 1995.
-Wright, Stephen J. Primal-dual interior-point methods.
-Siam, 1997.
-Zheng, Shuai, Jayasumana, Sadeep, Romera-Paredes,
-Bernardino, Vineet, Vibhav, Su, Zhizhong, Du, Dalong,
-Huang, Chang, and Torr, Philip HS. Conditional random
-fields as recurrent neural networks. In Proceedings of
-the IEEE International Conference on Computer Vision,
-pp. 1529–1537, 2015.
+Wang, Shengjie. Analysis of deep neural networks with the
+extended data jacobian matrix.
+Wilson, D Randall and Martinez, Tony R. The general inefficiency of batch training for gradient descent learning.
+Neural Networks, 16(10):1429–1451, 2003.
+Yao, Yuan, Rosasco, Lorenzo, and Caponnetto, Andrea. On
+early stopping in gradient descent learning. Constructive
+Approximation, 26(2):289–315, 2007.
+Zhang, Chiyuan, Bengio, Samy, Hardt, Moritz, Recht, Benjamin, and Vinyals, Oriol. Understanding deep learning
+requires rethinking generalization. International Conference on Learning Representations (ICLR), 2017.
 
 

@@ -1,885 +1,876 @@
-Adaptive Neural Networks for Efficient Inference
+Understanding Synthetic Gradients and Decoupled Neural Interfaces
 
-Tolga Bolukbasi 1 Joseph Wang 2 Ofer Dekel 3 Venkatesh Saligrama 1
+Wojciech Marian Czarnecki 1 Grzegorz Swirszcz 1 Max Jaderberg 1 Simon Osindero 1 Oriol Vinyals 1
+Koray Kavukcuoglu 1
 
 Abstract
-We present an approach to adaptively utilize deep
-neural networks in order to reduce the evaluation
-time on new examples without loss of accuracy.
-Rather than attempting to redesign or approximate existing networks, we propose two schemes
-that adaptively utilize networks. We first pose an
-adaptive network evaluation scheme, where we
-learn a system to adaptively choose the components of a deep network to be evaluated for each
-example. By allowing examples correctly classified using early layers of the system to exit,
-we avoid the computational time associated with
-full evaluation of the network. We extend this to
-learn a network selection system that adaptively
-selects the network to be evaluated for each example. We show that computational time can be
-dramatically reduced by exploiting the fact that
-many examples can be correctly classified using
-relatively efficient networks and that complex,
-computationally costly networks are only necessary for a small fraction of examples. We pose
-a global objective for learning an adaptive early
-exit or network selection policy and solve it by
-reducing the policy learning problem to a layerby-layer weighted binary classification problem.
-Empirically, these approaches yield dramatic reductions in computational cost, with up to a 2.8x
-speedup on state-of-the-art networks from the
-ImageNet image recognition challenge with minimal (< 1%) loss of top5 accuracy.
-
-speech recognition (Hinton et al., 2012), and machine
-translation (Sutskever et al., 2014). However, the power
-of DNNs comes at a considerable cost, namely, the computational cost of applying them to new examples. This
-cost, often called the test-time cost, has increased rapidly
-for many tasks (see Fig. 1) with ever-growing demands
-for improved performance in state-of-the-art systems. As
-a point of fact, the Resnet152 (He et al., 2016) architecture with 152 layers, realizes a substantial 4.4% accuracy
-gain in top-5 performance over GoogLeNet (Szegedy et al.,
-2015) on the large-scale ImageNet dataset (Russakovsky
-et al., 2015) but is about 14X slower at test-time. The high
-test-time cost of state-of-the-art DNNs means that they can
-only be deployed on powerful computers, equipped with
-massive GPU accelerators. As a result, technology companies spend billions of dollars a year on expensive and
-power-hungry computer hardware. Moreover, high testtime cost prevents DNNs from being deployed on resource
-constrained platforms, such as those found in Internet of
-Things (IoT) devices, smart phones, and wearables. This
-problem has given rise to a concentrated research effort to
-reduce the test-time cost of DNNs. Most of the work on this
-topic focuses on designing more efficient network topologies and on compressing pre-trained models using various
-techniques (see related work below). We propose a different approach, which leaves the original DNN intact and instead changes the way in which we apply the DNN to new
+When training neural networks, the use of Synthetic Gradients (SG) allows layers or modules
+to be trained without update locking – without
+waiting for a true error gradient to be backpropagated – resulting in Decoupled Neural Interfaces (DNIs). This unlocked ability of being
+able to update parts of a neural network asynchronously and with only local information was
+demonstrated to work empirically in Jaderberg
+et al. (2016). However, there has been very little demonstration of what changes DNIs and SGs
+impose from a functional, representational, and
+learning dynamics point of view. In this paper,
+we study DNIs through the use of synthetic graLegend:underdients on feed-forward networks to better
+Forward connection,
+stand their behaviour and elucidate their
+effect
+differentiable
+on optimisation. We show that the incorporaForward connection,
+tion of SGs does not affect the representational
+non-differentiable
+strength of the learning system for a neural netError gradient,
+work, and prove the convergence of the
+learning
+non-differentiable
+system for linear and deep linear models.
+On
+Synthetic error
+gradient, differentiable
+practical problems we investigate the mechanism
+by which synthetic gradient estimators
+approxSynthetic error
+nonimate the true loss, and, surprisingly,gradient,
+how
+that
+differentiable
+leads to drastically different layer-wise representations. Finally, we also expose the relationship
+of using synthetic gradients to other error approximation techniques and find a unifying language for discussion and comparison.
 
 1. Introduction
-Deep neural networks (DNNs) are among the most powerful and versatile machine learning techniques, achieving
-state-of-the-art accuracy in a variety of important applications, such as visual object recognition (He et al., 2016),
+Neural networks can be represented as a graph of computational modules, and training these networks amounts to
+optimising the weights associated with the modules of this
+graph to minimise a loss. At present, training is usually performed with first-order gradient descent style algorithms,
 1
+DeepMind, London, United Kingdom. Correspondence to:
+WM Czarnecki <lejlot@google.com>.
 
-Boston University, Boston, MA, USA 2 Amazon, Cambridge,
-MA, USA 3 Microsoft Research, Redmond, WA, USA. Correspondence to: Tolga Bolukbasi <tolgab@bu.edu>.
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-Figure 1. Performance versus evaluation complexity of the DNN
-architectures that won the ImageNet challenge over past several
-years. The model evaluation times increase exponentially with
-respect to the increase in accuracy.
+L
 
-Adaptive Neural Networks for Efficient Inference
+L
 
-examples. We exploit the fact that natural data is typically a
-mix of easy examples and difficult examples, and we posit
-that the easy examples do not require the full power and
-complexity of a massive DNN.
-We pursue two concrete variants of this idea. First, we propose an adaptive early-exit strategy that allows easy examples to bypass some of the network’s layers. Before each
-expensive neural network layer (e.g., convolutional layers),
-we train a policy that determines whether the current example should proceed to the next layer, or be diverted to a
-simple classifier for immediate classification. Our second
-approach, an adaptive network selection method, takes a set
-of pre-trained DNNs, each with a different cost/accuracy
-trade-off, and arranges them in a directed acyclic graph
-(Trapeznikov & Saligrama, 2013; Wang et al., 2015), with
-the the cheapest model first and the most expensive one
-last. We then train an exit policy at each node in the
-graph, which determines whether we should rely on the
-current model’s predictions or predict the most beneficial
-next branch to forward the example to. In this context we
-pose a global objective for learning an adaptive early exit or
-network selection policy and solve it by reducing the policy learning problem to a layer-by-layer weighted binary
-classification problem.
-We demonstrate the merits of our techniques on the ImageNet object recognition task, using a number of popular pretrained DNNs. The early exit technique speeds up
-the average test-time evaluation of GoogLeNet (Szegedy
-et al., 2015), and Resnet50 (He et al., 2016) by 20-30%
-within reasonable accuracy margins. The network cascade achieves 2.8x speed-up compared to pure Resnet50
-model at 1% top-5 accuracy loss and 1.9x speed-up with no
-change in model accuracy. We also show that our method
-can approximate a oracle policy that can see true errors suffered for each instance.
-In addition to reducing the average test-time cost of DNNs,
-it is worth noting that our techniques are compatible with
-the common design of large systems of mobile devices,
-such as smart phone networks or smart surveillance-camera
-networks. These systems typically include a large number
-of resource-constrained edge devices that are connected to
-a central and resource-rich cloud. One of the main challenges involved in designing these systems is determining
-whether the machine-learned models will run in the devices
-or in the cloud. Offloading all of the work to the cloud
-can be problematic due to network latency, limited cloud
-ingress bandwidth, cloud availability and reliability issues,
-and privacy concerns. Our approach can be used to design
-such a system, by deploying a small inaccurate model and
-an exit policy on each device and a large accurate model in
-the cloud. Easy examples would be handled by the devices,
-while difficult ones would be forwarded to the cloud. Our
+LSG
+Legend:
 
-approach naturally generalizes to a fog computing topology
-(where resource constrained edge devices are connected to
-a more powerful local gateway computer, which in turn is
-connected to a sequence of increasingly powerful computers along the path to the data-center). Such designs allow
-our method to be used in memory constrained settings as
-well due to offloading of complex models from the device.
+SG
 
-2. Related Work
-Past work on reducing evaluation time of deep neural networks has centered on reductions in precision and arithmetic computational cost, design of efficient network structure, and compression or sparsification of networks to reduce the number of convolutions, neurons, and edges. The
-approach proposed in this paper is complimentary. Our approach does not modify network structure or training and
-can be applied in tandem with these approaches to further
-reduce computational cost.
-The early efforts to compress large DNNs used a large
-teacher model to generate an endless stream of labeled examples for a smaller student model (Bucila et al., 2006;
-Hinton et al., 2015). The wealth of labeled training data
-generated by the teacher model allowed the small student
-model to mimic its accuracy.
-Reduced precision networks (Gong et al., 2014; Courbariaux et al., 2015; Chen et al., 2015; Hubara et al., 2016a;
-Wu et al., 2016; Rastegari et al., 2016; Hubara et al., 2016b)
-have been extensively studied to reduce the memory footprint of networks and their test-time cost. Similarly, computationally efficient network structures have also been
-proposed to reduce the computational cost of deep networks by exploiting efficient operations to approximate
-complex functions, such as the inception layers introduced
-in GoogLeNet (Szegedy et al., 2015).
-Network sparsification techniques attempt to identify and
-prune away redundant parts of a large neural networks. A
-common approach is to remove unnecessary nodes/edges
-from the network(Liu et al., 2015; Iandola et al., 2016; Wen
-et al., 2016). In convolutional neural networks, the expensive convolution layers can be approximated (Bagherinezhad et al., 2016) and redundant computation can be
-avoided (Figurnov et al., 2016b).
-More recently, researchers have designed spatially adaptive networks (Figurnov et al., 2016a; Bengio et al., 2015)
-where nodes in a layer are selectively activated. Others
-have developed cascade approaches (Leroux et al., 2017;
-Odena et al., 2017) that allow early exits based on confidence feedback. Our approach can be seen as an instance
-of conditional computation, where we seek computational
-gains through layer-by-layer and network-level early exits. However, we propose a general framework which opti-
+h
 
-Adaptive Neural Networks for Efficient Inference
+h
 
-Figure 2. (Left) An example network selection system topology for networks Alexnet(A), GoogLeNet(G) and Resnet(R). Green γ blocks
-denote the selection policy. The policy evaluates Alexnet, receives confidence feedback and decides to jump directly to Resnet or send
-the sample to GoogLeNet->Resnet cascade. (Right) An example early exit system topology (based on Alexnet). The policy chooses one
-of the multiple exits available to it at each stage for feedback. If the sample is easy enough, the system sends it down to exit, otherwise
-it sends the sample to the next layer.
+Differentiable
+Non-differentiable
+Forward connection
+Error gradient
 
-mizes a novel system risk that includes computational costs
-as well as accuracy. Our method does not require within
-layer modifications and works with directed acyclic graphs
-that allow multiple model evaluation paths.
+x
 
-example x and let tk denote the time it takes to compute
-this value (from the time that x is fed to the input layer).
-Finally, let ŷk (x) be the predicted label if we exit after the
-k th layer.
+y
+(a)
 
-Our techniques for adaptive DNNs borrow ideas from the
-related sensor selection problem (Xu et al., 2013; Kusner et al., 2014; Wang et al., 2014; 2015; Trapeznikov &
-Saligrama, 2013; Nan et al., 2016; Wang & Saligrama,
-2012). The goal of sensor selection is to adaptively choose
-sensor measurements or features for each example.
+x
 
-After computing the k th convolutional layer, we introduce a
-decision function γk that determines whether the example
-should exit the network with a label of ŷk (x) or proceed
-to the next layer for further evaluation. The input to this
-decision function is the output of the corresponding convolutional layer σk (x), and the value of γk (σk (x)) is either
-−1 (indicating an early exit) or 1. This architecture is depicted on the right-hand side of Fig. 2.
+y
 
-3. Adaptive Early Exit Networks
-Our first approach to reducing the test-time cost of deep
-neural networks is an early exit strategy. We first frame a
-global objective function and reduce policy training for optimizing the system-wide risk to a layer-by-layer weighted
-binary classification (WBC). We denote a labeled example as (x, y) ∈ Rd × {1, . . . , L}, where d is the dimension of the data and {1, . . . , L} is the set of classes represented in the data. We define the distribution generating
-the examples as X × Y. For a predicted label ŷ, we denote the loss L(ŷ, y). In this paper, we focus on the task
-of classification and, for exposition, focus on the indicator
-loss L(ŷ, y) = 1ŷ=y , in this section. In practice we upper
-bound the indicator functions with logistic loss for computational efficiency.
-As a running DNN example, we consider the AlexNet architecture (Krizhevsky et al., 2012), which is composed of
-5 convolutional layers followed 3 fully connected layers.
-During evaluation of the network, computing each convolutional layer takes more than 3 times longer than computing a fully connected layer, so we consider a system that
-allows an example to exit the network after each of the first
-4 convolutional layers. Let ŷ(x) denote the label predicted
-by the network for example x and assume that computing
-this prediction takes a constant time of T . Moreover, let
-σk (x) denote the output of the k th convolutional layer for
+Synthetic error gradient
 
-Globally, our goal is to minimize the evaluation time of the
-network such that the error rate of the adaptive system is no
-more than some user-chosen value B greater than the full
-network:
+(b)
 
-(1)
-min Ex∼X [Tγ1 ,...,γ4 (x)] .
-
-
-s.t. E(x,y)∼X ×Y (L(ŷγ1 , ..., γ4 (x), y) − L(ŷ(x), y))+ ≤ B
-γ1 ,...,γ4
+Figure 1. Visualisation of SG-based learning (b) vs. regular backpropagation (a).
 
-Here, Tγ1 ,...,γ4 (x) is the prediction time for example x for
-the adaptive system, ŷγ1 , ..., γ4 (x) is the label predicted by
-the adaptive system for example x. In practice, the time
-required to predict a label and the excess loss introduced
-by the adaptive system can be recursively defined. As in
-(Wang et al., 2015) we can reduce the early exit policy
-training for minimizing the global risk to a WBC problem.
-The key idea is that, for each input, a policy must identify
-whether or not the future reward (expected future accuracy
-minus comp. loss) outweighs the current-stage accuracy.
-To this end, we first focus on the problem of learning
-the decision function γ4 , which determines if an example
-should exit after the fourth convolutional layer or whether
-it will be classified using the entire network. The time it
-takes to predict the label of example x depends on this de-
+where the weights are adjusted along the direction of the
+negative gradient of the loss. In order to compute the gradient of the loss with respect to the weights of a module,
+one performs backpropagation (Williams & Hinton, 1986)
+– sequentially applying the chain rule to compute the exact gradient of the loss with respect to a module. However,
+this scheme has many potential drawbacks, as well as lacking biological plausibility (Marblestone et al., 2016; Bengio et al., 2015). In particular, backpropagation results in
+locking – the weights of a network module can only be updated after a full forwards propagation of the data through
+the network, followed by loss evaluation, then finally after waiting for the backpropagation of error gradients. This
+locking constrains us to updating neural network modules
+in a sequential, synchronous manner.
+One way of overcoming this issue is to apply Synthetic
+Gradients (SGs) to build Decoupled Neural Interfaces
+(DNIs) (Jaderberg et al., 2016). In this approach, models of
+error gradients are used to approximate the true error gradient. These models of error gradients are local to the network modules they are predicting the error gradient for, so
+that an update to the module can be computed by using the
+predicted, synthetic gradients, thus bypassing the need for
+subsequent forward execution, loss evaluation, and backpropagation. The gradient models themselves are trained
 
-Adaptive Neural Networks for Efficient Inference
+Understanding Synthetic Gradients and DNIs
 
-cision and can be written as
-(
-T + τ (γ4 ) if γ4 (σ4 (x)) = 1
-,
-T4 (x, γ4 ) =
-t4 + τ (γ4 ) otherwise
+at the same time as the modules they are feeding synthetic
+gradients to are trained. The result is effectively a complex
+dynamical system composed of multiple sub-networks cooperating to minimise the loss.
+There is a very appealing potential of using DNIs e.g. the
+potential to distribute and parallelise training of networks
+across multiple GPUs and machines, the ability to asynchronously train multi-network systems, and the ability to
+extend the temporal modelling capabilities of recurrent networks. However, it is not clear that introducing DNIs and
+SGs into a learning system will not negatively impact the
+learning dynamics and solutions found. While the empirical evidence in Jaderberg et al. (2016) suggests that SGs
+do not have a negative impact and that this potential is attainable, this paper will dig deeper and analyse the result of
+using SGs to accurately answer the question of the impact
+of synthetic gradients on learning systems.
+In particular, we address the following questions, using
+feed-forward networks as our probe network architecture:
+Does introducing SGs change the critical points of the
+neural network learning system? In Section 3 we show
+that the critical points of the original optimisation problem are maintained when using SGs. Can we characterise the convergence and learning dynamics for systems that use synthetic gradients in place of true gradients? Section 4 gives first convergence proofs when using
+synthetic gradients and empirical expositions of the impact
+of SGs on learning. What is the difference in the representations and functional decomposition of networks
+learnt with synthetic gradients compared to backpropagation? Through experiments on deep neural networks
+in Section 5, we find that while functionally the networks
+perform identically trained with backpropagation or synthetic gradients, the layer-wise functional decomposition is
+markedly different due to SGs.
+In addition, in Section 6 we look at formalising the connection between SGs and other forms of approximate error
+propagation such as Feedback Alignment (Lillicrap et al.,
+2016), Direct Feedback Alignment (Nøkland, 2016; Baldi
+et al., 2016), and Kickback (Balduzzi et al., 2014), and
+show that all these error approximation schemes can be
+captured in a unified framework, but crucially only using
+synthetic gradients can one achieve unlocked training.
 
-(2)
+2. DNI using Synthetic Gradients
+The key idea of synthetic gradients and DNI is to approximate the true gradient of the loss with a learnt model which
+predicts gradients without performing full backpropagation.
+Consider a feed-forward network consisting of N layers
+fn , n ∈ {1, . . . , N }, each taking an input hn−1
+and proi
 
-where τ (γ4 ) is the computational time required to evaluate
-the function γ4 . Our goal is to learn a system that trades-off
-the evaluation time and the induced error:
-h
-argmin Ex∼X [T4 (x, γ4 )] + λE(x,y)∼X ×Y L (ŷ4 (x), y)
-γ4 ∈Γ
+ducing an output hni = fn (hn−1
+), where h0i = xi is the ini
+put data point xi . A loss is defined on the output of the network Li = L(hN
+i , yi ) where yi is the given label or supervision for xi (which comes from some unknown P (y|x)).
+Each layer fn has parameters θn that can be trained jointly
+to minimise Li with the gradient-based update rule
+θn ← θn − α
 
-
-− L (ŷ(x), y)
+n
+∂L(hN
+i , yi ) ∂hi
+n
+∂hi
+∂θn
 
-1γ4 (σ4 (x))=−1
-
+where α is the learning rate and ∂Li /∂hni is computed with
+backpropagation.
+The reliance on ∂Li /∂hN
+i means that an update to layer i
+can only occur after every subsequent layer fj , j ∈ {i +
+1, . . . , N } has been computed, the loss Li has been computed, and the error gradient ∂L/∂hN
+i backpropgated to get
+∂Li /∂hN
+.
+An
+update
+rule
+such
+as
+this
+is update locked as
 i
+it depends on computing Li , and also backwards locked as
+it depends on backpropagation to form ∂Li /∂hni .
+Jaderberg et al. (2016) introduces a learnt prediction of
+the error gradient, the synthetic gradient SG(hni , yi ) =
+n
+n
+\
+∂L
+i /∂hi ' ∂Li /∂hi resulting in the update
+θk ← θk − α SG(hni , yi )
 
-(3)
+∂hni
+∂θk
 
-+
+∀k ≤ n
 
-where (·)+ is the function(z)+ = max(z, 0) and λ ∈ R+
-is a trade-off parameter that balances between evaluation
-time and error. Note that the function T4 (x, γ4 ) can be
-expressed as a sum of indicator functions:
-T4 (x, γ4 ) = (T + τ (γ4 )) 1γ4 (σ4 (x))=1
-+ (t4 + τ (γ4 )) 1γ4 (σ4 (x))=−1
-=T 1γ4 (σ4 (x))=1 + t4 1γ4 (σ4 (x))=−1 + τ4 (γ4 )
-Substituting for T4 (x, γ4 ) allows us to reduce the problem
-to an importance weighted binary learning problem:
-
-
-argmin E(x,y)∼X ×Y C4 (x, y)1γ4 (σ4 (x))6=β4 (x) + τ (γ4 )
-γ4 ∈Γ
+This approximation to the true loss gradient allows us to
+have both update and backwards unlocking – the update
+to layer n can be applied without any other network computation as soon as hni has been computed, since the SG
+module is not a function of the rest of the network (unlike
+∂Li /∂hi ). Furthermore, note that since the true ∂Li /∂hni
+can be described completely as a function of just hni and
+yi , from a mathematical perspective this approximation is
+sufficiently parameterised.
+The synthetic gradient module SG(hni , yi ) has parameters
+θSG which must themselves be trained to accurately predict the true gradient by minimising the L2 loss LSGi =
+kSG(hni , yi ) − ∂Li /∂hni k2 .
+The resulting learning system consists of three decoupled
+parts: first, the part of the network above the SG module
+which minimises L wrt. to its parameters {θn+1 , ..., θN },
+then the SG module that minimises the LSG wrt. to θSG .
+Finally the part of the network below the SG module which
+uses SG(h, y) as the learning signal to train {θ1 , ...θn },
+thus it is minimising the loss modeled internally by SG.
+Assumptions and notation
+Throughout the remainder of this paper, we consider the
+use of a single synthetic gradient module at a single layer
+k and for a generic data sample j and so refer to h = hj =
+hkj ; unless specified we drop the superscript k and subscript
+j. This model is shown in Figure 1 (b). We also focus on
 
-(4)
-where β4 (x) and C4 (x, y) are the optimal decision and cost
-at stage 4 for the example (x, y) defined:
-
-
-
-
-−1
-if
-T
->
-t
-+
-λ
-L (ŷ4 (x), y)
-4
-
-
- 
-β4 (x) =
-−L (ŷ(x), y)
-
-+
-
-
+Understanding Synthetic Gradients and DNIs
+
+SG modules which take the point’s true label/value as conditioning SG(h, y) as opposed to SG(h). Note that without
+label conditioning, a SG module is trying to approximate
+not ∂L/∂h but rather EP (y|x) ∂L/∂h since L is a function
+of both input and label. In theory, the lack of label is a sufficient parametrisation but learning becomes harder, since
+the SG module has to additionally learn P (y|x).
+We also focus most of our attention on models that employ linear SG modules, SG(h, y) = hA + yB + C. Such
+modules have been shown to work well in practice, and furthermore are more tractable to analyse.
+As a shorthand, we denote θ<h to denote the subset of the
+parameters contained in modules up to h (and symmetrically θ>h ), i.e. if h is the kth layer then θ<h = {θ1 . . . , θk }.
+Synthetic gradients in operation
+Consider an N -layer feed-forward network with a single
+SG module at layer k. This network can be decomposed
+into two sub-networks: the first takes an input x and produces an output h = Fh (x) = fk (fk−1 (. . . (f1 (x)))),
+while the second network takes h as an input, produces an
+output p = Fp (h) = fN (. . . (fk+1 (h))) and incurs a loss
+L = L(p, y) based on a label y.
+With regular backpropagation, the learning signal for the
+first network Fh is ∂L/∂h, which is a signal that specifies how the input to Fp should be changed in order to reduce the loss. When we attach a linear SG between these
+two networks, the first sub-network Fh no longer receives
+the exact learning signal from Fp , but an approximation
+SG(h, y), which implies that Fh will be minimising an approximation of the loss, because it is using approximate
+error gradients. Since the SG module is a linear model of
+∂L/∂h, the approximation of the true loss that Fh is being
+optimised for will be a quadratic function of h and y. Note
+that this is not what a second order method does when a
+function is locally approximated with a quadratic and used
+for optimisation – here we are approximating the current
+loss, which is a function of parameters θ with a quadratic
+which is a function of h. Three appealing properties of an
+approximation based on h is that h already encapsulates a
+lot of non-linearities due to the processing of Fh , h is usually vastly lower dimensional than θ<h which makes learning more tractable, and the error only depends on quantities
+(h) which are local to this part of the network rather than θ
+which requires knowledge of the entire network.
+With the SG module in place, the learning system decomposes into two tasks: the second sub-network Fp tasked
+with minimising L given inputs h, while the first subnetwork Fh is tasked with pre-processing x in such a way
+that the best fitted quadratic approximator of L (wrt. h) is
+minimised. In addition, the SG module is tasked with best
+approximating L.
+
+The approximations and changing of learning objectives
+(described above) that are imposed by using synthetic gradients may appear to be extremely limiting. However, in
+both the theoretical and empirical sections of this paper we
+show that SG models can, and do, learn solutions to highly
+non-linear problems (such as memorising noise).
+The crucial mechanism that allows such rich behaviour is
+to remember that the implicit quadratic approximation to
+the loss implied by the SG module is local (per data point)
+and non-stationary – it is continually trained itself. It is
+not a single quadratic fit to the true loss over the entire optimisation landscape, but a local quadratic approximation
+specific to each instantaneous moment in optimisation. In
+addition, because the quadratic approximation is a function
+only of h and not θ, the loss approximation is still highly
+non-linear w.r.t. θ.
+If, instead of a linear SG module, one uses a more complex function approximator of gradients such as an MLP,
+the loss is effectively approximated by the integral of the
+MLP. More formally, the loss implied by the SG module in
+hypotheses space H is of class {l : ∃g ∈ H : ∂l/∂h = g}1 .
+In particular, this shows an attractive mathematical benefit
+over predicting loss directly: by modelling gradients rather
+than losses, we get to implicitly model higher order loss
+functions.
+
+3. Critical points
+We now consider the effect SG has on critical points of the
+optimisation problem. Concretely, it seems natural to ask
+whether a model augmented with SG is capable of learning
+the same functions as the original model. We ask this question under the assumption of a locally converging training
+method, such that we always end up in a critical point. In
+the case of a SG-based model this implies a set of parameters θ such that ∂L/∂θ>h = 0, SG(h, y)∂h/∂θ<h = 0 and
+∂LSG /∂θSG = 0. In other words we are trying to establish
+whether SG introduces regularisation to the model class,
+which changes the critical points, or whether it merely introduces a modification to learning dynamics, but retains
+the same set of critical points.
+In general, the answer is positive: SG does induce a regularisation effect. However, in the presence of additional
+assumptions, we can show families of models and losses
+for which the original critical points are not affected.
+Proposition 1. Every critical point of the original optimisation problem where SG can produce ∂L/∂hi has a corresponding critical point of the SG-based model.
+Proof. Directly from the assumption we have that there exists a set of SG parameters such that the loss is minimal,
+thus ∂LSG /∂θSG = 0 and also SG(h, y) = ∂L/∂h and
 1
-otherwise
-and
-
-
-C4 (x, y) = T − t4 − λ (L (ŷ4 (x), y) − L (ŷ(x), y))+  .
-Note that the regularization term, τ (γ4 ), is important to
-choose the optimal functional form for the function γ4
-as well as a natural mechanism to define the structure of
-the early exit system. Rather than limiting the family of
-function Γ to a single functional form such as a linear
-function or a specific network architecture, we assume the
-family of functions Γ is the union of multiple functional
-families, notably including the constant decision functions
-γ4 (x) = 1, ∀x ∈ |X |. Although this constant function
-does not allow for adaptive network evaluation at the specific location, it additionally does not introduce any computational overhead, that is, τ (γ4 ) = 0. By including this
-constant function in Γ, we guarantee that our technique can
-only decrease the test-time cost.
 
-Empirically, we find that the most effective policies operate on classifier confidences such as classification entropy.
-Specifically, we consider the family of functions Γ as the
-union of three functional families, the aforementioned constant functions, linear classifier on confidence features generated from linear classifiers applied to σ4 (x), and linear
-classifier on confidence features generated from deep classifiers applied to σ4 (x).
-Rather than optimizing jointly over all three networks, we
-leverage the fact that the optimal solution to Eqn. (4) can be
-found by optimizing over each of the three families of functions independently. For each family of functions, the policy evaluation time τ (γ4 ) is constant, and therefore solving
-(4) over a single family of functions is equivalent to solving an unregularized learning problem. We exploit this by
-solving the three unregularized learning problems and taking the minimum over the three solutions.
-In order to learn the sequence of decision functions, we
-consider a bottom-up training scheme, as previously proposed in sensor selection (Wang et al., 2015). In this
-scheme, we learn the deepest (in time) early exit block first,
-then fix the outputs. Fixing the outputs of this trained function, we then train the early exit function immediately preceding the deepest early exit function (γ3 in Fig. 2).
-For a general early exit system, we recursively define
-the future time, Tk (x, γk ), and the future predicted label,
-ỹk (x, γk ), as
-
-T + τ (γk )
-if γk (σk (x)) = 1, k = K
-
-
-
-T
-if γk (σk (x)) = 1, k < K
-k+1 (x, γk
-Tk (x, γk ) =
-
-+1)
-+
-τ
-(γ
-)
-k
-
-
-
-tk + τ (γk )
-otherwise
-and
-
-ŷ(x)
-
-
-
-
-
-ŷ(x)
-
-
-
-
+We mean equality for all points where ∂l/∂h is defined.
 
-if k = K + 1
-if k = K
-and γk (σk (x)) = 1
-.
-ỹk (x, γk ) =
-
-ỹk+1 (x, γk+1 ) if k < K
-
-
-
-
-
-and γk (σk (x)) = −1
-
-
-
-ŷk (x)
-otherwise
-Using these definitions, we can generalize Eqn. (4). For a
-system with K early exit functions, the k th early exit function can be trained by solving the supervised learning problem:
-
-
-argmin E(x,y)∼X ×Y Ck (x, y)1γk (x)6=βk (σk (x)) + τ (γk ),
-γk ∈Γ
+Understanding Synthetic Gradients and DNIs
 
-(5)
-where optimal decision and cost βk (x) and Ck (x, y) can be
+SG(h, y)∂h/∂θ<h = 0.
+The assumptions of this proposition are true for example when L = 0 (one attains global minimum), when
+∂L/∂hi = 0 or a network is a deep linear model trained
+with MSE and SG is linear.
+In particular, this shows that for a large enough SG module
+all the critical points of the original problem have a corresponding critical point in the SG-based model. Limiting
+the space of SG hypotheses leads to inevitable reduction
+of number of original critical points, thus acting as a regulariser. At first this might look like a somewhat negative result, since in practice we rarely use a SG module capable of
+exactly producing true gradients. However, there are three
+important observations to make: (1) Our previous observation reflects having an exact representation of the gradient
+at the critical point, not in the whole parameter space. (2)
+One does preserve all the critical points where the loss is
+zero, and given current neural network training paradigms
+these critical points are important. For such cases even if
+SG is linear the critical points are preserved. (3) In practice one rarely optimises to absolute convergence regardless of the approach taken; rather we obtain numerical convergence meaning that k∂L/∂θk is small enough. Thus,
+all one needs from SG-based model is to have small enough
+k(∂L/∂h+e)∂h/∂θ<h k ≤ k∂L/∂θ<h k+kekk∂h/∂θ<h k,
+implying that the approximation error at a critical point just
+has to be small wrt to k∂h/∂θ<h k and need not be 0.
+To recap: so far we have shown that SG can preserve critical points of the optimisation problem. However, SG can
+also introduce new critical points, leading to premature
+convergence and spurious additional solutions. As with
+our previous observation, this does not effect SG modules
+which are able to represent gradients exactly. But if the SG
+hypothesis space does not include a good approximator2 of
+the true gradient, then we can get new critical points which
+end up being an equilibrium state between SG modules and
+the original network. We provide an example of such an
+equilibrium in the Supplementary Materials Section B.
 
-Adaptive Neural Networks for Efficient Inference
+4. Learning dynamics
+Having demonstrated that important critical points are preserved and also that new ones might get created, we need a
+better characterisation of the basins of attraction, and to understand when, in both theory and practice, one can expect
+convergence to a good solution.
+Artificial Data
+We conduct an empirical analysis of the learning dynamics on easily analysable artificial data. We create 2 and
+100 dimensional versions of four basic datasets (details in
+2
+In this case, our gradient approximation needs to be reasonable at every point through optimisation, not just the critical ones.
 
-Our goal is to learn the functions κ1 and κ2 that minimize
-the average evaluation time subject to a constraint on the
-if k < K and Tk+1 (x, γk+1 ) ≥ tk +
-average loss induced by adaptive network selection. As in
-the adaptive early exit case, we first learn κ2 to trade-off
-λ (L (ŷk (x), y) − L (ỹk+1 (x), y))+
-between the average evaluation time and induced error:
-if k = K and T ≥ tk +
-
-
-λ (L (ŷk (x), y) − L (ỹk+1 (x), y))+
-min Ex∼X τ (N3 )1κ2 (x)=N3 + τ (κ2 )
-κ2 ∈Γ
-"
-otherwise
-
-+ λE(x,y)∼X ×Y L (N2 (x), y)
-
-
-
-if k < K
-Tk+1 (x, γk+1 ) − tk
-
-
-#
-
- 
-
-
-
-
-
-−λ L (ŷk (x), y) − L (ỹk+1 (x), y) 
-(6)
-− L (N3 (x), y) 1κ2 (x)=N2 ,
-+
-Ck (x, y) = 
-.
-+
-
-
-otherwise
-T − tk
-
-
-
-
-where λ ∈ R+ is a trade-off parameter. As in the adap
-
-−λ (L (ŷk (x), y) − L (ŷ(x), y)) 
-+
-tive network usage case, this problem can be posed as an
-importance weighted supervised learning problem:
-Eqn. (5) allows for efficient training of an early exit sys
-
-tem by sequentially training early exit decision functions
-min E(x,y)∼X ×Y W2 (x, y)1κ2 (x)6=θ2 (x) + τ (κ2 ), (7)
-κ2 ∈Γ
-from the bottom of the network upwards. Furthermore, by
-where θ2 (x) and W2 (x, y) are the cost and optimal decision
-including constant functions in the family of functions Γ
-at stage 4 for the example/label pair (x, y) defined:
-and training early exit functions in all potential stages of
-(
-the system, the early exit architecture can also naturally be
-N2 if τ (N3 ) > λ (L (N3 (x), y) − L (N2 (x), y))+
-discovered. Finally, in the case of single option at each
-θ2 (x) =
-N3 otherwise
-exit, the layer-wise learning scheme is equivalent to jointly
-optimizing all the exits with respect to full system risk.
-and
-
-
-
-
-W2 (x, y) = τ (N3 ) − λ (L (N2 (x), y) − L (N3 (x), y))+ .
-defined:
+the Supplementary Materials Section D) and train four simple models (a linear model and a deep linear one with 10
+hidden layers, trained to minimise MSE and log loss) with
+regular backprop and with a SG-based alternative to see
+whether it (numerically) converges to the same solution.
+For MSE and both shallow and deep linear architectures the
+SG-based model converges to the global optimum (exact
+numerical results provided in Supplementary Material Table 2). However, this is not the case for logistic regression.
+This effect is a direct consequence of a linear SG module
+being unable to model ∂L/∂p3 (where p = xW + b is the
+output of logistic regression), which often approaches the
+step function (when data is linearly separable), and cannot
+be well approximated with a linear function SG(h, y) =
+hA + yB + C. Once one moves towards problems without
+this characteristic (e.g. random labeling) the problem vanishes, since now ∂L/∂p can be approximated much better.
+While this may not seem particularly significant, it illustrates an important characteristic of SG in the context of the
+log loss – it will struggle to overfit to training data, since it
+requires modeling step function type shapes, which is not
+possible with a linear model. In particular this means that
+for best performance one should adapt the SG module architecture to the loss function used —for MSE linear SG
+is a reasonable choice, however for log loss one should use
+architectures including a sigmoid σ applied pointwise to a
+linear SG, such as SG(h, y) = dσ(hA) + yB + C.
+As described in Section 2, using a linear SG module makes
+the implicit assumption that loss is a quadratic function
+of the activations. Furthermore, in such setting we can
+actually reconstruct the loss being used up to some additive constant since ∂L/∂h = hA + yB + C implies that
+L(h) = 21 hAhT + (yB + C)hT + const. If we now construct a 2-dimensional dataset, where data points are arranged in a 2D grid, we can visualise the loss implicitly
+predicted by the SG module and compare it with the true
+loss for each point.
+Figure 2 shows the results of such an experiment when
+learning a highly non-linear model (5-hidden layer relu network). As one can see, the quality of the loss approximation has two main components to its dynamics. First,
+it is better in layers closer to the true loss (i.e. the topmost layers), which matches observations from Jaderberg
+et al. (2016) and the intuition that the lower layers solve a
+more complex problem (since they bootstrap their targets).
+Second, the loss is better approximated at the very beginning of the training and the quality of the approximation
+degrades slowly towards the end. This is a consequence
+of the fact that close to the end of training, the highly nonlinear model has quite complex derivatives which cannot be
+well represented in a space of linear functions. It is worth
+3
 
-
-
-−1
-
-
-
-
-
-βk (x) = −1
-
-
-
-
-
-
-1
+∂L/∂p = exp(xW + b)/(1 + exp(xW + b)) − y
 
-4. Network Selection
+Understanding Synthetic Gradients and DNIs
 
-As shown in Fig. 1, the computational time has grown
-dramatically with respect to classification performance.
-Rather than attempting to reduce the complexity of the
-state-of-the-art networks, we instead leverage this nonlinear growth by extending the early exiting strategy to
-the regime of network selection. Conceptually, we seek
-to exploit the fact that many examples are correctly classified by relatively efficient networks such as alexnet and
-googlenet, whereas only a small fraction of examples are
-correctly classified by computationally expensive networks
-such as resnet 152 and incorrectly classified by googlenet
-and alexnet.
-As an example, assume we have three pre-trained networks,
-N1 , N2 , and N3 . For an example x, denote the predictions
-for the networks as N1 (x), N2 (x), and N3 (x). Additionally, denote the evaluation times for each of the networks
-as τ (N1 ), τ (N2 ), and τ (N3 ).
-As in Fig. 2, the adaptive system composed of two decision functions that determine which network is evaluated
-for each example. First, κ1 : |X | → {N1 , N2 , N3 } is applied after evaluation of N1 to determine if the classification decision from N1 should be returned or if network N2
-or network N3 should be evaluated for the example. For
-examples that are evaluated on N2 , κ2 : |X | → {N2 , N3 }
-determines if the classification decision from N2 should be
-returned or if network N3 should be evaluated.
+Every layer SG
 
-Once κ2 has been trained according to Eqn. (7), the
-training times for examples that pass through N2 and are
-routed by κ2 can be defined Tκ2 (x) = τ (N2 ) + τ (κ2 ) +
-τ (N3 )1κ2 (x)=N3 . As in the adaptive early exit case, we
-train and fix the last decision function, κ2 , then train the
-earlier function, κ1 . As before, we seek to trade-off between evaluation time and error:
-
-
-min Ex∼X τ (N3 )1κ1 (x)=N3 + τ (N2 )1κ1 =N2 + τ (κ1 )+
-κ1 ∈Γ
-"
-λE(x,y)∼X ×Y (L (N2 (x), y) − L (N3 (x), y))+ 1κ1 (x)=N2
-#
-+ (L (N1 (x), y) − L (N3 (x), y))+ 1κ1 (x)=N1
+Single SG
 
-(8)
+Every layer SG
 
-This can be reduced to a cost sensitive learning problem:
-"
-min E(x,y)∼X ×Y R3 (x, y)1κ1 (x)=N3 + R2 (x, y)1κ1 (x)=N2
+Train iteration
 
-κ1 ∈Γ
+Single SG
 
-#
-+R1 (x, y)1κ1 (x)=N1 + τ (κ1 ),
+b) log loss, noisy linear data
 
-(9)
+c) MSE, randomly labeled data
 
-where the costs are defined:
-R1 (x, y) = (L(N1 (x), y) − L(N3 (x), y))+
-R2 (x, y) = (L(N2 (x), y) − L(N3 (x), y))+ + τ (N2 )
-R3 (x, y) = τ (N3 ).
+d) log loss, randomly labeled data
 
-Adaptive Neural Networks for Efficient Inference
+Train iteration
 
-a simple linear policy significantly outperforms more complex policy functions that exclude the entropy feature.
-Algorithm 1 Adaptive Network Learning Pseudocode
-Input: Data: (xi , yi )ni=1 ,
-Models S, routes, E, model costs τ (.)),
-while ∃ untrained π do
-(1) Choose the deepest policy decision j, s.t. all downstream policies are trained
-for example i ∈ {1, . . . , n} do
-(2) Construct the weight vector w
-~ i of costs per action from Eqn. (7).
-end for
-(3) πj ←Learn clf.((x1 , w
-~ 1 ), . . . , (xn , w
-~ n ))
-(4) Evaluate πj and update route costs to model j:
-C(xi , yi , sn , sj ) ← w
-~ ij (πj (xi )) + C(xi , yi , sn , sj )
-end while
-(5) Prune models the policy does not route any example
-to from the collection
-Output: Policy functions, π1 , . . . , πK
+a) MSE, noisy linear data
 
-5. Experimental Section
-We evaluate our method on the Imagenet 2012 classification dataset (Russakovsky et al., 2015) which has 1000
-object classes. We train using the 1.28 million training
-images and evaluate the system using 50k validation images. We use the pre-trained models from Caffe Model
-Zoo for Alexnet, GoogLeNet and Resnet50 (Krizhevsky
-et al., 2012; Szegedy et al., 2015; He et al., 2016). For preprocessing we follow the same routines proposed for these
-networks and verify the final network performances within
-a small margin (< 0.1%). Note that it is common to use
-ensembles of networks and multiple crops to achieve maximum performance. These methods add minimal gain in
-accuracy while increasing the system cost dramatically. As
-the speedup margin increases, it becomes trivial for the policy to show significant speedups within the same accuracy
-tolerance. We believe such speedups are not useful in practice and focus on single crop with single model case.
-Temporal measurements: We measure network times using
-the built-in tool in the Caffe library on a server that utilizes
-a Nvidia Titan X Pascal with CuDNN 5. Since our focus
-is on the computational cost of the networks, we ignore the
-data loading and preprocessing times. The reported times
-are actual measurements including the policy overhead.
-Policy form and meta-features: In addition to the outputs
-of the convolutional layers of earlier networks, we augment
-the feature space with the entropy of prediction probabilities. We relax the indicators in equations (5) and (9) learn
-linear logistic regression model on these features for our
-policy. We experimented with pooled internal representations, but in practice, inclusion of the entropy feature with
+Figure 2. Visualisation of the true MSE loss and the loss approximation reconstructed from SG modules, when learning points are
+arranged in a 2D grid, with linearly separable 90% of points and 10% with randomly assigned labels (top row) and with completely
+random labels (bottom row). The model is a 6 layers deep relu network. Each image consists of visualisations for a model with a single
+SG (left part) and with SG between every two layers (on the right). Note, that each image has an independently scaled color range, since
+we are only interested in the shape of the surface, not particular values (which cannot be reconstructed from the SG). Linear SG tracks
+the loss well for MSE loss, while it struggles to fit to log loss towards the end of the training of nearly separable data. Furthermore, the
+quality of loss estimation degrades towards the bottom of the network when multiple SGs bootstrap from each other.
 
-5.1. Network Selection
-Baselines: Our full system, depicted in Figure 2, starts with
-Alexnet. Following the evaluation of Alexnet, the system
-determines for each example either to return the prediction,
-route the example to GoogLeNet, or route the example to
-Resnet50. For examples that are routed to GoogLeNet, the
-system either returns the prediction output by GoogLeNet
-or routes the example to Resnet50. As baselines, we compare against a uniform policy and a myopic policy which
-learns a single threshold based on model confidence. We
-also report performance from different system topologies.
-To provide a bound on the achievable performance, we
-show the performance of a soft oracle. The soft oracle
-has access to classification labels and sends each example
-to the fastest model that correctly classifies the example.
-Since having access to the labels is too strong, we made
-the oracle softer by adding two constraints. First, it follows
-the same network topology, also it can not make decisions
-without observing the model feedback first, getting hit by
-the same overhead. Second, it can only exit at a cheaper
-model if all latter models agree on the true label. This second constraint is added due to the fact that our goal is not
-to improve the prediction performance of the system but
-to reduce the computational time, and therefore we prevent
-the oracle from “correcting” mistakes made by the most
-complex networks.
-We sweep the cost trade-off parameter in the range 0.0 to
-0.1 to achieve different budget points. Note that due to
-weights in our cost formulation, even when the pseudo labels are identical, policy behavior can differ. Conceptually,
-the weights balance the importance of the samples that gain
-in classification loss in future stages versus samples that
-gain in computational savings by exiting early stages.
-The results are demonstrated in Figure 3. We see that both
-full tree and a->g->r50 cascade achieve significant (2.8x)
-speedup over using Resnet50 while maintaining its accuracy within 1%. The classifier feedback for the policy has
-a dramatic impact on its performance. Although, Alexnet
-introduces much less overhead compared to GoogLeNet
-(≈0.2 vs ≈0.7), the a->r50 policy performs significantly
-worse in lower budget regions. Our full tree policy learns to
-choose the best order for all budget regions. Furthermore,
-the policy matches the soft oracle performance in both the
-high and low budget regions.
-Note that GoogLeNet is a very well positioned at 0.7ms
-per image budget, probably due to its efficiency oriented
-architectural design with inception blocks (Szegedy et al.,
-2015). For low budget regions, the overhead of the policy is a detriment, as even when it can learn to send al-
+noting, that in these experiments, the quality of the loss approximation dropped significantly when the true loss was
+around 0.001, thus it created good approximations for the
+majority of the learning process. There is also an empirical
+confirmation of the previous claim, that with log loss and
+data that can be separated, linear SGs will have problems
+modeling this relation close to the end of training (Figure 2
+(b) left), while there is no such problem for MSE loss (Figure 2 (a) left).
+Convergence
+It is trivial to note that if a SG module used is globally
+convergent to the true gradient, and we only use its output
+after it converges, then the whole model behaves like the
+one trained with regular backprop. However, in practice
+we never do this, and instead train the two models in parallel without waiting for convergence of the SG module. We
+now discuss some of the consequences of this, and begin
+by showing that as long as a synthetic gradient produced is
+close enough to the true one we still get convergence to the
+true critical points. Namely, only if the error introduced by
+SG, backpropagated to all the parameters, is consistently
+smaller than the norm of true gradient multiplied by some
+positive constant smaller than one, the whole system converges. Thus, we essentially need the SG error to vanish
+around critical points.
+Proposition 2. Let us assume that a SG module is trained
+in each iteration in such a way that it -tracks true gradient,
 
-Adaptive Neural Networks for Efficient Inference
+i.e. that kSG(h, y) − ∂L/∂hk ≤ . If k∂h/∂θ<h k is upper
+bounded by some K and there exists a constant δ ∈ (0, 1)
+such that in every iteration K ≤ k∂L/∂θ<h k 1−δ
+1+δ , then
+the whole training process converges to the solution of the
+original problem.
+Proof. Proof follows from showing that, under the assumptions, effectively we are training with noisy gradients,
+where the noise is small enough for convergence guarantees given by Zoutendijk (1970); Gratton et al. (2011) to
+apply. Details are provided in the Supplementary Materials
+Section C.
+As a consequence of Proposition 2 we can show that with
+specifically chosen learning rates (not merely ones that are
+small enough) we obtain convergence for deep linear models.
+Corollary 1. For a deep linear model minimising MSE,
+trained with a linear SG module attached between two of
+its hidden layers, there exist learning rates in each iteration
+such that it converges to the critical point of the original
+problem.
+Proof. Proof follows directly from Propositions 1 and 2.
+Full proof is given in Supplementary Materials Section C.
+For a shallow model we can guarantee convergence to the
+global solution provided we have a small enough learning
+rate, which is the main theoretical result of this paper.
 
-Figure 3. Performance of network selection policy on Imagenet (Left: top-5 error Right: top-1 error). Our full adaptive system (denoted
-with blue dots) significantly outperforms any individual network for almost all budget regions and is close to the performance of the
-oracle. The performances are reported on the validation set of ImageNet dataset.
+Understanding Synthetic Gradients and DNIs
 
-Figure 4. (Left) Different network selection topologies that we considered. Arrows denote possible jumps allowed to the policy. A, G
-and R denote Alexnet, GoogLeNet and Resnet50, respectively. (Right) Statistics for proportion of total time spent on different networks
-and proportion of samples that exit at each network. Top row is sampled at 2.0ms and bottom row is sampled at 2.8ms system evaluation
+Figure 3. (left) Representation Dissimilarity Matrices for a label ordered sample from MNIST dataset pushed through 20-hidden layers
+deep relu networks trained with backpropagation (top row), a single SG attached between layers 11 and 12 (middle row) and SG between
+every pair of layers (bottom row). Notice the disappearance of dark squares on a diagonal in each learning method, which shows when
+a clear inner-class representation has been learned. For visual confidence off block diagonal elements are semi transparent. (right) L2
+distance between diagonal elements at a given layer and the same elements at layer 20. Dotted lines show where SGs are inserted.
 
-most half the samples to Alexnet instead of GoogLeNet
-with marginal loss in accuracy, the extra 0.23ms Alexnet
-overhead brings the balance point, ≈ 0.65ms, very close
-to using only GoogLeNet at 0.7ms. The ratio between network evaluation times is a significant factor for our system.
-Fortunately, as mentioned before, for many applications the
-ratio of different models can be very high (cloud computing
-upload times, resnet versus Alexnet difference etc.).
-We further analyzed the network usage and runtime proportion statistics for samples at different budget regions.
-Fig. 4 demonstrates the results at three different budget
-levels. Full tree policy avoids using GoogLeNet altogether
-for high budget regions. This is the expected behavior since
-the a->r50 policy performs just as well in those regions and
-using GoogLeNet in the decision adds too much overhead.
-At mid level budgets the policy distributes samples more
-evenly. Note that the sum of the overheads is close to useful
-runtime of cheaper networks in this region. This is possible
+Theorem 1. Let us consider linear regression trained with
+a linear SG module attached between its output and the
+loss. If one chooses the learning rate of the SG module
+using line search, then in every iteration there exists small
+enough, positive learning rate of the main network such
+that it converges to the global solution.
+Proof. The general idea (full proof in the Supplementary
+Materials Section C) is to show that with assumed learning rates the sum of norms of network error and SG error
+decreases in every iteration.
+Despite covering a quite limited class of models, these are
+the very first convergence results for SG-based learning.
+Unfortunately, they do not seem to easily generalise to the
+non-linear cases, which we leave for future research.
 
-since the earlier networks are very lightweight.
-5.2. Network Early Exits
-To output a prediction following each convolutional layer,
-we train a single layer linear classifier after a global average
-pooling for each layer. We added global pooling to minimize the policy overhead in earlier exits. For Resnet50 we
-added an exit after output layers of 2a, 2c, 3a, 3d, 4a and 4f.
-The dimensionality of the exit features after global average
-pooling are 256, 256, 512, 512, 1024 and 1024 in the same
-order as the layer names. For GoogLeNet we added the
-exits after concatenated outputs of every inception layer.
-Table 1 shows the early exit performance for different networks. The gains are more marginal compared to network
-selection. Fig 5 shows the accuracy gains per evaluation
-time for different layers. Interestingly, the accuracy gain
-per time is more linear within the same architecture com-
+5. Trained models
+We now shift our attention to more realistic data. We train
+deep relu networks of varied depth (up to 50 hidden layers)
+with batch-normalisation and with two different activation
+functions on MNIST and compare models trained with full
+backpropagation to variants that employ a SG module in
+the middle of the hidden stack.
 
-Adaptive Neural Networks for Efficient Inference
+Figure 4. Learning curves for MNIST experiments with backpropagation and with a single SG in a stack of from 3 to 50 hidden
+layers using one of two activation functions: relu and sigmoid.
+
+Figure 4 shows, that SG-based architectures converge well
+even if there are many hidden layers both below and above
+the module. Interestingly, SG-based models actually seem
+to converge faster (compare for example 20- or 50 layer
+deep relu network). We believe this may be due to some
+
+amount of loss function smoothing since, as described in
+Section 2, a linear SG module effectively models the loss
+function to be quadratic – thus the lower network has a simpler optimisation task and makes faster learning progress.
+Obtaining similar errors on MNIST does not necessarily
+mean that trained models are the same or even similar.
+Since the use of synthetic gradients can alter learning dynamics and introduce new critical points, they might converge to different types of models. Assessing the representational similarity between different models is difficult,
+however. One approach is to compute and visualise Representational Dissimilarity Matrices (Kriegeskorte et al.,
+2008) for our data. We sample a subset of 400 points xi
+from MNIST, order them by label, and then record activations on each hidden layer h when the network is presented with these points. We plot the matrix RDM for each
+layer, where RDMij = 1 − corr(h(xi ), h(xj )), as shown in
+Figure 3. This representation is permutation invariant, and
+thus the emergence of a block-diagonal correlation matrix
+means that at a given layer, points from the same class already have very correlated representations.
+Under such visualisations one can notice qualitative differences between the representations developed under standard backpropagation training versus those delivered by
+a SG-based model. In particular, in the MNIST model
+with 20 hidden layers trained with standard backpropagation we see that the representation covariance after 9 layers
+is nearly the same as the final layer’s representation. However, by contrast, if we consider the same architecture but
+with a SG module in the middle we see that the layers before the SG module develop a qualitatively different style
+of representation. Note: this does not mean that layers before SG do not learn anything useful. To confirm this, we
+also introduced linear classifier probes (Alain & Bengio,
+2016) and observed that, as with the pure backpropagation trained model, such probes can achieve 100% training accuracy after the first two hidden-layers of the SGbased model, as shown in Supplementary Material’s Figure 8. With 20 SG modules (one between every pair of
+
+Understanding Synthetic Gradients and DNIs
+
+layers), the representation is scattered even more broadly:
+we see rather different learning dynamics, with each layer
+contributing a small amount to the final solution, and there
+is no longer a point in the progression of layers where the
+representation is more or less static in terms of correlation
+structure (see Figure 3).
+
+tive corrections in deeper layers. For a one-point unlocked
+model with a single SG module, we have two slightly separated models where one behaves similarly to backprop, and
+the other supports it. Finally, a fully locked model (i.e. traditional backprop) solves the task relatively early on, and
+later just increases its confidence.
+
+Another way to investigate whether the trained models are
+qualitatively similar is to examine the norms of the weight
+matrices connecting consecutive hidden layers, and to assess whether the general shape of such norms are similar.
+While this does not definitively say anything about how
+much of the original classification is being solved in each
+hidden layer, it is a reasonable surrogate for how much
+computation is being performed in each layer4 . According
+
+We note that the results of this section support our previous
+notion that we are effectively dealing with a multi-agent
+system, which looks for coordination/equilibrium between
+components, rather than a single model which simply has
+some small noise injected into the gradients (and this is
+especially true for more complex models).
+
+Figure 5. Visualisation of normalised squared norms of linear
+transformations in each hidden layer of every model considered.
+Dotted orange line denotes level at which a single SG is attached.
+SG* has a SG at every layer.
+
+to our experiments (see Figure 5 for visualisation of one of
+the runs), models trained with backpropagation on MNIST
+tend to have norms slowly increasing towards the output of
+the network (with some fluctuations and differences coming from activation functions, random initialisations, etc.).
+If we now put a SG in between every two hidden layers,
+we get norms that start high, and then decrease towards
+the output of the network (with much more variance now).
+Finally, if we have a single SG module we can observe
+that the behaviour after the SG module resembles, at least
+to some degree, the distributions of norms obtained with
+backpropagation, while before the SG it is more chaotic,
+with some similarities to the distribution of weights with
+SGs in-between every two layers.
+These observations match the results of the previous experiment and the qualitative differences observed. When synthetic gradients are used to deliver full unlocking we obtain
+a very basic model at the lowest layers and then see itera4
+We train with a small L2 penalty added to weights to make
+norm correspond roughly to amount of computation.
+
+6. SG and conspiring networks
+We now shift our attention and consider a unified view
+of several different learning principles that work by replacing true gradients with surrogates. We focus on three
+such approaches: Feedback Alignment (FA) (Lillicrap
+et al., 2016), Direct Feedback Alignment (DFA) (Nøkland,
+2016), and Kickback (KB) (Balduzzi et al., 2014). FA effectively uses a fixed random matrix during backpropagation, rather than the transpose of the weight matrix used
+in the forward pass. DFA does the same, except each
+layer directly uses the learning signal from the output layer
+rather than the subsequent local one. KB also pushes the
+output learning signal directly but through a predefined
+matrix instead of a random one. By making appropriate
+choices for targets, losses, and model structure we can
+cast all of these methods in the SG framework, and view
+them as comprising two networks with a SG module in between them, wherein the first module builds a representation which makes the task of the SG predictions easier.
+We begin by noting that in the SG models described thus far
+we do not backpropagate the SG error back into the part of
+the main network preceding the SG module (i.e. we assume
+∂LSG /∂h = 0). However, if we relax this restriction, we
+can use this signal (perhaps with some scaling factor α)
+and obtain what we will refer to as a SG + prop model.
+Intuitively, this additional learning signal adds capacity to
+our SG model and forces both the main network and the SG
+module to “conspire” towards a common goal of making
+better gradient predictions. From a practical perspective,
+according to our experiments, this additional signal heavily
+stabilises learning system5 . However, this comes at the cost
+of no longer being unlocked.
+5
+
+In fact, ignoring the gradients predicted by SG and only using the derivative of the SG loss, i.e. ∂LSG /∂h, still provides
+enough learning signal to converge to a solution for the original
+task in the simple classification problems we considered. We posit
+a simple rationale for this: if one can predict gradients well using
+a simple transformation of network activations (e.g. a linear mapping), this suggests that the loss itself can be predicted well too,
+and thus (implicitly) so can the correct outputs.
+
+Synthetic error
+gradient, nondifferentiable
+
+fi
+
+Forward connection
+
+x
+
+y
+
+y
+
+…
+
+x
+
+…
+
+Error gradient
+Synthetic error gradient
+
+(a)
+(b)
+Understanding Synthetic
+Gradients and DNIs
 
 Network
-GoogLeNet@1
-GoogLeNet@2
-GoogLeNet@5
-Resnet50@1
-Resnet50@2
-Resnet50@5
 
-policy top-5
-9%
-22%
-33%
-8%
-18%
-22%
+L
 
-uniform top-5
-2%
-9%
-20%
-1%
-12%
-10%
+L
 
-Table 1. Early exit performances at different accuracy/budget
-trade-offs for different networks. @x denotes x loss from full
-model accuracy and reported numbers are percentage speed-ups.
+L
 
-pared to different network architectures. This explains why
-the adaptive policy works better for network selection compared to early exits.
+L
 
-Figure 6. Analysis of top-1 and top-5 errors for different networks. Majority of the samples are easily classified by Alexnet,
-and only a minority of them require deeper networks.
+L
 
-in top 1 and top 5 error, respectively, the use of any network
-apart from Alexnet is unnecessary and only adds unnecessary computational time.
-Additionally, it is worth noting the balance between examples incorrectly classified by all networks, 18% and 5% respectively for top 1 and top 5 error, and the fraction of examples correctly classified by either GoogLeNet or Resnet
-but not Alexnet, 25.1% and 15.1% for top 1 and top 5 error, respectively. This behavior supports our observation
-that entropy of classification decisions is an important feature in making policy decisions, as examples likely to be
-incorrectly classified by Alexnet are likely to be classified
-correctly by a later network.
-Note that our system is trained using the same data used to
-train the networks. Generally, the resulting evaluation error
-for each network on training data is significantly lower than
-error that arises on test data, and therefore our system is biased towards sending examples to more complex networks
-that generally show negligible training error. Practically,
-this problem is alleviated through the use of validation data
-to train the adaptive systems. In order to maintain the reported performance of the network without expansion of
-the training set, we instead utilize the same data for training both networks and adaptive systems, however we note
-that performance of our adaptive systems is generally better
-when trained on data excluded from the network training.
+L
 
-6. Conclusion
-Figure 5. The plots show the accuracy gains at different layers for
-early exits for networks GoogLeNet (top) and Resnet50 (bottom).
+p
 
-5.3. Network Error Analysis
-Fig. 6 shows the distributions over examples of the networks that correctly label the example. Notably, 50% and
-77% of the examples are correctly classified by all networks for top 1 and top 5 error, respectively. Similarly,
-18% and 5% of the examples are incorrectly classified by
-all networks with respect to their top 1 and top 5 error, respectively. These results verify our hypothesis that for a
-large fraction of data, there is no need for costly networks.
-In particular, for the 68% and 82% of data with no change
+p
 
-We proposed two different schemes to adaptively trade off
-model accuracy with model evaluation time for deep neural
-networks. We demonstrated that significant gains in computational time is possible through our novel policy with
-negligible loss in accuracy on ImageNet image recognition dataset. We posed a global objective for learning an
-adaptive early exit or network selection policy and solved
-it by reducing the policy learning problem to a layer-bylayer weighted binary classification problem. We believe
-that adaptivity is very important in the age of growing data
-for models with high variance in computational time and
-quality. We also showed that our method approximates an
-Oracle based policy that has benefit of access to true error
-for each instance from all the networks.
+p
 
-Adaptive Neural Networks for Efficient Inference
+p
 
-Acknowledgements
-This material is based upon work supported in part by NSF
-Grants CCF: 1320566, NSF Grant CNS: 1330008 NSF
-CCF: 1527618, the U.S. Department of Homeland Security, Science and Technology Directorate, Office of University Programs, under Grant Award 2013-ST-061-ED0001,
-and by ONR contract N00014-13-C-0288. The views and
-conclusions contained in this document are those of the authors and should not be interpreted as necessarily representing the social policies, either expressed or implied, of the
-NSF, U.S. DHS, ONR or AF.
+p
+
+p
+
+LSG
+
+h
+
+Method
+
+SG
+
+SG
+
+h
+
+SG
+
+SG + prop
+
+LSG
+
+LSG
+
+LSG
+
+h
+
+h
+
+Bprop
+
+h
+
+g=hW
+
+hA
+
+DFA
+
+h
+
+FA
+
+LSG
+
+LSG
+
+hA
+
+h
+
+h1
+
+Kickback
+
+\
+∂L/∂h
+SG(h, y)
+SG trains
+SG target
+LSG (t, s)
+
+SG(h, y)
+SG(h, y)
+yes
+∂L/∂h
+kt − sk2
+
+SG
+SG(h, y) + α ∂L
+∂h
+SG(h, y)
+yes
+∂L/∂h
+kt − sk2
+
+∂L/∂h
+h
+no
+−∂L/∂h
+−ht, si
+
+(∂L/∂p)AT
+hA
+no
+−∂L/∂p
+−ht, si
+
+(∂L/∂g)AT
+hA
+no
+−∂L/∂g
+−ht, si
+
+(∂L/∂p)1T
+h1
+no
+−∂L/∂p
+−ht, si
+
+Update locked
+Backw. locked
+Direct error
+
+no
+no
+no
+
+yes*
+yes*
+no
+
+yes
+yes
+no
+
+yes
+no
+yes
+
+yes
+yes
+no
+
+yes
+no
+yes
+
+Table 1. Unified view of “conspiring” gradients methods, including backpropagation, synthetic gradients are other error propagating
+methods. For each of them, one still trains with regular backpropagation (chain rule) however ∂L/∂h is substituted with a particular
+\ Black lines are forward signals, blue ones are synthetic gradients, and green ones are true gradients. Dotted lines represent
+∂L/∂h.
+non-differentiable operations. The grey modules are not trainable. A is a fixed, random matrix and 1 is a matrix of ones of an appropriate
+dimension. * In SG+Prop the network is locked if there is a single SG module, however if we have multiple ones, then propagating error
+signal only locks a module with the next one, not with the entire network. Direct error means that a model tries to solve classification
+problem directly at layer h.
+
+Our main observation in this section is that FA, DFA, and
+KB can be expressed in the language of “conspiring” networks (see Table 1), of two-network systems that use a SG
+module. The only difference between these approaches is
+how one parametrises SG and what target we attempt to
+fit it to. This comes directly from the construction of these
+systems, and the fact that if we treat our targets as constants
+(as we do in SG methods), then the backpropagated error
+from each SG module (∂LSG /∂h) matches the prescribed
+\ One direct
+update rule of each of these methods (∂L/∂h).
+result from this perspective is the fact that Kickback is essentially DFA with A = 1. For completeness, we note that
+regular backpropagation can also be expressed in this unified view – to do so, we construct a SG module such that the
+gradients it produces attempt to align the layer activations
+with the negation of the true learning signal (−∂L/∂h). In
+addition to unifying several different approaches, our mapping also illustrates the potential utility and diversity in the
+generic idea of predicting gradients.
+
+7. Conclusions
+This paper has presented new theory and analysis for the
+behaviour of synthetic gradients in feed forward models.
+Firstly, we showed that introducing SG does not necessarily
+
+change the critical points of the original problem, however
+at the same time it can introduce new critical points into the
+learning process. This is an important result showing that
+SG does not act like a typical regulariser despite simplifying the error signals. Secondly, we showed that (despite
+modifying learning dynamics) SG-based models converge
+to analogous solutions to the true model under some additional assumptions. We proved exact convergence for a
+simple class of models, and for more complex situations
+we demonstrated that the implicit loss model captures the
+characteristics of the true loss surface. It remains an open
+question how to characterise the learning dynamics in more
+general cases. Thirdly, we showed that despite these convergence properties the trained networks can be qualitatively different from the ones trained with backpropagation. While not necessarily a drawback, this is an important
+consequence one should be aware of when using synthetic
+gradients in practice. Finally, we provided a unified framework that can be used to describe alternative learning methods such as Synthetic Gradients, FA, DFA, and Kickback,
+as well as standard Backprop. The approach taken shows
+that the language of predicting gradients is suprisingly universal and provides additional intuitions and insights into
+the models.
+
+Understanding Synthetic Gradients and DNIs
 
 References
-Bagherinezhad, Hessam, Rastegari, Mohammad, and
-Farhadi, Ali. Lcnn: Lookup-based convolutional neural
-network. arXiv preprint arXiv:1611.06473, 2016.
-Bengio, Emmanuel, Bacon, Pierre-Luc, Pineau, Joelle,
-and Precup, Doina.
-Conditional computation in
-neural networks for faster models. arXiv preprint
-arXiv:1511.06297, 2015.
-Bucila, Cristian, Caruana, Rich, and Niculescu-Mizil,
-Alexandru. Model compression. In Proceedings of the
-12th ACM SIGKDD international conference on Knowledge discovery and data mining, pp. 535–541. ACM,
-2006.
-Chen, Wenlin, Wilson, James T, Tyree, Stephen, Weinberger, Kilian Q, and Chen, Yixin. Compressing neural
-networks with the hashing trick. In ICML, pp. 2285–
-2294, 2015.
-Courbariaux, Matthieu, Bengio, Yoshua, and David, JeanPierre. Binaryconnect: Training deep neural networks
-with binary weights during propagations. In Advances in
-Neural Information Processing Systems, pp. 3123–3131,
-2015.
-Figurnov, Michael, Collins, Maxwell D, Zhu, Yukun,
-Zhang, Li, Huang, Jonathan, Vetrov, Dmitry, and
-Salakhutdinov, Ruslan.
-Spatially adaptive computation time for residual networks.
+Alain, Guillaume and Bengio, Yoshua. Understanding intermediate layers using linear classifier probes. arXiv
+preprint arXiv:1610.01644, 2016.
+Baldi, Pierre, Sadowski, Peter, and Lu, Zhiqin. Learning in
+the machine: Random backpropagation and the learning
+channel. arXiv preprint arXiv:1612.02734, 2016.
+Balduzzi, David, Vanchinathan, Hastagiri, and Buhmann,
+Joachim. Kickback cuts backprop’s red-tape: Biologically plausible credit assignment in neural networks.
+arXiv preprint arXiv:1411.6191, 2014.
+Bengio, Yoshua, Lee, Dong-Hyun, Bornschein, Jorg,
+Mesnard, Thomas, and Lin, Zhouhan. Towards biologically plausible deep learning.
 arXiv preprint
-arXiv:1612.02297, 2016a.
-Figurnov, Mikhail, Ibraimova, Aizhan, Vetrov, Dmitry P,
-and Kohli, Pushmeet. Perforatedcnns: Acceleration
-through elimination of redundant convolutions. In Advances in Neural Information Processing Systems, pp.
-947–955, 2016b.
-Gong, Yunchao, Liu, Liu, Yang, Ming, and Bourdev,
-Lubomir. Compressing deep convolutional networks using vector quantization. arXiv preprint arXiv:1412.6115,
-2014.
-
-He, Kaiming, Zhang, Xiangyu, Ren, Shaoqing, and Sun,
-Jian. Deep residual learning for image recognition. In
-Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition, pp. 770–778, 2016.
-Hinton, Geoffrey, Deng, Li, Yu, Dong, Dahl, George E,
-Mohamed, Abdel-rahman, Jaitly, Navdeep, Senior, Andrew, Vanhoucke, Vincent, Nguyen, Patrick, Sainath,
-Tara N, et al. Deep neural networks for acoustic modeling in speech recognition: The shared views of four
-research groups. IEEE Signal Processing Magazine, 29
-(6):82–97, 2012.
-Hinton, Geoffrey, Vinyals, Oriol, and Dean, Jeff. Distilling the knowledge in a neural network. arXiv preprint
-arXiv:1503.02531, 2015.
-Hubara, Itay, Courbariaux, Matthieu, Soudry, Daniel, ElYaniv, Ran, and Bengio, Yoshua. Binarized neural networks. In Advances in Neural Information Processing
-Systems, pp. 4107–4115, 2016a.
-Hubara, Itay, Courbariaux, Matthieu, Soudry, Daniel, ElYaniv, Ran, and Bengio, Yoshua. Quantized neural networks: Training neural networks with low
-precision weights and activations.
-arXiv preprint
-arXiv:1609.07061, 2016b.
-Iandola, Forrest N, Han, Song, Moskewicz, Matthew W,
-Ashraf, Khalid, Dally, William J, and Keutzer, Kurt.
-Squeezenet: Alexnet-level accuracy with 50x fewer parameters and< 0.5 mb model size. arXiv preprint
-arXiv:1602.07360, 2016.
-Krizhevsky, Alex, Sutskever, Ilya, and Hinton, Geoffrey E.
-Imagenet classification with deep convolutional neural
-networks. In Advances in neural information processing
-systems, pp. 1097–1105, 2012.
-Kusner, M, Chen, W, Zhou, Q, Xu, Z, Weinberger, K, and
-Chen, Y. Feature-cost sensitive learning with submodular trees of classifiers. In Twenty-Eighth AAAI Conference on Artificial Intelligence, 2014.
-Leroux, Sam, Bohez, Steven, De Coninck, Elias, Verbelen,
-Tim, Vankeirsbilck, Bert, Simoens, Pieter, and Dhoedt,
-Bart. The cascading neural network: building the internet of smart things. Knowledge and Information Systems, pp. 1–24, 2017.
-Liu, Baoyuan, Wang, Min, Foroosh, Hassan, Tappen, Marshall, and Pensky, Marianna. Sparse convolutional neural networks. In Proceedings of the IEEE Conference on
-Computer Vision and Pattern Recognition, pp. 806–814,
-2015.
-
-Adaptive Neural Networks for Efficient Inference
-
-Nan, Feng, Wang, Joseph, and Saligrama, Venkatesh. Pruning random forests for prediction on a budget. In Advances in Neural Information Processing Systems 29:
-Annual Conference on Neural Information Processing
-Systems 2016, December 5-10, 2016, Barcelona, Spain,
-pp. 2334–2342, 2016.
-Odena, Augustus, Lawson, Dieterich, and Olah, Christopher. Changing model behavior at test-time using reinforcement learning. arXiv preprint arXiv:1702.07780,
-2017.
-Rastegari, Mohammad, Ordonez, Vicente, Redmon,
-Joseph, and Farhadi, Ali. Xnor-net: Imagenet classification using binary convolutional neural networks. In
-European Conference on Computer Vision, pp. 525–542.
-Springer, 2016.
-Russakovsky, Olga, Deng, Jia, Su, Hao, Krause, Jonathan,
-Satheesh, Sanjeev, Ma, Sean, Huang, Zhiheng, Karpathy, Andrej, Khosla, Aditya, Bernstein, Michael, et al.
-Imagenet large scale visual recognition challenge. International Journal of Computer Vision, 115(3):211–252,
-2015.
-Sutskever, Ilya, Vinyals, Oriol, and Le, Quoc V. Sequence to sequence learning with neural networks. In
-Advances in neural information processing systems, pp.
-3104–3112, 2014.
-Szegedy, Christian, Liu, Wei, Jia, Yangqing, Sermanet,
-Pierre, Reed, Scott, Anguelov, Dragomir, Erhan, Dumitru, Vanhoucke, Vincent, and Rabinovich, Andrew.
-Going deeper with convolutions. In Proceedings of
-the IEEE Conference on Computer Vision and Pattern
-Recognition, pp. 1–9, 2015.
-Trapeznikov, K and Saligrama, V. Supervised sequential
-classification under budget constraints. In International
-Conference on Artificial Intelligence and Statistics, pp.
-581–589, 2013.
-Wang, J., Bolukbasi, T., Trapeznikov, K., and Saligrama,
-V. Model selection by linear programming. In European
-Conference on Computer Vision, pp. 647–662, 2014.
-Wang, Joseph and Saligrama, Venkatesh. Local supervised
-learning through space partitioning. In Advances in Neural Information Processing Systems (NIPS), pp. 91–99,
-2012.
-Wang, Joseph, Trapeznikov, Kirill, and Saligrama,
-Venkatesh. Efficient learning by directed acyclic graph
-for resource constrained prediction. In Advances in
-Neural Information Processing Systems, pp. 2152–2160,
-2015.
-
-Wen, Wei, Wu, Chunpeng, Wang, Yandan, Chen, Yiran,
-and Li, Hai. Learning structured sparsity in deep neural
-networks. In Advances in Neural Information Processing
-Systems, pp. 2074–2082, 2016.
-Wu, Jiaxiang, Leng, Cong, Wang, Yuhang, Hu, Qinghao,
-and Cheng, Jian. Quantized convolutional neural networks for mobile devices. In Proceedings of the IEEE
-Conference on Computer Vision and Pattern Recognition, pp. 4820–4828, 2016.
-Xu, Z., Kusner, M., Chen, M., and Weinberger, K. Costsensitive tree of classifiers. In Proceedings of the 30th International Conference on Machine Learning, pp. 133–
-141, 2013.
+arXiv:1502.04156, 2015.
+Gratton, Serge, Toint, Philippe L, and Tröltzsch, Anke.
+How much gradient noise does a gradient-based linesearch method tolerate. Technical report, Citeseer, 2011.
+Jaderberg, Max, Czarnecki, Wojciech Marian, Osindero,
+Simon, Vinyals, Oriol, Graves, Alex, and Kavukcuoglu,
+Koray. Decoupled neural interfaces using synthetic gradients. arXiv preprint arXiv:1608.05343, 2016.
+Kriegeskorte, Nikolaus, Mur, Marieke, and Bandettini, Peter A. Representational similarity analysis-connecting
+the branches of systems neuroscience. Frontiers in systems neuroscience, 2:4, 2008.
+Lillicrap, Timothy P, Cownden, Daniel, Tweed, Douglas B,
+and Akerman, Colin J. Random synaptic feedback
+weights support error backpropagation for deep learning.
+Nature Communications, 7, 2016.
+Marblestone, Adam H, Wayne, Greg, and Kording, Konrad P. Toward an integration of deep learning and neuroscience. Frontiers in Computational Neuroscience, 10,
+2016.
+Nøkland, Arild. Direct feedback alignment provides learning in deep neural networks. In Lee, D. D., Sugiyama,
+M., Luxburg, U. V., Guyon, I., and Garnett, R. (eds.),
+Advances in Neural Information Processing Systems 29,
+pp. 1037–1045. Curran Associates, Inc., 2016.
+Williams, DRGHR and Hinton, GE. Learning representations by back-propagating errors. Nature, 323(6088):
+533–538, 1986.
+Zoutendijk, G. Nonlinear programming, computational
+methods. Integer and nonlinear programming, 143(1):
+37–86, 1970.
 
 

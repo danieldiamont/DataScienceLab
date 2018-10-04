@@ -1,1337 +1,982 @@
-Lazifying Conditional Gradient Algorithms
-Gábor Braun * 1 Sebastian Pokutta * 1 Daniel Zink * 1
+iSurvive: An Interpretable, Event-time Prediction Model for mHealth
+Walter H. Dempsey * 1 Alexander Moreno * 2 Christy K. Scott 3 Michael L. Dennis 3 David H. Gustafson 4
+Susan A. Murphy 1 James M. Rehg 2
 
 Abstract
-Conditional gradient algorithms (also often called
-Frank-Wolfe algorithms) are popular due to their
-simplicity of only requiring a linear optimization
-oracle and more recently they also gained significant traction for online learning. While simple
-in principle, in many cases the actual implementation of the linear optimization oracle is costly.
-We show a general method to lazify various conditional gradient algorithms, which in actual computations leads to several orders of magnitude of
-speedup in wall-clock time. This is achieved by
-using a faster separation oracle instead of a linear
-optimization oracle, relying only on few linear
-optimization oracle calls.
+An important mobile health (mHealth) task is the
+use of multimodal data, such as sensor streams
+and self-report, to construct interpretable timeto-event predictions of, for example, lapse to
+alcohol or illicit drug use. Interpretability of
+the prediction model is important for acceptance and adoption by domain scientists, enabling model outputs and parameters to inform
+theory and guide intervention design. Temporal
+latent state models are therefore attractive, and
+so we adopt the continuous time hidden Markov
+model (CT-HMM) due to its ability to describe irregular arrival times of event data. Standard CTHMMs, however, are not specialized for predicting the time to a future event, the key variable for
+mHealth interventions. Also, standard emission
+models lack a sufficiently rich structure to describe multimodal data and incorporate domain
+knowledge. We present iSurvive, an extension
+of classical survival analysis to a CT-HMM. We
+present a parameter learning method for GLM
+emissions and survival model fitting, and present
+promising results on both synthetic data and an
+mHealth drug use dataset.
 
 1. Introduction
-Convex optimization is an important technique both from
-a theoretical and an applications perspective. Gradient descent based methods are widely used due to their simplicity
-and easy applicability to many real-world problems. We are
-interested in solving constraint convex optimization problems of the form
-min f (x),
-(1)
-x2P
-
-where f is a smooth convex function and P is a polytope,
-with access to f being limited to first-order information,
-i.e., we can obtain rf (v) and f (v) for a given v 2 P and
-access to P via a linear minimization oracle which returns
-x = argminv2P cx for a given linear objective c.
-When solving Problem (1) using gradient descent approaches in order to maintain feasibility, typically a projection step is required. This projection back into the feasible
-region P is potentially computationally expensive, especially for complex feasible regions in very large dimensions.
-As such projection-free methods gained a lot of attention
-recently, in particular the Frank-Wolfe algorithm (Frank
-1
-ISyE, Georgia Institute of Technology, Atlanta, GA. Correspondence to: Daniel Zink <daniel.zink@gatech.edu>.
+In the emerging field of mobile health (mHealth) an important problem is the use of collected multimodal data
+– e.g., sensor streams along with self-report – to make
+time-varying predictions of events like lapse (Chih et al.,
+2014). Using latent state models for prediction is an attractive choice for three reasons: (1) States can be made
+interpretable by representing behavioral constructs such as
+stress and craving; (2) Emission models can handle noisy
+*
+Equal contribution 1 University of Michigan 2 Georgia Institute
+of Technology 3 Lighthouse Institute 4 University of WisconsinMadison. Correspondence to: Alexander Moreno <alexander.f.moreno@gatech.edu>.
 
 Proceedings of the 34 th International Conference on Machine
-Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017 by
-the author(s).
+Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
+by the author(s).
 
-Algorithm 1 Frank-Wolfe Algorithm (Frank & Wolfe,
-1956)
-Input: smooth convex f function with curvature C, x1 2
-P start vertex, LPP linear minimization oracle
-Output: xt points in P
-1: for t = 1 to T
-1 do
-2:
-vt
-LPP (rf (xt ))
+measurements; and (3) Parameters can capture domain
+knowledge. Moreover, an interpretable model can represent a theoretical relationship, such as the hypothesized
+link between increased stress and risk of smoking lapse, in
+a form which supports learning from data, simulation and
+visualization, and hypothesis testing. Such models can be a
+tool for data-driven design and testing of theoretical models
+by domain scientists (Nahum-Shani et al., 2015). Further,
+in the case of small sample sizes, the incorporation of domain knowledge may be critical for good performance. In
+such cases, superior performance relative to an alternative
+”black box” model can provide additional evidence for the
+correctness of a behavioral theory.
+Discrete time hidden Markov models (DT-HMMs) are a
+standard tool for regularly-sampled sensor data, but many
+important datatypes, such as EMAs or detected periods of
+high stress, take the form of event data with irregular arrival
+times. Fortunately, recent work (Wang et al., 2014; Rao &
+Teh, 2013) makes it feasible to use continuous time HMMs
+(CT-HMMs) to model irregularly-sampled data. This paper
+builds on our prior work on efficient parameter learning algorithms for CT-HMMs (Liu et al., 2015).
+In order to utilize CT-HMMs for mobile health interventions, however, two limitations with existing models must
+be addressed: (1) A mechanism is needed for predicting the
+time to future events; and (2) Emission models must go beyond the standard Gaussian and multinomial observations
+to embrace general multimodal data models. The first limitation can be addressed via classical methods for time-toevent prediction from survival analysis. Prior work in joint
+survival and longitudinal analysis has focused on sharedrandom effects models (Rizopoulos, 2012) or latent class
+models (Proust-Lima et al., 2014) with Gaussian emissions.
+Survival analysis has not been previously used in an interpretable hidden state setting with multimodal data. We
+develop a method for using the states of a CT-HMM as interpretable, time-varying covariates in a survival model. In
+prior work, Lian et al. (2014) developed an interpretable
+latent event process model; interpretability, however, was
+achieved post hoc rather than being a built-in feature of the
+model as is the case here. We describe additional differences between this prior work and our current approach in
+the supplementary material.
+
+iSurvive: An Interpretable, Event-time Prediction Model for mHealth
+
+We address the second limitation, the treatment of multimodal observations, by using a factorized GLM emission
+model. Rather than simply ”stacking” multimodal observations into a single vector, GLMs allow the specification
+of a different link function for each type of observation
+data, such as ordinal, count, and continuous data. Due
+to this choice, the M-step of EM does not have a closed
+form solution, and the temporal dependencies are different from standard GLM training. We derive an iterative
+M-step update approach to solve this problem, and provide convergence guarantees to match. We believe we
+are the first to use interpretable latent variables from a
+CT-HMM as covariates in a survival model with use of
+GLM emissions to handle multimodal data types in a CTHMM. Our method allows us to make precise intuitive
+statements like “under high risk and low engagement, the
+probability of lapse is 74.4%.” Our publicly-released software (http://cbi.gatech.edu/Survival-HMM)
+will enable the mHealth and data science communities to
+benefit from these new modeling capabilities. We show
+promising results both in simulation and on a real-world
+mHealth recovery support services dataset from individuals with substance use disorders.
+
+2. Model Description
+Our latent variable-based survival model, which we term
+iSurvive, has three components: (1) continuous-time hidden Markov process, (2) GLM emission models, and (3)
+event process. We assume there are N participants. For
+each participant, t is the time in hours since the start of
+the study. The study-window length ⇠ is pre-specified and
+fixed for all participants.
+2.1. Continuous-Time HMM
+A continuous-time hidden Markov model (Liu et al., 2015)
+is a continuous-time latent Markov process where state
+transitions and observations can occur at arbitrary times.
+There are two sources of hidden information: the states
+and their transition times. The estimation problem involves
+three sets of parameters: (1) an emission model p(o|s), relating observations o to the latent state s; (2) a transition
+rate matrix Q that captures the exponentially distributed
+transition rates between states; and (3) an initial state distribution.
+Let S be a vector Markov process of length p with vector representation S(t) = [S1 (t), . . . , Sp (t)] in which each
+Si (t) takes discrete values in {0, 1, . . . , `i }. Note that
+this can always be reduced to an equivalent representation
+Qp with a single discrete state S̃(t) with cardinality p̃ =
+i=1 (`i + 1). We will alternate between these representations as needed.
+
+A p̃ ⇥ p̃-dimensional transition rate matrix Q governs transitions for the latent Markov process S̃. The negative diagonal element Qii is the rate at which the process leaves
+state i 2 [p̃], assumed exponentially
+P distributed with parameter qi = Qii . The equation j6=i Qij = Qii must
+hold. If the latent process is currently in state i then at a
+transition time from state i, the probability of transitioning
+to state j is Qij /qi . Suppose we observe the latent state
+transition times (t01 = 0, t02 , . . . , t0V 1 , t0V = ⇠) and corresponding states (s̃(t00 ), . . . , s̃(t0V )). From these we deduce the sufficient statistics: (1) the number of transitions
+between states {nij }p̃i,j=1 and (2) the total length of time
+spent in each state {⌧i }p̃i=1 . The probability of this progression for the latent process is
+VY1
+v=1
+
+qs̃(tv ) exp( qs̃(tv ) · (tv+1
+
+tv )) · Qs̃(tv ),s̃(tv+1 ) /qs̃(tv ) .
+
+The CT-HMM also includes an observation process O =
+{O(t)}t2[0,⇠] , which is only observed at observation times.
+Let t = (t1 , . . . , tV ) denote the observation schedule;
+note this is a random subset of [0, ⇠]. At each observation
+time ti we observe the vector O(ti ). We assume O(t) ?
+?
+(O, S) | S(t). Let O[t] denote the vector of observation
+values at the observation schedule (O(t1 ), . . . , O(tV )).
+Consider a participant who has already had k observation
+times t(k) . In this paper, we make the following conditional
+independence assumption:
+tk+1 ?
+? (O, S) | (t(k) , O[t(k) ])
+
+(1)
+
+In other words, the conditional distribution of the random
+interval tk+1 tk only depends on the observed history.
+Under both above conditional independence assumptions,
+the joint probability of the latent process S and observation
+sequence O[t] = (O(t1 ), . . . , O(tV )) is equal to
 2
-3:
-xt+1
-(1
-t )xt + t vt with t := t+2
-4: end for
-& Wolfe, 1956) (also known as conditional gradient descent (Levitin & Polyak, 1966); see also (Jaggi, 2013) for
-an overview) and its online version (Hazan & Kale, 2012)
-due to their simplicity. We recall the basic Frank-Wolfe
-algorithm in Algorithm 1. These methods eschew the projection step and rather use a linear optimization oracle to
-stay within the feasible region. While convergence rates
-and regret bounds are often suboptimal, in many cases the
-gain due to only having to solve a single linear optimization
-problem over the feasible region in every iteration still leads
-to significant computational advantages (see e.g., (Hazan
-& Kale, 2012, Section 5)). This led to conditional gradients algorithms being used for e.g., online optimization
-and more generally machine learning and the property that
-these algorithms naturally generate sparse distributions over
-the extreme points of the feasible region (sometimes also
-refereed to as atoms) is often helpful. Further increasing
-the relevance of these methods, it was shown recently that
-conditional gradient methods can also achieve linear convergence (see e.g., (Garber & Hazan, 2013; Lacoste-Julien
-& Jaggi, 2015; Garber & Meshi, 2016)) as well as that the
-number of total gradient evaluations can be reduced while
-maintaining the optimal number of oracle calls as shown in
-(Lan & Zhou, 2014).
-Oracle 1 Weak Separation Oracle LPsepP (c, x, , K)
-Input: c 2 Rn linear objective, x 2 P point, K
+3
+p̃
+Y
+Y nij
+4 Qij 5 e
+
+i=1
+
+j6=i
+
+q i ⌧i
+
+V
+Y
+
+v=1
+
+p(O(tv ) | s̃(tv ))p(tv | Hv )
+
+where Hv is the observed history (t(v
+
+1)
+
+, O[tv
+
 1
-accuracy, > 0 objective value;
-Output: Either (1) y 2 P vertex with c(x y) > /K, or
-(2) false: c(x z)  for all z 2 P .
-Unfortunately, for complex feasible regions even solving the
-linear optimization problem might be time-consuming and
-as such the cost of solving the LP might be non-negligible.
 
-Lazifying Conditional Gradient Algorithms
+(2)
 
-This could be the case, e.g., when linear optimization over
-the feasible region is a hard problem or when solving largescale optimization problems or learning problems. As such
-it is natural to ask the following questions:
-(i) Does the linear optimization oracle have to be called
-in every iteration?
-(ii) Does one need approximately optimal solutions for
-convergence?
-(iii) Can one reuse information across iteration?
-We will answer these questions in this work, showing that (i)
-the LP oracle is not required to be called in every iteration,
-that (ii) much weaker guarantees are sufficient, and that (iii)
-we can reuse information. To significantly reduce the cost
-of oracle calls while maintaining identical convergence rates
-up to small constant factors, we replace the linear optimization oracle by a (weak) separation oracle (see Oracle 1)
-which approximately solves a certain separation problem
-within a multiplicative factor and returns improving vertices
-(or atoms). We stress that the weak separation oracle is
-significantly weaker than approximate minimization, which
-has been already considered in (Jaggi, 2013). In fact, if the
-oracle returns an improving vertex then this vertex does not
-imply any guarantee in terms of solution quality with respect
-to the linear minimization problem. It is this relaxation of
-the dual guarantees that will provide a significant speedup
-as we will see later. At the same time, in case that the oracle
-returns false, we directly obtain a dual bound via convexity.
-A (weak) separation oracle can be realized by a single call
-to a linear optimization oracle, however with two important
-differences. It allows for caching and early termination:
-Previous solutions are cached, and first it is verified whether
-any of the cached solutions satisfy the oracle’s separation
-condition. The underlying linear optimization oracle has to
-be called, only when none of the cached solutions satisfy
-the condition, and the linear optimization can be stopped as
-soon as a satisfactory solution with respect to the separation
-condition is found. See Algorithm 2 for pseudo-code; early
-termination is implicit in line 4.
-We call this technique lazy optimization and we will demonstrate significant speedups in wall-clock performance (see
-e.g., Figure 1), while maintaining identical theoretical convergence rates.
-To exemplify our approach we provide conditional gradient algorithms employing the weak separation oracle for
-the standard Frank-Wolfe algorithm as well as the variants
-in (Hazan & Kale, 2012; Garber & Meshi, 2016; Garber
-& Hazan, 2013), which have been chosen due to requiring modified convergence arguments that go beyond those
-required for the vanilla Frank-Wolfe algorithm. Complementing the theoretical analysis we report computational
+]).
 
-Oracle 2 LPsepP (c, x, , K) via LP oracle
-Input: c 2 Rn linear objective, x 2 P point, K
+Each observation O(tk ) is a multimodal vector. In an
+mHealth application, for example, we may observe several self-reported ordinal ratings (e.g. EMA) along with
+the number of times the mobile app has been used recently.
+Thus, we have both ordinal and count data. Our observation model summarizes each component of the observation
+vector in terms of the p latent sources.
+We assume conditional independence of the M observation
+components given the latent process, leading to the emission factorization:
+p(O(t) | S(t)) =
+
+M
+Y
+
+m=1
+
+p(Om (t) | S(t)).
+
+iSurvive: An Interpretable, Event-time Prediction Model for mHealth
+
+This factorization simplifies the specification of the GLM
+for each observation component.
+2.2. Emissions and Generalized Linear Models
+A generalized linear model (GLM) is a flexible generalization of ordinary linear regression where the error distributions need not be Gaussian. A GLM has three components (McCullagh & Nelder, 1989; Agresti, 2015): (1)
+a response variable y following a dispersion exponential
+family with distribution p(y | ⌘, d(⌧ )) with natural parameter ⌘ and dispersion term d(⌧ ). (2) a linear predictor 0 s,
+where is a vector of weights and s our input vector; and
+(3) a link function g or activation function g 1 .
+Suppose the p latent sources are binary (i.e., li = 1 for each
+i). For the j-th observation process, Oj = {Oj (t)}t2[0,⇠] ,
+the conditional mean given the latent process at time t
+equals E[Oj (t) | S(t)] = g 1 ( 0 + 0 S(t)). That is, the
+conditional expectation is equal to the activation function
+applied to a linear combination of the current values of the
+p latent sources plus a constant. Note this is an assumption of parsimony as the number of parameters in the fully
+nonparametric model would be 2p .
+2.3. Interpretability via Link Restriction
+Much of behavioral science theory concerns latent states
+such as stress, craving, engagement and risk. We aim for
+our model outputs to be interpretable by the clinician, an
+important feature necessary for both acceptance and adoption by domain scientists. We achieve this through the
+following assumption: some of the variables collected are
+noisy measures of only one latent state and not the others.
+
+complex observation processes that can provide improved
+accuracy over self-report. Using a survival model then allows us to make intuitive statements such as ”The probability of lapse within the next 30 minutes when the participant
+is stressed but not craving is 70%.”
+2.4. Event Process
+We now build a model relating the interpretable, latent process S to the event process Y = {Y (t)}t2[0,⇠] of interest;
+this is a binary process where Y (t) = 1 implies an event
+occurs at time t. In our case study, for example, the event of
+interest is alcohol or drug use at a particular moment t. Survival analysis provides the appropriate tools for modeling
+the intensity function – the instantaneous rate of occurrence
+of the event – given the latent process. Let N (t, t + s] be
+the number of events in the window (t, t + s]. Then the
+intensity function at time t is defined:
+h(t) = lim
+
+t!0
+
 1
-accuracy, > 0 objective value;
-Output: Either (1) y 2 P vertex with c(x y) > /K, or
-(2) false: c(x z)  for all z 2 P .
-1: if y 2 P cached with c(x y) > /K exists then
-2:
-return y {Cache call}
-3: else
-4:
-compute y
-argmaxx2P c(x) {LP call}
-5:
-if c(x y) > /K then
-6:
-return y and add y to cache
-7:
-else
-8:
-return false
-9:
-end if
-10: end if
-
-results demonstrating effectiveness of our approach via a
-significant reduction in wall-clock running time compared
-to their linear optimization counterparts.
-Related Work
-There has been extensive work on Frank-Wolfe algorithms
-and conditional gradient descent algorithms and we will be
-only able to review work most closely related to ours. The
-Frank-Wolfe algorithm was originally introduced in (Frank
-& Wolfe, 1956) (also known as conditional gradient descent
-(Levitin & Polyak, 1966) and has been intensely studied in
-particular in terms of achieving stronger convergence guarantees as well as affine-invariant versions. We demonstrate
-our approach for the vanilla Frank-Wolfe algorithm (Frank
-& Wolfe, 1956) (see also (Jaggi, 2013)) as an introductory example. We then consider more complicated variants
-that require non-trivial changes to the respective convergence proofs to demonstrate the versatility of our approach.
-This includes the linearly convergent variant via local linear optimization (Garber & Hazan, 2013) as well as the
-pairwise conditional gradient variant of (Garber & Meshi,
-2016), which is especially efficient in terms of implementation. However, our technique also applies to the Away-Step
-Frank-Wolfe algorithm, the Fully-Corrective Frank-Wolfe
-algorithm, as well as the Block-Coordinate Frank-Wolfe algorithm. Recently, in (Freund & Grigas, 2016) guarantees
-for arbitrary step-size rules were provided and an analogous analysis can be also performed for our approach. On
-the other hand, the analysis of the inexact variants, e.g.,
-with approximate linear minimization does not apply to our
-case as our oracle is significantly weaker than approximate
-minimization as pointed out earlier. For more information,
-we refer the interested reader to the excellent overview in
-(Jaggi, 2013) for Frank-Wolfe methods in general as well as
-(Lacoste-Julien & Jaggi, 2015) for an overview with respect
-to global linear convergence.
-
-Lazifying Conditional Gradient Algorithms
-
-It was also recently shown in (Hazan & Kale, 2012) that
-the Frank-Wolfe algorithm can be adjusted to the online
-learning setting and here we provide a lazy version of this
-algorithm. Combinatorial convex online optimization has
-been investigated in a long line of work (see e.g., (Kalai
-& Vempala, 2005; Audibert et al., 2013; Neu & Bartók,
-2013)). It is important to note that our regret bounds hold
-in the structured online learning setting, i.e., our bounds
-depend on the `1 -diameter or sparsity of the polytope, rather
-than its ambient dimension for arbitrary convex functions
-(see e.g., (Cohen & Hazan, 2015; Gupta et al., 2016)). We
-refer the interested reader to (Hazan, 2016) for an extensive
-overview.
-
-(iii) Weak separation through augmentation. We show in
-the case of 0/1 polytopes how to implement a weak separation oracle with at most k calls to an augmentation oracle
-that on input c 2 Rn and x 2 P provides either an improving solution x 2 P with cx < cx or ensures optimality,
-where k denotes the `1 -diameter of P . This is useful when
-the solution space is sparse.
-
-A key component of the new oracle is the ability to cache
-and reuse old solutions, which accounts for the majority
-of the observed speed up. The idea of caching of oracle
-calls was already explored in various other contexts such
-as cutting plane methods (see e.g., (Joachims et al., 2009))
-as well as the Block-Coordinate Frank-Wolfe algorithm in
-(Shah et al., 2015; Osokin et al., 2016). Our lazification
-approach (which uses caching) is different however in the
-sense that our weak separation oracle does not resemble an
-approximate linear optimization oracle with a multiplicative
-approximation guarantee; see (Osokin et al., 2016, Proof of
-Theorem 3. Appendix F) and (Lacoste-Julien et al., 2013)
-for comparison to our setup. In fact, our weaker oracle does
-not imply any approximation guarantee and differs from
-approximate minimization as done e.g., in (Jaggi, 2013)
-substantially.
-
-It is important to note that in all cases, we inherit the same
-requirements, assumptions, and properties of the baseline
-algorithm that we lazify. This includes applicable function classes, norm requirements, as well as smoothness and
-(strong) convexity requirements. We also maintain identical
-convergence rates up to (small!) constant factors.
-
-Contribution
-The main technical contribution of this paper is a new approach, whereby instead of finding the optimal solution,
-the oracle is used only to find a good enough solution or a
-certificate that such a solution does not exist, both ensuring the desired convergence rate of the conditional gradient
-algorithms.
-
-Garber & Meshi, 2016).
-
-(iv) Computational experiments. We demonstrate computational superiority by extensive comparisons of the weak
-separation based versions with their original versions. In
-all cases we report significant speedups in wall-clock time
-often of several orders of magnitude.
-
-Outline
-We briefly recall notation and notions in Section 2 and consider conditional gradients algorithms in Section 3. In Section 4 we explain how parameter-free variants of the proposed algorithms can be obtained. Finally, in Section 5
-we provide some experimental results. In the supplemental
-material we consider two more variants of conditional gradients algorithms (Sections B and C), we show that we can
-realize a weak separation oracle with an even weaker oracle
-in the case of combinatorial problem (Section D) and we
-provide additional computational results (Section E).
-
-Our contribution can be summarized as follows:
-
-2. Preliminaries
-
-(i) Lazifying approach. We provide a general method to
-lazify conditional gradient algorithms. For this we replace
-the linear optimization oracle with a weak separation oracle,
-which allows us to reuse feasible solutions from previous
-oracle calls, so that in many cases the oracle call can be
-skipped. In fact, once a simple representation of the underlying feasible region is learned no further oracle calls are
-needed. We also demonstrate how parameter-free variants
-can be obtained.
-
-Let k·k be an arbitrary norm on Rn , and let k·k denote
-the dual norm of k·k. We will specify the applicable
-norm in the later sections. A function f is L-Lipschitz
-if |f (y) f (x)|  Lky xk for all x, y 2 dom f . A
-convex function f is smooth with curvature at most C if
-f ( y + (1
-)x)  f (x) + rf (x)(y x) + C 2 /2 for
-all x, y 2 dom f and 0   1. A function f is S-strongly
-2
-convex if f (y) f (x) rf (x)(y x) + S2 ky xk for
-all x, y 2 dom f . Unless stated otherwise Lipschitz continuity and strong convexity will be measured in the norm
-k·k. Moreover, let Br (x) := {y | kx yk  r} be the ball
-around x with radius r with respect to k.k. In the following,
-P will denote the feasible region, a polytope and the vertices
-of P will be denoted by v1 , . . . , vN .
-
-(ii) Lazified conditional gradient algorithms. We exemplify our approach by providing lazy versions of the vanilla
-Frank-Wolfe algorithm as well as of the conditional gradient
-methods in (Hazan & Kale, 2012; Garber & Hazan, 2013;
-
-⇤
-
-Lazifying Conditional Gradient Algorithms
-
-3. Lazy Conditional Gradients
-We start with the most basic Frank-Wolfe algorithm as a
-simple example how a conditional gradient algorithm can
-be lazified by means of a weak separation oracle. We will
-also use the basic variant to discuss various properties and
-implications. We then show how the more complex FrankWolfe algorithms in (Garber & Hazan, 2013) and (Garber &
-Meshi, 2016) can be lazified. Throughout this section k·k
-denotes the `2 -norm.
-
-guish two cases depending on the return value of the weak
-separation oracle in Line 3.
-When the oracle returns an improving solution vt , which we
-call the positive case, then rf (xt )(xt vt )
-t /K, which
-is used in the second inequality below. The first inequality
-follows by smoothness of f , and the third inequality by the
-induction hypothesis:
-f (xt+1 )
-
-We start with lazifying the original Frank-Wolfe algorithm
-(arguably the simplest Conditional Gradients algorithm),
-adapting the baseline argument from (Jaggi, 2013, Theorem 1). While the vanilla version has suboptimal convergence rate O(1/T ), its simplicity makes it an illustrative
-example of the main idea of lazification. The lazy algorithm (Algorithm 2) maintains an upper bound t on the
-convergence rate, guiding its eagerness for progress when
-searching for an improving vertex vt . If the oracle provides
-an improving vertex vt we refer to this as a positive call and
-we call it a negative call otherwise.
-Algorithm 2 Lazy Conditional Gradients (LCG)
-Input: smooth convex f function with curvature C, x1 2
-P start vertex, LPsepP weak linear separation oracle,
-accuracy K > 1, initial upper bound 0
-Output: xt points in P
-1: for t = 1 to T
-1 do
-2:
-
+P(N (t, t +
 t
 
-C t2
-2
-t
-K
+t] > 0 | S)
 
-1+
+(4)
 
-1+
+For this paper we consider the proportional hazards model
+which expresses the hazard as
+!
+p
+X
+h(t | S) = h0 (t) exp
+(5)
+i Si (t)
+i=1
 
-3:
-vt
-LPsepP (rf (xt ), xt , t , K)
-4:
-if vt = false then
-5:
-xt+1
-xt
-6:
-else
-7:
-xt+1
-(1
-t )xt + t vt
-8:
-end if
-9: end for
-t
+(3)
 
-Theorem 3.1. Assume f is convex and smooth with cur2(K 2 +1)
-vature C. Then Algorithm 2 with t = K(t+K
-2 +2) has
-convergence rate
-f (xt )
+where h0 (t) is the baseline hazard function. In this paper
+we consider a constant baseline hazard; moreover, we presuppose the intensity only depends on the latent process at
+the current time t. The proposed model is an interpretable
+Cox process (Cox & Isham, 1980; Taylor et al., 2013) – a
+generalization of a Poisson process in which the intensity
+function is itself a stochastic process. Cox processes have
+found success in event prediction problems with respect to
+complex health data (Ranganath et al., 2015). Here the latent process is interpretable and therefore helps in answering both the prediction problem and the sequential decision making problem of interest. The Cox process assumes
+“lapses” are conditionally independent given the latent process. Such a model is appropriate when lapse is only a
+function of the latent behavioral constructs.
 
-f (x⇤ ) 
+Therefore O1 (t) is conditionally independent of S2 (t)
+given S1 (t). That is, given information about the user’s
+stress, the observation value does not depend on craving.
+We call such conditional independence assumptions link
+restrictions. iSurvive achieves interpretability via link restriction: for each latent source {Si (t)}t2[0,⇠] there exists at least one observation process {Oj (t)}t2[0,⇠] such
+that Oj (t) is a noisy measure of only Si (t). In an EMA
+context, this can be achieved with questions such as ”Are
+you currently experiencing stress?” which target a single
+latent state construct. These direct observations enforce interpretability and allow us to incorporate additional more
 
- f (xt )
+In mHealth applications, the event process can be measured
+either via sensors (Sarker et al., 2016; Hossain et al., 2014)
+(i.e., continuous monitoring) or self-report (i.e., intermittent monitoring). Alternatively, scientists may schedule observation times at which the participant is asked if they have
+used drugs within a prior window of time. In the case study
+for this work, participants were asked if they used either alcohol or drugs within the past 30 minutes. This can be
+modeled as
+✓ Z t
+◆
+P(N (t
+, t] > 0) = 1 exp
+h(s)ds
+(6)
 
-2
+For example, suppose S has latent binary sources S1 (t) and
+S2 (t) representing stress and craving, respectively. Further
+let O1 (t) be a binary observation dependent only on stress,
+and O2 (t) be a second observation dependent on both stress
+and craving (see Appendix B for the associated graphical
+model). Then taking the logit link function, the form of the
+conditional mean is
+logit (E[O1 (t) | S]) =
 
-2 max{C, 0 }(K + 1)
-,
-t + K2 + 2
-
-where x⇤ is a minimum point of f over P .
-Proof. We prove by induction that f (xt ) f (x⇤ )  t 1 .
-The claim is clear for t = 1 by the choice of 0 . Assuming
-the claim is true for t, we prove it for t + 1. We distin-
-
-t rf (xt )(vt
-
-f (x⇤ )
-
-
-t 1
-
-t
-
-xt ) +
-
-C t2
-2
-
-C t2
-K
-2
-C t2
-t
-+
-=
-t
-K
-2
-t
+baseline
 
 +
 
-t,
+stress
 
-When the oracle returns no improving solution, then in particular rf (xt )(xt x⇤ )  t , hence by Line 5 f (xt+1 )
-f (x⇤ ) = f (xt ) f (x⇤ )  rf (xt )(xt x⇤ ) = t .
-Finally, using the specific values of t we prove the upper
-bound
-2 max{C, 0 }(K 2 + 1)
-t 1 
-t + K2 + 2
-by induction on t. The claim is obvious for t = 1. The induction step is an easy computation relying on the definition
-of t on Line 2:
-t
-
-=
-
-C
-
-2
-
-+ 2t
-
-1 + Kt
-
-t 1
-
-2 max{C, 0 }(K 2 +1)
-t+K 2 +2
-
-+
-
-max{C,
-2
-
-2
-0} t
-
-1 + Kt
-1 + 2Kt
-= 2 max{C, 0 }(K 2 + 1)
-t
-1 + K (t + K 2 + 2)
-
-
-The step size t is chosen to (approximately) minimize
-in Line 2; roughly t 1 /KC.
-
-f (x⇤ ) +
-
- f (xt )
-
-3.1. Lazy Conditional Gradients: a basic example
+· S1 (t).
 
 t
 
-f (x⇤ )
+iSurvive: An Interpretable, Event-time Prediction Model for mHealth
 
-2 max{C, 0 }(K 2 + 1)
-.
-t + K2 + 3
-
-Here the second equation follows via plugging-in the choice
-for t for one of the t in the quadratic term and last inequality follows from t
-1 and the concrete choice of
-.
-t
-Remark 3.2 (Discussion of the weak separation oracle). A
-few remarks are in order:
-(i) Interpretation of weak separation oracle. The weak
-separation oracle provides new extreme points (or vertices)
-vt that ensure necessary progress to converge at the proposed
-rate t or it certifies that we are already t -close to the
-optimal solution. It is important to note that the two cases in
-Oracle 1 are not mutually exclusive: the oracle might return
-y 2 P with c(x y) > /K (positive call: returning a
-vertex y with improvement /K), while still c(x z) 
-for all z 2 P (negative call: certifying that there is no vertex
-
-Lazifying Conditional Gradient Algorithms
-
-z that can improve by ). This a desirable property as it
-makes the separation problem much easier and the algorithm
-works with either answer in the ambiguous case.
-(ii) Choice of K. The K parameter can be used to bias
-the oracle towards positive calls, i.e., returning improving
-directions. We would also like to point out that the algorithm
-above as well as those below will also work for K = 1,
-however we show in supplemental material (Section D)
-that we can use an even weaker oracle to realize a weak
-separation oracle if K > 1 and for consistency, we require
-K > 1 throughout. In the case K = 1 the two cases in the
-oracle are mutually exclusive.
-(iii) Effect of caching and early termination. When realizing the weak separation oracle, the actual linear optimization oracle has to be only called if none of the previously
-seen vertices (or atoms) satisfies the separation condition.
-Moreover, the weak separation oracle has to only produce
-a satisfactory solution and not an approximately optimal
-one. These two properties are responsible for the observed
-speedup (see Figure 1). Moreover, the convex combinations
-of vertices of P that represent the solutions xt are extremely
-sparse as we reuse (cached) vertices whenever possible.
-(iv) Dual certificates. By not computing an approximately
-optimal solution, we give up dual optimality certificates. For
-a given point x 2 P , let g(x) := maxv2P rf (x)(x v)
-denote the Wolfe gap. We have f (x) f (x⇤ )  g(x)
-where x⇤ = argminx2P f (x) by convexity. In those
-rounds t where we obtain an improving vertex we have
-no information about g(xt ). However, if the oracle returns false in round t, then we obtain the dual certificate
-f (xt ) f (x⇤ )  g(xt )  t .
-(v) Rate of convergence. A close inspection of the algorithm utilizing the weak separation oracle suggests that the
-algorithm converges only at the worst-case convergence rate
-that we propose with the t sequence. This however is only
-an artefact of the simplified presentation for the proof of
-the worst-case rate. We can easily adjust the algorithm to
-implicitly perform a search over the rate t combined with
-line search for . This leads to a parameter-free variant of
-Algorithm 2as given in Section 4 and comes at the expense
-of a (small!) constant factor deterioration of the worst-case
-rate guarantee; see also Supplementary Material A.(iii) for
-an in-depth discussion.
-We discuss potential implementation improvements in Supplementary Material A.
-3.2. Lazy Pairwise Conditional Gradients
-In this section we provide a lazy variant (Algorithm 3) of
-the Pairwise Conditional Gradient algorithm from (Garber
-
-& Meshi, 2016), using separation instead of linear optimization. We make identical assumptions: the feasible region
-is a 0/1 polytope given in the form P = {x 2 Rn | 0 
-x  1, Ax = b}, where 1 denotes the all-one vector of
-compatible dimension; in particular all vertices of P have
-only 0/1 entries.
-Algorithm 3 Lazy Pairwise Conditional Gradients (LPCG)
-Input: polytope P , smooth and S-strongly convex function
-f with curvature C, accuracy K > 1, ⌘t non-increasing
-step-sizes
-Output: xt points
-1: x1 2 P arbitrary and 0
-f (x1 ) f (x⇤ )
-2: for t = 1, . . . , T do
-3:
-define r̃f (xt ) 2 Rm as follows:
-(
-rf (xt )i if (xt )i > 0
-r̃f (xt )i :=
-1
-if (xt )i = 0
-4:
-5:
-6:
-
-t
-
-2
-
-⌘
-rf (xt ), r̃f (xt )
-⇣
-(vt+ , vt )
-LPsepP ⇥P ct , (xt , xt ),
-ct
-
-⇣
-
-2
-t 1 +⌘t C
-⌘
-2+ K t
-t
-
-7:
-if (vt+ , vt ) = false then
-8:
-xt+1
-xt
-9:
-else
-10:
-⌘˜t
-max{2 | 2 Z 0 , 2
-11:
-xt+1
-xt + ⌘˜t (vt+ vt )
-12:
-end if
-13: end for
-
-,K
-t
-
-t
-
-⌘
-
- ⌘t }
-
-Observe that Algorithm 3 calls LPsep on the cartesian product of P with itself. Choosing the objective function as
-in Line 5 allows us to simultaneously find an improving
-direction and an away-step direction.
-Theorem 3.3. Let x⇤ be a minimum point of f in P , and 0
-⇤
-an
-1 :=
-q upper bound of f (x1 ) f (x ). Furthermore, let M
-p
-M1
-S
-:= KC/2,  := min{ 2M2 , 1/
-0 },
-8 card(x⇤ ) , M2
-q
-p
-2 card(x⇤ ) t 1
-⌘t := 
-, then Algot 1 and
-t :=
-S
-rithm 3 has convergence rate
-✓
-◆t
-1+B
-⇤
-f (xt+1 ) f (x )  t  0
-,
-1 + 2B
-where B :=  ·
-
-M1
-2K .
-
-We recall a technical lemma for the proof.
-Lemma 3.4 ((Garber & Meshi, 2016, Lemma 2)). Let
-x, y 2 P . There exists vertices vi of P
-such that
-⇣P
-⌘ x =
-Pk
-Pk
-k
-i ) vi +
-i=1 i vi and y =
-i=1 ( i
-i=1 i z with
-p
-Pk
-card(y)kx yk.
-i 2 [0, i ], z 2 P and
-i=1 i 
-
-Lazifying Conditional Gradient Algorithms
-
-Proof of Theorem 3.3. The feasibility of the iterates xt is
-ensured by Line 10 and the monotonicity of the sequence
-{⌘t }t 1 with the same argument as in (Garber & Meshi,
-2016, Lemma 1 and Observation 2).
-We first show by induction that f (xt+1 ) f (x⇤ )  t . For
-t = 0 we have 0 f (x1 ) f (x⇤ ). Now assume the statement for some t 0. In the negative case (Line 8), we use
-the guarantee of Oracle 1 to get ct ((xt , xt ) (z1 , z2 ))  tt
-for all z1 , z2 2 P , which is equivalent to (as ct (xt , xt ) = 0)
-r̃f (xt )z2 rf (xt )z1  tt and therefore
-rf (xt )(z̃2
-
-t
-
-z1 ) 
-
-,
-
-t
-
-for all z̃2 , z1 2 P with supp(z̃2 ) ✓ supp(xt ). We furPk
-ther use Lemma 3.4 to write xt = i=1 i vi and x⇤ =
-Pk
-Pk
-i )vi +
-i=1 ( i
-i=1 i z with i 2
-q[0, i ], z 2 P and
-p
-Pk
-2 card(x⇤ ) t 1
-⇤
-card(x⇤ )kxt x k 
-=
-i=1 i 
-S
-t , using the induction hypothesis and the strong convexity
-in the second inequality. Then f (xt+1 ) f (x⇤ ) = f (xt )
-Pk
-f (x⇤ )  rf (xt )(xt x⇤ ) = i=1 i (vi z) · rf (xt ) 
-t , where we used Equation 3.2 for the last inequality.
-For the positive case (Lines 10 and 11) we get, using first
-smoothness of f , then ⌘t /2 < ⌘˜t  ⌘t and rf (xt )(vt+
-vt ) 
-t /( t K), and finally the definition of t :
-f (x⇤ ) = f (xt + ⌘˜t (vt+
-
-f (xt+1 )
-
-
-
-
-t 1
-
-+ ⌘˜t rf (xt )(vt+
-⌘t
-·
-2
-
-t 1
-
-Plugging in the values of ⌘t and
-gives the desired bound.
-t
-
-=
-
-
-2
-
-t 1
-
-2+
-t 1
-
-+ ⌘t2 C
-
-⌘t
-K t
-
-f (x⇤ )
-
-vt ))
-
-=
-
-1+B
-
-1 + 2B
-
-t
-tK
-t
-
-+
-
-vt ) +
-
-⌘t2 C
-2
-
-=
-
-⌘˜t2 C
-2
-t.
-
-to the definition of
-
-t
-
-1 + 2 M2 /K
-1 + M1 /K
-✓
-◆t
-1+B
-.
+Here we assume the window length
+(i.e., 30 minutes)
+is short enough so that (1) the latent process is likely to
+be constant within the window; then given the latent process, the chance of no use (exponentiated term in eq. 6)
+can be well-approximated by exp (
+· ( 0 + 0 S(t))),
 0
-1 + 2B
-t 1
+where 0 + S(t) is the hazard. We focus on the latter
+case with a similar discretized approximation for the remainder of the paper. For more on survival analysis see
+(Aalen et al., 2008; Cook & Lawless, 2007).
 
-4. Parameter-free Conditional Gradients via
-Weak Separation
-We now provide a parameter-free variant of the Lazy FrankWolfe Algorithm. We stress that the worst-case convergence
-rate is identical up to a small constant factor. Here we find a
-tight initial bound 0 with a single extra LP call, which can
-be also done approximately as long as 0 is a valid upper
-bound. Alternatively, one can perform binary search via the
-weak separation oracle as described earlier.
-Note that the accuracy parameter K in Algorithm 4 is a
-parameter of the oracle and not of the algorithm itself. We
+3. Parameter Estimation for iSurvive
+Here we present an expectation-maximization algorithm
+for parameter estimation of iSurvive. Our development
+uses the context of our case study, and so we assume
+that the event process and observation processes are measured via self-report (EMA) following the same observation schedule (i.e., Y (t) ⇢ O(t)). It is straightforward to
+apply our approach to other use cases.
+One property of self-report data is that participants may not
+respond at a scheduled observation time, and instead may
+decline to provide data. Let M = {M (t)}t2[0,⇠] be a binary process representing missing data. Suppose an observation is scheduled at time tv ; we write M (tv ) = 1 if the
+participant declines to provide information (i.e., the observation O(tv ) is missing). Consider a participant who al(k)
+ready has k observations at times t(k) . Then define t0 to
+be the set of observation times at which we do observe the
+observation (i.e., {ti 2 t(k) s.t. M (ti ) = 0}).
+We make the following conditional independence assumptions regarding the missing data indicator process:
+(k)
 
-Algorithm 4 Parameter-free Lazy Conditional Gradients
-(LCG)
-Input: smooth convex function f , x1 2 P start vertex,
-LPsepP weak linear separation oracle, accuracy K > 1
-Output: xt points in P
-1: 0
-maxx2P rf (x1 )(x1 x)/2 {Initial bound}
-2: for t = 1 to T
-1 do
-3:
-vt
-LPsepP (rf (xt ), xt , t 1 , K)
-4:
-if vt = false then
-5:
-xt+1
-xt
-t 1
-6:
-{Update }
-t
+M (tk+1 ) ?
+? S | O[t0 ], M [t(k) ], t(k) .
+
+A plausible alternative to assumption (7) is conditional independence given the observed history and the latent process at the observation time,
+M (tk+1 ) ?
+?S|
+
+3.1. EM Method
+For ease of presentation, we present the EM algorithm
+based on equation (2) under the conditional independence
+assumptions for observations and missing data given by
+equations (1) and (7) respectively. Excluding the initial
+state distribution, the expected complete log-likelihood is
+given by
 2
-7:
-else
-8:
-argmin0 1 f ((1
-)xt + vt )
-t
-9:
-xt+1
-(1
-{Update iterate}
-t )xt + t vt
-10:
-t
-11:
-end if
-12: end for
+3
+P
+h
+i
+X
+X
+4
+L(Q, ) =
+log(qij )E nij | O[t], Q̂(l) , ˆ (l) 5
+i=1
 
-t 1
+(8)
 
-will show now that Algorithm 4 converges in the worst-case
-at a rate identical to Algorithm 2 (up to a small constant
-factor).
-Theorem 4.1. Let f be a smooth convex function with curvature C. Algorithm 4 converges at a rate proportional to
-1/t. In particular to achieve a bound f (xt ) f (x⇤ )  ",
-given an initial upper bound f (x1 ) f (x⇤ )  2 0 , the
-number of required steps is upper bounded by
-t  dlog
+Under this assumption, likelihood estimation cannot ignore the missing data process; however, the emission model
+becomes hierarchical and so can be readily handled within
+the iSurvive framework.
 
-0 /"e
+h
 
-+ 1 + 4Kdlog
+j6=i
 
-0 /KCe
+qi E ⌧i | O[t], Q̂(l) , ˆ (l)
 
 +
 
-16K 2 C
-.
-"
+V
+X
+v=1
 
-Proof. The main idea of the proof is that while negative
-answers to oracle calls halve the dual upper bound 2 t ,
-positive oracle calls significantly decrease the function value
-of the current point.
-We analyze iteration t of the algorithm. If Oracle 1 in Line 3
-returns a negative answer (i.e., false, case (2)), then this
-guarantees rf (xt )(xt x)  t 1 for all x 2 P , in
-particular, using convexity, f (xt+1 ) f (x⇤ ) = f (xt )
-f (x⇤ )  rf (xt )(xt x⇤ )  t 1 = 2 t .
+i
 
-If Oracle 1 returns a positive answer (case (1)), then we have
-f (xt ) f (xt+1 )
-(C/2) t2 by smoothness
-t t 1 /K
-of f . By minimality of t , therefore f (xt ) f (xt+1 )
-min0 1 ( t 1 /K (C/2) 2 ), which is 2t 1 /(2CK 2 )
-if t 1 < KC, and t 1 /K C/2 C2 if t 1 KC.
-Now we bound the number t0 of consecutive positive oracle
-calls immediately following an iteration t with a negative
-oracle call. Note that the same argument bounds the number
-of initial consecutive positive oracle calls with the choice
-t = 0, as we only use f (xt+1 ) f (x⇤ )  2 t below.
+h
+i
+E log p(O(tv ) | S(tv )) | O[t], Q̂(l) , ˆ (l)
 
-Lazifying Conditional Gradient Algorithms
+where (Q̂(l) , ˆ (l) ) are the parameter estimates from the l-th
+iteration. Under variational independence of the emission
+models and the latent Markov process, the maximization
+step can be done separately for the latent variable parameters and emission models.
+We begin by describing the EM-steps for the transition matrix. The M-step for the transition matrix yields the following (l + 1) iteration estimate:
 
-Note that
-2
+(7)
 
-t
+That is, the missing data indicator at tk+1 is independent of
+the latent process, given the observed history (i.e., observation and missing data processes at prior observation times
+of tk ). This assumption plus variational independence (i.e.,
+no parameter sharing across components of the joint density) imply that likelihood estimation can ignore the missing data process. Note that observed missing data indicators can still be used in the survival and emission models.
+For example, missing data may be an indicator of future
+risk; assumption (7) only states that missing data may only
+depend on the latent process through the observed history.
 
-t
+(k)
+S(tk+1 ), O[t0 ], M [t(k) ], t(k) .
 
+As the preceding discussion illustrates, the iSurvive framework is sufficiently flexible to describe a wide range of experiment designs and modeling assumptions. In the case
+study in Section 6, behavioral scientists identified through
+participant interviews that the primary cause for missed appointment was exogenous shocks to their schedule.
+
+(l+1)
+
+Q̂ij
+
+h
+i
+E nij | O[t], Q̂(l) , ˆ (l)
+h
+i
+=
+E ⌧i | O[t], Q̂(l) , ˆ (l)
+
+for i 6= j and Q̂ii =
+
+P
+
+j6=i
+
+(9)
+
+Q̂ij .
+
+The main challenge here is in the E-step, which (Liu et al.,
+2015) solved by breaking up the expectations into terms
+per observation, and terms conditioned on the possible
+state transitions between observations. Let ⇣(v, s, s0 ) denote the transition probability p(S(tv ) = s, S(tv+1 ) =
+s0 | O[t], Q̂(l) , ˆ (l) ). Then
+⇥
+⇤
+E nij | O[t], Q̂(l) , ˆ (l)
 =
 
-t+1
+⇥
 
-⇤
+V
+X1
 
-f (xt+1 )
-8
-< t0
-: t0
-
-t+t0 .
-
-= ··· =
-f (x )
-
-0
-t+t
+S
 X
 
-Therefore
+h
+i
+⇣(v, s, s0 ) ⇥ E nij | S(tv ) = s, S(tv+1 ) = s0 , Q̂(l)
 
-(f (x⌧ )
+V
+X1
 
-f (x⌧ +1 ))
+S
+X
 
-⌧ =t+1
-2
-t
+h
+i
+⇣(v, s, s0 ) ⇥ E ⌧i | S(tv ) = s, S(tv+1 ) = s0 , Q̂(l) .
 
-2CK 2
+v=1 s,s0 =1
 
-⇣
-
-t
-
-C
-2
-
-1
-
-K
-
-⌘
-
-if
-if
-
-t 1
-
-< KC
-
-t 1
-
-KC
-
-,
-
-which gives in the case t < KC that t0  4CK 2 /
-in the case t KC that
-t0 
-
-2
-t
-
-K
-
-t
-C
-2
-
+E ⌧i | O[t], Q̂(l) , ˆ (l)
 =
 
-4K
-2
+v=1 s,s0 =1
 
-t
+⇤
 
-t
+Liu et al. (2015) adapt methods from the continuous-time
+Markov chain (CTMC) literature to compute the end-state
 
-KC
+iSurvive: An Interpretable, Event-time Prediction Model for mHealth
+
+conditioned expectations, and develop an equivalent inhomogeneous discrete-time hidden Markov model to calculate the pairwise beliefs ⇣(v, s, s0 ).
+The
+density
+for
+the
+kth
+observation
+process p(Ok (t) | S(t) = s; ) can be rewritten in the
+following exponential dispersion family form:
+◆
+✓
+⌘s T (o) A(⌘s )
+p(Ok (t) = o | S(t) = s) = h(o, ⌧ ) exp
+.
+d(⌧ )
+Define v,s = p(S(tv ) = s | O, Q̂(l) , ˆ (l) ). Then the
+corresponding component of the expected complete loglikelihood (ECLL) is given by
+V X
+S
+X
+v=1 s=1
+
+v,s
 
 
 
-4K
-2
+log h(O(tv ), ⌧ ) +
 
-t
+⌘s T (O(tv )) A(⌘s )
+.
+d(⌧ )
 
-t
-
-t,
-
+Maximizing the ECLL, which is done after maximization
+of the transition terms, does not have a closed form solution, and Fisher scoring or Newton’s method must be used.
+However, Fisher scoring for GLMs assumes an unweighted
+log-likelihood, which is not the case for this objective because of the v,s terms. Appendix C extends the Fisher
+scoring method to the weighted setting above. A similar
+learning procedure was derived in (Escola et al., 2011), but
+focused on incorporating covariates into an HMM rather
+than using GLM emissions.
+Algorithm 1 Forward-backward + Weighted Fisher scoring estimation procedure
+Input:
+N participants, observation processes
+{O(i) }N
+,
+observation
+times {t(i) }N
+i=1
+i=1
+Output: rate matrix Q̂, emission parameters ˆ
+Smart initialization: (Q̂(0) , ˆ (0) )
+Set l = 0
+repeat
+Use forward-backward algorithm to compute ⇣(v, s, s0 ) and (v, s) for v = 0, . . . , V
+and s, s0 = 1, . . . , S.
+h
+i
+Compute
+E ⌧i | O[t], Q̂(l) , ˆ (l) ,
 and
+h
+i
+E nij | O[t], Q̂(l) , ˆ (l) .
+Compute Q̂(l+1) via equation (9).
+Compute ˆ (l+1) via weighted Fisher scoring with
+weights { (v, s)}.
+until log-likelihood converges
 
-= 4K.
-t
+its convergence properties. We want to ensure that EM converges to intuitively reasonable estimates so that we can
+interpret the resulting model parameters in the context of
+relevant behavioral theory.
+Prior theoretical work has provided some convergence
+guarantees for standard EM algorithms (Balakrishnan
+et al., 2014; Wang et al., 2015). To guarantee convergence,
+in each case strong concavity and first-order stability conditions are required along with reasonable parameter initialization. Here we provide a similar guarantee for EM
+parameter estimation for the case of CT-HMMs with factorized GLM emissions and conditional independence on
+the observation schedule. Our development is based on the
+assumption of strong concavity, which seems likely to hold
+based on prior work (Kakade et al., 2010) on almost strong
+concavity of exponential families. Our supporting simulation results in Section 5 provide additional evidence. A
+proof of strong concavity remains for future work.
+For iSurvive, the Q-function of the EM-algorithm is decomposable into three components for the latent process,
+the observation model, and the event process. Decomposability allows us to discuss the assumption of strong concavity separately for each component; in particular, it allows us to isolate the issue of strong concavity for generalized linear models and investigate this independently of the
+other model components. Further, since the Q-function is
+decomposable, so is the M -step.
+Under the assumption that the participant trajectories are
+independent and identically distributed, the law of large
+numbers ensures that as the sample size N increases, the
+sample-based Q-function approaches its expectation:
+⇥
+⇤
+Q̃(✓ | ✓0 ) = E QN (✓ | ✓0 )
+⇥
+⇤
+= E ES | O[t],Y,✓0 [log(p(S, O[t], Y; ✓))]
 
-Thus iteration t is followed by at most 4K consecutive
-positive oracle calls as long as t KC, and 4CK 2 / t <
-2`+1 · 4K ones for 2 ` 1 KC < t  2 ` KC with ` 0.
+The population M -function can then be defined as
+M̃ (✓0 ) = arg max✓2⌦ Q̃(✓ | ✓0 ). When applying EM, ✓0
+corresponds to ✓(t 1) , the parameters of the previous iteration. The population M -function is also decomposable; We
+now present Lemma 1 which provides convergence guarantees and motivates our approach to parameter initialization.
+Lemma 1. If each component of the population M function satisfies strong concavity and first-order stability
+conditions for parameters ✓ 2 ⌦, then for sample size N
+sufficiently large the EM-algorithm satisfies
+k✓ˆ(t)
 
-Adding up the number of oracle calls gives the desired rate:
-in addition to the positive oracle calls we also have at most
-dlog( 0 /")e + 1 negative oracle calls, where log(·) is the
-binary logarithm and " is the (additive) accuracy. Thus after
-a total of
-dlog
+3.2. Parameter Initialization and Convergence
+Algorithm 1 presents the EM-algorithm for iSurvive using a combination of the forward-backward and weighted
+Fisher scoring procedures. The algorithm requires initial
+estimates (Q̂(0) , ˆ (0) ), and these initial values will effect
 
-0 /"e+1+4Kdlog
+✓? k  t k✓?
 
- dlog
+✓ˆ(0) k +
 
-0 /KCe+
+1
+1
 
-dlog KC/"e
+
 
+( (N, ))
+
+(10)
+
+where ✓⇤ is the MLE, ✓ˆ(t) is the tth EM-iteration estimates,  = L/ , L is a measure of first-order stability,
+a measure of strong concavity, and (N, ) is the sum
+of high-probability lower bounds on the distance between
+MN (✓) and M̃ (✓) for each component.
+
+iSurvive: An Interpretable, Event-time Prediction Model for mHealth
+
+See Appendix D for additional technical details. Lemma 1
+motivates a practical problem: how do we choose the initial
+parameter estimates? iSurvive leverages GLMs for connecting the latent process to each component of the observable process. Kakade et al. (2010) shows (almost) strong
+concavity of exponential families. In particular, their Theorem 3.4 quantifies the fact that “exponential families behave in a strongly concave manner only in a (sufficiently
+small) neighborhood of ✓? . These findings combined with
+equation (10) highlight the importance of appropriately
+choosing ✓ˆ(0) . A good initialization will ensure convergence to high quality parameter estimates.
+We propose a smart initialization strategy which leverages
+domain expertise. First, we treat rate matrix and emission
+initializations separately. For the rate matrix, we obtain
+an initial estimate of the hidden state sequences by assuming that the direct observations of the states resulting from
+link restriction (see Section 2.3) are noise-free. This allows
+us to estimate an initial Q corresponding to a CTMC over
+the observed states using the method of (Metzner et al.,
+2007). For the emission parameters, we hand-design an initial emission model by drawing from behavioral theory to
+connect the latent states to the observations. For example,
+we can ascertain the likelihood that a participant is experiencing stress if they answer positively to a question about
+being stressed. We can then choose GLM weight parameters accordingly. Note that this initialization method provides an indirect test of of our behavioral theories: if they
+are correct, they should lead to good predictive accuracy.
+
+4. Prediction and Validation
+iSurvive is designed to be an interpretable event prediction model. Here we show how to take parameter estimates (Q̂, ˆ ) and answer the question “Given observed
+data O[t], what is the probability that a lapse will not occur
+at any of a future set of observation times (t01 , . . . , t0k )?”.
+Note we allow for multiple events to occur and thus are interested in whether any event occurs in the window or not.
+This is the primary question of interest when analyzing the
+recovery support services data in Section 6. In this case,
+prior data includes self-reported alcohol or drug use at observation times (i.e., Y [t] ⇢ O[t]). As we are interested
+in predicting self-reported lapse, we do not require the full
+generality of equation (6), as we only need to compute the
+chance of no use within a small prior window (i.e., a discretized approximation). At time t01 we can use the forward
+algorithm to compute the posterior distribution of the latent
+process at time t1 conditional on the observed data. We
+can then compute the probability of not observing a lapse
+at time t01 . To do this, we use a logistic emission model
+for p(Y (ti ) = 0 | S(ti ) = s). This is equivalent to the
+discretized approximation described in Section 2.4 for the
+
+event process. We iterate on this procedure to compute a
+sequence of conditional probabilities of not lapsing (conditional on observed history and the fact that the participant
+has yet to lapse at any future scheduled observation time);
+multiplying them together yields the prediction of interest.
+Algorithm 2 presents pseudo-code.
+We use the brier score (Blanche et al., 2015; van Houwelingen & Putter, 2011) and log-loss to define prediction accuracy. Use of the log-likelihood is inappropriate as it measures overall fit, which is not the main quantity of interest.
+We choose a time t and window-length . We then produce
+the probability of no lapses at any of the scheduled observations times within the interval (t, t + ). Let ⇡n (t, )
+denote this prediction for the nth participant. We compute
+an indicator of whether no events occur at these scheduled
+observation times within the window for the chosen participant In (t, ). The brier score is the average squared
+difference in these quantities (⇡n (t, ) In (t, ))2 .
+The complete brier score and log-loss are then
+BS( ) /
+LL( ) /
+
+mn
+N X
 X
-`=0
 
-0 /"e
+(⇡n (tj ,
 
-+ 1 + 4Kdlog
+)
 
-0 /KCe
+In (tj ,
 
-+
+In (tj ,
 
-2`+1 ·4K
+) log(1
 
-16K 2 C
-"
+))2
 
-iterations (or equivalently oracle calls) we have f (xt )
-f (x⇤ )  ".
-Remark 4.2. Observe that Algorithm 4 might converge
-much faster due to the aggressive halving of the rate. In
-fact, Algorithm 4 convergences at a rate that is at most a
-factor 4K 2 slower than the rate that the vanilla (non-lazy)
-Frank-Wolfe algorithm would realize for the same problem.
-In actual wall-clock time Algorithm 4 is much faster though
-due to the use of the weaker oracle; see Figure 2 and 4
-for a comparison and Section E.1.2 for more experimental
-results.
-Negative oracle calls tend to be significantly more expensive time-wise than positive oracle calls due to proving dual
-bounds. The following corollary is an immediate consequence of the argumentation from above:
-Corollary 4.3. Algorithm 4 makes at most dlog
-negative oracle calls.
+n=1 j=1
 
-0 /"e
+mn 
+N X
+X
 
-+1
+⇡n (tj ,
 
-If line search is too expensive we can choose t =
-min(1, t /KC) in Algorithm 4. In this case an estimate of
-the curvature C is required, though no explicit knowledge
-of the sequence t is needed as compared to the textbook
-variant in Section 3.1.
+))
 
-Figure 1. Performance gain due to caching and early termination
-for stochastic optimization over a maximum cut problem with
-linear losses. The red line is the OCG baseline, the green one is
-the lazy variant using only early termination, and the blue one
-uses caching and early termination. Left: loss vs. wall-clock time.
-Right: loss vs. total time spent in oracle calls. Time limit was
-7200 seconds. Caching allows for a significant improvement in
-loss reduction in wall-clock time. The effect is even more obvious
-in oracle time as caching cuts out a large number of oracle calls.
+n=1 j=1
 
-5. Experiments
-As mentioned before, lazy algorithms have two improvements: caching and early termination. Here we depict the
-effect of caching in Figure 1, comparing OCG (no caching,
-no early termination), LOCG (caching and early termination) and LOCG (only early termination) (see Algorithm 7).
-We did not include a caching-only OCG variant, because
-caching without early termination does not make much
-sense: in each iteration a new linear optimization problem
-has to be solved; previous solutions can hardly be reused as
-they are unlikely to be optimal for the new linear optimization problem.
-5.1. Effect of K
-If the parameter K of the oracle can be chosen, which
-depends on the actual oracle implementation, then we can
-increase K to bias the algorithm towards performing more
-positive calls. At the same time the steps get shorter. As
-such there is a natural trade-off between the cost of many
-positive calls vs. a negative call. We depict the impact of
-the parameter choice for K in Figure 6.
++ (1
 
-1015
-1014
-1013
-1012
-1011
-1010
-109
-108
-107
-106
+In (tj ,
 
-LCG
-CG
+)) log(⇡n (tj ,
 
+))
+
+n
+respectively where {tj }m
+j=1 are a set of chosen, participant
+specific times. The Brier score and log-loss are two ways
+to verify the accuracy of a probability forecast, the former
+ranges from 0 (completely accurate) to 1 (wholly inaccurate) while the latter from 0 to 1.
+
+For each experiment that follows, we perform a crossvalidation based assessment of prediction accuracy. We
+randomly partition the N participants into groups of
+size K. Suppose N/K = M and we label each partition
+uniquely m = 1, . . . , M , then the Brier score and log-loss
+for the mth run is denoted BSm ( ) and LLm ( ) respectively. The cross-validated
+complete brier
+P
+P score and logloss is then given by m BSm ( ) and m LLm ( ) respectively. We perform this calculation for various choices
+of
+to observe performance over a range of windowlengths.
+
+5. Synthetic Experiments
+Our experiments are focused on the setting of self-reported
+alcohol or illicit drug use at scheduled observation times,
+which is the basis for our case study in Section 6.
+We start with a synthetic experiment aimed at illustrating
+
+iSurvive: An Interpretable, Event-time Prediction Model for mHealth
+
+Algorithm 2 Event prediction algorithm
+Input: Rate matrix Q, emission parameters , prior observations O[t]; current time t0 and future observation
+times (t1 , . . . , tk ).
+Qk
+Output: i=1 (ti ) for i = 1, . . . , k.
+Compute ↵t (s)
+p(S(t) = s | O[t]; Q, )
+for k 0 2 {1, . . . , k} do
+Compute P (i)
+exp(Q(ti ti 1 ))
+for s 2 {1, . . . , S}
+hPdo
+i
+(i)
 0
-
-Dual bound
-
-Dual bound
-
-Lazifying Conditional Gradient Algorithms
-
-150 300 450 600
-Wall clock time (s)
-
-1015
-1014
-1013
-1012
-1011
-1010
-109
-108
-107
-106
-
-LCG
-CG
-
+Set ↵ti (s)
+(s
+)P
 0
-
-100 200 300
-LP calls
-
-400
-
-Figure 2. Performance on an instance of the video colocalization
-problem. We solve quadratic minimization over a flow polytope
-and report the achieved dual bound (or Wolfe-gap) over wall-clock
-time in seconds in logscale on the left and over the number of actual
-LP calls on the right. We used the parameter-free variant of the
-Lazy CG algorithm, which performs in both measures significantly
-better than the non-lazy counterpart. The performance difference
-is more prominent in the number of LP calls.
-
-Figure 3. Performance on a large instance of the video colocalization problem using PCG and its lazy variant. We observe that
-lazy PCG is significantly better both in terms of function value and
-dual bound. Recall that the function value is normalized between
-[0, 1].
-
-108
-
-106
-105
-
 0
+t
+i 1
+ss
+s
+Set ti (s)
+↵ti (s)p(Y (ti ) = 0 | S(ti ) = s)
+end for
+P
+Set (ti )
+s2S ti (s)
+P
+Normalize ti (s)
+ti (s)/
+s ti (s)
+end for
 
-150
-300
-450
-Wall clock time (s)
+three ordinal ratings, each taking binary values. Each ratings question is associated with only one latent source (i.e.,
+one binary question per latent source). We also generate
+count data to represent the number of times a user has used
+the app in the past 30 minutes. All emissions models are
+generalized linear models; for the ordinal ratings we assume a logit link while for the count data we assume a logarithmic link. For each, we are interested in observing the
+effect of smart initialization.
+Figure 1 shows convergence (50 iterations) of the emission coefficients to the generating parameters a) with and
+b) without smart initialization. With smart initialization,
+convergence is very good, and without it, convergence is
+very poor; in fact, the estimated logistic parameters do not
+even converge toward the generating parameters.
 
-10
+6. Recovery Support Services – a Case Study
 
-102
+Figure 1. Convergence to the generating parameters (50 iterations) measured via Frobenius (l2 in count case) norm a) with
+smart initialization b) without it. With smart initialization we recover good estimates of the generating parameters, while without
+it we do not even get closer to them in the binary case. The count
+difference norms are exponentiated to make visual comparison
+easier.
 
-102
-LCG K=1
-LCG K=1.5
-LCG K=5
-LCG K=10
-LCG K=50
-LCG K=100
+the importance of good initialization. Due to our desire for
+interpretability, we are concerned with how close the parameter estimates are to the true parameter values. We now
+briefly describe the synthetic experiment; see Appendix F
+for details. The latent process has three binary sources.
+We generate a random transition matrix, Q. We generate
 
-7
+Here we analyze a set of recovery support studies on individuals with substance use disorders (SUDs). In particular,
+we analyze two pilot studies – a 5-week study of adults
+(N = 23) and a 6-week study of adolescents (N = 29) –
+where participants have recently been discharged from outpatient, intensive outpatient, or residential treatment. Each
+study was done using a modified version of the Addiction Comprehensive Health Enhancement Support System
+(ACHESS) (Gustafson et al., 2014). Participants of each
+pilot study have met criteria for substance use disorder in
+the year prior to the original treatment intake and have used
+alcohol or other drugs in the 90 days prior to the original
+treatment; prompts occur at six random times by the mobile phone per day. At each prompt, self-report data is collected concerning the prior 30 minutes exposure to internal
+and external protective and risk factors. Ratings were given
+to how each factor aids in their recovery or makes them
+want to use drugs/alcohol. Self-report also included questions regarding physical pain, illness or withdrawal from
+drugs/alcohol, level of craving for drugs/alcohol, exposure
+to drugs/alcohol, and resistance to drugs/alcohol. Participants were given smartphones enabled with 24/7 access
+to a range of drug abuse and HIV ecological momentary
+interventions (Dennis et al., 2015; Scott et al., 2017). Participants were asked to self-report use of drugs/alcohol in
+the prior 30 minutes. Sensor data was collected including information on when EMIs (Ecological momentary interventions; interventions delivered in real time) were accessed and the amount of time engaged with the EMI. Such
+a rich dataset of complex longitudinal data (e.g., simultaneously measuring EMI usage, drug use, self-reported ratings) is becoming increasingly common as the field of mobile health grows. We are interested in using the collected
+complex longitudinal data in event prediction – in particular the probability of any substance use within a future
 
-106
-105
+iSurvive: An Interpretable, Event-time Prediction Model for mHealth
 
-0
+window of time.
+Prompts occur at random times so the observation schedule
+automatically satisfies the sequential conditional independence assumption. Prompts cannot occur from midnight to
+6AM every morning; since participants are likely asleep
+at these times, we compute time since recruitment after
+removing these “sleeping windows”. Consider a prompt
+at time t; we consider the reduced observation O(t) =
+(O1 (t), O2 (t), O3 (t), Y (t)). This is a 4-dimensional vector where O1 (t) is a 3-level ordinal response to a question
+on how one’s current feelings helps with/supports recovery,
+O2 (t) is a 3-level ordinal variable related to EMI usage,
+O3 (t) is a binary variable indicating whether the participant kept all default answers in the self-report, and Y (t)
+is the binary event process indicating use of drugs/alcohol.
+We assume the latent process S = {(S1 (t), S2 (t))}t2[0,⇠] is
+comprised of two binary sources; S1 (t) represents level of
+engagement; S2 (t) represents level of risk. In this paper engagement is defined in terms of active engagement in selfreport and is therefore connected to the indicator O3 (t).
+We now specify the models for each observation component conditional on S(t). For the event variable Y (t), we
+assume a logit model where the mean is a linear, additive
+model in terms of S1 (t) and S2 (t). For the engagement
+variable O3 (t), we assume a logit model where the mean
+is a linear, additive model in terms of only S1 (t). For
+the EMI usage variable O2 (t), we assume a proportional
+odds model where the linear predictor is additive in terms
+of S1 (t) and S2 (t). The risk variable O1 (t) is a mixture
+depending on engagement. Given the participant is not currently engaged, the responses are not related to latent risk;
+given the participant is currently engaged, we assume a proportional odds model where the linear predictor is additive
+only in terms of S2 (t). Appendix E provides further details
+on the observations, latent states, and models.
+We fit several alternative discriminative models aiming to
+predict future events given a fixed window length . We
+fit both logistic regressions and kernel SVMs where the
+response is an indicator of use in a future window with a
+particular choice of features from the history. The first feature set is simply the current observation values; the second
+adds an additional covariate indicating whether an event
+occurred at the current observation time; the third adds an
+additional covariate indicating whether an event occurred
+in the prior twenty-four hours; the fourth adds an additional covariate indicating whether an event occurred in
+the prior week. Finally, we add as a covariate the number of scheduled observation times in the future window.
+For each discriminative model and iSurvive, we compute
+the cross-validated complete brier score and complete logloss. Figure 2 shows that iSurvive outperforms the discriminative models in terms of the cross-validated Brier score
 
-10
-20
-LP calls
+for each  5 days. Figure 8 in Appendix E shows iSurvive also outperforms the alternative discriminative models
+in terms of the cross-validated log-loss.
 
-30
+Figure 2. Cross-validated complete Brier score on recovery support services study for several discriminative models and iSurvive
 
-101
+Our analysis via iSurvive yields the interpretable finding
+that 30-minute probability of lapse is highest for individuals in the latent states of High risk and Low engagement
+(74.4%), decreases for High risk and High engagement
+(21.5%), decreases more for Low risk and Low Engagement (1.1%), and is negligible for Low risk and High engagement (0.1%). The finding is intuitive for our behavioral scientist collaborators and can be used to help decide
+what types of interventions to provide and when to provide
+them.
 
-Figure 4. Performance on a matrix completion instance. More
-information about this problem can be found in the supplemental
-material (Section E). The performance is reported as the objective
-function value over wall-clock time in seconds on the left and over
-LP calls on the right. In both measures after an initial phase the
-function value using LCG is much lower than with the non-lazy
-algorithm.
-
-0
-
-150
-300
-450
-Wall clock time (s)
-
-LCG K=1
-LCG K=1.5
-LCG K=5
-LCG K=10
-LCG K=50
-LCG K=100
-
-Function value
-
-10
-
-7
-
-LCG
-CG
-
-Function value
-
-LCG
-CG
-
-Function value
-
-Function value
-
-108
-
-Figure 5. Performance of the two lazified variants LOCG (left
-column) and LPCG (right column). The feasible regions are a
-cut polytope on the left and the MIPLIB instance air04 on the
-right. The objective functions are in both cases quadratic, on the
-left randomly chosen in every step. We show the performance
-over wall clock time in seconds (first row) and over iterations
-(second row). The last row shows the number of call to the linear
-optimization oracle. The lazified versions perform significantly
-better in wall clock time compared to the non-lazy counterparts.
-
-101
-
-0
-
-200 400 600
-Iterations
-
-Figure 6. Impact of the oracle approximation parameter K depicted for the Lazy CG algorithm. We can see that increasing
-K leads to a deterioration of progress in iterations but improves
-performance in wall-clock time. The behavior is similar for other
-algorithms.
-
-Lazifying Conditional Gradient Algorithms
+7. Conclusion and Future Work
+In this paper we introduce iSurvive, an interpretable, eventtime prediction model for mHealth. By using a continuoustime hidden Markov model and a factorized GLM emission
+model with link restriction, we can summarize our observations in terms of interpretable latent variables. We then use
+these in a survival model to predict event times. iSurvive is
+designed with an interest toward treatment policies; by having interpretable latent states, we hope to leverage iSurvive
+in optimizing the delivery of mobile health interventions as
+future work.
 
 Acknowledgements
-We are indebted to Alexandre D’Aspremont, Simon LacosteJulien, and George Lan for the helpful discussions and for
-providing us with relevant references. Research reported in
-this paper was partially supported by NSF CAREER award
-CMMI-1452463.
+We thank the reviewers for their useful comments and
+the members of the Statistical Reinforcement Learning
+Lab at the University of Michigan for valuable discussions. We acknowledge support from the National Institutes of Health under BD2K grant U54EB020404 and
+grants R01EY13178-15, R01AA023187, P50 DA039838,
+and R01HL125440. This work was also supported by
+NIDA R01 DA035879 and additional grants from NIAAA,
+NIDA and NIMH.
+
+iSurvive: An Interpretable, Event-time Prediction Model for mHealth
 
 References
-Achterberg, Tobias, Koch, Thorsten, and Martin,
-Alexander. MIPLIB 2003. Operations Research
-Letters, 34(4):361–372, 2006.
-doi: 10.1016/
-j.orl.2005.07.009.
-URL http://www.zib.de/
-Publications/abstracts/ZR-05-28/.
-Audibert, Jean-Yves, Bubeck, Sébastien, and Lugosi, Gábor.
-Regret in online combinatorial optimization. Mathematics of Operations Research, 39(1):31–45, 2013.
-Bodic, Pierre Le, Pavelka, Jeffrey W, Pfetsch, Marc E, and
-Pokutta, Sebastian. Solving MIPs via scaling-based augmentation. arXiv preprint arXiv:1509.03206, 2015.
-Cohen, Alon and Hazan, Tamir. Following the perturbed
-leader for online structured learning. In Proceedings of
-the 32nd International Conference on Machine Learning
-(ICML-15), pp. 1034–1042, 2015.
-Dash, Sanjeeb. A note on QUBO instances defined on
-Chimera graphs. preprint arXiv:1306.1202, 2013.
-Frank, András and Tardos, Éva. An application of simultaneous Diophantine approximation in combinatorial optimization. Combinatorica, 7(1):49–65, 1987.
-Frank, Marguerite and Wolfe, Philip. An algorithm for
-quadratic programming. Naval research logistics quarterly, 3(1-2):95–110, 1956.
-Freund, Robert M. and Grigas, Paul. New analysis and
-results for the frank–wolfe method. Mathematical Programming, 155(1):199–230, 2016. ISSN 1436-4646. doi:
-10.1007/s10107-014-0841-6. URL http://dx.doi.
-org/10.1007/s10107-014-0841-6.
-Garber, Dan and Hazan, Elad. A linearly convergent conditional gradient algorithm with applications to online and
-stochastic optimization. arXiv preprint arXiv:1301.4666,
-2013.
-Garber, Dan and Meshi, Ofer. Linear-memory and
-decomposition-invariant linearly convergent conditional
-gradient algorithm for structured polytopes. arXiv
-preprint, arXiv:1605.06492v1, May 2016.
-Grötschel, Martin and Lovász, Lászlo. Combinatorial optimization: A survey, 1993.
+Aalen, O., Borgan, O., and Gjessing, H. Survival and event
+history analysis: a process point of view. New York.
+Springer-Verlag, 2008.
+Agresti, A. Foundations of Linear and Generalized Linear
+Models. Wiley, New York, first edition, 2015.
+Balakrishnan, S., Wainwright, M.J., and Yu, B. Statistical guarantees for the em algorithm: From population to
+sample-based analysis. 2014.
+Blanche, P., Proust-Lima, C., L. Loubère, C. Berr, Dartiguesand, J.F., and Jacqmin-Gadda, H. Quantifying and
+comparing dynamic predictive accuracy of joint models
+for longitudinal marker and time-to-event in presence of
+censoring and competing risks. Biometrics, 71(1):102–
+113, 2015.
+Chih, M., Patton, T., McTavish, F., Isham, A., JudkinsFisher, C. L., Atwood, A. K., and Gustafson, D. H. Predictive modeling of addiction lapses in a mobile health
+application. Journal of Substance Abuse Treatment, 46
+(1):29–35, 2014.
+Cook, R. and Lawless, J. The statistical analysis of recurrent events. Springer, 2007.
+Cox, D.R. and Isham, V. Point Processes. Chapman &
+Hall, London, 1 edition, 1980.
+Dennis, M.L., Scott, C. K., Funk, R. R., and Nicholson,
+L. A pilot study to examine the feasibility and potential
+effectiveness of using smartphones to provide recovery
+support for adolescents. Substance abuse, 36(4):486–
+492, 2015.
+Escola, Sean, Fontanini, Alfredo, Katz, Don, and Paninski,
+Liam. Hidden markov models for the stimulus-response
+relationships of multistate neural systems. Neural computation, 23(5):1071–1132, 2011.
+Gustafson, D.H., McTavish, F. M., Chih, M. Y., Atwood,
+A. K., Johnson, R. A., Boyle, M. G., M.S., Levy,
+Driscoll, H., Chisholm, S.M., Dillenburg, L., and Isham,
+A. A smartphone application to support recovery from
+alcoholism: a randomized clinical trial. JAMA psychiatry, 71(5):566–572, 2014.
+Hossain, Syed Monowar, Ali, Amin Ahsan, Rahman,
+Md. Mahbubur, Ertin, Emre, Epstein, David, Kennedy,
+Ashley, Preston, Kenzie, Umbricht, Annie, Chen, Yixin,
+and Kumar, Santosh. Identifying drug (cocaine) intake
+events from acute physiological response in the presence
+of free-living physical activity. In Proceedings of the
+13th International Symposium on Information Processing in Sensor Networks, IPSN ’14, pp. 71–82, 2014.
 
-Gupta, Swati, Goemans, Michel, and Jaillet, Patrick. Solving combinatorial games using products, projections
-and lexicographically optimal bases. arXiv preprint
-arXiv:1603.00522, 2016.
-Gurobi Optimization. Gurobi optimizer reference manual version 6.5, 2016. URL https://www.gurobi.
-com/documentation/6.5/refman/.
-Hazan, Elad. Introduction to online convex optimization. Foundations and Trends in Optimization, 2(3–
-4):157–325, 2016. doi: 10.1561/2400000013. URL
-http://ocobook.cs.princeton.edu/.
-Hazan, Elad and Kale, Satyen. Projection-free online learning. arXiv preprint arXiv:1206.4657, 2012.
-Jaggi, Martin. Revisiting Frank–Wolfe: Projection-free
-sparse convex optimization. In Proceedings of the 30th
-International Conference on Machine Learning (ICML13), pp. 427–435, 2013.
-Joachims, Thorsten, Finley, Thomas, and Yu, ChunNam John. Cutting-plane training of structural svms.
-Machine Learning, 77(1):27–59, 2009.
-Joulin, Armand, Tang, Kevin, and Fei-Fei, Li. Efficient
-image and video co-localization with frank-wolfe algorithm. In European Conference on Computer Vision, pp.
-253–268. Springer, 2014.
-Kalai, Adam and Vempala, Santosh. Efficient algorithms
-for online decision problems. Journal of Computer and
-System Sciences, 71(3):291–307, 2005.
-Koch, Thorsten, Achterberg, Tobias, Andersen, Erling,
-Bastert, Oliver, Berthold, Timo, Bixby, Robert E., Danna,
-Emilie, Gamrath, Gerald, Gleixner, Ambros M., Heinz,
-Stefan, Lodi, Andrea, Mittelmann, Hans, Ralphs, Ted,
-Salvagnin, Domenico, Steffy, Daniel E., and Wolter, Kati.
-MIPLIB 2010. Mathematical Programming Computation, 3(2):103–163, 2011. doi: 10.1007/s12532-0110025-9. URL http://mpc.zib.de/index.php/
-MPC/article/view/56/28.
-Lacoste-Julien, Simon and Jaggi, Martin. On the global
-linear convergence of Frank–Wolfe optimization
-variants. In Cortes, C., Lawrence, N. D., Lee, D. D.,
-Sugiyama, M., and Garnett, R. (eds.), Advances in
-Neural Information Processing Systems, volume 28, pp.
-496–504. Curran Associates, Inc., 2015. URL http:
-//papers.nips.cc/paper/5925-on-theglobal-linear-convergence-of-frankwolfe-optimization-variants.pdf.
-Lacoste-Julien, Simon, Jaggi, Martin, Schmidt, Mark, and
-Pletscher, Patrick. Block-coordinate frank-wolfe optimization for structural svms. In ICML 2013 International
-Conference on Machine Learning, pp. 53–61, 2013.
+Kakade, S., Shamir, O., Sindharan, K., and Tewari,
+A. Learning exponential families in high-dimensions:
+Strong convexity and sparsity. AISTATS, pp. 381–388,
+2010.
+Lian, W., Rao, V.A., Eriksson, B., and Carin, L. Modeling correlated arrival events with latent semi-markov
+processes. In Proceedings of the 29th International Conference on Machine Learning, 2014.
+Liu, Y., Song, L., Li, F., Li, S., and Rehg, J. Efficient
+continuous-time hidden markov model for disease modeling. In Proceedings for Advances in Neural Information Processing Systems (NIPS), 2015.
+McCullagh, P. and Nelder, J.A. Generalized Linear Models. Springer, 2nd edition, 1989.
+Metzner, Philipp, Horenko, Illia, and Schütte, Christof.
+Generator estimation of markov jump processes based
+on incomplete observations nonequidistant in time.
+Physical Review E, 76(6):066702, 2007.
+Nahum-Shani, Inbal, Hekler, Eric B., and Spruijt-Metz,
+Donna. Building health behavior models to guide the
+development of just-in-time adaptive interventions: A
+pragmatic framework. Health Psychology, 34:1209–
+1219, 2015.
+Proust-Lima, C., Sne, M., Taylor, J.M., and JacqminGadda, H. Joint latent class models for longitudinal
+and time-to-event data: A review. Statistical Methods
+in Medical Research, 23:74–90, 2014.
+Ranganath, R., Perotte, A., Elhadad, N., and Blei, D. The
+survival filter – joint survival analysis with a latent time
+series. Uncertainty in Artificial Intelligence, 2015.
+Rao, Vinayak and Teh, Yee Whye. Fast mcmc sampling
+for markov jump processes and extensions. Journal of
+Machine Learning Research, 14(1):3295–3320, 2013.
+Rizopoulos, D. Joint models for longitudinal and time-toevent data: With applications in R. CRC Press, 2012.
+Sarker, Hillol, Tyburski, Matthew, Rahman, Md Mahbubur, Hovsepian, Karen, Sharmin, Moushumi, Epstein,
+David H., Preston, Kenzie L., Furr-Holden, C. Debra,
+Milam, Adam, Nahum-Shani, Inbal, al’Absi, Mustafa,
+and Kumar, Santosh. Finding significant stress episodes
+in a discontinuous time series of rapidly varying mobile
+sensor data. In Proceedings of the 2016 CHI Conference
+on Human Factors in Computing Systems, CHI ’16, pp.
+4489–4501. ACM, 2016.
+Scott, C. K., Dennis, M. L., Gustafson, D., and Johnson, K.
+A pilot study of the feasibility and potential effectiveness
+of using smartphones to provide recovery support. Drug
+& Alcohol Dependence, 171:e185, 2017.
 
-Lazifying Conditional Gradient Algorithms
+iSurvive: An Interpretable, Event-time Prediction Model for mHealth
 
-Lan, Guanghui and Zhou, Yi. Conditional gradient sliding
-for convex optimization. Optimization-Online preprint
-(4605), 2014.
-Levitin, Evgeny S and Polyak, Boris T. Constrained minimization methods. USSR Computational mathematics
-and mathematical physics, 6(5):1–50, 1966.
-Neu, Gergely and Bartók, Gábor. An efficient algorithm
-for learning with semi-bandit feedback. In Algorithmic
-Learning Theory, pp. 234–248. Springer, 2013.
-Oertel, Timm, Wagner, Christian, and Weismantel, Robert.
-Integer convex minimization by mixed integer linear optimization. Oper. Res. Lett., 42(6-7):424–428, 2014.
-Osokin, Anton, Alayrac, Jean-Baptiste, Lukasewitz, Isabella, Dokania, Puneet K, and Lacoste-Julien, Simon.
-Minding the gaps for block frank-wolfe optimization of
-structured svms. ICML 2016 International Conference
-on Machine Learning / arXiv preprint arXiv:1605.09346,
-2016.
-Schulz, Andreas S and Weismantel, Robert. The complexity
-of generic primal algorithms for solving general integer
-programs. Mathematics of Operations Research, 27(4):
-681–692, 2002.
-Schulz, Andreas S., Weismantel, Robert, and Ziegler,
-Günter M. 0/1-integer programming: Optimization and
-augmentation are equivalent. In Algorithms – ESA ’95,
-Proceedings, pp. 473–483, 1995.
-Shah, Neel, Kolmogorov, Vladimir, and Lampert,
-Christoph H. A multi-plane block-coordinate frank-wolfe
-algorithm for training structural svms with a costly maxoracle. In Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition, pp. 2737–2745,
-2015.
+Taylor, Benjamin M., Rowlingson, Barry, Moraga, Paula,
+and Diggle, Peter J. Spatial and spatio-temporal loggaussian cox processes: Extending the geostatistical
+paradigm. Statistical Science, 28(4):542–563, 2013.
+van Houwelingen, Hans and Putter, Hein. Dynamic Prediction in Clinical Survival Analysis. CRC Press, Inc.,
+Boca Raton, FL, USA, 1st edition, 2011.
+Wang, Xiang, Sontag, David, and Wang, Fei. Unsupervised
+learning of disease progression models. In Proceedings
+of the 20th ACM SIGKDD international conference on
+Knowledge discovery and data mining, pp. 85–94. ACM,
+2014.
+Wang, Zhaoran, Gu, Quanquan, Ning, Yang, and Liu, Han.
+High dimensional em algorithm: Statistical optimization
+and asymptotic normality. In Proceedings of the 28th International Conference on Neural Information Processing Systems, NIPS’15, pp. 2521–2529, 2015.
 
 

@@ -1,1051 +1,1651 @@
-Globally Optimal Gradient Descent for a ConvNet with Gaussian Inputs
-
-Alon Brutzkus 1 Amir Globerson 1
+Stochastic Variance Reduction Methods for Policy Evaluation
+Simon S. Du 1 Jianshu Chen 2 Lihong Li 2 Lin Xiao 2 Dengyong Zhou 2
 
 Abstract
-Deep learning models are often successfully
-trained using gradient descent, despite the worst
-case hardness of the underlying non-convex optimization problem. The key question is then under what conditions can one prove that optimization will succeed. Here we provide a strong result of this kind. We consider a neural net with
-one hidden layer and a convolutional structure
-with no overlap, and a ReLU activation function. For this architecture we show that learning is NP-complete in the general case, but that
-when the input distribution is Gaussian, gradient
-descent converges to the global optimum in polynomial time. To the best of our knowledge, this
-is the first global optimality guarantee of gradient
-descent on a convolutional neural network with
-ReLU activations.
+Policy evaluation is concerned with estimating
+the value function that predicts long-term values of states under a given policy. It is a crucial step in many reinforcement-learning algorithms. In this paper, we focus on policy evaluation with linear function approximation over
+a fixed dataset. We first transform the empirical policy evaluation problem into a (quadratic)
+convex-concave saddle-point problem, and then
+present a primal-dual batch gradient method, as
+well as two stochastic variance reduction methods for solving the problem. These algorithms
+scale linearly in both sample size and feature dimension. Moreover, they achieve linear convergence even when the saddle-point problem has
+only strong concavity in the dual variables but no
+strong convexity in the primal variables. Numerical experiments on benchmark problems demonstrate the effectiveness of our methods.
 
-1. Introduction
-Deep neural networks have achieved state-of-the-art performance on many machine learning tasks in areas such as natural language processing (Wu et al., 2016), computer vision
-(Krizhevsky et al., 2012) and speech recognition (Hinton
-et al., 2012). Training of such networks is often successfully performed by minimizing a high-dimensional nonconvex objective function, using simple first-order methods
-such as stochastic gradient descent.
-Nonetheless, the success of deep learning from an optimization perspective is poorly understood theoretically.
-Current results are mostly pessimistic, suggesting that even
-training a 3-node neural network is NP-hard (Blum &
-Rivest, 1993), and that the objective function of a single
-neuron can admit exponentially many local minima (Auer
-et al., 1996; Safran & Shamir, 2016). There have been re1
-Tel Aviv University, Blavatnik School of Computer Science.
-Correspondence to:
-Alon Brutzkus
-<alonbrutzkus@mail.tau.ac.il>,
-Amir
-Globerson
-<gamir@cs.tau.ac.il>.
+1 Introduction
+Reinforcement learning (RL) is a powerful learning
+paradigm for sequential decision making (see, e.g., Bertsekas & Tsitsiklis, 1995; Sutton & Barto, 1998). An RL
+agent interacts with the environment by repeatedly observing the current state, taking an action according to a certain
+policy, receiving a reward signal and transitioning to a next
+state. A policy specifies which action to take given the current state. Policy evaluation estimates a value function that
+predicts expected cumulative reward the agent would receive by following a fixed policy starting at a certain state.
+In addition to quantifying long-term values of states, which
+can be of interest on its own, value functions also provide
+1
 
+Machine Learning Department, Carnegie Mellon University, Pittsburgh, Pennsylvania 15213, USA. 2 Microsoft Research, Redmond, Washington 98052, USA.. Correspondence
+to: Simon S. Du <ssdu@cs.cmu.edu>, Jianshu Chen <jianshuc@microsoft.com>, Lihong Li <lihongli@microsoft.com>,
+Lin Xiao <lin.xiao@microsoft.com>, Dengyong Zhou <denzho@microsoft.com>.
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-cent attempts to bridge this gap between theory and practice. Several works focus on the geometric properties of
-loss functions that neural networks attempt to minimize.
-For some simplified architectures, such as linear activations, it can be shown that there are no bad local minima
-(Kawaguchi, 2016). Extension of these results to the nonlinear case currently requires very strong independence assumptions between the activations of the neurons and the
-inputs (Kawaguchi, 2016).
-Since gradient descent is the main “work-horse” of deep
-learning it is of key interest to understand its convergence
-properties. However, there are no results showing that
-gradient descent is globally optimal for non-linear models, except for the case of many hidden neurons (Andoni
-et al., 2014) and non-linear activation functions that are not
-widely used in practice (Zhang et al., 2017).1 Here we provide the first such result for a neural architecture that has
-two very common components: namely a ReLU activation
-function and a convolution layer.
-The architecture considered in the current paper is shown in
-Figure 1. We refer to these models as no-overlap networks.
-A no-overlap network can be viewed as a simple convolution layer with non overlapping filters, followed by a ReLU
-activation function, and then average pooling. Formally, let
-w ∈ Rm denote the filter coefficients, and assume the input
-x is in Rd . Define k = d/m and assume that k is integral.
-Partition x into k non-overlapping parts and denote x[i] the
-ith part. Finally, define σ to be the ReLU activation function, namely σ (z) = max{0, z}. Then the output of the
-network in Figure 1 is given by:
-1X
-f (x; w) =
-σ (w · x[i])
+important information for the agent to optimize its policy.
+For example, policy-iteration algorithms iterate between
+policy-evaluation steps and policy-improvement steps, until a (near-)optimal policy is found (Bertsekas & Tsitsiklis,
+1995; Lagoudakis & Parr, 2003). Therefore, estimating the
+value function efficiently and accurately is essential in RL.
+There has been substantial work on policy evaluation, with
+temporal-difference (TD) methods being perhaps the most
+popular. These methods use the Bellman equation to bootstrap the estimation process. Different cost functions are
+formulated to exploit this idea, leading to different policy
+evaluation algorithms; see Dann et al. (2014) for a comprehensive survey. In this paper, we study policy evaluation
+by minimizing the mean squared projected Bellman error
+(MSPBE) with linear approximation of the value function.
+We focus on the batch setting where a fixed, finite dataset
+is given. This fixed-data setting is not only important in itself (Lange et al., 2011), but also an important component
+in other RL methods such as experience replay (Lin, 1992).
+The finite-data regime makes it possible to solve policy
+evaluation more efficiently with recently developed fast optimization methods based on stochastic variance reduction,
+such as SVRG (Johnson & Zhang, 2013) and SAGA (Defazio et al., 2014). For minimizing strongly convex functions with a finite-sum structure, such methods enjoy the
+same low computational cost per iteration as the classical stochastic gradient method, but also achieve fast, linear
+convergence rates (i.e., exponential decay of the optimality
+gap in the objective). However, they cannot be applied directly to minimize the MSPBE, whose objective does not
+have the finite-sum structure. In this paper, we overcome
+this obstacle by transforming the empirical MSPBE problem to an equivalent convex-concave saddle-point problem
+that possesses the desired finite-sum structure.
+In the saddle-point problem, we consider the model parameters as the primal variables, which are coupled with the
+dual variables through a bilinear term. Moreover, without
+an `2 -regularization on the model parameters, the objective
+is only strongly concave in the dual variables, but not in the
+primal variables. We propose a primal-dual batch gradient
+method, as well as two stochastic variance-reduction methods based on SVRG and SAGA, respectively. Surprisingly,
+we show that when the coupling matrix is full rank, these
+algorithms achieve linear convergence in both the primal
+
+Stochastic Variance Reduction Methods for Policy Evaluation
+
+and dual spaces, despite the lack of strong convexity of the
+objective in the primal variables. Our results also extend to
+off-policy learning and TD with eligibility traces (Sutton &
+Barto, 1998; Precup et al., 2001).
+We note that Balamurugan & Bach (2016) have extended
+both SVRG and SAGA to solve convex-concave saddlepoint problems with linear-convergence guarantees. The
+main difference between our results and theirs are
+• Linear convergence in Balamurugan & Bach (2016)
+relies on the assumption that the objective is strongly
+convex in the primal variables and strongly concave
+in the dual. Our results show, somewhat surprisingly,
+that only one of them is necessary if the primal-dual
+coupling is bilinear and the coupling matrix is full
+rank. In fact, we are not aware of similar previous results even for the primal-dual batch gradient method,
+which we show in this paper.
+• Even if a strongly convex regularization on the primal
+variables is introduced to the MSPBE objective, the
+algorithms in Balamurugan & Bach (2016) cannot be
+applied efficiently. Their algorithms require that the
+proximal mappings of the strongly convex and concave regularization functions be computed efficiently.
+In our saddle-point formulation, the strong concavity
+of the dual variables comes from a quadratic function defined by the feature covariance matrix, which
+cannot be inverted efficiently and makes the proximal
+mapping costly to compute. Instead, our algorithms
+only use its (stochastic) gradients and hence are much
+more efficient.
+We compare various gradient based algorithms on a Random MDP and Mountain Car data sets. The experiments
+demonstrate the effectiveness of our proposed methods.
+
+2 Preliminaries
+We consider a Markov Decision Process (MDP) (Puterman,
+a
+2005) described by (S, A, Pss
+0 , R, ), where S is the set of
+a
+states, A the set of actions, Pss
+0 the transition probability
+0
+from state s to state s after taking action a, R (s, a) the reward received after taking action a in state s, and 2 [0, 1)
+a discount factor. The goal of an agent is to find an actionselection policy ⇡, so that the long-term reward under this
+policy is maximized. For ease of exposition, we assume S
+is finite, but none of our results relies on this assumption.
+A key step in many algorithms in RL is to estimate the
+value
+of a given policy ⇡, defined as V ⇡ (s) ,
+P1function
+t
+E[ t=0 R(st , at )|s0 = s, ⇡]. Let V ⇡ denote a vector
+constructed by stacking the values of V ⇡ (1), . . . , V ⇡ (|S|)
+on top of each other. Then V ⇡ is the unique fixed point of
+the Bellman operator T ⇡ :
+
+where R⇡ is the expected reward vector under policy ⇡,
+defined elementwise as R⇡ (s) = E⇡(a|s) R(s, a); and P ⇡
+is the transition matrix induced by the policy applying ⇡,
+a
+defined entrywise as P ⇡ (s, s0 ) = E⇡(a|s) Pss
+0.
+2.1
+
+Mean squared projected Bellman error (MSPBE)
+
+One approach to scale up when the state space size |S| is
+large or infinite is to use a linear approximation for V ⇡ .
+Formally, we use a feature map
+: S ! Rd and ap⇡
+b
+proximate the value function by V (s) = (s)T ✓, where
+✓ 2 Rd is the model parameter to be estimated. Here, we
+want to find ✓ that minimizes the mean squared projected
+Bellman error, or MSPBE:
+MSPBE (✓) ,
+
+V
+
+⇡
+
+=T V
+
+⇡
+
+,R + P V ,
+⇡
+
+⇡
+
+⇡
+
 (1)
-k i
-We note that such architectures have been used in several
-works (Lin et al., 2013; Milletari et al., 2016), but we view
-them as important firstly because they capture key properties of general convolutional networks.
-We address the realizable case, where training data is generated from a function as in Eq. 1 with weight vector
-w∗ . Training data is then generated by sampling n training points x1 , . . . , xn from a distribution D, and assigning
-them labels using y = f (x; w∗ ). The learning problem is
-1
 
-See more related work in Section 2.
-
-Globally Optimal Gradient Descent for a ConvNet with Gaussian Inputs
-
-then to find a w that minimizes the squared loss. In other
-words, solve the optimization problem:
-min
-w
-
-1X
-2
-(f (xi ; w) − yi )
-n i
+⇧T ⇡ Vb ⇡ k2⌅ ,
 
 (2)
 
-In the limit n → ∞, this is equivalent to minimizing the
-population risk:
-h
-i
-2
-`(w) = Ex∼D (f (x; w) − f (x; w∗ ))
+where ⌅ is a diagonal matrix with diagonal elements being the stationary distribution over S induced by the policy ⇡, and ⇧ is the weighted projection matrix onto the
+linear space spanned by (1), . . . , (|S|), that is,
+⇧=
+
+(
+
+T
+
+⌅ )
+
+1
+
+T
+
 (3)
-Like several recent works (Hardt et al., 2016; Hardt & Ma,
-2016) we focus on minimizing the population risk, leaving
-the finite sample case to future work. We believe the population risk captures the key characteristics of the problem,
-since the large data regime is the one of interest.
 
-y
+⌅
 
-ReLU
+where , [ T (1), . . . , T (|S|)] is the matrix obtained by
+stacking the feature vectors row by row. Substituting (3)
+and (1) into (2), we obtain (see, e.g., Dann et al., 2014)
+MSPBE(✓) =
 
-w
+1
+k
+2
 
-To further understand the role of overlap in the network,
-we consider networks that do have overlap between the filters. In Section 7.1 we show that in this case, even under
-Gaussian distributed inputs, there will be non-optimal local
-minima. Thus, gradient descent will no longer be optimal
-in the overlap case. In Section 7.2 we show empirically
-that these local optima may be overcome in practice by using gradient descent with multiple restarts.
-Taken together, our results are the first to demonstrate
-distribution dependent optimality of gradient descent for
-learning a neural network with a convolutional like architecture and a ReLU activation function.
+T
 
-2. Related Work
+⌅(Vb ⇡
 
-+
+T ⇡ Vb ⇡ )k2(
 
-w
+T⌅
 
-on the data. We provide an empirical demonstration of this
-in Section 6 where gradient descent is shown to succeed in
-the Gaussian case and fail for a different distribution.
+)
 
-w
+1
 
-x
+.
 
-Figure 1. Convolutional neural network with non-overlapping filters. In the first layer, a filter w is applied to non-overlapping
-parts of the input vector x, and the output passes through a ReLU
-activation function. The outputs of the neurons are then averaged
-to give the output y.
+We can further rewrite the above expression for MSPBE as
+a standard weighted least-squares problem:
+MSPBE(✓) =
 
-Our key results are as follows:
-• Worst Case Hardness: Despite the simplicity of NoOverlap Networks, we show that learning them is in
-fact hard if D is unconstrained. Specifically, in Section 4, we show that learning No-Overlap Networks is
-NP complete via a reduction from a variant of the set
-splitting problem.
-• Distribution Dependent Tractability:
-When D
-corresponds to independent Gaussian variables with
-µ = 0, σ 2 = 1, we show in Section 5 that No-Overlap
-Networks can be learned in polynomial time using gradient descent.
-The above two results nicely demonstrate the gap between
-worst-case intractability and tractability under assumptions
+1
+kA✓
+2
 
-Hardness of learning neural networks has been demonstrated for many different settings. For example, Blum
-& Rivest (1993) show that learning a neural network with
-one hidden layer with a sign activation function is NP-hard
-in the realizable case. Livni et al. (2014) extend this to
-other activation functions and bounded norm optimization.
-Hardness can also be shown for improper learning under
-certain cryptographic assumptions (e.g., see Daniely et al.,
-2014; Klivans, 2008; Livni et al., 2014). Note that these
-hardness results do not hold for the regression and tied parameter setting that we consider.
-Due to the above hardness results, it is clear that the success of deep-learning can only be explained by making additional assumptions about the data generating distribution.
-The classic algorithm by Baum (1990) shows that intersection of halfspaces (i.e., a specific instance of a one hidden
-layer network) is PAC learnable under any symmetric distribution. This was later extended in Klivans et al. (2009)
-to log-concave distributions.
-The above works do not consider gradient descent as the
-optimization method, leaving open the question of which
-assumptions can lead to global optimality of gradient descent. Such results have been hard to obtain, and we survey some recent ones below. One instance when gradient descent can succeed is when there are enough hidden
-units such that random initialization of the first layer can
-lead to zero error even if only the second layer is trained.
-Such over-specified networks have been considered (Andoni et al., 2014; Livni et al., 2014) and it was shown that
-gradient descent can globally learn them in some cases
-(Andoni et al., 2014). However, the assumption of overspecification is very restrictive and limits generalization.
-In contrast, we show convergence of gradient descent to a
-global optimum for any network size and consider convo-
+bk2C
 
-Globally Optimal Gradient Descent for a ConvNet with Gaussian Inputs
+1
 
-lutional neural networks with shared parameters. Another
-interesting case is linear dynamical systems, where Hardt
-et al. (2016) show that under independence assumptions
-maximum likelihood is quasi-concave and hence solvable
-with gradient ascent.
-Recent work by Mei et al. (2016) shows that regression with a single neuron and certain non-linear activation
-functions, can be learned with gradient descent for subGaussian inputs. We note that their architecture is significantly simpler than ours, in that it uses a single neuron. In
-fact, their regression problem can also be solved via methods for generalized linear models (Kakade et al., 2011).
-Shamir (2016) recently showed that there is a limit to what
-distribution dependent results can achieve. Namely, it was
-shown that for large enough one-hidden layer networks,
-no distributional assumption such as Gaussian inputs can
-make gradient descent tractable. Importantly, the construction in Shamir (2016) does not use parameter tying and thus
-is not applicable to the architecture we study here.
-Several works have focused on understanding the loss surface of neural network objectives, but without direct algorithmic implications. Kawaguchi (2016) show that linear neural networks do not suffer from bad local minima.
-Hardt & Ma (2016) consider objectives of linear residual
-networks and prove that there are no critical points other
-than the global optimum. Soudry & Carmon (2016) show
-that in the objective of over-parameterized neural networks
-with dropout-like noise, all differentiable local minima are
-global. Other works (Safran & Shamir, 2016; Haeffele
-& Vidal, 2015) give similar results for over-specified networks. All of these results are purely geometric and do not
-have direct implications on convergence of optimization algorithms. Janzamin et al. (2015) and Goel et al. (2016),
-suggest alternatives to gradient-based methods for learning
-neural networks. However, these algorithms are not widely
-used in practice. Finally, Choromanska et al. (2015) use
-spin glass models to argue that, under certain generative
-modelling and architectural constraints, local minima are
-likely to have low loss values.
-The theory of non-convex optimization is closely related
-to the theory of neural networks. Recently, there has
-been substantial progress in proving convergence guarantees of simple first-order methods in various machine learning problems, that don’t correspond to typical neural nets.
-These include for example matrix completion (Ge et al.,
-2016) and tensor decompositions (Ge et al., 2015).
-Finally, recent work by Zhang et al. (2016) shows that neural nets can perfectly fit random labelings of the data. Understanding this from an optimization perspective is largely
-an open problem.
+,
 
-3. Preliminaries
-We use bold-faced letters for vectors and capital letters for
-matrices. The ith row of a matrix A is denoted by ai .
-In our analysis in Section 5 and Section 7.1 we assume that
-the input feature x ∈ Rd is a vector of IID Gaussian random variables with zero mean and variance one.2 Denote
-this distribution by G. We consider networks with one hidden layer, and k hidden units. Our main focus will be on
-No-Overlap Networks, but we begin with a more general
-one-hidden-layer neural network with a fully-connected
-layer parameterized by W ∈ Rk,d followed by average
-pooling. The network output is then:
-f (x; W ) =
+with properly defined A, b and C, described as follows.
+Suppose the MDP under policy ⇡ settles at its stationary
+distribution and generates an infinite transition sequence
+1
+{(st , at , rt , st+1 )}t=1 , where st is the current state, at is
+the action, rt is the reward, and st+1 is the next state. Then
+with the definitions t , (st ) and 0t , (st+1 ), we have
+A = E[ t (
 
-1X
-σ (wi · x)
-k i
+t
+
+0 T
+t ) ],
+
+b = E[ t rt ], C = E[
+
+T
+t t ],
 
 (4)
 
-where σ () is the pointwise ReLU function.
-We consider the realizable setting where there exists a true
-W ∗ using which the training data is generated. The population risk (see Eq. 3) is then:
-
-
-`(W ) = EG (f (x; W ) − f (x; W ∗ ))2 ,
+where E[·] are with respect to the stationary distribution.
+Many TD solutions converge to a minimizer of MSPBE in
+the limit (Tsitsiklis & Van Roy, 1997; Dann et al., 2014).
+2.2
+
+Empirical MSPBE
+
+In practice, quantities in (4) are often unknown, and we
+only have access to a finite dataset with n transitions D =
+n
+{(st , at , rt , st+1 )}t=1 . By replacing the unknown statistics
+with their finite-sample estimates, we obtain the Empirical
+MSPBE, or EM-MSPBE. Specifically, let
+n
+
+⇡
+
+1 b⇡
+kV
+2
+
+X
+b, 1
+A
+At ,
+n t=1
+
+n
+
+X
+bb , 1
+bt ,
+n t=1
+
+n
+
+X
+b, 1
+C
+Ct ,
+n t=1
+
 (5)
-As we show next, `(W ) can be considerably simplified.
-First, define:
-g(u, v) = EG [σ (u · x) σ (v · x)]
+
+Stochastic Variance Reduction Methods for Policy Evaluation
+
+where for t = 1, . . . , n,
+At ,
+
+t( t
+
+bt , rt t ,
+
+0 T
+t) ,
+
+Ct ,
+
+T
+t t .
 
 (6)
 
-Simple algebra then shows that:
-`(W ) =
+EM-MSPBE with an optional `2 -regularization is given by:
+EM-MSPBE (✓) =
+where ⇢
 
-
-1 X
-g(wi , wj ) − 2g(wi , w∗j ) + g(w∗i , w∗j )
+1 b
+kA✓
 2
-k i,j
+
+bbk2
+b
+C
+
+1
+
+⇢
++ k✓k2 ,
+2
+
 (7)
 
-The next Lemma from Cho & Saul (2009) shows that
-g(u, v) has a simple form.
-Lemma 3.1. (Cho & Saul, 2009, Section 2) Given u, v ∈
-Rd denote by θu,v the angle between u and v. Then:
-1
-g(u, v) =
-kuk kvk
-2π
+0 is a regularization factor.
 
-
-
-
-
-!
-
-sin θu,v + π − θu,v cos θu,v
-
-The gradient of g with respect to u also turns out to have
-a simple form, as stated in the lemma below. The proof is
-deferred to the supplementary material.
-Lemma 3.2. Let g be as defined in Eq. 6. Then g is differentiable at all points u 6= 0 and
-
-∂g(u, v)
-1
-u
-1 
-=
-kvk
-sin θu,v +
-π − θu,v v
-∂u
-2π
-kuk
-2π
-2
-The variance per variable can be arbitrary. We choose one for
-simplicity.
-
-Globally Optimal Gradient Descent for a ConvNet with Gaussian Inputs
-
-We conclude by special-casing the results above to NoOverlap Networks. In this case, the entire model is specified by a single filter vector w ∈ Rm . The rows wi
-are mostly zeros, except for the indices ((i − 1)m +
-1, . . . , im) which take
- the values of w. Namely, wi =
-0(i−1)m , w, 0d−im where 0l ∈ Rl is a zero vector.
-The same holds for the vectors w∗i with a weight vector
-w∗ . This simplifies the loss considerably, since for all i:
-2
-g(wi , wi ) = 12 kwk , and for all i 6= j: g(wi , wj ) =
-2
-1
-1
-∗
-∗
-2π kwk and g(w i , w j ) = 2π kwk kw k. Thus the loss
-`(w) for No-Overlap Networks yields (up to additive factors in w∗ ):
-i
-1h
-2
-`(w) = 2 γkwk − 2kg(w, w∗ ) − 2β kwk kw∗ k (8)
-k
-where β =
-
-2
-
-k −k
-2π
-
-and γ = β + k2 .
-
-4. Learning No-Overlap Networks is
-NP-Complete
-The No-Overlap Networks architecture is a simplified convolutional layer with average pooling. However, as we
-show here, learning it is still a hard problem. This will
-motivate our exploration of distribution dependent results
-in Section 5.
-Recall that our focus is on minimizing the squared error in
-Eq. 3. For this section, we do not make any assumptions
-about D. Thus D can be a distribution with uniform mass
-on training points x1 , . . . , xn , recovering the empirical risk
-in Eq. 2. We know that `(w) in Eq. 3 can be minimized by
-setting w = w∗ and the corresponding squared loss `(w)
-will be zero. However, we of course do not know w∗ , and
-the question is how difficult is it to minimize `(w). In what
-follows we show that this is hard. Namely, it is an NPcomplete problem to find a w that comes 0 close to the
-minimum of `(w), for some constant 0 .
-We begin by defining the Set-Splitting-by-k-Sets problem,
-which is a variant of the classic Set-Splitting problem
-(Garey & Johnson, 1990). After establishing the hardness
-of Set-Splitting-by-k-Sets, we will provide a reduction from
-it to learning No-Overlap Networks.
-Definition 1. The Set-Splitting-by-k-Sets decision problem
-is defined as follows: Given a finite set S of d elements and
-a collection C of at most (k − 1)d subsets CSj of S, do there
-exist disjoint sets S1 , S2 , ..., Sk such that i Si = S and
-for all j and i, Cj 6⊆ Si ?
-For k = 2 and without the upper bound on |C| this is
-known as the Set-Splitting decision problem which is NPcomplete (Garey & Johnson, 1990). Next, we show that
-Set-Splitting-by-k-Sets is NP-complete. The proof is via a
-reduction from 3SAT and induction, and is provided in the
-supplementary material.
-
-Proposition 4.1. Set-Splitting-by-k-Sets is NP-complete
-for all k ≥ 2.
-We next formulate the No-Overlap Networks optimization
-problem.
-Definition 2. The k-Non-Overlap-Opt problem is defined
-as follows. The input is a distribution DX,Y over inputoutput pairs x, y where x ∈ Rd . If the input is realizable
-by a no-overlap network with k hidden neurons, then the
-output is a vector w such that:
-h
-i
-2
-EDX,Y (f (x; w) − y)) <
+Observe that (7) is a (regularized) weighted least squares
+b is invertible, its optimal solution is
+problem. Assuming C
+b> C
+b
+✓ ? = (A
 
 1
-4k 5 d
+
+b + ⇢I)
+A
+
+1
+
+b> C
+b
+A
+
+1b
+
+b.
+
+(8)
+
+Computing ✓? directly requires O(nd2 ) operations to form
+b bb and C,
+b and then O(d3 ) operations to
+the matrices A,
+complete the calculation. This method, known as leastsquares temporal difference or LSTD (Bradtke & Barto,
+1996; Boyan, 2002), can be very expensive when n and
+d are large. One can also skip forming the matrices explicitly and compute ✓? using n recusive rank-one updates
+(Nedić & Bertsekas, 2003). Since each rank-one update
+costs O(d2 ), the total cost is O(nd2 ).
+In the sequel, we develop efficient algorithms to minimize
+EM-MSPBE by using stochastic variance reduction methods, which samples one ( t , 0t ) per update without preb bb and C.
+b These algorithms not only maintain
+computing A,
+a low O(d) per-iteration computation cost, but also attain
+fast linear convergence rates with a log(1/✏) dependence
+on the desired accuracy ✏.
+
+3 Saddle-Point Formulation of EM-MSPBE
+Our algorithms (in Section 5) are based on the stochastic
+variance reduction techniques developed for minimizing a
+finite sum of convex functions, more specifically, SVRG
+(Johnson & Zhang, 2013) and SAGA (Defazio et al., 2014).
+They deal with problems of the form
+min
+
+x2Rd
+
+⇢
+
+n
+
+f (x) ,
+
+1X
+fi (x) ,
+n i=1
 
 (9)
 
-Otherwise an arbitrary weight vector is returned.3
-The above problem returns a w that minimizes the
-population-risk up to 4k15 d accuracy. It is thus easier than
-minimizing the risk to an arbitrary precision  (see Section
-5, Theorem 5.2).
-We prove the following theorem, which uses some ideas
-from Blum & Rivest (1993), but introduces additional constructions needed for the no overlap case.
-Theorem 4.2. For all k ≥ 2, the k-Non-Overlap-Opt problem is NP-complete.
-Proof. We will show a reduction from Set-Splitting-by-ksets to k-Non-Overlap-Opt. Assume a given instance of the
-Set-Splitting-by-k-sets problem with a set S and collection
-of subsets C. Denote S = {1, 2, ..., d} and |C| ≤ (k − 1)d.
-Let 0d ∈ Rd be the all zeros vector. For a vector v ∈ Rd ,
-define the vector di (v) ∈ Rkd to be the concatenation of
-i − 1 vectors 0d , followed by v and k − i vectors 0d , and
-2
-let d(v) = (d1 (v), d2 (v), ..., dk (v)) ∈ Rk d .
-We next define a training set for k-Non-Overlap-Opt. For
-each element i ∈ S define an input vector xi = d(ei ),
-where ei is the standard basis of Rd . Assign the label
-for each subset Cj ∈ C
-yi = k1 to this input. In addition,
-P
-define the vector xd+j = d( i∈Cj ei ) and label yd+j = 0.
+where each fi is convex. We immediately notice that the
+EM-MSPBE in (7) cannot be put into such a form, even
+b bb and C
+b have the finite-sum structhough the matrices A,
+ture given in (5). Thus, extending variance reduction techniques to EM-MSPBE minimization is not straightforward.
+Nevertheless, we will show that the minimizing the EMMSPBE is equivalent to solving a convex-concave saddlepoint problem which actually possesses the desired finitesum structure. To proceed, we resort to the machinery of
+conjugate functions (e.g. Rockafellar, 1970, Section 12).
+For a function f : Rd ! R, its conjugate function f ? :
+
+Rd ! R is defined as f ? (y) , supx (y T x f (x)). Note
+that the conjugate function of 12 kxk2Cb is 12 kyk2Cb 1 , i.e.,
+1
+kyk2Cb
 2
 
-Thus we have |S| + |C| data points in Rk d . Let DX,Y be a
-uniform distribution over the training set points (i.e., each
 1
-point with probability at least kd
-since |C| ≤ (k − 1)d).
-We will now show that the given instance of Set-Splittingby-k-sets has a solution (i.e., there exist splitting sets) if and
-only if k-Non-Overlap-Opt returns a weight vector with low
-risk. First, assume there exist splitting sets S1 , ..., Sk .4 For
-each 1 ≤ l ≤ k define the vector aSl ∈ Rd such that
-for all i ∈ Sl , aSi l = 1 and aSi l = −d otherwise. Define
-a No-Overlap Network with k 2 d inputs and weight vector
-3
 
-We assume that the population risk is efficiently computable.
-The sets are disjoint, their union is S and for all j and i,
-Cj 6⊆ Si .
-4
+⇣
+= max y T x
+x
 
-Globally Optimal Gradient Descent for a ConvNet with Gaussian Inputs
-
-w = (aS1 , aS2 , ..., aSk ) ∈ Rkd . Then for all 1 ≤ i ≤ d
-we have:
-Pk
-σ((aSl )T ei )
+⌘
 1
-f (xi ; w) = l=1
-= = yi
+kxk2Cb .
+2
+
+With this relation, we can rewrite EM-MSPBE in (7) as
+⇣
+⌘ ⇢
+1
+b
+max wT (bb A✓)
+kwk2Cb + k✓k2 ,
+w
+2
+2
+
+so that minimizing EM-MSPBE is equivalent to solving
+⇢
+n
+1X
+min max L(✓, w) =
+Lt (✓, w) ,
 (10)
-k
-k
-and for all j:
-Pk
-
-l=1
-
-P
-σ((aSl )T ( i∈Cj ei ))
-
-= 0 = yd+j
-(11)
-where the last equality follows since for all l and j, Cj 6⊆
-Sl . There thus exists a w for which the error in Eq. 9 is zero
-and k-Non-Overlap-Opt will return a weight vector with
-low risk.
-f (xd+j ; w) =
-
-k
-
-Conversely, assume that k-Non-Overlap-Opt returned a
-w ∈ Rkd with risk less than 4k15 d on DX,Y above. Denote by w = (w1 , w2 , ..., wk ), where wl ∈ Rd . We will
-show that this implies that there exist k splitting sets. For
-all x0 , y 0 in the training set it holds that:5
+n t=1
+✓2Rd w2Rd
+where the Lagrangian, defined as
+⇣1
+⇢
+b
+L(✓, w) , k✓k2 wT A✓
+kwk2Cb
+2
 2
 
-1
-(f (x0 ; w) − y 0 )
-≤ EDX,Y [(f (x; w) − y)2 ] < 5
-kd
-4k d
-This implies that for all i and j,
-|f (d(ei ); w) −
+may be decomposed using (5), with
+⇣1
+⇢
+Lt (✓, w) , k✓k2 wT At ✓
+kwk2Ct
+2
+2
 
-X
-1
-1
-1
-| < 2 , |f (d(
-ei ); w)| < 2
-k
-2k
-2k
+⌘
+wT bb , (11)
+⌘
+w T bt .
 
-5. No-Overlap Networks can be Learned for
-Gaussian Inputs
-In this section we assume that the input features x are generated via a Gaussian distribution G, as in Section 3. We
-will show that in this case, gradient descent will converge
-with high probability to the global optimum of `(w) (Eq. 8)
-in polynomial time.
-In order to analyze convergence of gradient descent on
-`, we need a characterization of all the critical and
-non-differentiable points. We show that ` has a nondifferentiable point and a degenerate saddle point.6 Therefore, recent methods for showing global convergence of
-gradient-based optimizers on non-convex objectives (Lee
-et al., 2016; Ge et al., 2015) cannot be used in our case, because they assume all saddles are strict 7 and the objective
-function is continuously differentiable everywhere.
-The characterization is given in the following proposition.
-The proof relies on the fact that `(w) depends only on
-kwk,kw∗ k and θw,w∗ , and therefore w.l.o.g. it can be assumed that w∗ lies on one of the axes. Then by a symmetry
-argument, in order to prove properties of the gradient and
-the Hessian, it suffices to calculate partial derivatives with
-respect to at most three variables.
-Proposition 5.1. Let `(w) be defined as in Eq. 8. Then the
-following holds:
+Therefore, minimizing the EM-MSPBE is equivalent to
+solving the saddle-point problem (10), which is convex in
+the primal variable ✓ and concave in the dual variable w.
+Moreover, it has a finite-sum structure similar to (9).
+Liu et al. (2015) and Valcarcel Macua et al. (2015) independently showed that the GTD2 algorithm (Sutton et al.,
+2009b) is indeed a stochastic gradient method for solving
+the saddle-point problem (10), although they obtained the
+saddle-point formulation with different derivations. More
+recently, Dai et al. (2016) used the conjugate function approach to obtain saddle-point formulations for a more general class of problems and derived primal-dual stochastic
+gradient algorithms for solving them. However, these algorithms have sublinear convergence rates, which leaves
+much room to improve when applied to problems with finite datasets. Recently, Lian et al. (2017) developed SVRG
+methods for a general finite-sum composition optimization
+that achieve linear convergence rate. Different from our
+methods, their stochastic gradients are biased and they have
+worse dependency on the condition numbers (3 and 4 ).
+The fast linear convergence of our algorithms presented in
+Sections 4 and 5 requires the following assumption:
+b has full rank, C
+b is strictly positive defiAssumption 1. A
+nite, and the feature vector t is uniformly bounded.
 
-i∈Cj
+Under mild regularity conditions (e.g., Wasserman, 2013,
+b and C
+b converge in probability to A
+Chapter 5), we have A
+and C defined in (4), respectively. Thus, if the true statistics
+A is non-singular and C is positive definite, and we have
+enough training samples, these assumptions are usually satisfied. They have been widely used in previous works on
+gradient-based algorithms (e.g., Sutton et al., 2009a;b).
 
-(12)
-1
-Define sets Sl = {i | wTl ei > 2k
-} for 1 ≤ l ≤ k and
-WLOG assume they are disjoint by arbitrarily assigning
-points that belong to more than one set, to one of the sets
-they belong to. We will next
-S show that these Sl are splitting. Namely, it holds that l Sl = S and no subset Cj is a
-subset of some Sl .
-Pk
+Stochastic Variance Reduction Methods for Policy Evaluation
 
-σ(wT e )
+A direct consequence of Assumption 1 is that ✓? in (8) is
+the unique minimizer of the EM-MSPBE in (7), even without any strongly convex regularization on ✓ (i.e., even if
+⇢ = 0). However, if ⇢ = 0, then the Lagrangian L(✓, w) is
+only strongly concave in w, but not strongly convex in ✓. In
+this case, we will show that non-singularity of the coupling
+b can “pass” an implicit strong convexity on ✓,
+matrix A
+which is exploited by our algorithms to obtain linear convergence in both the primal and dual spaces.
 
-i
-1
-l
-l=1
-Since f (d(ei ); w) =
-> k1 − 2k12 > 2k
-k
-for all i, it follows that for each i ∈ S there exists 1 ≤
-1
-l ≤ k such that wTl ei > S2k
-. Therefore, by the definition of Sl we deduce that l Sl = S. To show the second property, assume by contradiction that for some j and
-P
-|C |
-m, Cj ⊆ Sm . Then wTm ( i∈Cj ei ) > 2kj , which imPk
-T P
-P
-l=1 σ(w l (
-i∈Cj ei ))
-plies that f (d( i∈Cj ei ); w) =
->
-k
+4 A Primal-Dual Batch Gradient Method
+Before diving into the stochastic variance reduction algorithms, we first present Algorithm 1, which is a primal-dual
+batch gradient (PDBG) algorithm for solving the saddlepoint problem (10). In Step 2, the vector B(✓, w) is obtained by stacking the primal and negative dual gradients:
+"
+#
+
+bT w
+⇢✓ A
+r✓ L(✓, w)
+B (✓, w) ,
+= b
+. (12)
+b
+rw L(✓, w)
+A✓ bb + Cw
+Some notation is needed in order to characterize the convergence rate of Algorithm 1. For any symmetric and positive definite matrix S, let max (S) and min (S) denote its
+maximum and minimum eigenvalues respectively, and define its condition number to be (S) , max (S)/ min (S).
+We also define L⇢ and µ⇢ for any ⇢ 0:
+bT C
+b 1 A),
+b
++A
+bT C
+b 1 A).
+b
+µ⇢ , min (⇢I + A
 
-|Cj |
-2k2
+L⇢ ,
 
-≥
+max (⇢I
 
-1
-2k2 ,
-
-a contradiction. This concludes our proof.
-
-To conclude, we have shown that No-Overlap Networks are
-hard to learn if one does not make any assumptions about
-the training data. In fact we have shown that finding a w
-with loss at most 4k15 d is hard. In the next section, we show
-that certain distributional assumptions make the problem
-tractable.
-5
-The LHS is true because for a non-negative random variable
-1
-X, E[X] ≥ p(x)x for all x, and in our case p(x) ≥ kd
-.
-
-1. `(w) is differentiable if and only if w 6= 0.
-2. For k > 1, `(w) has three critical points:
-(a) A local maximum at w = 0.
-(b) A unique global minimum at w = w∗ .
-(c) A degenerate saddle point at w
-k2 −k
-)w∗ .
-−( k2 +(π−1)k
-
-=
-
-For k = 1, w = 0 is not a local maximum and the
-unique global minimum w∗ is the only differentiable
-critical point 8 .
-We next consider a simple gradient descent update rule for
-minimizing `(w) and analyze its convergence. Let λ >
-0 denote the step size. Then the update at iteration t is
-simply:
-wt+1 = wt − λ∇`(wt )
 (13)
-Our main result, stated formally below, is that the above
-update is guaranteed to converge to an  accurate solution
-after O( 12 ) iterations. We note that the dependence of the
-6
-A saddle point is degenerate if the Hessian at the point has
-only non-negative eigenvalues and at least one zero eigenvalue.
-7
-A saddle point is strict if the Hessian at the point has at least
-one negative eigenvalue.
-8
-See Figure 2.
-
-Globally Optimal Gradient Descent for a ConvNet with Gaussian Inputs
-
-follows from the fact that w = 0 is a local maximum.13
-The fact that wt stays away from the problematic points
-allows us to show that `(w) has a Lipschitz continuous
-gradient on the line between wt and wt+1 , with constant
-L = Õ(1).12 By standard optimization analysis (Nesterov,
-2004) it follows that after T = O( 12 ) iterations we will
-have k∇l(wt )k ≤ O() for some 0 ≤ √t ≤ T . This in
-turn can be used to show that wt is O( )-close to w∗ .
-2
-Finally, since `(w) ≤ dkw − w∗ k , it follows that wt approximates the global minimum to within O() accuracy.
-
-Figure 2. Colormap of `(w) (Eq. 8) in 2 dimensions for w∗ =
-(1, 1) and k = 10.
-
-convergence rate on  is similar to standard results on convergence of gradient descent to stationary points (e.g., see
-discussion in Allen-Zhu & Hazan, 2016).
-∗
-
-9
-
-Theorem 5.2. Assume kw k = 1. For any δ > 0 and
-0 <  < δ sink πδ , there exists 0 < λ < 1 10 such that
-with probability at least 1 − δ, gradient descent initialized
-randomly from the unit sphere with learning rate λ will get
-to a point w such that `(w) ≤ O() in O( 12 ) iterations.11
-The complete proof is provided in the supplementary material. Here we provide a high level overview. In particular,
-we first explain why gradient descent will stay away from
-the two bad points mentioned in Lemma 5.1.
-First we note that the gradient of `(w) at wt is given by:
-∇`(wt ) = −c1 (wt , w∗ )wt − c2 (wt , w∗ )w∗ ,
-
 (14)
 
-where c1 and c2 are two functions such that c1 ≥ −1, c2 ≥
-0 and c2 = 0 if and only if θwt ,w∗ = π. Thus the gradient
-is a sum of a vector in the direction of wt and a vector in
-the direction of w∗ . At iteration t + 1 we have:
-wt+1 = (1 + λc1 (wt , w∗ ))wt + λc2 (wt , w∗ )w∗ (15)
+By Assumption 1, we have L⇢
+µ⇢ > 0. The following
+theorem is proved in Appendix B.
+Theorem 1. Suppose Assumption 1 holds and let (✓? , w? )
+be the (unique) solution of (10). If the step sizes are chosen
+8
+as ✓ = 9L 1(C)
+b and w = 9
+b , then the number
+(C)
+⇢
 
-Theorem 5.2 implies that gradient descent converges to a
-point w such that `(w) ≤ d12 in time O(poly(d)) where
-d is the input dimension.14 The following corollary thus
-follows.
-Corollary 5.3. Gradient descent solves the k-NonOverlap-Opt problem under the Gaussian assumption on
-D with high probability and in polynomial time.
+max
 
-6. Empirical Illustration of Tractability Gap
-The results in the previous sections showed that NoOverlap Networks optimization is hard in the general case,
-but tractable for Gaussian inputs. Here we empirically
-demonstrate both the easy and hard cases. The training data
-for the two cases will be generated by using the same w∗
-but different distributions over x.
-To generate the “hard” case, we begin with a set splitting
-problem. In particular, we consider a set S with 40 elements and a collection C of 760 subsets of S, each of size
-20. We choose Cj such that there exists subsets S1 ,S2 that
-split the subsets Cj . We use the reduction in Section 4
-to convert this into a No-Overlap Networks optimization
-problem. This results in a training set of size 800.
-Since we know the w∗ that solves the set splitting problem, we can use it to label data from a different distribution.
-Motivated by Section 5 we use a Gaussian distribution G as
-defined earlier and generate a training set of the same size
-(namely 800) and labels given by the no-overlap network
-with weight w∗ .
-
-Next, assuming kw0 k > 0 and that θw0 ,w∗ ≤ (1 − δ)π
-(which occurs with probability 1 − δ), it can be shown that
-the norm of wt is always bounded away from zero by a
-constant M = Ω̃(1).12 The proof is quite technical and
-
-For these two learning problems we used AdaGrad (Duchi
-et al., 2011) to optimize the empirical risk (plain gradient
-descent also converges, but AdaGrad requires less tuning
-of step size). For both datasets we used a random normal
-initializer and for each we chose the best performing learning rate schedule. The training error for each setting as a
-function of the number of epochs is shown in Figure 3. It is
-clear that in the non-Gaussian case, AdaGrad gets trapped
-
-Assumed for simplicity, otherwise kw∗ k is a constant factor.
-λ can be found explicitly.
-11
-O(·) hides a linear factor in d.
-12
-Ω̃ and Õ hide factors of kw∗ k, θw0 ,w∗ , k and δ.
-
-13
-The proof holds even for k = 1 where w = 0 is not a local
-maximum.
-14
-Note that the complexity of a gradient descent iteration is
-polynomial in d.
-
-It follows that for λ < 1 and θwt ,w∗ 6= π, we have
-θwt+1 ,w∗ < θwt ,w∗ . Therefore, if θw0 ,w∗ 6= π , we will
-never converge to the saddle point in Lemma 5.1.
-
-9
-
-10
-
-Globally Optimal Gradient Descent for a ConvNet with Gaussian Inputs
-
-lapping filter of size 2 with stride 1, i.e., for all 1 ≤ i ≤
-k wi = (0i−1 , w, 0d−i−1 ), w∗i = (0i−1 , w∗ , 0d−i−1 )
-where 0l = (0, 0, ..., 0) ∈ Rl , w = (w1 , w2 ) is a vector of
-2 parameters and w∗ = (−w∗ , w∗ ) ∈ R2 , w∗ > 0. Define
-the following vectors wr = (w1 , w2 , 0), wl = (0, w1 , w2 ),
-w∗r = (−w∗ , w∗ , 0), w∗l = (0, −w∗ , w∗ ) and denote by
-θw,v the angle between two vectors w and v.
-
-0.1
-Non-Gaussian
-Gaussian
-
-Loss
-
-0.08
-0.06
-0.04
-0.02
-0
-
-0
-
-20
-
-40
-
-60
-
-80
-
-One might wonder why the analysis of the overlapping
-case should be any different than the non-overlapping case.
-However, even for a filter of size two, as above, the loss
-function and consequently the gradient, are more complex
-in the overlapping case. Indeed, the loss function in this
-case is given by:
-
-Iteration
-2
-
-Figure 3. Training loss of Adagrad on the Gaussian and NonGaussian datasets. See Section 6 for details.
-
-2
-
-`(w) = α(kwk + kw∗ k ) − βg(w, w∗ )
-+ (β − 2)(g(wr , wl ) − g(wl , w∗r )
-−
-
-g(wr , w∗l )
-
-where α =
-
-1
-k2
-
-k
-2
-
-+
-
-+
-
-g(w∗r , w∗l ))
-
-k2 −3k+2
-2π
-
-
-
-(16)
-∗
-
-− γ kwk kw k
-
-, β = 2k and γ =
-
-k2 −3k+2
+of iterations of Algorithm 1 to achieve k✓ ✓? k2 + kw
+w? k2  ✏2 is upper bounded by
+✓ ⇣
+⌘
+⇣ 1 ⌘◆
+T b 1 b
+b
+b
+O  ⇢I + A C A · (C) · log
 .
-π
+(15)
+✏
 
-at a sub-optimal point, whereas the Gaussian case is solved
-optimally.15 In the Gaussian case AdaGrad converged to
-w∗ . Therefore, given the Gaussian dataset we were able
-to recover the true weight vector w∗ , whereas given the
-data constructed via the reduction we were not, even though
-both datasets were of the same size. We conclude that these
-empirical findings are in line with our theoretical results.
+We assigned specific values to the step sizes ✓ and w
+for clarity. In general, we can use similar step sizes while
+8L⇢
+keeping their ratio roughly constant as w✓ ⇡
+b ; see
+min (C)
+Appendices A and B for more details. In practice, one can
+use a parameter search on a small subset of data to find
+reasonable step sizes. It is an interesting open problem how
+to automatically select and adjust step sizes.
+Note that the linear rate is determined by two parts: (i)
+the strongly convex regularization parameter ⇢, and (ii) the
+bT C
+b 1 A.
+b The second part could
+positive definiteness of A
+be interpreted as transferring strong concavity in dual varib For
+ables via the full-rank bi-linear coupling matrix A.
 
-7. Networks with Overlapping Filters
-Thus far we showed that the non-overlapping case becomes
-tractable under Gaussian inputs. A natural question is
-then what happens when overlaps are allowed (namely, the
-stride is smaller than the filter size). Will gradient descent
-still find a global optimum? Here we show that this is in
-fact not the case, and that with probability greater than 14
-gradient descent will get stuck in a sub-optimal region. In
-Section 7.1 we analyze this setting for a two dimensional
-example and provide bounds on the level of suboptimality.
-In Section 7.2 we report on an empirical study of optimization for networks with overlapping filters. Our results suggest that by restarting gradient descent a constant number
-of times, it will converge to the global minimum with high
-probability. Complete proofs of the results are provided in
-the supplementary material.
-7.1. Suboptimality of Gradient Descent for R2
-We consider an instance where there are k = d − 1 neurons and matrices W, W ∗ ∈ Rk×d correspond to an over15
+Algorithm 1 PDBG for Policy Evaluation
+Inputs: initial point (✓, w), step sizes ✓ and w , and
+number of epochs M .
+1: for i = 1 to M do
+
+
+
+✓
+✓
+0
+✓
+2:
+B(✓, w)
+w
+w
+0
+w
+where B(✓, w) is computed according to (12).
+3: end for
+this reason, even if the saddle-point problem (10) has only
+strong concavity in dual variables (when ⇢ = 0), the algorithm still enjoys a linear convergence rate.
+Moreover, even if ⇢ > 0, it will be inefficient to solve problem (10) using primal-dual algorithms based on proximal
+mappings of the strongly convex and concave terms (e.g.,
+Chambolle & Pock, 2011; Balamurugan & Bach, 2016).
+The reason is that, in (10), the strong concavity of the Lagrangian with respect to the dual lies in the quadratic function (1/2)kwkCb , whose proximal mapping cannot be computed efficiently. In contrast, the PDBG algorithm only
+needs its gradients.
+b bb and C,
+b which costs
+If we pre-compute and store A,
+O(nd2 ) operations, then computing the gradient operator
+B(✓, w) in (12) during each iteration of PDBG costs O(d2 )
+operations. Alternatively, if we do not want to store these
+d ⇥ d matrices (especially if d is large), then we can compute B(✓, w) P
+as finite sums on the fly. More specifically,
+n
+B(✓, w) = n1 t=1 Bt (✓, w), where for each t = 1, . . . , n,
+
+⇢✓ At w
+Bt (✓, w) =
+.
+(16)
+At ✓ b t + C t w
+Since At , bt and Ct are all rank-one matrices, as given
+in (6), computing each Bt (✓, w) only requires O(d) operations. Therefore, computing B(✓, w) costs O(nd) operations as it averages Bt (✓, w) over n samples.
 
-We note that the value of 0.06 attained by the non-Gaussian
-case is quite high, since the zero weight vector in this case has
-loss of order 0.1.
+5
 
-Figure 4. The population risk for a network with overlapping filters, with a two dimensional filter w∗ = [−1, 1], k = 4, d = 5,
-and Gaussian inputs.
+Stochastic Variance Reduction Methods
 
-Compared to the objective in Eq. 8 which depends only on
-kwk, kwk and θw,w∗ , we see that the objective in Eq. 16
-has new terms such as g(wr , w∗l ) which has a more complicated dependence on the weight vectors w∗ and w. This
-does not only have implications on the analysis, but also
-on the geometric properties of the loss function and the dynamics of gradient descent. In particular, in Figure 4 we
-see that the objective has a large sub-optimal region which
-is not the case when the filters are non-overlapping.
-As in the previous section we consider gradient descent updates as in Eq. 13. The following Proposition shows that
-if w is initialized in the interior of the fourth quadrant of
-R2 , then it will stay there for all remaining iterations. The
-proof is a straightforward inspection of the components of
-the gradient, and is provided in the supplementary.
+If we replace B(✓, w) in Algorithm 1 (line 2) by the
+stochastic gradient Bt (✓, w) in (16), then we recover the
+GTD2 algorithm of Sutton et al. (2009b), applied to a fixed
+dataset, possibly with multiple passes. It has a low periteration cost but a slow, sublinear convergence rate. In
+this section, we provide two stochastic variance reduction
+methods and show they achieve fast linear convergence.
+5.1
 
-Globally Optimal Gradient Descent for a ConvNet with Gaussian Inputs
+SVRG for policy evaluation
 
-Proposition 7.1. For any λ ∈ (0, 31 ), if wt is in the interior
-of the fourth quadrant of R2 then so is wt+1 .
+Algorithm 2 is adapted from the stochastic variance reduction gradient (SVRG) method (Johnson & Zhang, 2013).
+It uses two layers of loops and maintains two sets of pa˜ w̃) and (✓, w). In the outer loop, the algorithm
+rameters (✓,
+˜ w̃) using (✓,
+˜ w̃), which takes
+computes a full gradient B(✓,
 
-follows easily from equating the population risk (Eq. 3) to 0
-and the full proof is deferred to the supplementary material.
+Stochastic Variance Reduction Methods for Policy Evaluation
 
-Note that in our example the global optimum w∗ is in the
-second quadrant (it’s easy to show that it is also unique).
-Hence, if initialized at the fourth quadrant, gradient descent
-will remain in a sub-optimal region. The sub-optimality
-can be clearly seen in Figure 4. In the proposition below
-we formalize this observation by giving a tight lower bound
-on the values of `(w) for w in the fourth quadrant. Specifically, we show that the sub-optimality scales with O( k12 ).
-The proof idea is to express all angles between all the vectors that appear in Eq. 16 via a single angle parameter θ
-between w in the fourth quadrant and the positive x-axis.
-Then it is possible to prove the relatively simpler one dimensional inequality that depends on θ.
+Algorithm 2 SVRG for Policy Evaluation
+Inputs: initial point (✓, w), step sizes { ✓ , w }, number of
+outer iterations M , and number of inner iterations N .
+1: for m = 1 to M do
+˜ w̃) = (✓, w) and compute B(✓,
+˜ w̃).
+2:
+Initialize (✓,
+3:
+for j = 1 to N do
+4:
+Sample an index tj from {1, · · · , n} and do
+˜ w̃).
+5:
+Compute Btj (✓, w) and Btj (✓,
+
+
+
+✓
+✓
+0
+✓
+˜ w̃)
+6:
+Btj (✓, w, ✓,
+w
+w
+0
+w
+˜ w̃) is given in (17).
+where Btj (✓, w, ✓,
+7:
+end for
+8: end for
+Algorithm 3 SAGA for Policy Evaluation
+Inputs: initial point (✓, w), step sizes ✓ and w , and
+number of iterations M .
+1: Compute each gt = Bt (✓, w)P
+for t = 1, . . . , n.
+n
+2: Compute B = B(✓, w) = n1
+t=1 gt .
+3: for m = 1 to M do
+4:
+Sample an index tm from {1, · · · , n}.
+5:
+Compute htm = Btm (✓, w).
+
+
+
+✓
+✓
+0
+✓
+6:
+(B + htm gtm ).
+w
+w
+0
+w
+7:
+B
+B + n1 (htm
+8:
+g tm
+ht m .
+9: end for
 
-Our results are that across all values of d, m, overlap and
-w∗ , the probability mass of the basin of attraction is at least
+g tm )
+
+As Algorithm 3 proceeds, different vectors gt are computed
+using different values of ✓ and w (depending on when the
+index t was sampled). So in general we need to store all
+vectors gt , for t = 1, . . . , n, to facilitate individual updates,
+which will cost additional O(nd) storage. However, by exploiting the rank-one structure in (6), we only need to store
+0 T
+0 T
+three scalars ( t
+) ✓, ( t
+) w, and Tt w, and
+form gtm on the fly using O(d) computation. Overall, each
+iteration of SAGA costs O(d) operations.
+5.3
+
+Theoretical analyses of SVRG and SAGA
+
+In order to study the convergence properties of SVRG and
+SAGA for policy evaluation, we introduce a smoothness
+parameter LG based on the stochastic gradients Bt (✓, w).
+Let = w / ✓ be the ratio between the primal and dual
+step-sizes, and define a pair of weighted Euclidean norms
+⌦(✓, w) , (k✓k2 +
+
 1
-17 . The practical implication is that multiple restarts of gradient descent (in this case a few dozen) will find the global
-optimum with high probability. We leave formal analysis
-of this intriguing fact for future work.
+
+kwk2 )1/2 ,
+
+⌦⇤ (✓, w) , (k✓k2 + kwk2 )1/2 .
+
+O(nd) operations. Afterwards, the algorithm executes the
+inner loop, which randomly samples an index tj and updates (✓, w) using variance-reduced stochastic gradient:
+˜ w̃) = Bt (✓, w) + B(✓,
+˜ w̃)
+Btj(✓, w, ✓,
+j
+
+computing each component gradients gt = Bt (✓,Pw) at
+n
+the initial point, and also form their average B = t gt .
+At each iteration, the algorithm randomly picks an index
+tm 2 {1, . . . , n} and computes the stochastic gradient
+htm = Btm (✓, w). Then, it updates (✓, w) using a variance reduced stochastic gradient: B + htm gtm , where
+gtm is the previously computed stochastic gradient using
+the tm -th sample (associated with certain past values of ✓
+and w). Afterwards, it updates the batch gradient estimate
+B as B + n1 (htm gtm ) and replaces gtm with htm .
+
+˜ w̃). (17)
+Btj(✓,
+
+Here, Btj (✓, w) contains the stochastic gradients at (✓, w)
+computed using the random sample with index tj , and
+˜ w̃) Bt (✓,
+˜ w̃) is a term used to reduce the variance
+B(✓,
+j
+˜ w̃) an unbiased esin Btj (✓, w) while keeping Btj(✓, w, ✓,
+timate of B(✓, w).
+˜ w̃) is computed once during each iteration of
+Since B(✓,
+the outer loop with cost O(nd) (as explained at the end of
+Section 4), and each of the N iterations of the inner loop
+cost O(d) operations, the total computational cost of for
+each outer loop is O(nd + N d). We will present the overall
+complexity analysis of Algorithm 2 in Section 5.3.
+5.2 SAGA for policy evaluation
+The second stochastic variance reduction method for policy
+evaluation is adapted from SAGA (Defazio et al., 2014);
+see Algorithm 3. It uses a single loop, and maintains a single set of parameters (✓, w). Algorithm 3 starts by first
+
+Note that ⌦(·, ·) upper bounds the error in optimizing ✓:
+⌦(✓ ✓? , w w? ) k✓ ✓? k. Therefore, any bound on
+⌦(✓ ✓? , w w? ) applies automatically to k✓ ✓? k.
+Next, we define the parameter LG through its square:
+Pn
+1
+⇤
+Bt (✓2 , w2 )
+t=1 ⌦ Bt (✓1 , w1 )
+2
+n
+LG ,
+sup
+⌦(✓1 ✓2 , w1 w2 )2
+✓1 ,w1 ,✓2 ,w2
 
 2
 
-√
+.
 
-+ 3(k−1)
-+
-Proposition 7.2. Let h(k) = k −3k+2
-π
-π
-2(k−1)
-, then for all w in the fourth quadrant l(w) ≥
-3
-2h(k)+1
-∗ 2
-k2 (2h(k)+2) kw k and this lower bound is attained by
-h(k)
-w̃ = − h(k)+1
-w∗ .
+This definition is similar to the smoothness constant L̄ used
+in Balamurugan & Bach (2016) except that we used the
+step-size ratio rather than the strong convexity and concavity parameters of the Lagrangian to define ⌦ and ⌦⇤ .1
+Substituting the definition of Bt (✓, w) in (16), we have
+
+p T
+n
+1X T
+⇢I
+At
+L2G =
+Gt Gt , where Gt , p
+.
+At
+Ct
+n t=1
+(18)
+With the above definitions, we characterize the convergence of ⌦(✓m ✓? , wm w? ), where (✓? , w? ) is the solution of (10), and (✓m , wm ) is the output of the algorithms
+1
 
-The above two propositions result in the following characterization of the sub-optimality of gradient descent for
-w ∈ R2 and overlapping filters.
-Theorem 7.3. Define h(k) as in Proposition 7.2. Then with
-probability ≥ 41 , a randomly initialized gradient descent
-with learning rate λ ∈ (0, 13 ) will get stuck in a sub-optimal
-region, where each point in this region has loss at least
-2h(k)+1
-∗ 2
-k2 (2h(k)+2) kw k and this bound is tight.
-7.2. Empirical study of Gradient Descent for m > 2
-In Section 7.1 we showed that already for m = 2, networks with w ∈ Rm and filter overlaps exhibit more complex behavior than those without overlap. This leaves open
-the question of what happens in the general case under the
-Gaussian assumption, for various values of d, m and overlaps. We leave the theoretical analysis of this question to
-future work, but here report on empirical findings that hint
-at what the solution should look like.
-We experimented with a range of d, m and overlap values
-(see supplementary material for details of the experimental setup). For each value of d, m and overlap we sampled 90 values of w∗ from various uniform input distributions with different supports and several pre-defined deterministic values. This resulted in more than 1200 different
-sampled w∗ . For each such w∗ we ran gradient descent
-multiple times, each initialized randomly from a different
-w0 . Using the results from these runs, we could estimate
-the probability of sampling a w0 that would converge to
-the unique global minimum. Viewed differently, this is the
-probability mass of the basin of attraction of the global optimum. We note that the uniqueness of the global minimum
+Since our saddle-point problem is not necessarily strongly
+convex in ✓ (when ⇢ = 0), we could not define ⌦ and ⌦⇤ in the
+same way as Balamurugan & Bach (2016).
 
-8. Discussion
-The key theoretical question in deep learning is why it succeeds in finding good models despite the non-convexity of
-the training loss. It is clear that an answer must characterize specific settings where deep learning provably works.
-Despite considerable recent effort, such a case has not been
-shown. Here we provide the first analysis of a non-linear architecture where gradient descent is globally optimal, for a
-certain input distribution, namely Gaussian. Thus our specific characterization is both in terms of architecture (nooverlap networks, single hidden layer, and average pooling) and input distribution. We show that learning in nooverlap architectures is hard, so that some input distribution restriction is necessary for tractability. Note however,
-that it is certainly possible that other, non-Gaussian, distributions also result in tractability. Some candidates would
-be sub-Gaussian and log-concave distributions.
-Our derivation addressed the population risk, which for the
-Gaussian case can be calculated in closed form. In practice, one minimizes an empirical risk. Our experiments in
-Section 6 suggest that optimizing the empirical risk in the
-Gaussian case is tractable. It would be interesting to prove
-this formally. It is likely that measure concentration results
-can be used to get similar results to those we had for the
-population risk (e.g., see Mei et al., 2016; Xu et al., 2016,
-for use of such tools).
-Convolution layers are among the basic building block of
-neural networks. Our work is among the first to analyze
-optimization for these. The architecture we study is similar
-in structure to convolutional networks, in the sense of using parameter tying and pooling. However, most standard
-convolutional layers have overlap and use max pooling. In
-Section 7 we provide initial results for the case of overlap, showing there is hope for proving optimality for gradient descent with random restarts. Analyzing max pooling
-would be very interesting and is left for future work.
-Finally, we note that distribution dependent tractability has
-been shown for intersection of halfspaces (Klivans et al.,
-2009), which is a non-convolutional architecture. However,
-these results do not use gradient descent. It would be very
-interesting to use our techniques to try and understand gradient descent for the population risk in these settings.
+Stochastic Variance Reduction Methods for Policy Evaluation
 
-Globally Optimal Gradient Descent for a ConvNet with Gaussian Inputs
+after the m-th iteration. For SVRG, it is the m-th outer
+iteration in Algorithm 2. The following two theorems are
+proved in Appendices C and D, respectively.
+Theorem 2 (Convergence rate of SVRG). Suppose Asµ⇢
+sumption 1 holds. If we choose ✓ = 48(C)L
+b 2 , w =
+b 2
+512(C)L
+G
+,
+µ2⇢
 
-Acknowledgements
-This work was supported by the Blavatnik Computer Science Research Fund, the Intel Collaborative Research Institute for Computational Intelligence (ICRI-CI), and an ISF
-Centers of Excellence grant.
+8L⇢
+b ✓,
+min (C)
 
-Ge, Rong, Lee, Jason D, and Ma, Tengyu. Matrix completion has no spurious local minimum. In Advances in
-Neural Information Processing Systems, pp. 2973–2981,
-2016.
+N =
+in (13) and (14), then
+⇥
+E ⌦(✓m
+
+✓? , wm
+
+G
+
+where L⇢ and µ⇢ are defined
+
+⇤ ⇣ 4 ⌘m
+w? )2 
+⌦(✓0
+5
+
+✓? , w0
+
+w? )2 .
+
+⇥
+
+Theorem 3 (Convergence rate of SAGA). Suppose Asµ⇢
+sumption 1 holds. If we choose ✓ = 3 82 (C)L
+b 2 +nµ2 )
+(
+⇢
+G
+8L⇢
+and w =
+in
+Algorithm
+3,
+then
+b ✓
+(C)
+min
+
+⇤
+E ⌦(✓m ✓? , wm w? )2  2(1 ⇢)m ⌦(✓0 ✓? , w0 w? )2 ,
+where ⇢
+⇥
+E ⌦(✓m
+
+µ2⇢
+
+b 2 +nµ2 )
+9(82 (C)L
+⇢
+G
+
+✓? , wm
+
+⇤
+
+Algorithm
+
+SVRG / SAGA
+GTD2
+
+The overall computational
+cost for reaching E ⌦(✓m
+⇤
+✓? , wm w? )  ✏ is upper bounded by
+✓✓
+◆
+⇣ 1 ⌘◆
+b 2
+(C)L
+G
+O
+n+
+d log
+. (19)
+2 (⇢I + A
+bT C
+b 1 A)
+b
+✏
+min
+
+⇥
+
+Table 1. Complexity of different policy evaluation algorithms. In
+the table, d is feature dimension, n is dataset size,  , (⇢I +
+bT C
+b 1 A);
+b G , LG / min (⇢I + A
+bT C
+b 1 A);
+b and 0 is a conA
+dition number related to GTD2.
+
+. The total cost to achieve
+
+w? )  ✏ has the same bound in (19).
+
+Similar to our PDBG results in (15), both the SVRG and
+SAGA algorithms for policy evaluation enjoy linear convergence even if there is no strong convexity in the saddlepoint problem (10) (i.e., when ⇢ = 0). This is mainly due to
+bT C
+b 1A
+b when C
+b is positivethe positive definiteness of A
+b is full-rank. In contrast, the linear converdefinite and A
+gence of SVRG and SAGA in Balamurugan & Bach (2016)
+requires the Lagrangian to be both strongly convex in ✓ and
+strongly concave in w.
+Moreover, in the policy evaluation problem, the strong concavity with respect to the dual variable w comes from a
+weighted quadratic norm (1/2)kwkCb , which does not admit an efficient proximal mapping as required by the proximal versions of SVRG and SAGA in Balamurugan &
+Bach (2016). Our algorithms only require computing the
+stochastic gradients of this function, which is easy to do
+due to its finite sum structure.
+Balamurugan & Bach (2016) also proposed accelerated
+variants of SVRG and SAGA using the “catalyst” framework of Lin et al. (2015). Such extensions can be done
+similarly for the three algorithms presented in this paper,
+and we omit the details due to space limit.
+
+6 Comparison of Different Algorithms
+This section compares the computation complexities of
+several representative policy-evaluation algorithms that
+minimize EM-MSPBE, as summarized in Table 1.
+
+PDBG-(I)
+PDBG-(II)
+LSTD
+
+Total Complexity
+⇣
+⇣
+⌘
+⌘
+b 2
+(C)
+G
+O nd · 1 +
+· log 1/✏
+n
+O (d · 0 /✏)
+⇣
+⌘
+b · log(1/✏)
+O nd · (C)
+⇣
+⌘
+b · log(1/✏)
+O nd2 + d2 (C)
+O nd2 or O nd2 + d3
+
+The upper part of the table lists algorithms whose complexity is linear in feature dimension d, including the two new
+algorithms presented in the previous section. We can also
+apply GTD2 to a finite dataset with samples drawn uniformly at random with replacement. It costs O(d) per iteration, but has a sublinear convergence rate regarding ✏. In
+practice, people may choose ✏ = ⌦(1/n) for generalization reasons (see, e.g., Lazaric et al. (2010)), leading to an
+O(0 nd) overall complexity for GTD2, where 0 is a condition number related to the algorithm. However, as verified
+by our experiments, the bounds in the table show that our
+SVRG/SAGA-based algorithms are much faster as their effective condition numbers vanish when n becomes large.
+TDC has a similar complexity to GTD2.
+In the table, we list two different implementations of
+PDBG. PDBG-(I) computes the gradients by averaging the
+stochastic gradients over the entire dataset at each iteration,
+which costs O(nd) operations; see discussions at the end of
+b bb
+Section 4. PDBG-(II) first pre-computes the matrices A,
+2
+b
+and C using O(nd ) operations, then computes the batch
+gradient at each iteration with O(d2 ) operations. If d is
+very large (e.g., when d
+n), then PDBG-(I) would have
+an advantage over PDBG-(II). The lower part of the table
+also includes LSTD, which has O(nd2 ) complexity if rankone updates are used.
+SVRG and SAGA are more efficient than the other algorithms, when either d or n is very large. In particular, they have a lower
+⇣ ⌘ complexity than LSTD when d >
+b 2
+(C)
+
+G
+(1 +
+) log 1✏ , This condition is easy to satisfy,
+n
+when n is very large. On the other hand, SVRG and SAGA
+algorithms are more efficient than PDBG-(I) if n is large,
+b 2 (C)
+b
+say n > (C)
+1 , where  and G are deG
+scribed in the caption of Table 1.
+
+There are other algorithms whose complexity scales
+linearly with n and d, including iLSTD (Geramifard
+et al., 2007), and TDC (Sutton et al., 2009b), fLSTDSA (Prashanth et al., 2014), and the more recent algorithms
+of Wang et al. (2016) and Dai et al. (2016). However, their
+
+Stochastic Variance Reduction Methods for Policy Evaluation
+
+convergence is slow: the number of iterations required to
+reach a desired accuracy ✏ grows as 1/✏ or worse. The
+CTD algorithm (Korda & Prashanth, 2015) uses a similar
+idea as SVRG to reduce variance in TD updates. This algorithm is shown to have a similar linear convergence rate
+in an online setting where the data stream is generated by a
+Markov process with finite states and exponential mixing.
+The method solves for a fixed-point solution by stochastic approximation. As a result, they can be non-convergent
+in off-policy learning, while our algorithms remain stable
+(c.f., Section 7.1).
+
+7 Extensions
+It is possible to extend our approach to accelerate optimization of other objectives such as MSBE and NEU (Dann
+et al., 2014). In this section, we briefly describe two extensions of the algorithms developed earlier.
+7.1 Off-policy learning
+In some cases, we may want to estimate the value function
+of a policy ⇡ from a set of data D generated by a different “behavior” policy ⇡b . This is called off-policy learning (Sutton & Barto, 1998, Chapter 8).
+In the off-policy case, samples are generated from the distribution induced by the behavior policy ⇡b , not the the
+target policy ⇡. While such a mismatch often causes
+stochastic-approximation-based methods to diverge (Tsitsiklis & Van Roy, 1997), our gradient-based algorithms remain convergent with the same (fast) convergence rate.
+Consider the RL framework outlined in Section 2. For each
+state-action pair (st , at ) such that ⇡b (at |st ) > 0, we define
+the importance ratio, ⇢t , ⇡(at |st )/⇡b (at |st ). The EMMSPBE for off-policy learning has the same expression as
+in (7) except that At , bt and Ct are modified by the weight
+factor ⇢t , as listed in Table 2; see also Liu et al. (2015,
+Eqn 6) for a related discussion.) Algorithms 1–3 remain the
+same for the off-policy case after At , bt and Ct are modified
+correspondingly.
+7.2 Learning with eligibility traces
+Eligibility traces are a useful technique to trade off bias and
+variance in TD learning (Singh & Sutton, 1996; Kearns &
+Singh, 2000). When they are used, we can pre-compute zt
+in Table 2 before running our new algorithms. Note that
+EM-MSPBE with eligibility traces has the same form of
+(7), with At , bt and Ct defined differently according to the
+last row of Table 2. At the m-th step of the learning process, the algorithm randomly samples ztm , tm , 0tm and
+rtm from the fixed dataset and computes the corresponding
+stochastic gradients, where the index tm is uniformly distributed over {1, . . . , n} and are independent for different
+values of m. Algorithms 1–3 immediately work for this
+case, enjoying a similar linear convergence rate and a com-
+
+Table 2. Expressions of At , bt and Ct for different cases of policy
+Here, ⇢t , ⇡(at |st )/⇡b (at |st ); and zt ,
+Pt evaluation.
+)t i i , where
+0 is a given parameter.
+i=1 (
+At
+
+On-policy
+Off-policy
+Eligibility trace
+
+t( t
+
+⇢t t ( t
+zt ( t
+
+0 >
+t)
+0 >
+t)
+0 >
+t)
+
+bt
+rt t
+⇢t r t t
+r t zt
+
+Ct
+t
+t
+t
+
+>
+t
+>
+t
+>
+t
+
+putation complexity linear in n and d. We need additional
+O(nd) operations to pre-compute zt recursively and an additional O(nd) storage for zt . However, it does not change
+the order of the total complexity for SVRG/SAGA.
+
+8
+
+Experiments
+
+In this section, we compare the following algorithms on
+two benchmark problems: (i) PDBG (Algorithm 1); (ii)
+GTD2 with samples drawn randomly with replacement
+from a dataset; (iii) TD: the fLSTD-SA algorithm of
+Prashanth et al. (2014); (iv) SVRG (Algorithm 2); and
+(v) SAGA (Algorithm 3). Note that when ⇢ > 0, the
+TD solution and EM-MSPBE minimizer differ, so we do
+not include TD. For step size tuning, ✓ is chosen from
+1
+10 1 , 10 2 , . . . , 10 6 L (
+b and w is chosen from
+C)
+⇢
+
+1
+1, 10 1 , 10 2
+b . We only report the results of
+max (C)
+each algorithm which correspond to the best-tuned step
+sizes; for SVRG we choose N = 2n.
+
+In the first task, we consider a randomly generated MDP
+with 400 states and 10 actions (Dann et al., 2014). The transition probabilities are defined as P (s0 |a, s) / pass0 +10 5 ,
+where pass0 ⇠ U [0, 1]. The data-generating policy and start
+distribution were generated in a similar way. Each state
+is represented by a 201-dimensional feature vector, where
+200 of the features were sampled from a uniform distribution, and the last feature was constant one. We chose
+= 0.95. Fig. 1 shows the performance of various algorithms for n = 20000. First, notice that the stochastic
+variance methods converge much faster than others. In fact,
+our proposed methods achieve linear convergence. Second,
+as we increase ⇢, the performances of PDBG, SVRG and
+SAGA improve significantly due to better conditioning, as
+predicted by our theoretical results.
+Next, we test these algorithms on Mountain Car (Sutton &
+Barto, 1998, Chapter 8). To collect the dataset, we first ran
+Sarsa with d = 300 CMAC features to obtain a good policy.
+Then, we ran this policy to collect trajectories that comprise the dataset. Figs. 2 and 3 show our proposed stochastic variance reduction methods dominate other first-order
+methods. Moreover, with better conditioning (through a
+larger ⇢), PDBG, SVRG and SAGA achieve faster convergence rate. Finally, as we increase sample size n, SVRG
+and SAGA converge faster. This simulation verifies our
+
+0
+
+0
+
+−2
+
+−2
+
+−4
+−6
+PDBG
+GTD2
+TD
+SVRG
+SAGA
+
+−8
+−10
+−12
+0
+
+1000
+
+2000
+Epochs
+
+3000
+
+−4
+−6
+−8
+
+−12
+0
+
+4000
+
+(a) ⇢ = 0
+
+PDBG
+GTD2
+SVRG
+SAGA
+
+−10
+
+1000
+
+(b) ⇢ =
+
+q
+
+2000
+Epochs
+
+3000
+
+b> C
+b
+
+max (A
+
+log10(Objective Value)
+
+0
+−2
+
+log10(Objective Value)
+
+log10(Objective Value)
+
+Stochastic Variance Reduction Methods for Policy Evaluation
+
+−4
+−6
+−8
+PDBG
+GTD2
+SVRG
+SAGA
+
+−10
+−12
+0
+
+4000
+
+1000
+
+(c) ⇢ =
+
+1 A)
+b
+
+0
+
+0
+
+−2
+
+−2
+
+−2
+
+−4
+−6
+PDBG
+GTD2
+TD
+SVRG
+SAGA
+
+−8
+−10
+−12
+0
+
+500
+
+1000
+
+1500
+
+−4
+−6
+−8
+−10
+−12
+0
+
+2000
+
+PDBG
+GTD2
+SVRG
+SAGA
+500
+
+Epochs
+
+1000
+
+1500
+
+log10(Objective Value)
+
+0
+
+log10(Objective Value)
+
+log10(Objective Value)
+
+Figure 1. Random MDP with s = 400, d = 200, and n = 20000.
+
+(b) ⇢ = 0.01
+
+PDBG
+GTD2
+SVRG
+SAGA
+
+−10
+
+500
+
+b> C
+b
+
+max (A
+
+1
+
+b
+A)
+
+(c) ⇢ =
+
+−2
+
+−2
+
+−2
+
+PDBG
+GTD2
+TD
+SVRG
+SAGA
+
+−10
+−12
+0
+
+500
+
+1000
+
+1500
+
+2000
+
+−4
+−6
+−8
+PDBG
+GTD2
+SVRG
+SAGA
+
+−10
+−12
+0
+
+500
+
+Epochs
+
+(a) ⇢ = 0
+
+1000
+
+1500
+
+2000
+
+log10(Objective Value)
+
+0
+
+log10(Objective Value)
+
+log10(Objective Value)
+
+0
+
+−8
+
+9 Conclusions
+In this paper, we reformulated the EM-MSPBE minimization problem in policy evaluation into an empirical saddlepoint problem, and developed and analyzed a batch gradient method and two first-order stochastic variance reduction methods to solve the problem. An important result we
+obtained is that even when the reformulated saddle-point
+problem lacks strong convexity in primal variables and has
+only strong concavity in dual variables, the proposed algorithms are still able to achieve a linear convergence rate.
+We are not aware of any similar results for primal-dual
+
+2000
+
+b> C
+b
+
+max (A
+
+1
+
+b
+A)
+
+b> C
+b
+
+max (A
+
+1
+
+b
+A)
+
+−6
+−8
+PDBG
+GTD2
+SVRG
+SAGA
+
+−10
+−12
+0
+
+500
+
+(c) ⇢ =
+
+Figure 3. Mountain Car Data Set with d = 300 and n = 20000.
+
+theoretical finding in Table 1 that SVRG/SAGA need fewer
+epochs for large n.
+
+1500
+
+−4
+
+Epochs
+
+(b) ⇢ = 0.01
+
+1000
+
+Epochs
+
+0
+
+−6
+
+4000
+
+⌘
+b> C
+b 1A
+b
+A
+
+−8
+
+Figure 2. Mountain Car Data Set with d = 300 and n = 5000.
+
+−4
+
+3000
+
+−6
+
+Epochs
+
+(a) ⇢ = 0
+
+max
+
+⇣
+
+−4
+
+−12
+0
+
+2000
+
+2000
+Epochs
+
+1000
+Epochs
+
+b> C
+b
+
+max (A
+
+1500
+
+1
+
+2000
+
+b
+A)
+
+batch gradient methods or stochastic variance reduction
+methods. Furthermore, we showed that when both the feature dimension d and the number of samples n are large, the
+developed stochastic variance reduction methods are more
+efficient than any other gradient-based methods which are
+convergent in off-policy settings.
+This work leads to several interesting directions for research. First, we believe it is important to extend the
+stochastic variance reduction methods to nonlinear approximation paradigms (Bhatnagar et al., 2009), especially with
+deep neural networks. Moreover, it remains an important
+open problem how to apply stochastic variance reduction
+techniques to policy optimization.
+
+Stochastic Variance Reduction Methods for Policy Evaluation
 
 References
+Balamurugan, P and Bach, Francis. Stochastic variance reduction methods for saddle-point problems. In Advances
+in Neural Information Processing Systems 29, pp. 1416–
+1424, 2016.
+Bertsekas, Dimitri P and Tsitsiklis, John N. Neurodynamic programming: An overview. In Decision and
+Control, 1995., Proceedings of the 34th IEEE Conference on, volume 1, pp. 560–564. IEEE, 1995.
+Bhatnagar, Shalabh, Precup, Doina, Silver, David, Sutton, Richard S, Maei, Hamid R, and Szepesvári, Csaba.
+Convergent temporal-difference learning with arbitrary
+smooth function approximation. In Advances in Neural
+Information Processing Systems, pp. 1204–1212, 2009.
+Boyan, Justin A. Technical update: Least-squares temporal difference learning. Machine Learning, 49:233–246,
+2002.
+Bradtke, Steven J and Barto, Andrew G. Linear leastsquares algorithms for temporal difference learning. Machine Learning, 22:33–57, 1996.
+Chambolle, Antonin and Pock, Thomas. A first-order
+primal-dual algorithm for convex problems with applications to imaging. Journal of Mathematical Imaging
+and Vision, 40(1):120–145, 2011.
+Dai, Bo, He, Niao, Pan, Yunpeng, Boots, Byron, and Song,
+Le. Learning from conditional distributions via dual embeddings. arXiv:1607.04579, 2016.
+Dann, Christoph, Neumann, Gerhard, and Peters, Jan. Policy evaluation with temporal differences: a survey and
+comparison. Journal of Machine Learning Research, 15
+(1):809–883, 2014.
+Defazio, Aaron, Bach, Francis, and Lacoste-Julien, Simon.
+SAGA: A fast incremental gradient method with support
+for non-strongly convex composite objectives. In Advances in Neural Information Processing Systems, pp.
+1646–1654, 2014.
+Geramifard, Alborz, Bowling, Michael H., Zinkevich,
+Martin, and Sutton, Richard S. iLSTD: Eligibility traces
+and convergence analysis. In Advances in Neural Information Processing Systems 19, pp. 441–448, 2007.
+Gohberg, Israel, Lancaster, Peter, and Rodman, Leiba. Indefinite linear algebra and applications. Springer Science & Business Media, 2006.
+Johnson, Rie and Zhang, Tong. Accelerating stochastic
+gradient descent using predictive variance reduction. In
+Advances in Neural Information Processing Systems, pp.
+315–323, 2013.
 
-Goel, Surbhi, Kanade, Varun, Klivans, Adam, and Thaler,
-Justin. Reliably learning the ReLU in polynomial time.
-arXiv preprint arXiv:1611.10258, 2016.
+Kearns, Michael J. and Singh, Satinder P. “Bias-variance”
+error bounds for temporal difference updates. In Proceedings of the Thirteenth Annual Conference on Computational Learning Theory (COLT-00), pp. 142–147,
+2000.
+Korda, Nathaniel and Prashanth, L.A. On TD(0) with function approximation: Concentration bounds and a centered variant with exponential convergence. In Proceedings of the Thirty-Second International Conference on
+Machine Learning (ICML-15), pp. 626–634, 2015.
+Lagoudakis, Michail G and Parr, Ronald. Least-squares
+policy iteration. Journal of Machine Learning Research,
+4(Dec):1107–1149, 2003.
+Lange, Sascha, Gabel, Thomas, and Riedmiller, Martin.
+Batch reinforcement learning. In Wiering, Marco and
+van Otterlo, Martijn (eds.), Reinforcement Learning:
+State of the Art, pp. 45–73. Springer Verlag, 2011.
+Lazaric, Alessandro, Ghavamzadeh, Mohammad, and
+Munos, Rémi. Finite-sample analysis of LSTD. In
+Proceedings of the Twenty-Seventh International Conference on Machine Learning, pp. 615–622, 2010.
+Lian, Xiangru, Wang, Mengdi, and Liu, Ji. Finite-sum
+composition optimization via variance reduced gradient
+descent. In Proceedings of Artificial Intelligence and
+Statistics Conference (AISTATS), pp. 1159–1167, 2017.
+Liesen, Jörg and Parlett, Beresford N. On nonsymmetric
+saddle point matrices that allow conjugate gradient iterations. Numerische Mathematik, 108(4):605–624, 2008.
+Lin, Hongzhou, Mairal, Julien, and Harchaoui, Zaid.
+A universal catalyst for first-order optimization. In
+Advances in Neural Information Processing Systems
+(NIPS) 28, pp. 3384–3392, 2015.
+Lin, Long-Ji. Self-improving reactive agents based on reinforcement learning, planning and teaching. Machine
+Learning, 8(3–4):293–321, 1992.
+Liu, Bo, Liu, Ji, Ghavamzadeh, Mohammad, Mahadevan,
+Sridhar, and Petrik, Marek. Finite-sample analysis of
+proximal gradient TD algorithms. In Proc. The 31st
+Conf. Uncertainty in Artificial Intelligence, Amsterdam,
+Netherlands, 2015.
+Nedić, A. and Bertsekas, Dimitri P. Least squares policy evaluation algorithms with linear function approximation. Discrete Event Dynamics Systems: Theory and
+Applications, 13(1):79–110, 2003.
+Prashanth, LA, Korda, Nathaniel, and Munos, Rémi. Fast
+LSTD using stochastic approximation: Finite time analysis and application to traffic control. In Joint European
 
-Allen-Zhu, Zeyuan and Hazan, Elad. Variance reduction for faster non-convex optimization. arXiv preprint
-arXiv:1603.05643, 2016.
+Stochastic Variance Reduction Methods for Policy Evaluation
 
-Haeffele, Benjamin D and Vidal, René. Global optimality
-in tensor factorization, deep learning, and beyond. arXiv
-preprint arXiv:1506.07540, 2015.
+Conference on Machine Learning and Knowledge Discovery in Databases, pp. 66–81. Springer, 2014.
+Precup, Doina, Sutton, Richard S., and Dasgupta, Sanjoy.
+Off-policy temporal-difference learning with funtion approximation. In Proceedings of the Eighteenth Conference on Machine Learning (ICML-01), pp. 417–424,
+2001.
+Puterman, Martin L. Markov Decision Processes: Discrete
+Stochastic Dynamic Programming. John Wiley & Sons,
+2005.
+Rockafellar, R. Tyrrell. Convex Analysis. Princeton University Press, 1970.
+Shen, Shu-Qian, Huang, Ting-Zhu, and Cheng, GuangHui. A condition for the nonsymmetric saddle point
+matrix being diagonalizable and having real and positive eigenvalues. Journal of Computational and Applied
+Mathematics, 220(1):8–12, 2008.
+Singh, Satinder P. and Sutton, Richard S. Reinforcement learning with replacing eligibility traces. Machine
+Learning, 22(1–3):123–158, 1996.
+Sutton, Richard S and Barto, Andrew G. Reinforcement
+Learning: An Introduction. MIT Press, Cambridge, MA,
+1998.
+Sutton, Richard S, Maei, Hamid R, and Szepesvári, Csaba.
+A convergent o(n) temporal-difference algorithm for
+off-policy learning with linear function approximation.
+In Advances in neural information processing systems,
+pp. 1609–1616, 2009a.
+Sutton, Richard S, Maei, Hamid Reza, Precup, Doina,
+Bhatnagar, Shalabh, Silver, David, Szepesvári, Csaba,
+and Wiewiora, Eric. Fast gradient-descent methods
+for temporal-difference learning with linear function approximation. In Proceedings of the 26th Annual International Conference on Machine Learning, pp. 993–1000.
+ACM, 2009b.
+Tsitsiklis, John N. and Van Roy, Benjamin. An analysis
+of temporal-difference learning with function approximation. IEEE Transactions on Automatic Control, 42:
+674–690, 1997.
+Valcarcel Macua, Sergio, Chen, Jianshu, Zazo, Santiago,
+and Sayed, Ali H. Distributed policy evaluation under
+multiple behavior strategies. Automatic Control, IEEE
+Transactions on, 60(5):1260–1274, 2015.
+Wang, Mengdi, Liu, Ji, and Fang, Ethan. Accelerating
+stochastic composition optimization. In Advances in
+Neural Information Processing Systems (NIPS) 29, pp.
+1714–1722, 2016.
 
-Andoni, Alexandr, Panigrahy, Rina, Valiant, Gregory, and
-Zhang, Li. Learning polynomials with neural networks.
-In Proceedings of the 31th International Conference on
-Machine Learning, pp. 1908–1916, 2014.
-
-Hardt, Moritz and Ma, Tengyu. Identity matters in deep
-learning. arXiv preprint arXiv:1611.04231, 2016.
-
-Auer, Peter, Herbster, Mark, Warmuth, Manfred K, et al.
-Exponentially many local minima for single neurons.
-Advances in neural information processing systems, pp.
-316–322, 1996.
-Baum, Eric B. A polynomial time algorithm that learns
-two hidden unit nets. Neural Computation, 2(4):510–
-522, 1990.
-Blum, Avrim L and Rivest, Ronald L. Training a 3-node
-neural network is np-complete. In Machine learning:
-From theory to applications, pp. 9–28. Springer, 1993.
-Cho, Youngmin and Saul, Lawrence K. Kernel methods
-for deep learning. In Advances in neural information
-processing systems, pp. 342–350, 2009.
-Choromanska, Anna, Henaff, Mikael, Mathieu, Michael,
-Arous, Gérard Ben, and LeCun, Yann. The loss surfaces
-of multilayer networks. In AISTATS, 2015.
-Daniely, Amit, Linial, Nati, and Shalev-Shwartz, Shai.
-From average case complexity to improper learning
-complexity. In Proceedings of the 46th Annual ACM
-Symposium on Theory of Computing, pp. 441–448.
-ACM, 2014.
-Duchi, John, Hazan, Elad, and Singer, Yoram. Adaptive
-subgradient methods for online learning and stochastic
-optimization. Journal of Machine Learning Research,
-12(Jul):2121–2159, 2011.
-Garey, Michael R. and Johnson, David S. Computers and Intractability; A Guide to the Theory of NPCompleteness. W. H. Freeman & Co., New York, NY,
-USA, 1990. ISBN 0716710455.
-Ge, Rong, Huang, Furong, Jin, Chi, and Yuan, Yang. Escaping from saddle points-online stochastic gradient for
-tensor decomposition. In COLT, pp. 797–842, 2015.
-
-Hardt, Moritz, Ma, Tengyu, and Recht, Benjamin. Gradient
-descent learns linear dynamical systems. arXiv preprint
-arXiv:1609.05191, 2016.
-Hinton, Geoffrey, Deng, Li, Yu, Dong, Dahl, George E,
-Mohamed, Abdel-rahman, Jaitly, Navdeep, Senior, Andrew, Vanhoucke, Vincent, Nguyen, Patrick, Sainath,
-Tara N, et al. Deep neural networks for acoustic modeling in speech recognition: The shared views of four
-research groups. IEEE Signal Processing Magazine, 29
-(6):82–97, 2012.
-Janzamin, Majid, Sedghi, Hanie, and Anandkumar, Anima.
-Beating the perils of non-convexity: Guaranteed training
-of neural networks using tensor methods. arXiv preprint
-arXiv:1506.08473, 2015.
-Kakade, Sham M, Kanade, Varun, Shamir, Ohad, and
-Kalai, Adam. Efficient learning of generalized linear
-and single index models with isotonic regression. In Advances in Neural Information Processing Systems 24, pp.
-927–935. 2011.
-Kawaguchi, Kenji. Deep learning without poor local minima. In Advances In Neural Information Processing Systems, pp. 586–594, 2016.
-Klivans, Adam. Cryptographic hardness of learning. In Encyclopedia of Algorithms, pp. 210–212. Springer, 2008.
-Klivans, Adam R, Long, Philip M, and Tang, Alex K.
-Baums algorithm learns intersections of halfspaces with
-respect to log-concave distributions. In Approximation,
-Randomization, and Combinatorial Optimization. Algorithms and Techniques, pp. 588–600. Springer, 2009.
-Krizhevsky, Alex, Sutskever, Ilya, and Hinton, Geoffrey E.
-Imagenet classification with deep convolutional neural
-networks. In Advances in neural information processing
-systems, pp. 1097–1105, 2012.
-
-Globally Optimal Gradient Descent for a ConvNet with Gaussian Inputs
-
-Lee, Jason D., Simchowitz, Max, Jordan, Michael I., and
-Recht, Benjamin. Gradient descent only converges to
-minimizers. In Proceedings of the 29th Conference on
-Learning Theory, pp. 1246–1257, 2016.
-Lin, Min, Chen, Qiang, and Yan, Shuicheng. Network in
-network. arXiv preprint arXiv:1312.4400, 2013.
-Livni, Roi, Shalev-Shwartz, Shai, and Shamir, Ohad. On
-the computational efficiency of training neural networks.
-In Advances in Neural Information Processing Systems,
-pp. 855–863, 2014.
-Mei, Song, Bai, Yu, and Montanari, Andrea. The landscape
-of empirical risk for non-convex losses. arXiv preprint
-arXiv:1607.06534, 2016.
-Milletari, Fausto, Navab, Nassir, and Ahmadi, SeyedAhmad. V-net: Fully convolutional neural networks for
-volumetric medical image segmentation. In 3D Vision
-(3DV), 2016 Fourth International Conference on, pp.
-565–571. IEEE, 2016.
-Nesterov, Yurii. Introductory lectures on convex optimization. pp. 22–29, 2004.
-Safran, Itay and Shamir, Ohad. On the quality of the initial
-basin in overspecified neural networks. In Proceedings
-of the 33nd International Conference on Machine Learning, pp. 774–782, 2016.
-Shamir, Ohad. Distribution-specific hardness of learning neural networks. arXiv preprint arXiv:1609.01037,
-2016.
-Soudry, Daniel and Carmon, Yair. No bad local minima:
-Data independent training error guarantees for multilayer neural networks. arXiv preprint arXiv:1605.08361,
-2016.
-Wu, Yonghui, Schuster, Mike, Chen, Zhifeng, Le, Quoc V.,
-Norouzi, Mohammad, Macherey, Wolfgang, Krikun,
-Maxim, Cao, Yuan, Gao, Qin, Macherey, Klaus,
-Klingner, Jeff, Shah, Apurva, Johnson, Melvin, Liu,
-Xiaobing, Kaiser, Lukasz, Gouws, Stephan, Kato,
-Yoshikiyo, Kudo, Taku, Kazawa, Hideto, Stevens, Keith,
-Kurian, George, Patil, Nishant, Wang, Wei, Young, Cliff,
-Smith, Jason, Riesa, Jason, Rudnick, Alex, Vinyals,
-Oriol, Corrado, Greg, Hughes, Macduff, and Dean, Jeffrey. Google’s neural machine translation system: Bridging the gap between human and machine translation.
-CoRR, abs/1609.08144, 2016.
-Xu, Ji, Hsu, Daniel J, and Maleki, Arian. Global analysis of
-expectation maximization for mixtures of two gaussians.
-In Advances in Neural Information Processing Systems,
-pp. 2676–2684, 2016.
-
-Zhang, Chiyuan, Bengio, Samy, Hardt, Moritz, Recht,
-Benjamin, and Vinyals, Oriol. Understanding deep
-learning requires rethinking generalization.
-CoRR,
-abs/1611.03530, 2016. URL http://arxiv.org/
-abs/1611.03530.
-Zhang, Qiuyi, Panigrahy, Rina, Sachdeva, Sushant, and
-Rahimi, Ali. Electron-proton dynamics in deep learning.
-arXiv preprint arXiv:1702.00458, 2017.
+Wasserman, Larry. All of Statistics: A Concise Course in
+Statistical Inference. Springer Science & Business Media, 2013.
 
 

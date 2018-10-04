@@ -1,1036 +1,880 @@
-Efficient softmax approximation for GPUs
+Multiplicative Normalizing Flows for Variational Bayesian Neural Networks
 
-Édouard Grave 1 Armand Joulin 1 Moustapha Cissé 1 David Grangier 1 Hervé Jégou 1
+Christos Louizos 1 2 Max Welling 1 3
 
 Abstract
-We propose an approximate strategy to efficiently
-train neural network based language models over
-very large vocabularies. Our approach, called
-adaptive softmax, circumvents the linear dependency on the vocabulary size by exploiting the
-unbalanced word distribution to form clusters that
-explicitly minimize the expectation of computation time. Our approach further reduces the
-computational time by exploiting the specificities of modern architectures and matrix-matrix
-vector operations, making it particularly suited
-for graphical processing units. Our experiments
-carried out on standard benchmarks, such as EuroParl and One Billion Word, show that our approach brings a large gain in efficiency over standard approximations while achieving an accuracy
-close to that of the full softmax. The code of our
-method is available at https://github.com/
-facebookresearch/adaptive-softmax.
+We reinterpret multiplicative noise in neural networks as auxiliary random variables that augment the approximate posterior in a variational
+setting for Bayesian neural networks. We show
+that through this interpretation it is both efficient
+and straightforward to improve the approximation by employing normalizing flows (Rezende
+& Mohamed, 2015) while still allowing for local reparametrizations (Kingma et al., 2015) and
+a tractable lower bound (Ranganath et al., 2015;
+Maaløe et al., 2016). In experiments we show
+that with this new approximation we can significantly improve upon classical mean field for
+Bayesian neural networks on both predictive accuracy as well as predictive uncertainty.
 
 1. Introduction
-This paper considers strategies to learn parametric models
-for language modeling with very large vocabularies. This
-problem is key to natural language processing, with applications in machine translation (Schwenk et al., 2012;
-Sutskever et al., 2014; Vaswani et al., 2013) or automatic
-speech recognition (Graves et al., 2013; Hinton et al.,
-2012). In particular, Neural Network Language Models
-(NNLMs) have received a renewed interest in recent years,
-by achieving state of the art performance on standard benchmarks (Jozefowicz et al., 2016; Mikolov et al., 2010). These
-approaches are more computationally intensive but generalize better than traditional non-parametric models (Bahl
-et al., 1983; Kneser & Ney, 1995).
-Statistical language models assign a probability to words
-given their history (Bahl et al., 1983). They are evaluated
+Neural networks have been the driving force behind the
+success of deep learning applications. Given enough training data they are able to robustly model input-output relationships and as a result provide high predictive accuracy.
+However, they do have some drawbacks. In the absence of
+enough data they tend to overfit considerably; this restricts
+them from being applied in scenarios were labeled data are
+scarce, e.g. in medical applications such as MRI classification. Even more importantly, deep neural networks trained
+with maximum likelihood or MAP procedures tend to be
+overconfident and as a result do not provide accurate confidence intervals, particularly for inputs that are far from the
+training data distribution. A simple example can be seen at
+Figure 1a; the predictive distribution becomes overly overconfident, i.e. assigns a high softmax probability, towards
+the wrong class for things it hasn’t seen before (e.g. an
+MNIST 3 rotated by 90 degrees). This in effect makes them
+unsuitable for applications where decisions are made, e.g.
 1
-Facebook AI Research. Correspondence to: Édouard Grave
-<egrave@fb.com>.
+University of Amsterdam, Netherlands 2 TNO Intelligent Imaging, Netherlands 3 Canadian Institute For Advanced
+Research (CIFAR). Correspondence to: Christos Louizos
+<c.louizos@uva.nl>.
 
 Proceedings of the 34 th International Conference on Machine
-Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017 by
-the author(s).
+Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
+by the author(s).
 
-by objective criteria such as perplexity (ppl), which directly
-measures the ability of the system to determine proper probabilities for all the words. This potentially makes parametric models prohibitively slow to train on corpora with
-very large vocabulary. For instance, the vocabulary of the
-One Billion Word benchmark (Chelba et al., 2013) contains around 800K words. In standard NNLMs, such as
-feedforward networks (Bengio et al., 2003a) or recurrent
-networks (Mikolov et al., 2010), computing this probability
-over the whole vocabulary is the bottleneck. Many solutions have been proposed to reduce the complexity of this
-expensive step (Bengio et al., 2003b; Goodman, 2001a; Gutmann & Hyvärinen, 2010). We distinguish (i) the methods
-that consider the original distribution and aim at providing approximations of the probabilities, or of a subset of
-them (Bengio et al., 2003b; Ji et al., 2015), from (ii) the
-approaches that compute exact probabilities for an approximate model yielding a lower computational time, such as
-the popular hierarchical softmax (Goodman, 2001a; Mnih
-& Hinton, 2009; Morin & Bengio, 2005).
-Our approach, called adaptive softmax, belongs to the second category. More specifically, it is inspired by the hierarchical softmax and its subsequent variants. In contrast to
-previous works and motivated by the trend that GPUs are
-comparatively more and more performant than CPUs, our
-design is oriented towards efficient processing on GPUs. In
-this context, our paper makes the following points:
-• We define a strategy to produce an approximate hierarchical model. It departs from previous ones in that it
-explicitly takes into account the computation time of
-matrix-matrix multiplications on modern architectures,
-which is not trivially linear in the dimensions of the
-matrices.
-• We conduct an empirical analysis of this model on
-recent GPUs. This leads us to define a realistic computation time model that is incorporated in the proposed
-optimization;
-• Our approach provides a significant acceleration factor compared to the regular softmax, i.e., 2× to 10×
-speed-ups. Equivalently we improve the accuracy under computational constraints. Importantly, on the
-largest corpus, this higher efficiency empirically comes
+when a doctor determines the disease of a patient based on
+the output of such a network.
+A principled approach to address both of the aforementioned shortcomings is through a Bayesian inference procedure. Under this framework instead of doing a point estimate for the network parameters we infer a posterior distribution. These distributions capture the parameter uncertainty of the network, and by subsequently integrating over
+them we can obtain better uncertainties about the predictions of the model. We can see that this is indeed the case
+at Figure 1b; the confidence of the network for the unseen
+digits is drastically reduced when we are using a Bayesian
+model, thus resulting into more realistic predictive distributions. Obtaining the posterior distributions is however
+no easy task, as the nonlinear nature of neural networks
+makes the problem intractable. For this reason approximations have to be made.
+Many works have considered the task of approximate
+Bayesian inference for neural networks using either
+Markov Chain Monte Carlo (MCMC) with Hamiltonian
+Dynamics (Neal, 1995), distilling SGD with Langevin
+Dynamics (Welling & Teh, 2011; Korattikara et al.,
+2015) or deterministic techniques such as the Laplace
+Approximation (MacKay, 1992), Expectation Propagation (Hernández-Lobato & Adams, 2015; HernándezLobato et al., 2015) and variational inference (Graves,
+2011; Blundell et al., 2015; Kingma et al., 2015; Gal &
+Ghahramani, 2015b; Louizos & Welling, 2016).
+In this paper we will also tackle the problem of Bayesian
+inference in neural networks. We will adopt a stochastic
+gradient variational inference (Kingma & Welling, 2014;
+Rezende et al., 2014) procedure in order to estimate the
+posterior distribution over the weight matrices of the network. Arguably one of the most important ingredients of
+variational inference is the flexibility of the approximate
+posterior distribution; it determines how well we are able
+to capture the true posterior distribution and thus the true
+uncertainty of our models. In Section 2 we will show how
+we can produce very flexible distributions in an efficient
+way by employing auxiliary random variables (Agakov &
+Barber, 2004; Salimans et al., 2013; Ranganath et al., 2015;
+Maaløe et al., 2016) and normalizing flows (Rezende &
+Mohamed, 2015). In Section 3 we will discuss related
 
-Efficient softmax approximation for GPUs
+Multiplicative Normalizing Flows for Variational Bayesian Neural Networks
 
-at no cost in accuracy for a given amount of training
-data, in contrast to concurrent approaches improving
-the efficiency.
-This paper is organized as follows. Section 2 briefly reviews
-the related work and Section 3 provides some background
-on the language modeling task that we consider. Section 4
-describes our proposal, which is subsequently evaluated in
-Section 5 on typical benchmarks of the language modeling
-literature, including Text8, Europarl and One Billion Word
-datasets.
+(a) LeNet with weight decay
 
-2. Related work
-Many methods have been proposed to approximate the softmax efficiently (Bengio et al., 2003b; Goodman, 2001a;
-Gutmann & Hyvärinen, 2010; Morin & Bengio, 2005). We
-briefly describe the most popular ones below and point the
-reader to Chen et al. (2015) for a comparative study. For
-the sake of completeness, we refer the reader to other strategies that can speed-up the training of language models in
-complementary manners (Mikolov et al., 2011b).
-Loss function approximation. The Hierarchical Softmax (HSM) is an approximation of the softmax function
-introduced by Goodman (2001a). This approach is generally used with a two-level tree (Goodman, 2001a; Mikolov
-et al., 2011c) but has also been extended to deeper hierarchies (Morin & Bengio, 2005; Mnih & Hinton, 2009). In
-general, the hierarchy structure is built on word similarities (Brown et al., 1992; Le et al., 2011; Mikolov et al.,
-2013) or frequency binning (Mikolov et al., 2011c). In
-particular, Mikolov et al. (2013) proposes an optimal hierarchy by constructing a Huffman coding based on frequency.
-However this coding scheme does not take into account the
-theoretical complexity reduction offered by matrix-matrix
-multiplication and distributed computation, in particular
-with modern GPUs.
-Similar to our work, Zweig & Makarychev (2013) constructs
-their hierarchy in order to explicitly reduce the computational complexity. They also solve the assignment problem
-with dynamic programming. However, they only consider
-hierarchies where words are kept in the leaves of the tree,
-leading to a significant drop of performance (reported to be
-around 5 − 10%), forcing them to also optimize for word
-similarity. In our case, allowing classes to be stored in the
-internal node of the tree leads to almost no drop of performance. Also, they assume a linear computational time for
-the vector-matrix operation which significantly limits the
-use of their approach on distributed system such as GPU.
-The idea of keeping a short-list of the most frequent words
-has been explored before (Le et al., 2011; Schwenk, 2007).
-In particular, Le et al. (2011) combines a short-list with
+(b) LeNet with multiplicative formalizing flows
 
-a hierachical softmax based on word representation. In
-contrast, the word hierarchy that we introduce in Section 4
-explicitly aims at reducing the complexity.
-Our work also shares similarities with the d-softmax introduced by Chen et al. (2015). They assign capacity to words
-according to their frequency to speed up the training. Less
-frequent words have smaller classifiers than frequent ones.
-Unlike our method, their formulation requires accessing the
-whole vocabulary to evaluate the probability of a word.
+Figure 1. Predictive distribution for a continuously rotated version of a 3 from MNIST. Each colour corresponds to a different class
+and the height of the bar denotes the probability assigned to that particular class by the network. Visualization inspired by (Gal &
+Ghahramani, 2015b).
 
-Sampling based approximation. Sampling based approaches have been successfully applied to approximate
-the softmax function over large dictionaries in different
-domains, such as language modeling (Jozefowicz et al.,
-2016), machine translation (Jean et al., 2015) and computer
-vision (Joulin et al., 2015). In particular, importance sampling (Bengio & Senécal, 2008; Bengio et al., 2003b) selects
-a subset of negative targets to approximate the softmax normalization. Different schemes have been proposed for sampling, such as the unigram and bigram distribution (Bengio
-et al., 2003b) or more recently, a power-raised distribution
-of the unigram (Ji et al., 2015; Mikolov et al., 2013). While
-this approach often leads to significant speed-up at train
-time, it still requires to evaluate the full softmax at test time.
+work, whereas in Section 4 we will evaluate and discuss
+the proposed framework. Finally we will conclude with
+Section 5, where we will provide some final thoughts along
+with promising directions for future research.
 
-Self-normalized approaches. Self-normalized approaches aim at learning naturally normalized classifier,
-to avoid computing the softmax normalization. Popular
-methods are Noise Contrastive Estimation (Gutmann &
-Hyvärinen, 2010; Mnih & Teh, 2012; Vaswani et al., 2013)
-or a penalization on the normalization function (Andreas
-& Klein, 2014; Devlin et al., 2014). Noise Contrastive
-Estimation (Gutmann & Hyvärinen, 2010) replaces the
-softmax by a binary classifier distinguishing the original
-distribution form a noisy one. While the original formulation still requires to compute the softmax normalization,
-Mnih & Teh (2012) shows that good performance can be
-achieved even without it.
-Finally, Vincent et al. (2015) have also proposed an efficient
-way to train model with high dimensional output space.
-Their approach is exact and leads to a promising speed-up
-but it cannot be directly applied to the softmax function,
-limiting its potential application to language modeling.
-
-3. Preliminaries on language modeling
-The goal of language modeling is to learn a probability distribution over a sequence of words from a given dictionary
-V. The joint distribution is defined as a product of conditional distribution of tokens given their past (Bahl et al.,
-1983). More precisely, the probability of a sequence of T
-
-Efficient softmax approximation for GPUs
-
-words w1 , . . . , wT ∈ V T is given as
-P (w1 , . . . , wT ) =
-
-T
-Y
-
-P (wt | wt−1 , . . . , w1 ).
-
+2. Multiplicative normalizing flows
+2.1. Variational inference for Bayesian Neural
+Networks
+Let D be a dataset consisting of input output pairs
+{(x1 , y1 ), . . . , (xn , yn )} and let W1:L denote the weight
+matrices of L layers. Assuming that p(Wi ), qφ (Wi ) are
+the prior and approximate posterior over the parameters of
+the i’th layer we can derive the following lower bound on
+the marginal log-likelihood of the dataset D using variational Bayes (Peterson, 1987; Hinton & Van Camp, 1993;
+Graves, 2011; Blundell et al., 2015; Kingma et al., 2015;
+Gal & Ghahramani, 2015b; Louizos & Welling, 2016):
+
+L(φ) = Eqφ (W1:L ) log p(y|x, W1:L )+
+
++ log p(W1:L ) − log qφ (W1:L ) ,
 (1)
-
-t=1
-
-This problem is traditionally addressed with nonparameteric models based on counting statistics (Goodman,
-2001b). In particular, smoothed N-gram models (Bahl et al.,
-1983; Katz, 1987; Kneser & Ney, 1995) achieve good performance in practice (Mikolov et al., 2011a), especially when
-they are associated with cache models (Kuhn & De Mori,
-1990). More recently, parametric models based on neural networks have gained popularity for language modeling (Bengio et al., 2003a; Jozefowicz et al., 2016; Mikolov
-et al., 2010). They are mostly either feedforward networks (Bengio et al., 2003a) or recurrent networks (Mikolov
-et al., 2010).
-3.1. Feedforward network.
-In a standard feedforward network for language modeling,
-we fix a window of length N and predict the next words
-according to the words appearing in this window. In the
-simplest case, this probability is represented by a 2-layer
-neural network acting on an input xt ∈ V N , defined as the
-concatenation of the one-hot representation of the N previous words, wt−N +1 , . . . , wt . The state ht of the hidden
-layer and subsequently the vector of scores yt associated
-with the next token wt+1 are computed as
-ht = σ(AP xt ),
-
+where p̃(x, y) denotes the training data distribution and φ
+the parameters of the variational posterior. For continuous q(·) distributions that allow for the reparametrization
+trick (Kingma & Welling, 2014) or stochastic backpropagation (Rezende et al., 2014) we can reparametrize the random sampling from q(·) of the lower bound in terms of
+noise variables  and deterministic functions f (φ, ):
+
+L = Ep() log p(y|x, f (φ, ))+
+
++ log p(f (φ, )) − log qφ (f (φ, )) .
 (2)
+This reparametrization allow us to treat approximate parameter posterior inference as a straightforward optimiza-
 
-yt = f (Bht ),
+tion problem that can be optimized with off-the-shelf
+(stochastic) gradient ascent techniques.
+2.2. Improving the variational approximation
+For Bayesian neural networks the most common family for
+the approximate posterior is that of mean field with independent Gaussian distributions for each weight. Despite
+the fact that this leads to a straightforward lower bound
+for optimization, the approximation capability is quite limiting; it corresponds to just a unimodal “bump” on the
+very high dimensional space of the parameters of the neural network. There have been attempts to improve upon
+this approximation with works such as (Gal & Ghahramani, 2015b) with mixtures of delta peaks and (Louizos &
+Welling, 2016) with matrix Gaussians that allow for nontrivial covariances among the weights. Nevertheless, both
+of the aforementioned methods are still, in a sense, limited;
+the true parameter posterior is more complex than delta
+peaks or correlated Gaussians.
+There has been a lot of recent work on ways to improve
+the posterior approximation in latent variable models with
+normalizing flows (Rezende & Mohamed, 2015) and auxiliary random variables (Agakov & Barber, 2004; Salimans
+et al., 2013; Ranganath et al., 2015; Maaløe et al., 2016)
+being the most prominent. Briefly, a normalizing flow is
+constructed by introducing parametrized bijective transformations, with easy to compute Jacobians, to random variables with simple initial densities. By subsequently optimizing the parameters of the flow according to the lower
+bound they can significantly improve the posterior approximation. Auxiliary random variables instead construct more
+flexible distributions by introducing latent variables in the
+
+Multiplicative Normalizing Flows for Variational Bayesian Neural Networks
+
+posterior itself, thus defining the approximate posterior as
+a mixture of simple distributions.
+Nevertheless, applying these ideas to the parameters in a
+neural network has not yet been explored. While it is
+straightforward to apply normalizing flows to a sample of
+the weight matrix from q(W), this quickly becomes very
+expensive; for example with planar flows (Rezende & Mohamed, 2015) we will need two extra matrices for each step
+of the flow. Furthermore, by utilizing this procedure we
+also lose the benefits of local reparametrizations (Kingma
+et al., 2015; Louizos & Welling, 2016) which are possible
+with Gaussian approximate posteriors.
+In order to simultaneously maintain the benefits of local reparametrizations and increase the flexibility of the
+approximate posteriors in a Bayesian neural network we
+will rely on auxiliary random variables (Agakov & Barber, 2004; Salimans et al., 2013; 2015; Ranganath et al.,
+2015; Maaløe et al., 2016); more specifically we will exploit the well known “multiplicative noise” concept, e.g. as
+in (Gaussian) Dropout (Srivastava et al., 2014), in neural
+networks and we will parametrize the approximate posterior with the following process:
+z ∼ qφ (z);
+
+W ∼ qφ (W|z),
 
 (3)
 
-where σ is a non linearity, e.g., the pointwise sigmoid function σ(z) = 1/(1+exp(−z)), and f is the softmax function
-discussed in section 3.3. This model is parameterized by the
-weight matrices P , A and B and is routinely learned with
-an optimization scheme such as stochastic gradient descent
-or Adagrad (Duchi et al., 2011).
-3.2. Recurrent network.
-A Recurrent network (Elman, 1990) extends a feedforward
-network in that the current state of the hidden layer also
-depends on its previous state. The hidden state ht is updated
-according to the equation
-ht = σ(Awt + Rht−1 ),
-where R is a weight matrix and xt is the one-hot representation of the current word wt . Computing the exact gradient
-for this model is challenging but it is possible to compute
-an efficient and stable approximation of it, using a truncated
-back-propagation through time (Werbos, 1990; Williams &
-Peng, 1990) and norm clipping (Mikolov et al., 2010).
+where now the approximate
+R posterior becomes a compound
+distribution, q(W) = q(W|z)q(z)dz, with z being a
+vector of random variables distributed according to the
+mixing density q(z). To allow for local reparametrizations we will parametrize the conditional distribution for
+the weights to be a fully factorized Gaussian. Therefore we
+assume the following form for the fully connected layers:
+qφ (W|z) =
 
-Since the model introduced by Elman (1990), many extensions have been proposed, such as Longer Short Term Memory (LSTM) (Hochreiter & Schmidhuber, 1997), Gated recurrent units (Chung et al., 2014) or structurally constrained
-network (Mikolov et al., 2014). These models have been
-successfully used in the context of language modeling (Jozefowicz et al., 2016; Mikolov et al., 2010; Mikolov & Zweig,
-2012). In this work, we focus on the standard word level
-LSTM architecture since it has obtained state of the art
-performance on the challenging One Billion Word Benchmark (Jozefowicz et al., 2016).
-3.3. Class-based hierarchical softmax.
-In neural language modeling, predicting the probability of
-the next word requires computing scores for every word in
-the vocabulary and to normalize them to form a probability
-distribution. This is typically achieved by applying a softmax function to the unnormalized score zw associated with
-each word w, where the softmax function is defined as
-f (zw ) = P
+D
+in D
+out
+Y
+Y
 
-exp(zw )
-.
-exp(zw0 )
+2
+N (zi µij , σij
+),
 
 (4)
 
-w0 ∈V
+i=1 j=1
 
-For a vocabulary comprising k = |V| words, this function
-requires O(k) operations once the scores are computed. In
-the case of neural networks, the overall complexity is O(dk),
-where d is the size of the last hidden layer. When the vocabulary is large, this step is computationally expensive and
-often dominates the computation of the whole model (Jozefowicz et al., 2016; Mikolov et al., 2014), as discussed in
-introduction and related work. A simple approach (Goodman, 2001a) to reduce this computational cost is to assign
-each word w of the vocabulary to a unique class C(w) and
-to factorize the probability distribution over words as
-p(wt | ht ) = p1 (C(wt ) | ht ) × p2 (wt | C(wt ), ht ),
-where p1 and p2 are obtained√using the softmax function
-(Eq. 4). If each class contains k words,
-the computational
-√
-cost is reduced from O(dk) to O(d k).
+where Din , Dout is the input and output dimensionality,
+and the following form for the kernels in convolutional networks:
+qφ (W|z) =
 
-4. Our approach: the adaptive softmax
-In this section, we propose the adaptive softmax, a simple
-speedup technique for the computation of probability distributions over words. The adaptive softmax is inspired by the
-class-based hierarchical softmax, where the word classes
-are built to minimize the computation time. Our method
-is designed to be efficient for GPUs, which are commonly
-used to train neural networks. For the sake of clarity, we
-first present the intuition behind our method in the simple
-case where we simply split our dictionary in two distinct
-clusters, before analyzing a more general case.
+Df
+Dh Y
+Dw Y
+Y
 
-Efficient softmax approximation for GPUs
-
-4.2. Intuition: the two-clusters case
-
-1s
-100 ms
-
-K40 (λ=0.0035, c=0.4)
-M40 (λ=0.002, c=0.22)
-
-10 ms
-1 ms
-100 μs 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
-2 2 2 2 2 2 2 2 2 2 2 2 2 2 2
-number of vectors k
-Figure 1. GPU timings for multiplying two matrices. We consider
-matrices of size 2560 × 2048 and 2048 × k representing hidden
-states and word representations. We report average timings over
-1000 measures as a function of k (number of words).
-
-4.1. Computation time model of matrix-multiplication
-The bottleneck of the model described in the previous section is the matrix multiplication between the matrix representing the hidden states (of size B × d, where B denotes
-the batch size), and the matrix of word representations, of
-size d × k. For a fixed size d of the hidden layer, we denote by g(k, B) the computation time of this multiplication
-(using an efficient implementation such as cuBLAS), and
-simplify the notation wherever some parameters are fixed.
-Figure 1 reports empirical timings as a function of k for
-typical parameters of B and d for two GPU models, namely
-K40 and M40. We observe that the computation time g(k)
-is constant for low values of k, until a certain inflection
-point k0 ≈ 50, and then becomes affine for values k > k0 .
-This suggests a computational model of the form
-g(k) = max(c + λk0 , c + λk)
-
-
-= cm + max 0, λ(k − k0 ) .
+2
+N (zk µijk , σijk
+),
 
 (5)
-(6)
 
-Empirically, cm = 0.40 ms on a K40 and 0.22 ms on a M40.
-We observe the same behavior when measuring the timings
-as a function of the batch size B, i.e., it is inefficient to
-matrix-multiplication when one of the dimensions is small.
-This observation suggests that hierarchical organizations
-of words with a low number of children per node, such as
-binary Huffman codes, are highly suboptimal. Similarly,
-clusters comprising only rare words have a low probabilty
-p and a shrinking batch size of p B, which also lead to
-iniffient matrix-multiplication. In the following, we propose
-to use the following model of computation time for matrixmultiplication
-g(k, B) = max(c + λk0 B0 , c + λkB).
+i=1 j=1 k=1
+
+where Dh , Dw , Df are the height, width and number of
+filters for each kernel. Note that we did not let z affect the
+variance of the Gaussian approximation; in a pilot study we
+found that this parametrization was prone to local optima
+due to large variance gradients, an effect also observed with
+the multiplicative parametrization of the Gaussian posterior (Kingma et al., 2015; Molchanov et al., 2017). We
+have now reduced the problem of increasing the flexibility
+of the approximate posterior over the weights W to that of
+increasing the flexibility of the mixing density q(z). Since
+
+z is of much lower dimension, compared to W, it is now
+straightforward to apply normalizing flows to q(z); in this
+way we can significantly enhance our approximation and
+allow for e.g. multimodality and nonlinear dependencies
+between the elements of the weight matrix. This will in
+turn better capture the properties of the true posterior distribution, thus leading to better performance and predictive
+uncertainties. We will coin the term multiplicative normalizing flows (MNFs) for this family of approximate posteriors. Algorithms 1, 2 describe the forward pass using local
+reparametrizations for fully connected and convolutional
+layers with this type of approximate posterior.
+Algorithm 1 Forward propagation for each fully connected
+layer h. Mw , Σw are the means and variances of each
+layer, H is a minibatch of activations and NF(·) is the normalizing flow described at eq. 6. For the first layer we have
+that H = X where X is the minibatch of inputs.
+Require: H, Mw , Σw
+1: Z0 ∼ q(z0 )
+2: ZTf = NF(Z0 )
+3: Mh = (H  ZTf )Mw
+4: Vh = H2 Σw
+5: E ∼ N (0, 1) √
+6: return Mh + Vh  E
+
+Algorithm 2 Forward propagation for each convolutional
+layer h. Nf are the number of convolutional filters, ∗ is
+the convolution operator and we assume the [batch, height,
+width, feature maps] convention.
+Require: H, Mw , Σw
+1: z0 ∼ q(z0 )
+2: zTf = NF(z0 )
+3: Mh = H ∗ (Mw  reshape(zTf , [1, 1, Df ]))
+4: Vh = H2 ∗ Σw
+5: E ∼ N (0, 1) √
+6: return Mh + Vh  E
+For the normalizing flow of q(z) we will use the masked
+RealNVP (Dinh et al., 2016) using the numerically stable updates introduced in Inverse Autoregressive Flow
+(IAF) (Kingma et al., 2016):
+m ∼ Bern(0.5);
+µ = g(h);
+
+h = tanh(f (m  zt ))
+σ = σ(k(h))
+
+zt+1 = m  zt +(1 − m)  (zt  σ + (1 − σ)  µ)
+(6)
+
+
+ ∂zt+1 
+ = (1 − m)T log σ,
+log 
+∂zt 
+where  corresponds to element-wise multiplication, σ(·)
+
+Multiplicative Normalizing Flows for Variational Bayesian Neural Networks
+
+is the sigmoid function1 and f (·), g(·), k(·) are linear mappings. We resampled the mask m every time in order to
+avoid a specific splitting over the dimensions of z. For the
+starting point of the flow q(z0 ) we used a simple fully factorized Gaussian and we will refer to the final iterate as
+z Tf .
+2.3. Bounding the entropy
+Unfortunately, parametrizing the posterior distribution as
+eq. 3 makes the lower bound intractable as generally we do
+not have a closed form density function for q(W). This
+makes the calculation of the entropy − Eq(W) [log q(W)]
+challenging. Fortunately we can make the lower bound
+tractable again by further lower bounding the entropy in
+terms of an auxiliary distribution r(z|W) (Agakov & Barber, 2004; Salimans et al., 2013; 2015; Ranganath et al.,
+2015; Maaløe et al., 2016). This can be seen as if we are
+performing variational inference on the augmented probability space p(D, W1:L , z1:L ), that maintains the same true
+posterior distribution p(W|D) (as we can always marginalize out r(z|W) to obtain the original model). The lower
+bound in this case becomes:
+
+L(φ, θ) = Eqφ (z1:L ,W1:L ) log p(y|x, W1:L , z1:L )+
++ log p(W1:L ) + log rθ (z1:L |W1:L )−
+
+− log qφ (W1:L |z1:L ) − log qφ (z1:L ) ,
+
+Dz
+Y
+
+N (µ̃i , σ̃i2 ),
 
 (7)
 
-While this is a very crude model of computation, it allows
-to explain empirical observations well.
-
-In natural languages, the distribution of the words notoriously follows a Zipf law (Zipf, 1949). Most of the probability mass is covered by a small fraction of the dictionary,
-e.g., 87% of the document is covered by only 20% of the
-vocabulary in the Penn TreeBank. Similar to the frequency
-binning hierarchical softmax (Mikolov et al., 2011c), this
-information can be exploited to reduce the computation
-time.
-A simple strategy to reduce the overall computation time is
-to partition the dictionary V into two clusters as Vh and Vt ,
-where Vh denotes the head of the distribution consisting of
-the most frequent words, and where Vt is the tail associated
-with a large number of rare words. The classifier frequently
-accesses the head, which motivates the fact that it should
-be computed efficiently. In contrast, the tail occurs less
-frequently and the corresponding computation can be slower.
-This suggests defining clusters with unbalanced cardinalities
-|Vh |  P
-|Vt | and probabilities P (Vh )  P (Vt ), where
-P (A) = w∈A pi is the probability of a word to occur in
-the set Vi . For instance, one may define the head would
-only contain 20% of the vocabulary (covering for 87% on
-PennTree Bank). These two clusters can be organized in
-two different ways: either they are both leaves of a 2-level
-tree (Mikolov et al., 2011c), or the head cluster is kept as a
-short-list in the root node (Le et al., 2011).
-
-Compromising between efficiency and accuracy. We
-observe empirically that putting all the clusters in the
-leaves of the tree leads to a significant drop of performance (around 5 − 10% performance drop, Mikolov et al.,
-2011c; Zweig & Makarychev, 2013). The reason is that
-the probability of every word w belonging to a cluster c
-is multiplied by the probability of its class, i.e., it is equal
-to P (c | h)P (w | c, h), while attaching a frequent word
-directly to the root associates it directly to the probability
-P (w | h) making its inference sharper. For this reason, unless there is a significant difference in computation time, we
-favor using a short-list, over the standard 2-level hierarchical
-softmax.
-
-Minimizing the computation time. Given a vocabulary
-of k words, we are looking for the number kh = |Vh | of
-words from the head of the distribution to be assigned to
-the first cluster. These words will cover for ph of the distribution. The tail cluster will then contain the rest of the
-vocabulary, made of kt = k − kh words and covering for
-pt = 1 − ph of the overall distribution. The computation
-time corresponding to the matrix multiplication of the root
-is equal to g(kh + 1, B), while the computation time for the
-tail of the distribution is equal to g(kt , pt B), where B is the
-
-Efficient softmax approximation for GPUs
-
-comp. time (ms)
-
-200
-
-Vh
-
-theoretical
-empirical
-
-150
-100
-50
-0
-101
-
-102
-
-103
-
-104
-
-V1
-
-105
-
-Figure 2. Computational time for the two-clusters adaptive softmax on the Bulgarian Europarl data, as a function of the size of
-the head cluster kh . We report values predicted by our model
-(theoretical) as well as measured on a K40 (empirical).
-Even with this very simple hierarchy, we observe more than 5×
-speedup over the full softmax. The red dotted line indicates the
-value of the parameter kh such that both clusters have equal probability: ph = pt = 0.5.
-
-batch size. We thus obtain the overall computation time
-C = g(kh + 1, B) + g(kt , pt B).
-We can then find the size of the head cluster kh which
-minimizes the computation time C. We plot the value of C
-as a function of kh in Figure 2, for the word distribution of
-the Bulgarian Europarl dataset. We observe that the optimal
-splitting between head and tail gives a 5× speedup over the
-full softmax. Another important observation is the fact that
-the optimal size of the head cluster does not correspond to
-two clusters with equal probability.
-Adapting the classifier capacity for each cluster. Each
-cluster is accessed independently of each other, they thus do
-not need to have the same capacity. Frequent words need
-high capacity to be predicted correctly. In contrast, rare
-words cannot be learned very well, since we only see them
-a few times. It would then be wasteful to associate them
-with high capacity. Like in Chen et al. (2015), we exploit
-this observation to further reduce the computational time
-of our classifier. Unlike Chen et al. (2015), we share the
-state of hidden layer across clusters and simply reduce the
-input size of the classifiers by applying a projection matrix.
-Typically, the projection matrix for the tail cluster reduces
-the size from d to dt = d/4.
-4.3. General case
-Let us now consider the more general case where the dictionary is partitioned as V = Vh ∪ V1 . . . VJ , Vi ∩ Vj = ∅
-if i 6= j. We consider the hierarchical model depicted in
-Figure 3, where the sub-dictionary Vh is accessed at the first
-level, and the others in the second level. We now investigate
-
-V2
-
-V3
-
-Figure 3. Our hierarchical model is organized as (i) a first level that
-includes both the most frequent words and vectors representing
-clusters, and (ii) clusters on the second level that are associated
-with rare words, the largest ones being associated with the less
-frequent words. The sizes are determined so as to minimize our
-computational model on GPU.
-
-the computational cost C of the forward (equivalently, backward) pass of this approximate softmax layer. For the time
-being, we fix the batch size B and the dimensionality d of
-the hidden layer, in order to analyze the computation time
-as a function of theP
-sub-dictionary sizes and probabilities.
-We denote by pi = w∈Vi p(w) the probability P (w ∈ Vi )
-and ki = |Vi | the cardinality of each cluster.
-The expected
-computational cost C is decomposed as C =
-P
-Ch + i Ci , where
-Ch = g(J + kh , B)
-and
-∀i, Ci = g(ki , pi B),
-leading to
-C = g(J + kh , B) +
-
-X
-
-g(ki , pi B).
-
 (8)
 
-i
+i=1
 
-We add the constraint kB ≥ k0 B0 to ensure that there is no
-penalty induced by the constant part of the computational
-model of Equation 7, the previous equation simplifies as
-X
-C = c + λ(J + kh )B +
-(c + λki pi B)
+where for fully connected layers we have that:
+
+−1
+µ̃i = b1 ⊗ tanh(cT W) (1  Dout
+)
+
+
+
+−1
+T
+σ̃i = σ b2 ⊗ tanh(c W) (1  Dout ) ,
+
 (9)
-i
-
-X
-
-
-= (J + 1)c + λB J + kh +
-pi ki .
-
 (10)
 
-i
-
-Let us discuss this equation, by first considering that the cardinalities of the sub-vocabularies are fixed. The right-most
-term is the only one that depends on the word probabilities.
-For two distinct clusters Vi and Vj , we can re-write pj kj as
-(pi+j − pi )kj , where pi+j = pi + pj , so that
-pi ki + pj kj = pi (ki − kj ) + pi+j kj .
-
+and for convolutional:
+
+µ̃i = tanh(mat(W)c) ⊗ b1 (1  (Dh Dw )−1 )
 (11)
-
-comp. time (ms)
-
-Efficient softmax approximation for GPUs
-
-40
-35
-30
-25
-20
-15
-10
-5
-0
-
-5
-
-10
-# clusters
-
-15
-
-20
-
-Figure 4. Computational time for the adaptive softmax on the Bulgarian Europarl data, as a function of the number of clusters.
-
-Without loss of generality, we assume that ki > kj . The
-quantities pi+j , ki and kj being fixed, the second term of
-the right-hand side of this equation is constant, and the best
-strategy is trivially to minimize the probability of the largest
-cluster Vi . In other terms, an optimal solution for Equation 10 requires that the most frequent words are assigned to
-the smallest cluster. This remark is true for any tuple (i, j),
-and we easily see that this point also holds for the head
-cluster. As a consequence, for a fixed number of clusters
-of given sizes, the best strategy is to assign the words by
-decreasing probabilities to clusters of increasing size. Note,
-this analysis remains valid as long as the g is monotonically
-increasing in k.
-Determining ki with J fixed: dynamic programming.
-We now assume that the number of clusters is fixed. Following our analysis above, the optimization solely depends
-on the cardinalities ki for all clusters, which perfectly determines how to split the list of words ordered by frequency.
-We solve this problem by dynamic programming.
-Finding the number of clusters. The only remaining
-free variable in our optimization is J, since the other parameters are then determined by the aforementioned optimizations. We plot in Figure 4 the optimal computation
-time, as a function of the number of clusters J, according
-to our model. We observe that a small number of clusters,
-between 10 and 15 gives the best computation time. Moreover, we observe that using more than 5 clusters does not
-lead to significant gains in computational time (a couple of
-milliseconds at best). In practice, we thus decide to use a
-small number of clusters (between 2 and 5), as it usually
-lead to slightly better perplexity, and we empirically determine the best speed/perplexity compromise on training data.
-As shown later by our experiments, using a small number of
-clusters allows to obtain comparable perplexity as the exact
-softmax on large corpora.
-
-ppl
-
-training time
-
-full softmax
-sampling
-HSM (freq)
-HSM (sim)
-D-softmax
-D-softmax [*]
-
-144
-166
-166
-155
-195
-147
-
-83 min
-41 min
-34 min
-41 min
-53 min
-54 min
-
-Ours
-
-147
-
-30 min
-
-Table 1. Text8: perplexity and training time after 5 epochs. Our
-approach is significantly better than other published approximate
-strategies. We also show that improving the baseline D-softmax [*]
-as discussed in text improve the results, but is slower than our
-proposal. Note, approximate strategies are comparatively less
-interesting for small vocabularies such as in this case.
-
-5. Experiments
-This section provides a set of experiments aiming at analyzing the trade-off between actual computation time and
-effectiveness of several strategies, in particular the approach
-presented in the previous section. First we describe our evaluation protocol, then we evaluate some of the properties of
-our model and finally we compare it on standard benchmark
-against standard baselines.
-Datasets. We evaluate our method on standard datasets,
-and use the perplexity (ppl) as an evaluation metric, as the
-function of the training time or of the number of training
-data (epochs). The datasets have varying vocabulary sizes,
-in different languages, which allows us to better understand
-the strengths and weaknesses of the different approaches.
-• Text81 is a standard compression dataset containing a
-pre-processed version of the first 100 million characters
-from Wikipedia in English. It has been recently used
-for language modeling (Mikolov et al., 2014) and has
-a vocabulary of 44k words.
-• Europarl2 is a machine translation corpus, containing
-20 languages (Koehn, 2005). For most languages, there
-are 10M–60M tokens and the vocabulary is in between
-44k and 250k words.
-• One Billion Word 3 is a massive corpus introduced by
-Chelba et al. (2013). It contains 0.8B tokens and a
-vocabulary comprising almost 800k words.
-Implementation details. We use an LSTM with one layer
-in all our experiments. On Text8 and Europarl, the models
+
+
+
+σ̃i = σ tanh(mat(W)c) ⊗ b2 (1  (Dh Dw )−1 ) ,
+(12)
 1
 
-http://mattmahoney.net/dc/textdata
-http://www.statmt.org/europarl/
-3
-https://code.google.com/archive/p/1-billion-word-languagemodeling-benchmark/
+f (x) =
+
+1
+1+exp(−x)
+
+− KL(q(W)||p(W)) =
+= Eq(W,zT ) [−KL(q(W|zTf )||p(W))+
++ log r(zTf |W) − log q(zTf )],
+
+(13)
+
+where each of the terms corresponds to:
+− KL(q(W|zTf )||p(W)) =
+1X
 2
+2
+(− log σi,j
++ σi,j
++ zT2f µ2i,j − 1)
+=
+i
+2 i,j
+Tf +Tb
 
-Efficient softmax approximation for GPUs
+where θ are the parameters of the auxiliary distribution r(·).
+This bound is looser than the previous bound, however the
+extra flexibility of q(W) can compensate and allow for a
+tighter bound. Furthermore, the tightness of the bound also
+depends on the ability of r(z|W) to approximate the “aux. Thereiliary” posterior distribution q(z|W) = q(W|z)q(z)
+q(W)
+fore, to allow for a flexible r(z|W) we will follow (Ranganath et al., 2015) and we will parametrize it with inverse
+normalizing flows as follows:
+r(zTb |W) =
 
-Model
+where b1 , b2 , c are trainable vectors that have the same
+dimensionality as z, Dz , 1 corresponds to a vector of
+1s, ⊗ corresponds to the outer product and mat(·) corresponds to the matricization2 operator. The zTb variable
+corresponds to the fully factorized variable that is transformed by a normalizing flow to zTf or else the variable obtained by the inverse normalizing flow, zTb = NF−1 (zTf ).
+We will parametrize this inverse directly with the procedure described at eq. 6. Notice that we can employ local
+reparametrizations also in eq. 9,10,11,12, so as to avoid
+sampling the, potentially big, matrix W. With the standard
+normal prior and the fully factorized Gaussian posterior of
+eq. 4 the KL-divergence between the prior and the posterior
+can be computed as follows:
 
-Test perplexity
+log r(zTf |W) = log r(zTb |W) +
 
-Interpolated Kneser-Ney 5-gram (Chelba et al., 2013)
-Feedforward NN + D-Softmax (Chen et al., 2015)
-4-layer IRNN-512 (Le et al., 2015)
-RNN-2048 + BlackOut sampling (Ji et al., 2015)
-Sparse Non-negative Matrix Language Model (Shazeer et al., 2015)
-RNN-1024 + MaxEnt 9-gram (Chelba et al., 2013)
-LSTM-2048-512 (Jozefowicz et al., 2016)
-2-layer LSTM-8192-1024 + CNN inputs (Jozefowicz et al., 2016)
+X
+t=Tf
 
-67.6
-91.2
-69.4
-68.3
-52.9
-51.3
-43.7
-30.0
+(14)
 
-Ours (LSTM-2048)
-Ours (2-layer LSTM-2048)
+
+
+ ∂zt+1 
+
+log 
+∂zt 
+(15)
 
-43.9
-39.8
-
-Table 2. One Billion Word benchmark. Perplexity on the test set for single models. Our result is obtained after 5 epochs.
-
-Language:
-k=
-Method
-
-bg
-50k
-ppl
+
+
+Tf
+X
+ ∂zt+1 
+.
+
+log q(zTf ) = log q(z0 ) −
+log 
+
+∂z
 t
+t=1
 
-cs
-83k
-ppl
-t
+(16)
 
-da
-128k
-ppl
-t
+It should be noted that this bound is a generalization of the
+bound proposed by (Gal & Ghahramani, 2015b). We can
+arrive at the bound of (Gal & Ghahramani, 2015b) if we
+trivially parametrize the auxiliary model r(z|W) = q(z)
+(which provides a less tight bound (Ranganath et al., 2015))
+use a standard normal prior for W, a Bernoulli q(z) with
+probability of success π and then let the variance of our
+conditional Gaussian q(W|z) go to zero. This will result
+into the lower bound being infinite due to the log of the
+variances; nevertheless since we are not optimizing over σ
+we can simply disregard those terms. After a little bit of algebra we can show that the only term that will remain in the
+KL-divergence between q(W) and p(W) will be the expectation of the trace of the square of the mean matrix3 , i.e.
+Eq(z) [ 21 tr((diag(z)M))T (diag(z)M))] = π2 kMk22 , with
+1 − π being the dropout rate.
+We also found that in general it is beneficial to “constrain”
+the standard deviations σij of the conditional Gaussian posterior q(W|z) during the forward pass for the computation
+2
+3
 
-de
-143k
-ppl
-t
+Converting the multidimensional tensor to a matrix.
+The matrix that has M[i, j] = µij
 
-el
-100k
-ppl
-t
+Multiplicative Normalizing Flows for Variational Bayesian Neural Networks
 
-es
-87k
-ppl
-t
+of the likelihood to a lower than the true range, e.g. [0, α]
+instead of the [0, 1] we have with a standard normal prior.
+This results into a small bias and a looser lower bound,
+however it helps in avoiding bad local minima in the variational objective. This is akin to the free bits objective described at (Kingma et al., 2016).
 
-Full
-Sampling
-HSM (freq)
-HSM (sim)
-D-softmax
-D-softmax [*]
-Ours
+2015).
+It should also be mentioned that uncertainty estimation
+in neural networks can also be performed without the
+Bayesian paradigm; frequentist methods such as Bootstrap (Osband et al., 2016) and ensembles (Lakshminarayanan et al., 2016) have shown that in certain scenarios
+they can provide reasonable confidence intervals.
 
-37
-40
-43
-39
-47
-37
-37
+3. Related work
+Approximate inference for Bayesian neural networks has
+been pioneered by (MacKay, 1992) and (Neal, 1995).
+Laplace approximation (MacKay, 1992) provides a deterministic approximation to the posterior that is easy to obtain; it is a Gaussian centered at the MAP estimate of the
+parameters with a covariance determined by the inverse of
+the Hessian of the log-likelihood. Despite the fact that it
+is straightforward to implement, its scalability is limited
+unless approximations are made, which generally reduces
+performance. Hamiltonian Monte Carlo (Neal, 1995) is
+so far the golden standard for approximate Bayesian inference; nevertheless it is also not scalable to large networks and datasets due to the fact that we have to explicitly
+store the samples from the posterior. Furthermore as it is
+an MCMC method, assessing convergence is non trivial.
+Nevertheless there is interesting work that tries to improve
+upon those issues with stochastic gradient MCMC (Chen
+et al.) and distillation methods (Korattikara et al., 2015).
+Deterministic methods for approximate inference in
+Bayesian neural networks have recently attained much attention. One of the first applications of variational inference in neural networks was in (Peterson, 1987) and (Hinton & Van Camp, 1993). More recently (Graves, 2011)
+proposed a practical method for variational inference in
+this setting with a simple (but biased) estimator for a
+fully factorized posterior distribution. (Blundell et al.,
+2015) improved upon this work with the unbiased estimator from (Kingma & Welling, 2014) and a scale mixture prior. (Hernández-Lobato & Adams, 2015) proposed
+to use Expectation Propagation (Minka, 2001) with fully
+factorized posteriors and showed good results on regression
+tasks. (Kingma et al., 2015) showed how Gaussian dropout
+can be interpreted as performing approximate inference
+with log-uniform priors, multiplicative Gaussian posteriors and local reparametrizations, thus allowing straightforward learning of the dropout rates. Similarly (Gal &
+Ghahramani, 2015b) showed interesting connections between Bernoulli Dropout (Srivastava et al., 2014) networks
+and approximate Bayesian inference in deep Gaussian Processes (Damianou & Lawrence, 2013) thus allowing the
+extraction of uncertainties in a principled way. Similarly (Louizos & Welling, 2016) arrived at the same result through structured posterior approximations via matrix Gaussians and local reparametrizations (Kingma et al.,
 
-62
-70
-78
-68
-82
-62
-62
+4. Experiments
+All of the experiments were coded in Tensorflow (Abadi et al., 2016) and optimization was done
+with Adam (Kingma & Ba, 2015) using the default hyperparameters. We used the LeNet 54 (LeCun et al., 1998)
+convolutional architecture with ReLU (Nair & Hinton,
+2010) nonlinearities. The means M of the conditional
+Gaussian q(W|z) were initialized with the scheme proposed in (He et al., 2015), whereas the log of the variances
+were initialized by sampling from N (−9, 0.001). Unless
+explicitly mentioned otherwise we use flows of length two
+for q(z) and r(z|W) with 50 hidden units for each step
+of the flow of q(z) and 100 hidden units for each step of
+the flow of r(z|W). We used 100 posterior samples to
+estimate the predictive distribution for all of the models
+during testing and 1 posterior sample during training.
+Table 1. Models considered in this paper. Dropout corresponds
+to the model used in (Gal & Ghahramani, 2015a), Deep Ensemble to the model used in (Lakshminarayanan et al., 2016), FFG to
+the Bayesian neural network employed in (Blundell et al., 2015),
+FFLU to the Bayesian neural network used in (Kingma et al.,
+2015; Molchanov et al., 2017) with the additive parametrization
+of (Molchanov et al., 2017) and MNFG corresponds to the proposed variational approximation. It should be noted that Deep
+Ensembles use adversarial training (Goodfellow et al., 2014).
+Name
+Prior
+Posterior
+L2
+N (0, I)
+delta peak
+Dropout
+N (0, I)
+mixture of zero and delta peaks
+D. Ensem.
+mixture of peaks
+FFG
+N (0, I)
+fully factorized additive Gaussian
+FFLU
+log(|W|) = c fully factorized additive Gaussian
+MNFG
+N (0, I)
+multiplicative normalizing flows
 
-37
-40
-42
-38
-46
-36
-35
+4.1. Predictive performance and uncertainty
+MNIST We trained on MNIST LeNet architectures using
+the priors and posteriors described at Table 1. We trained
+Dropout with the way described at (Gal & Ghahramani,
+2015a) using 0.5 for the dropout rate and for Deep Ensembles (Lakshminarayanan et al., 2016) we used 10 members and  = .25 for the adversarial example generation.
+For the models with the Gaussian prior we constrained the
+standard deviation of the conditional posterior to be ≤ .5
+4
 
-42
-45
-51
-43
-56
-41
-40
+The version from Caffe.
 
-38
-41
-45
-39
-50
-37
-36
+Multiplicative Normalizing Flows for Variational Bayesian Neural Networks
 
-30
-32
-34
-30
-38
-29
-29
+during the forward pass. The classification performance of
+each model can be seen at Table 2; while our overall focus is not classification accuracy per se, we see that with
+the MNF posteriors we improve upon mean field reaching
+similar accuracies with Deep Ensembles.
+notMNIST To evaluate the predictive uncertainties of
+each model we performed the task described at (Lakshminarayanan et al., 2016); we estimated the entropy of the
+predictive distributions on notMNIST5 from the LeNet architectures trained on MNIST. Since we a-priori know that
+none of the notMNIST classes correspond to a trained class
+(since they are letters and not digits) the ideal predictive
+distribution is uniform over the MNIST digits, i.e. a maximum entropy distribution. Contrary to (Lakshminarayanan
+et al., 2016) we do not plot the histogram of the entropies
+across the images but we instead use the empirical CDF,
+which we think is more informative. Curves that are closer
+to the bottom right part of the plot are preferable, as it denotes that the probability of observing a high confidence
+prediction is low. At Figure 2 we show the empirical CDF
+over the range of possible entropies, [0, 2.5], for all of the
+models.
 
-58
-29
-17
-25
-36
-36
-18
+Figure 2. Empirical CDF for the entropy of the predictive distributions on notMNIST.
 
-132
-53
-29
-43
-75
-76
-30
+It is clear from the plot that the uncertainty estimates from
+MNFs are better than the other approaches, since the probability of a low entropy prediction is overall lower. The
+network trained with just weight decay was, as expected,
+the most overconfident with an almost zero median entropy while Dropout seems to be in the middle ground. The
+Bayesian neural net with the log-uniform prior also showed
+overconfidence in this task; we hypothesize that this is due
+to the induced sparsity (Molchanov et al., 2017) which results into the pruning of almost all irrelevant sources of
+variation in the parameters thus not providing enough vari5
+Can be found at http://yaroslavvb.blogspot.
+co.uk/2011/09/notmnist-dataset.html
 
-713
-247
-114
-150
-369
-366
-105
+ability to allow for uncertainty in the predictions. The sparsity levels6 are 62%, 95.2% for the two convolutional layers and 99.5%, 93.3% for the two fully connected. Similar
+effects would probably be also observed if we optimized
+the dropout rates for Dropout. The only source of randomness in the neural network is from the Bernoulli random
+variables (r.v.) z. By employing the Central Limit Theorem7 we can express the distribution of the activations as a
+Gaussian (Wang & Manning, 2013) with variance affected
+by the variance of the Bernoulli r.v., V(z) = π(1 − π). The
+maximum variance of the Bernoulli r.v. is when π = 0.5,
+therefore any tuning of the Dropout rate will result into a
+decrease in the variance of the r.v. and therefore a decrease
+in the variance of the Gaussian at the hidden units. This will
+subsequently lead into less predictive variance and more
+confidence.
+Finally, whereas it was shown at (Lakshminarayanan et al.,
+2016) that Deep Ensembles provide good uncertainty estimates (better than Dropout) on this task using fully connected networks, this result did not seem to apply for the
+LeNet architecture we considered. We hypothesize that
+they are sensitive to the hyperparameters (e.g. adversarial
+noise, number of members in the ensemble) and it requires
+more tuning in order to improve upon Dropout on this architecture.
+CIFAR 10 We performed a similar experiment on CIFAR
+10. To artificially create the ”unobserved class” scenario,
+we hid 5 of the labels (dog, frog, horse, ship, truck) and
+trained on the rest (airplane, automobile, bird, cat, deer).
+For this task we used the larger LeNet architecture8 described at (Gal & Ghahramani, 2015a). For the models
+with the Gaussian prior we similarly constrained the standard deviation during the forward pass to be ≤ .4. For Deep
+Ensembles we used five members with  = .1 for the adversarial example generation. The predictive performance on
+these five classes can be seen in Table 2, with Dropout and
+MNFs achieving the overall better accuracies. We subsequently measured the entropy of the predictive distribution
+on the classes that were hidden, with the resulting empirical
+CDFs visualized in Figure 3.
+We similarly observe that the network with just weight decay was the most overconfident. Furthermore, Deep Ensembles and Dropout had similar uncertainties, with Deep
+Ensembles having lower accuracy on the observed classes.
+The networks with the Gaussian priors also had similar uncertainty with the network with the log uniform prior, nevertheless the MNF posterior had much better accuracy on
+6
+Computed by pruning weights where log σ 2 − log µ2 ≥
+5 (Molchanov et al., 2017).
+7
+Assuming that the network is wide enough.
+8
+192 filters at each convolutional layer and 1000 hidden units
+for the fully connected layer.
 
-802
-262
-124
-154
-397
-398
-110
+Multiplicative Normalizing Flows for Variational Bayesian Neural Networks
 
-383
-144
-73
-98
-211
-213
-72
+sarial examples at least it “knows that it doesn’t know”.
 
-536
-217
-110
-147
-296
-303
-103
+Figure 3. Empirical CDF for the entropy of the predictive distributions on the 5 hidden classes from CIFAR 10.
 
-Table 3. Europarl. Perplexity after 5 epochs for different languages as a function of time t (minutes).
+the observed classes. The sparsity levels for the network
+with the log-uniform prior now were 94.9%, 99.8% for the
+convolutional layers and 99.9%, 92.7% for the fully connected. Overall, the network with the MNF posteriors seem
+to provide the better trade-off in uncertainty and accuracy
+on the observed classes.
+Table 2. Test errors (%) with the LeNet architecture on MNIST
+and the first five classes of CIFAR 10.
+Dataset
+MNIST
+CIFAR 5
 
-have d = 512 hidden units and are regularized with weight
-decay (λ = 10−6 ). On the One Billion Word benchmark,
-we use d = 2048 hidden units and no regularization. The
-dimension of the input word embeddings is set to 256, so
-that large models fit in GPU memory. For the backpropagation through time, we unroll the models for 20 steps. We
-use Adagrad (Duchi et al., 2011), with a step size of 0.1 and
-5 epochs, and we clip the norm of the gradients to 1. The
-batch size B is set to 128, except on the Finnish portion of
-Europarl where B=64 due to memory constraints. All the
-experiments were run on the same GPU with the Maxwell
-architecture.
-Baselines. Our method is compared to: (1) the full softmax, (2) the hierarchical softmax with frequency binning
-(HSM freq) and similarity-based binning (HSM sim), (3) importance sampling (Bengio et al., 2003b; Bengio & Senécal,
-2008) and (4) the differentiated softmax (Chen et al., 2015).
-For HSM, we tried different strategies for the binning. We
-observe that using the square root function on the count
-before computing the word bins is the most efficient for
-frequency binning. For the similarity-based binning, we
-used the Brown clustering algorithm (Brown et al., 1992)
-to determine the word classes. For the negative sampling
-method, we used a number of samples equal to 20% of the
+L2
+0.6
+24
 
-size of the vocabulary (Chen et al., 2015). For the differentiated softmax (D-softmax), we used the same partitions for
-the vocabulary as for our approach. We tried two version of
-the differentiated softmax. The first is the one described by
-Chen et al. (2015), where each word cluster uses a disjoint
-subset of the hidden representation. We also present an
-improved version, referred to as D-softmax [*], which uses
-our choice to have the whole hidden representation mapped
-to the different word clusters using projection matrices of
-different sizes.
-Comparison with the state of the art. Table 1 reports the
-results that we achieve on Text8. On this small vocabulary,
-approximate methods are comparatively less interesting.
-Our approach is the only one to approach the result of the
-full soft-max (below by 3 points of perplexity), while being
-the fastest. Our improved variant D-softmax [*] of the work
-by Chen et al. (2015) obtains similar results but is slower by
-a factor ×1.8.
-On Europarl, we first present the convergence properties of
-our approach compared to other approximate strategies in
-Figure 5 show the perplexity (ppl) as a function of training
-time. Our approach significantly outperforms all competitors by a large margin. For reference, we also show the
+Dropout
+0.5
+16
 
-Efficient softmax approximation for GPUs
+D.Ensem.
+0.7
+21
 
-200
-Full
-Sampling
-HSM
-D-Softmax[*]
-Ours
+FFG
+0.9
+22
 
-Perplexity
+FFLU
+0.9
+23
 
-180
-160
-140
+MNFG
+0.7
+16
 
-reasonable time and without the need of a large number of
-GPUs. We believe our approach to be general enough to be
-applied to other parallel computing architectures and other
-losses, as well as to other domains where the distributions
-of the class are unbalanced.
+Figure 4. Accuracy (solid) vs entropy (dashed) as a function of
+the adversarial perturbation  on MNIST.
 
-120
+CIFAR We performed the same experiment also on the
+five class subset of CIFAR 10. The results can be seen
+in Figure 5. Here we however observe a different picture,
+compared to MNIST, since all of the methods experienced
+overconfidence. We hypothesize that adversarial examples
+are harder to escape and be uncertain about in this dataset,
+due to the higher dimensionality, and therefore further investigation is needed.
+
+4.2. Accuracy and uncertainty on adversarial examples
+We also measure how robust our models and uncertainties are against adversarial examples (Szegedy et al., 2013;
+Goodfellow et al., 2014) by generating examples using the
+fast sign method (Goodfellow et al., 2014) for each of the
+previously trained architectures using Cleverhans (Papernot et al., 2016). For this task we do not include Deep
+Ensembles as they are trained on adversarial examples.
+MNIST On this scenario we observe interesting results
+if we plot the change in accuracy and entropy by varying
+the magnitude of the adversarial perturbation. The resulting plot can be seen in Figure 4. Overall Dropout seems
+to have better accuracies on adversarial examples; nevertheless, those come at an ”overconfident” price since the
+entropy of the predictive distributions is quite low thus resulting into predictions that have, on average, above 0.7
+probability for the dominant class. This is in contrast with
+MNFs; while the accuracy almost immediately drops close
+to random, the uncertainty simultaneously increases to almost maximum entropy. This implies that the predictive
+distribution is more or less uniform over those examples.
+So despite the fact that our model cannot overcome adver-
+
+Figure 5. Accuracy (solid) vs entropy (dashed) as a function of the
+adversarial perturbation  on CIFAR 10 (on the first 5 classes).
+
+4.3. Regression on toy dataset
+For the final experiment we visualize the predictive distributions obtained with the different models on the toy regression task introduced at (Hernández-Lobato & Adams,
+2015). We generated 20 training inputs from U[−4, 4] and
+then obtained the corresponding targets via y = x3 + ,
+where  ∼ N (0, 9). We fixed the likelihood noise to its
+true value and then fitted a Dropout network with π = 0.5
+
+Multiplicative Normalizing Flows for Variational Bayesian Neural Networks
+
+(a) Dropout π = 0.5
+
+(b) Dropout learned π
+
+(c) FFLU
+
+(d) MNFG
+
+Figure 6. Predictive distributions for the toy dataset. Blue areas correspond to ±3 standard deviations around the mean.
+
+for the hidden layer9 , an FFLU network and an MNFG. We
+also fitted a Dropout network where we also learned the
+dropout probability π of the hidden layer according to the
+bound described at section 2.3 (which is equivalent to the
+one described at (Gal & Ghahramani, 2015b)) using REINFORCE (Williams, 1992) and a global baseline (Mnih
+& Gregor, 2014). The resulting predictive distributions can
+be seen at Figure 6.
+As we can observe, MNF posteriors provide more realistic
+predictive distributions, closer to the true posterior (which
+can be seen at (Hernández-Lobato & Adams, 2015)) and
+with the network being more uncertain on areas where we
+do not observed any data. The uncertainties obtained by
+Dropout with fixed π = 0.5 did not diverge as much in
+those areas but overall they were better compared to the
+uncertainties obtained with FFLU. We could probably attribute the latter to the sparsification of the network since
+95% and 44% of the parameters were pruned for each layer
+respectively.
+Interestingly the uncertainties obtained with the network
+with the learned Dropout probability were the most “overfitted”. This might suggest that Dropout uncertainty is
+probably not a good posterior approximation since by optimizing the dropout rates we do not seem to move closer to
+the true posterior predictive distribution. This is in contrast
+with MNFs; they are flexible enough to allow for optimizing all of their parameters in a way that does better approximate the true posterior distribution. This result also empirically verifies the claim we previously made; by learning the
+dropout rates the entropy of the posterior predictive will decrease thus resulting into more overconfident predictions.
+
+5. Conclusion
+We introduce multiplicative normalizing flows (MNFs);
+a family of approximate posteriors for the parameters of
+a variational Bayesian neural network. We have shown
+that through this approximation we can significantly improve upon mean field on both predictive performance as
+9
+No Dropout was used for the input layer since it is 1dimensional.
+
+well as predictive uncertainty. We compared our uncertainty on notMNIST and CIFAR with Dropout (Srivastava
+et al., 2014; Gal & Ghahramani, 2015b) and Deep Ensembles (Lakshminarayanan et al., 2016) using convolutional
+architectures and found that MNFs achieve more realistic
+uncertainties while providing predictive capabilities on par
+with Dropout. We suspect that the predictive capabilities
+of MNFs can be further improved through more appropriate optimizers that avoid the bad local minima in the variational objective. Finally, we also highlighted limitations
+of Dropout approximations and empirically showed that
+MNFs can overcome them.
+There are a couple of promising directions for future research. One avenue would be to explore how much
+can MNFs sparsify and compress neural networks under
+either sparsity inducing priors, such as the log-uniform
+prior (Kingma et al., 2015; Molchanov et al., 2017), or empirical priors (Ullrich et al., 2017). Another promising direction is that of designing better priors for Bayesian neural
+networks. For example (Neal, 1995) has identified limitations of Gaussian priors and proposes alternative priors
+such as the Cauchy. Furthermore, the prior over the parameters also affects the type of uncertainty we get in our
+predictions; for instance we observed in our experiments a
+significant difference in uncertainty between Gaussian and
+log-uniform priors. Since different problems require different types of uncertainty it makes sense to choose the prior
+accordingly, e.g. use an informative prior so as to alleviate
+adversarial examples.
 
 Acknowledgements
-
-100
-
-The authors would like to thank Jeff Johnson for his help
-with GPU benchmarking as well as Tomas Mikolov, Rob
-Fergus and Jeff Johnson for insightful discussions.
-
-80
-
-0
-
-100 200 300 400 500 600 700 800
-Time (min)
+We would like to thank Klamer Schutte, Matthias Reisser
+and Karen Ullrich for valuable feedback. This research is
+supported by TNO, NWO and Google.
 
 References
-Figure 5. Finnish Europarl: perplexity (on validation) as the function of time for our method and baselines. We represent the result
-after each epoch by a point. Our method favorably compares with
-all other approaches w.r.t. the tradeoff perplexity and training
-time.Similar conclusions are drawn for the other languages.
+Abadi, Martı́n, Agarwal, Ashish, Barham, Paul, Brevdo,
+Eugene, Chen, Zhifeng, Citro, Craig, Corrado, Greg S,
+Davis, Andy, Dean, Jeffrey, Devin, Matthieu, et al. Tensorflow: Large-scale machine learning on heterogeneous
 
-Andreas, Jacob and Klein, Dan. When and why are log-linear
-models self-normalizing. In ACL, 2014.
-Bahl, Lalit R, Jelinek, Frederick, and Mercer, Robert L. A maximum likelihood approach to continuous speech recognition.
-PAMI, 1983.
-Bengio, Yoshua and Senécal, Jean-Sébastien. Adaptive importance
-sampling to accelerate training of a neural probabilistic language
-model. Neural Networks, 2008.
+Multiplicative Normalizing Flows for Variational Bayesian Neural Networks
 
-performance (D-softmax [*]) obtained by improving the Dsoftmax, to make it more comparable to our method. Our
-method is 2× to 3× faster than this improved competitor,
-which demonstrates how critical is our optimization strategy. Similar conclusions are drawn from Table 3 for other
-languages from the Europal corpus.
-Table 2 gives the test perplexity on One Billion Word benchmark: Our method achieves a perplexity of 43.9 after five
-epochs, taking less than three days to train on a single GPU.
-In comparison, only Jozefowicz et al. (2016) achieves a
-lower perplexity, but with a model 8× bigger than ours and
-trained over 32 GPUs during 3 weeks. We also note that for
-models of similar size, we achieve similar perplexity than
-the method introduced by Jozefowicz et al. (2016). As far
-as we know, ours the first method to achieve a perplexity
-lower than 50 on a single GPU.
+distributed systems. arXiv preprint arXiv:1603.04467,
+2016.
 
-6. Conclusion
-In this paper, we have proposed a simple yet efficient approximation of the softmax classifier. To our knowledge,
-it is the first speed optimizing approximation that obtains
-performance on par with the exact model. This is achieved
-by explicitly taking into account the computation time of
-matrix-multiplication on parallel systems and combining it
-with a few important observations, namely keeping a shortlist of frequent words in the root node (Schwenk, 2007)
-and reducing the capacity of rare words (Chen et al., 2015).
-In all our experiments on GPU, our method consistently
-maintains a low perplexity while enjoying a speed-up going
-from 2× to 10× compared to the exact model. This type
-of speed-up allows to deal with extremely large corpora in
+Richard E.
+Black-box α-divergence minimization.
+arXiv preprint arXiv:1511.03243, 2015.
 
-Bengio, Yoshua, Ducharme, Réjean, Vincent, Pascal, and Jauvin,
-Christian. A neural probabilistic language model. JMLR, 2003a.
-Bengio, Yoshua, Senécal, Jean-Sébastien, et al. Quick training of
-probabilistic neural nets by importance sampling. In AISTATS,
-2003b.
-Brown, Peter F, Desouza, Peter V, Mercer, Robert L, Pietra, Vincent J Della, and Lai, Jenifer C. Class-based n-gram models of
-natural language. Computational linguistics, 1992.
-Chelba, Ciprian, Mikolov, Tomas, Schuster, Mike, Ge, Qi, Brants,
-Thorsten, Koehn, Phillipp, and Robinson, Tony. One billion
-word benchmark for measuring progress in statistical language
-modeling. arXiv preprint arXiv:1312.3005, 2013.
-Chen, Welin, Grangier, David, and Auli, Michael. Strategies
-for training large vocabulary neural language models. arXiv
-preprint arXiv:1512.04906, 2015.
-Chung, Junyoung, Gulcehre, Caglar, Cho, KyungHyun, and Bengio, Yoshua. Empirical evaluation of gated recurrent neural networks on sequence modeling. arXiv preprint arXiv:1412.3555,
-2014.
-Devlin, Jacob, Zbib, Rabih, Huang, Zhongqiang, Lamar, Thomas,
-Schwartz, Richard M, and Makhoul, John. Fast and robust
-neural network joint models for statistical machine translation.
-In ACL, 2014.
-Duchi, John, Hazan, Elad, and Singer, Yoram. Adaptive subgradient methods for online learning and stochastic optimization.
-JMLR, 2011.
-Elman, Jeffrey L. Finding structure in time. Cognitive science,
-1990.
-Goodman, Joshua. Classes for fast maximum entropy training. In
-ICASSP, 2001a.
+Agakov, Felix V and Barber, David. An auxiliary variational method. In International Conference on Neural
+Information Processing, pp. 561–566. Springer, 2004.
 
-Efficient softmax approximation for GPUs
-Goodman, Joshua T. A bit of progress in language modeling.
-Computer Speech & Language, 2001b.
-Graves, Alan, Mohamed, Abdel-rahman, and Hinton, Geoffrey.
-Speech recognition with deep recurrent neural networks. In
-ICASSP, 2013.
-Gutmann, Michael and Hyvärinen, Aapo. Noise-contrastive estimation: A new estimation principle for unnormalized statistical
-models. In International Conference on Artificial Intelligence
-and Statistics, 2010.
-Hinton, Geoffrey, Deng, Li, Yu, Dong, Dahl, George E, Mohamed,
-Abdel-rahman, Jaitly, Navdeep, Senior, Andrew, Vanhoucke,
-Vincent, Nguyen, Patrick, Sainath, Tara N, et al. Deep neural networks for acoustic modeling in speech recognition: The
-shared views of four research groups. Signal Processing Magazine, 2012.
-Hochreiter, Sepp and Schmidhuber, Jürgen. Long short-term memory. Neural computation, 1997.
-Jean, Sebastien, Cho, Kyunghyun, Memisevic, Roland, and Bengio, Yoshua. On using very large target vocabulary for neural
-machine translation. 2015.
-Ji, Shihao, Vishwanathan, SVN, Satish, Nadathur, Anderson,
-Michael J, and Dubey, Pradeep. Blackout: Speeding up recurrent neural network language models with very large vocabularies. arXiv preprint arXiv:1511.06909, 2015.
-Joulin, Armand, van der Maaten, Laurens, Jabri, Allan, and Vasilache, Nicolas. Learning visual features from large weakly
-supervised data. arXiv preprint arXiv:1511.02251, 2015.
+Hinton, Geoffrey E and Van Camp, Drew. Keeping the
+neural networks simple by minimizing the description
+length of the weights. In Proceedings of the sixth annual
+conference on Computational learning theory, pp. 5–13.
+ACM, 1993.
 
-Mikolov, Tomas, Deoras, Anoop, Kombrink, Stefan, Burget,
-Lukas, and Cernockỳ, Jan. Empirical evaluation and combination of advanced language modeling techniques. In INTERSPEECH, 2011a.
-Mikolov, Tomáš, Deoras, Anoop, Povey, Daniel, Burget, Lukáš,
-and Černockỳ, Jan. Strategies for training large scale neural
-network language models. In ASRU, 2011b.
-Mikolov, Tomáš, Kombrink, Stefan, Burget, Lukáš, Černockỳ,
-Jan Honza, and Khudanpur, Sanjeev. Extensions of recurrent
-neural network language model. In ICASSP, 2011c.
-Mikolov, Tomas, Chen, Kai, Corrado, Greg, and Dean, Jeffrey.
-Efficient estimation of word representations in vector space.
-arXiv preprint arXiv:1301.3781, 2013.
-Mikolov, Tomas, Joulin, Armand, Chopra, Sumit, Mathieu,
-Michael, and Ranzato, Marc’Aurelio. Learning longer memory
-in recurrent neural networks. arXiv preprint arXiv:1412.7753,
-2014.
-Mnih, Andriy and Hinton, Geoffrey E. A scalable hierarchical
-distributed language model. In NIPS, 2009.
-Mnih, Andriy and Teh, Yee Whye. A fast and simple algorithm for
-training neural probabilistic language models. arXiv preprint
-arXiv:1206.6426, 2012.
-Morin, Frederic and Bengio, Yoshua. Hierarchical probabilistic
-neural network language model. In Aistats, 2005.
-Schwenk, Holger. Continuous space language models. Computer
-Speech & Language, pp. 492–518, 2007.
+Blundell, Charles, Cornebise, Julien, Kavukcuoglu, Koray,
+and Wierstra, Daan. Weight uncertainty in neural networks. Proceedings of the 32nd International Conference on Machine Learning, ICML 2015, Lille, France,
+6-11 July 2015, 2015.
+Chen, Tianqi, Fox, Emily B, and Guestrin, Carlos. Stochastic gradient hamiltonian monte carlo.
+Damianou, Andreas C. and Lawrence, Neil D. Deep gaussian processes. In Proceedings of the Sixteenth International Conference on Artificial Intelligence and Statistics, AISTATS 2013, Scottsdale, AZ, USA, April 29 - May
+1, 2013, pp. 207–215, 2013.
+Dinh, Laurent, Sohl-Dickstein, Jascha, and Bengio, Samy.
+Density estimation using real nvp. arXiv preprint
+arXiv:1605.08803, 2016.
 
-Jozefowicz, Rafal, Vinyals, Oriol, Schuster, Mike, Shazeer, Noam,
-and Wu, Yonghui. Exploring the limits of language modeling.
-arXiv preprint arXiv:1602.02410, 2016.
+Kingma, Diederik and Ba, Jimmy. Adam: A method for
+stochastic optimization. International Conference on
+Learning Representations (ICLR), San Diego, 2015.
+Kingma, Diederik P and Welling, Max. Auto-encoding
+variational bayes. International Conference on Learning Representations (ICLR), 2014.
+Kingma, Diederik P, Salimans, Tim, and Welling, Max.
+Variational dropout and the local reparametrization trick.
+Advances in Neural Information Processing Systems,
+2015.
+Kingma, Diederik P, Salimans, Tim, and Welling, Max. Improving variational inference with inverse autoregressive
+flow. arXiv preprint arXiv:1606.04934, 2016.
 
-Schwenk, Holger, Rousseau, Anthony, and Attik, Mohammed.
-Large, pruned or continuous space language models on a gpu
-for statistical machine translation. In NAACL-HLT Workshop,
-2012.
+Gal, Yarin and Ghahramani, Zoubin. Bayesian convolutional neural networks with bernoulli approximate variational inference. arXiv preprint arXiv:1506.02158,
+2015a.
 
-Katz, Slava M. Estimation of probabilities from sparse data for the
-language model component of a speech recognizer. ICASSP,
+Korattikara, Anoop, Rathod, Vivek, Murphy, Kevin, and
+Welling, Max. Bayesian dark knowledge. arXiv preprint
+arXiv:1506.04416, 2015.
+
+Gal, Yarin and Ghahramani, Zoubin. Dropout as a bayesian
+approximation: Representing model uncertainty in deep
+learning. arXiv preprint arXiv:1506.02142, 2015b.
+
+Lakshminarayanan, Balaji, Pritzel, Alexander, and Blundell, Charles. Simple and scalable predictive uncertainty estimation using deep ensembles. arXiv preprint
+arXiv:1612.01474, 2016.
+
+Goodfellow, Ian J, Shlens, Jonathon, and Szegedy, Christian. Explaining and harnessing adversarial examples.
+arXiv preprint arXiv:1412.6572, 2014.
+Graves, Alex. Practical variational inference for neural networks. In Advances in Neural Information Processing
+Systems, pp. 2348–2356, 2011.
+He, Kaiming, Zhang, Xiangyu, Ren, Shaoqing, and Sun,
+Jian. Delving deep into rectifiers: Surpassing humanlevel performance on imagenet classification. In Proceedings of the IEEE International Conference on Computer Vision, pp. 1026–1034, 2015.
+Hernández-Lobato, José Miguel and Adams, Ryan.
+Probabilistic backpropagation for scalable learning of
+bayesian neural networks. In Proceedings of the 32nd
+International Conference on Machine Learning, ICML
+2015, Lille, France, 6-11 July 2015, pp. 1861–1869,
+2015.
+Hernández-Lobato, José Miguel, Li, Yingzhen,
+Hernández-Lobato, Daniel, Bui, Thang, and Turner,
+
+LeCun, Yann, Bottou, Léon, Bengio, Yoshua, and Haffner,
+Patrick. Gradient-based learning applied to document
+recognition. Proceedings of the IEEE, 86(11):2278–
+2324, 1998.
+Louizos, Christos and Welling, Max. Structured and efficient variational deep learning with matrix gaussian posteriors. arXiv preprint arXiv:1603.04733, 2016.
+Maaløe, Lars, Sønderby, Casper Kaae, Sønderby,
+Søren Kaae, and Winther, Ole. Auxiliary deep generative models. arXiv preprint arXiv:1602.05473, 2016.
+MacKay, David JC. A practical bayesian framework for
+backpropagation networks. Neural computation, 4(3):
+448–472, 1992.
+Minka, Thomas P. Expectation propagation for approximate bayesian inference. In Proceedings of the Seventeenth conference on Uncertainty in artificial intelligence, pp. 362–369. Morgan Kaufmann Publishers Inc.,
+2001.
+
+Multiplicative Normalizing Flows for Variational Bayesian Neural Networks
+
+Mnih, Andriy and Gregor, Karol. Neural variational inference and learning in belief networks. arXiv preprint
+arXiv:1402.0030, 2014.
+Molchanov, D., Ashukha, A., and Vetrov, D. Variational
+Dropout Sparsifies Deep Neural Networks. ArXiv eprints, January 2017.
+Nair, Vinod and Hinton, Geoffrey E. Rectified linear units
+improve restricted boltzmann machines. In Proceedings
+of the 27th International Conference on Machine Learning (ICML-10), pp. 807–814, 2010.
+Neal, Radford M. Bayesian learning for neural networks.
+PhD thesis, Citeseer, 1995.
+Osband, Ian, Blundell, Charles, Pritzel, Alexander, and
+Van Roy, Benjamin. Deep exploration via bootstrapped
+dqn. arXiv preprint arXiv:1602.04621, 2016.
+Papernot, Nicolas, Goodfellow, Ian, Sheatsley, Ryan, Feinman, Reuben, and McDaniel, Patrick. cleverhans v1.0.0:
+an adversarial machine learning library. arXiv preprint
+arXiv:1610.00768, 2016.
+Peterson, Carsten. A mean field theory learning algorithm
+for neural networks. Complex systems, 1:995–1019,
 1987.
+Ranganath, Rajesh, Tran, Dustin, and Blei, David M.
+Hierarchical variational models.
+arXiv preprint
+arXiv:1511.02386, 2015.
+Rezende, Danilo Jimenez and Mohamed, Shakir. Variational inference with normalizing flows. arXiv preprint
+arXiv:1505.05770, 2015.
+Rezende, Danilo Jimenez, Mohamed, Shakir, and Wierstra,
+Daan. Stochastic backpropagation and approximate inference in deep generative models. In Proceedings of
+the 31th International Conference on Machine Learning, ICML 2014, Beijing, China, 21-26 June 2014, pp.
+1278–1286, 2014.
+Salimans, Tim, Knowles, David A, et al. Fixed-form variational posterior approximation through stochastic linear
+regression. Bayesian Analysis, 8(4):837–882, 2013.
+Salimans, Tim, Kingma, Diederik P, Welling, Max, et al.
+Markov chain monte carlo and variational inference:
+Bridging the gap. In International Conference on Machine Learning, pp. 1218–1226, 2015.
+Srivastava, Nitish, Hinton, Geoffrey, Krizhevsky, Alex,
+Sutskever, Ilya, and Salakhutdinov, Ruslan. Dropout:
+A simple way to prevent neural networks from overfitting. The Journal of Machine Learning Research, 15(1):
+1929–1958, 2014.
 
-Shazeer, Noam, Pelemans, Joris, and Chelba, Ciprian. Sparse
-non-negative matrix language modeling for skip-grams. In
-Proceedings of Interspeech, pp. 1428–1432, 2015.
-
-Kneser, Reinhard and Ney, Hermann. Improved backing-off for
-m-gram language modeling. In ICASSP, 1995.
-
-Sutskever, Ilya, Vinyals, Oriol, and Le, Quoc V. Sequence to
-sequence learning with neural networks. In Advances in neural
-information processing systems, 2014.
-
-Koehn, Philipp. Europarl: A parallel corpus for statistical machine
-translation. In MT summit, 2005.
-Kuhn, Roland and De Mori, Renato. A cache-based natural language model for speech recognition. PAMI, 1990.
-Le, Hai-Son, Oparin, Ilya, Allauzen, Alexandre, Gauvain, JeanLuc, and Yvon, François. Structured output layer neural network
-language model. In ICASSP, 2011.
-Le, Quoc V, Jaitly, Navdeep, and Hinton, Geoffrey E. A simple
-way to initialize recurrent networks of rectified linear units.
-arXiv preprint arXiv:1504.00941, 2015.
-Mikolov, Tomas and Zweig, Geoffrey. Context dependent recurrent
-neural network language model. In SLT, 2012.
-Mikolov, Tomas, Karafiát, Martin, Burget, Lukas, Cernockỳ, Jan,
-and Khudanpur, Sanjeev. Recurrent neural network based language model. In INTERSPEECH, 2010.
-
-Vaswani, Ashish, Zhao, Yinggong, Fossum, Victoria, and Chiang, David. Decoding with large-scale neural language models
-improves translation. In EMNLP, 2013.
-Vincent, Pascal, de Brébisson, Alexandre, and Bouthillier, Xavier.
-Efficient exact gradient update for training deep networks with
-very large sparse targets. In NIPS, 2015.
-Werbos, Paul J. Backpropagation through time: what it does and
-how to do it. 1990.
-Williams, Ronald J and Peng, Jing. An efficient gradient-based
-algorithm for on-line training of recurrent network trajectories.
-Neural computation, 1990.
-Zipf, George Kingsley. Human behavior and the principle of least
-effort. 1949.
-Zweig, Geoffrey and Makarychev, Konstantin. Speed regularization and optimality in word classing. In ICASSP, 2013.
+Szegedy, Christian, Zaremba, Wojciech, Sutskever, Ilya,
+Bruna, Joan, Erhan, Dumitru, Goodfellow, Ian, and Fergus, Rob. Intriguing properties of neural networks. arXiv
+preprint arXiv:1312.6199, 2013.
+Ullrich, Karen, Meeds, Edward, and Welling, Max. Soft
+weight-sharing for neural network compression. arXiv
+preprint arXiv:1702.04008, 2017.
+Wang, Sida and Manning, Christopher. Fast dropout training. In Proceedings of The 30th International Conference on Machine Learning, pp. 118–126, 2013.
+Welling, Max and Teh, Yee W. Bayesian learning via
+stochastic gradient langevin dynamics. In Proceedings
+of the 28th International Conference on Machine Learning (ICML-11), pp. 681–688, 2011.
+Williams, Ronald J. Simple statistical gradient-following
+algorithms for connectionist reinforcement learning.
+Machine learning, 8(3-4):229–256, 1992.
+Zhang, Chiyuan, Bengio, Samy, Hardt, Moritz, Recht, Benjamin, and Vinyals, Oriol. Understanding deep learning requires rethinking generalization. arXiv preprint
+arXiv:1611.03530, 2016.
 
 

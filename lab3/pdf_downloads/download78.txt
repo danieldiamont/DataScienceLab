@@ -1,1226 +1,837 @@
-Learning to Discover Sparse Graphical Models
+Identification and Model Testing in Linear Structural Equation Models using
+Auxiliary Variables
 
-Eugene Belilovsky 1 2 3 Kyle Kastner 4 Gael Varoquaux 2 Matthew B. Blaschko 1
+Bryant Chen 1 Daniel Kumor 2 Elias Bareinboim 2
 
 Abstract
-We consider structure discovery of undirected
-graphical models from observational data. Inferring likely structures from few examples is a complex task often requiring the formulation of priors
-and sophisticated inference procedures. Popular
-methods rely on estimating a penalized maximum
-likelihood of the precision matrix. However, in
-these approaches structure recovery is an indirect
-consequence of the data-fit term, the penalty can
-be difficult to adapt for domain-specific knowledge, and the inference is computationally demanding. By contrast, it may be easier to generate training samples of data that arise from graphs
-with the desired structure properties. We propose
-here to leverage this latter source of information
-as training data to learn a function, parametrized
-by a neural network, that maps empirical covariance matrices to estimated graph structures.
-Learning this function brings two benefits: it implicitly models the desired structure or sparsity
-properties to form suitable priors, and it can be
-tailored to the specific problem of edge structure
-discovery, rather than maximizing data likelihood.
-Applying this framework, we find our learnable
-graph-discovery method trained on synthetic data
-generalizes well: identifying relevant edges in
-both synthetic and real data, completely unknown
-at training time. We find that on genetics, brain
-imaging, and simulation data we obtain performance generally superior to analytical methods.
+We developed a novel approach to identification and model testing in linear structural equation models (SEMs) based on auxiliary variables
+(AVs), which generalizes a widely-used family
+of methods known as instrumental variables. The
+identification problem is concerned with the conditions under which causal parameters can be
+uniquely estimated from an observational, noncausal covariance matrix. In this paper, we provide an algorithm for the identification of causal
+parameters in linear structural models that subsumes previous state-of-the-art methods. In other
+words, our algorithm identifies strictly more coefficients and models than methods previously
+known in the literature. Our algorithm builds
+on a graph-theoretic characterization of conditional independence relations between auxiliary
+and model variables, which is developed in this
+paper. Further, we leverage this new characterization for allowing identification when limited
+experimental data or new substantive knowledge
+about the domain is available. Lastly, we develop
+a new procedure for model testing using AVs.
 
-Introduction
-Probabilistic graphical models provide a powerful framework to describe the dependencies between a set of variables. Many applications infer the structure of a probabilistic graphical model from data to elucidate the relationships
+1. Introduction
+The problem of estimating causal effects is one of the fundamental problems in the data-driven sciences. In order to
+estimate a causal effect, the desired effect must be identified
+or uniquely expressible in terms of the probability distribution over the available data. Causal effects are identified
+by design in randomized control trials, but in many applications, such experiments are not possible. When only observational data is available, determining whether a causal
 1
+IBM Research, San Jose, California, USA 2 Purdue University, West Lafeyette, Indiana, USA. Correspondence to:
+Bryant Chen <bryant.chen@ibm.com>, Daniel Kumor <dkumor@purdue.edu>.
 
-KU Leuven 2 INRIA 3 University of Paris-Saclay 4 University
-of Montreal. Correspondence to: Eugene Belilovsky <eugene.belilovsky@inria.fr>.
 Proceedings of the 34 th International Conference on Machine
-Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017 by
-the author(s).
+Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
+by the author(s).
 
-between variables. These relationships are often represented
-by an undirected graphical model also known as a Markov
-Random Field (MRF). We focus on a common MRF model,
-Gaussian graphical models (GGMs). GGMs are used in
-structure-discovery settings for rich data such as neuroimaging, genetics, or finance (Friedman et al., 2008; Ryali et al,
-2012; Mohan et al., 2012; Belilovsky et al., 2016). Although
-multivariate Gaussian distributions are well-behaved, determining likely structures from few examples is a difficult task
-when the data is high dimensional. It requires strong priors,
-typically a sparsity assumption, or other restrictions on the
-structure of the graph, which now make the distribution
-difficult to express analytically and use.
-A standard approach to estimating structure with GGMs in
-high dimensions is based on the classic result that the zeros
-of a precision matrix correspond to zero partial correlation,
-a necessary and sufficient condition for conditional independence (Lauritzen, 1996). Assuming only a few conditional
-dependencies corresponds to a sparsity constraint on the
-entries of the precision matrix, leading to a combinatorial
-problem. Many popular approaches to learning GGMs can
-be seen as leveraging the `1 -norm to create convex surrogates to this problem. Meinshausen & Bühlmann (2006)
-use nodewise `1 penalized regressions, while other estimators penalize the precision matrix directly (Cai et al., 2011;
-Friedman et al., 2008; Ravikumar et al., 2011), the most
-popular being the graphical lasso
-fgl (Σ̂) = arg min − log |Θ| + Tr (Σ̂Θ) + λkΘk1 (1)
-Θ0
-
-which can be seen as a penalized maximum-likelihood estimator. Here Θ and Σ̂ are the precision and sample covariance matrices, respectively. A large variety of alternative
-penalties extend the priors of the graphical lasso (Danaher et al., 2014; Ryali et al, 2012; Varoquaux et al., 2010).
-However, this strategy faces several challenges. Constructing novel surrogates for structured-sparsity assumptions on
-MRF structures is difficult, as priors need to be formulated
-and incorporated into a penalized maximum likelihood objective which then calls for the development of an efficient
-optimization algorithm, often within a separate research effort. Furthermore, model selection in a penalized maximum
-likelihood setting is difficult as regularization parameters
-are often unintuitive.
-We propose to learn the estimator. Rather than manually de-
-
-Learning to Discover Sparse Graphical Models
-
-signing a specific graph-estimation procedure, we frame this
-estimator-engineering problem as a learning problem, selecting a function from a large flexible function class by risk
-minimization. This allows us to construct a loss function
-that explicitly aims to recover the edge structure. Indeed,
-sampling from a distribution of graphs and empirical covariances with desired properties is often possible, even when
-this distribution is not analytically tractable. As such we
-can perform empirical risk minimization to select an appropriate function for edge estimation. Such a framework gives
-more control on the assumed level of sparsity (as opposed
-to graph lasso) and can impose structure on the sampling to
-shape the expected distribution, while optimizing a desired
-performance metric.
-For particular cases we show that the problem of interest
-can be solved with a polynomial function, which is learnable with a neural network (Andoni et al., 2014). Motivated
-by this fact, as well as theoretical and empricial results
-on learning smooth functions approximating solutions to
-combinatorial problems (Cohen et al., 2016; Vinyals et al.,
-2015), we propose to use a particular convolutional neural
-network as the function class. We train it by sampling small
-datasets, generated from graphs with the prescribed properties, with a primary focus on sparse graphical models. We
-estimate from this data small-sample covariance matrices
-(n < p), where n is the number of samples and p is the
-dimensionality of the data. Then we use them as training
-data for the neural network (Figure 2) where target labels
-are indicators of present and absent edges in the underlying
-GGM. The learned network can then be employed in various
-real-world structure discovery problems.
-In Section 1.1 we review the related work. In Section 2 we
-formulate the risk minimization view of graph-structure inference and describe how it applies to sparse GGMs. Section
-2.3 describes and motivates the deep-learning architecture
-we chose to use for the sparse GGM problem in this work.
-In Section 3 we describe the details of how we train an edge
-estimator for sparse GGMs. We then evaluate its properties
-extensively on simulation data. Finally, we show that this
-edge estimator trained only on synthetic data can obtain
-state of the art performance at inference time on real neuroimaging and genetics problems, while being much faster
-to execute than other methods.
-Related Work
-Lopez-Paz et al. (2015) analyze learning functions to identify the structure of directed graphical models in causal
-inference using estimates of kernel-mean embeddings. As
-in our work, they demonstrate the use of simulations for
-training while testing on real data. Unlike our work, they
-primarily focus on finding the causal direction in two node
-graphs with many observations.
-
-Our learning architecture is motivated by the recent literature on deep networks. Vinyals et al. (2015) have shown
-that neural networks can learn approximate solutions to NPhard combinatorial problems, and the problem of optimal
-edge recovery in MRFs can be seen as a combinatorial optimization problem. Several recent works have proposed
-neural architectures for graph input data (Henaff et al., 2015;
-Duvenaud et al, 2015; Li et al., 2016). These are based on
-multi-layer convolutional networks, as in our work, or multistep recurrent neural networks. The input in our approach
-can be viewed as a complete graph, while the output is a
-sparse graph, thus none of these are directly applicable. Related to our work, Balan et al. (2015) use deep networks
-to approximate a posterior distribution. Finally, Gregor
-& LeCun (2010); Xin et al. (2016) use deep networks to
-approximate steps of a known sparse recovery algorithm.
-Bayesian approaches to structure learning rely on priors on
-the graph combined with sampling techniques to estimate
-the posterior of the graph structure. Some approaches make
-assumptions on the decomposability of the graph (Moghaddam et al., 2009). The G-Wishart distribution is a popular
-distribution which forms part of a framework for structure
-inference, and advances have been recently made in efficient
-sampling (Mohammadi & Wit, 2015). These methods can
-still be rather slow compared to competing methods, and in
-the setting of p > n we find they are less powerful.
-
-Methods
-Learning an Approximate Edge Estimation Procedure
-We consider MRF edge estimation as a learnable function.
-Let X ∈ Rn×p be a matrix whose n rows are i.i.d. samples
-x ∼ P (x) of dimension p. Let G = (V, E) be an undirected
-and unweighted graph associated with the set of variables in
-x. Let L = {0, 1} and Ne = p(p−1)
-the maximum possible
+effect is identified requires modeling the underlying causal
+structure, which is generally done using structural equation models (SEMs) (also called structural causal models)
+(Pearl, 2009; Bareinboim and Pearl, 2016).
+A structural equation model consists of a set of equations
+that describe the underlying data-generating process for a
+set of variables. While SEMs, in their most general, nonparametric form do not require any assumptions about the
+form of these functions, in many fields, including machine
+learning, psychology, and the social sciences, linear SEMs
+are used. A linear SEM consists of a set of equations of
+the form, X = ΛX + U , where X = [x1 , ..., xn ]t is a
+vector containing the model variables, Λ is a matrix containing the coefficients of the model, and Λij represents the
+direct effect of xi on xj , and U = [u1 , ..., un ]t is a vector
+of normally distributed error terms, which represents omitted or latent variables.1 The matrix Λ contains zeroes on
+the diagonal, and Λij = 0 whenever xi is not a cause of
+xj . The covariance matrix of X will be denoted by Σ and
+the covariance matrix over the error terms, U, by Ω. In
+this paper, we will restrict our attention to semi-Markovian
+models (Pearl, 2009), models where the rows of Λ can be
+arranged so that it is lower triangular, and the corresponding graph is acyclic.
+When modeling using SEMs, researchers typically specify
+the model by setting certain entries of Λ and Ω to zero (i.e.
+exclusion and independence restrictions), while leaving the
+rest of the entries as free parameters to be estimated from
+data2 . Restricting a particular entry Λij to zero reflects the
+assumption that Yi has no direct effect on Yj . Similarly,
+restricting Ωij to zero reflects the assumption that there are
+no unobserved common causes of both Yi and Yj . Once the
+1
+Instrumental and auxiliary variables can also be used when
+normality is not assumed, but to simplify the proofs in the paper,
+we will, as is commonly done by empirical researchers, assume
+normality.
 2
-edges in E. Let Y ∈ LNe indicate the presence or absence
-of edges in the edge set E of G, namely
-(
-0 xi ⊥ xj |xV \i,j
-ij
-Y =
-(2)
-1 xi 6⊥ xj |xV \i,j .
-We define an approximate structure discovery method
-gw (X), which predicts the edge structure, Ŷ = gw (X),
-given a sample of data X. We focus on X drawn from a
-Gaussian distribution. In this case, the empirical covariance
-matrix, Σ̂, is a sufficient statistic of the population covariance and therefore of the conditional dependency structure.
-We thus express our structure-recovery problem as a function of Σ̂: gw (X) := fw (Σ̂). fw is parametrized by w and
-belongs to the function class F. Note that the graphical
-lasso in Equation (1) is an fw for a specific choice of F.
-This view on the edge estimator now allows us to bring the
-selection of fw from the domain of human design to the
+There are a number of algorithms for discovering the model
+structure from data(Spirtes et al., 2000; Shimizu et al., 2006;
+Pearl, 2009; Zhang and Hyvärinen, 2009; Mooij et al., 2016).
+However, it is only in very rare instances that these methods are
+able to uniquely determine the model structure. As a result, model
+specification generally utilizes knowledge about the domain under
+study.
 
-Learning to Discover Sparse Graphical Models
+Identification and Model Testing using AVs
 
-domain of empirical risk minimization over F. Defining a
-distribution P on Rp×p × LNe such that (Σ̂, Y ) ∼ P, we
-would like our estimator, fw , to minimize the expected risk
-R(f ) = E(Σ̂,Y )∼P [l(f (Σ̂), Y )].
+parameters are estimated, causal effects (as well as counterfactual quantities) can be computed from the structural
+coefficients directly (Pearl, 2009; Chen and Pearl, 2014).
+However, in order to be estimable from data, a parameter
+must first be identified. In some cases, the modeling assumptions are not strong enough, and there are multiple,
+often infinite, values for the parameter that are consistent
+with the observed data. As a result, two fundamental problems in SEMs are to identify and estimate the model parameters and to test the underlying assumptions that enable
+identification.
+The problem of identification has been studied extensively
+by econometricians and social scientists (Fisher, 1966;
+Bowden and Turkington, 1984; Bekker et al., 1994; Rigdon, 1995) and more recently by the AI and statistics communities using graphical methods (Spirtes et al., 1998;
+Tian, 2007; 2009; Brito and Pearl, 2002a;c; 2006; Bareinboim and Pearl, 2016). To our knowledge, the most general, efficient algorithm for model identification is the g-HT
+algorithm given by Chen (2016) combined with ancestor
+decomposition (Drton and Weihs, 2016). This method generalizes the half-trek algorithm of Foygel et al. (2012) and
+utilizes ancestor decomposition, which expands on an idea
+by Tian (2005) where the model is decomposed into simpler sub-models. Graphical methods have also been applied
+to the problem of testing the causal assumptions embedded
+in an SEM. For example, d-separation (Pearl, 2009) and
+overidentification (Pearl, 2004; Chen et al., 2014) provide
+the means to discover testable implications of the model,
+which can be used to test it against data.
+Despite decades of attention and work from diverse fields,
+the identification problem3 has still not been efficiently
+solved4 . There are identifiable parameters and models that
+none of the above methods are able to identify. Similarly, there are testable implications of SEMs that the above
+methods are unable to detect. One promising avenue to aid
+in both tasks are auxiliary variables (Chen et al., 2016).
+Each of the aforementioned methods for identification and
+model testing only utilizes restrictions on the entries of Λ
+and Ω to zero. Auxiliary variables can be used to incorporate knowledge of non-zero coefficient values into existing
+methods for identification and model testing. These coefficient values could be obtained, for example, from a previously conducted randomized experiment, from substantive
+understanding of the domain, or even from another identification technique. The intuition behind auxiliary vari3
+To be precise, we are referring to the problem of identification almost everywhere (Brito and Pearl, 2002b), also called
+generic identification (Foygel et al., 2012).
+4
+An exhaustive procedure can be obtained using Gröbner
+bases methods (Foygel et al., 2012). However, these methods
+are computationally intractable for anything but the smallest of
+graphs.
 
-(3)
+ables is simple: if the coefficient from variable w to z, β,
+is known, then we would like to remove the direct effect of
+w on z by subtracting it from z. This removal eliminates
+confounding paths through w and is performed by creating
+a variable z ∗ = z − βw, which is used as a proxy for z. In
+many cases, z ∗ allows the identification of parameters or
+testable implications using existing methods when z could
+not.
+Chen et al. (2016) demonstrated how auxiliary variables
+could be utilized in simple instrumental sets (instrumental sets that do not utilize conditioning to block spurious
+paths) (Brito and Pearl, 2002a; van der Zander et al., 2015)
+and proved that any model identifiable using the g-HT algorithm is also identifiable using auxiliary simple instrumental sets.
+Since auxiliary variables allow knowledge of non-zero coefficient values to be incorporated into existing methods
+for identification, they are also directly applicable to the
+problem of z-identification (Bareinboim and Pearl, 2012),
+in which partial experimental data is available. Additionally, the cancellation of paths that results from adding an
+AV may result in conditional independence constraints between the AV and other variables that can be used to test
+the model.
+In this paper, we generalize the results of Chen et al. (2016)
+and demonstrate how auxiliary variables can be utilized in
+generalized instrumental sets, which allow for conditioning to block spurious paths. We prove that, unlike auxiliary simple instrumental sets, this generalization strictly
+subsumes the g-HT algorithm. Additionally, we introduce
+quasi-instrumental sets, which utilize auxiliary variables
+to identify coefficients when partial experimental data is
+available. Quasi-instrumental sets are incorporated into
+our identification algorithm, allowing it to better address
+the problem of z-identification. To our knowledge, this
+algorithm is the first systematic method for tackling zidentification in linear systems. We also demonstrate how
+auxiliary instrumental sets and quasi-instrumental sets can
+be used to derive over-identifying constraints, which can
+be used to test the model specification against data. Moreover, we prove that these overidentifying constraints subsume conditional independence constraints among auxiliary variables. Lastly, we discuss related work, showing
+how auxiliary IVs are able to unite a variety of disparate
+methods under a single framework.
 
-Here l : LNe × LNe → R+ is the loss function. For graphical model selection the 0/1 loss function is the natural error
-metric to consider (Wang et al., 2010). The estimator with
-minimum risk is generally not possible to compute as a
-closed form expression for most interesting choices of P,
-such as those arising from sparse graphs. In this setting,
-Eq. (1) achieves the information theoretic optimal recovery rate up to a constant for certain P corresponding to
-uniformly sparse graphs with a maximum degree, but only
-when the optimal λ is used and the non-zero precision matrix values are bounded away from zero (Wang et al., 2010;
-Ravikumar et al., 2011).
-The design of the estimator in Equation (1) is not explicitly
-minimizing this risk functional. Thus modifying the estimator to fit a different class of graphs (e.g. small-world networks) while minimizing R(f ) is not obvious. Furthermore,
-in practical settings the optimal λ is unknown and precision
-matrix entries can be very small. We would prefer to directly
-minimize the risk functional. Desired structural assumptions
-on samples from P on the underlying graph, such as sparsity,
-may imply that the distribution is not tractable for analytic
-solutions. Meanwhile, we can often devise a sampling procedure for P allowing us to select an appropriate function
-via empirical risk minimization. Thus it is sufficient to
-define a rich enough F over which we can minimize the
-empirical risk over the samples generated, giving us a learning objective over N samples {Yk , Σk }N
-k=1 drawn from P:
-PN
-1
-min N k=1 l(fw (Σ̂k ), Yk ). To maintain tractability, we
-w
-use the standard cross-entropy loss as a convex surrogate,
-ˆl : RNe × LNe , given by
-X
-
-Y ij log(fwij (Σ̂)) + (1 − Y ij ) log(1 − fwij (Σ̂)) .
-i6=j
+2. Preliminaries
+The causal graph or path diagram of an SEM is a graph,
+G = (V, D, B), where V are nodes or vertices, D directed
+edges, and B bidirected edges. The nodes represent model
+variables. Directed eges encode the direction of causal-
 
-We now need to select a sufficiently rich function class
-for fw and a method to produce appropriate (Y, Σ̂) which
-model our desired data priors. This will allow us to learn
-a fw that explicitly attempts to minimize errors in edge
-discovery.
-Discovering Sparse GGMs and Beyond
-We discuss how the described approach can be applied to
-recover sparse Gaussian graphical models. A typical assumption in many modalities is that the number of edges
-is sparse. A convenient property of these GGMs is that the
-precision matrix has a zero value in the (i, j)th entry precisely when variables i and j are independent conditioned
-on all others. Additionally, the precision matrix and partial
+Identification and Model Testing using AVs
 
-correlation matrix have the same sparsity pattern, while the
-partial correlation matrix has normalized entries.
-We propose to simulate our a priori assumptions of sparsity
-and Gaussianity to learn fw (Σ̂), which can then produce
-predictions of edges from the input data. We model P (x|G)
-as arising from a sparse prior on the graph G and correspondingly the entries of the precision matrix Θ. To obtain
-a single sample of X corresponds to n i.i.d. samples from
-N (0, Θ−1 ). We can now train fw (Σ̂) by generating sample
-pairs (Σ̂, Y ). At execution time we standardize the input
-data and compute the covariance matrix before evaluating
-fw (Σ̂). The process of learning fw for the sparse GGM is
-given in Algorithm 1.
-Algorithm 1 Training a GGM edge estimator
-for i ∈ {1, .., N } do
-Sample Gi ∼ P(G)
-Sample Θi ∼ P(Θ|G = Gi )
-n
-Xi ← {xj ∼ N (0, Θ−1
-i )}j=1
-Construct (Yi , Σ̂i ) pair from (Gi , Xi )
-end for
-Select Function Class F (e.g. CNN)
-PN ˆ
-Optimize: min N1
-k=1 l(f (Σ̂k ), Yk ))
-f ∈F
-
-A weakly-informative sparsity prior is one where each edge
-is equally likely with small probability, versus structured
-sparsity where edges have specific configurations. For obtaining the training samples (Σ̂, Y ) in this case we would
-like to create a sparse precision matrix, Θ, with the desired
-number of zero entries distributed uniformly. One strategy
-to do this and assure the precision matrices lie in the positive
-definite cone is to first construct an upper triangular sparse
-matrix and then multiply it by its transpose. This process
-is described in detail in the experimental section. Alternatively, an MCMC based G-Wishart distribution sampler can
-be employed if specific structures of the graph are desired
-(Lenkoski, 2013).
-The sparsity patterns in real data are often not uniformly
-distributed. Many real world networks have a small-world
-structure: graphs that are sparse and yet have a comparatively short average distance between nodes. These transport
-properties often hinge on a small number of high-degree
-nodes called hubs. Normally, such structural patterns require sophisticated adaptation when applying estimators
-like Eq. (1). Indeed, high-degree nodes break the smallsample, sparse-recovery properties of `1 -penalized estimators (Ravikumar et al., 2011). In our framework such structural assumptions appear as a prior that can be learned offline during training of the prediction function. Similarly
-priors on other distributions such as general exponential
-families can be more easily integrated. As the structure discovery model can be trained offline, even a slow sampling
-procedure may suffice.
-
-Learning to Discover Sparse Graphical Models
-
-Neural Network Graph Estimator
-In this work we propose to use a neural network as our
-function fw . To motivate this let us consider the extreme
-case when n  p. In this case Σ̂ ≈ Σ and thus entries
-of Σ̂−1 or the partial correlation that are almost equal to
-zero can give the edge structure. We can show that a neural
-network is consistent with this limiting case.
-Definition 1 (P-consistency). A function class F is Pconsistent if ∃f ∈ F such that E(Σ̂,Y )∼P [l(f (Σ̂), Y )] → 0
-as n → ∞ with high probability.
-Proposition 1 (Existence of P-consistent neural network
-graph estimator). There exists a feed forward neural network function class F that is P-consistent.
-Proof. If the data is standardized, each entry of Σ corresponds to the correlation ρi,j . The partial correlation of
-edge (i, j) conditioned on nodes Z, is given recursively as
-ρi,j|Z = (ρi,j|Z\zo − ρi,zo |Z\zo ρj,zo |Z\zo )
-
-1
-.
-D
-
-(4)
-
-We may ignore the denominator, D, as we are interested in
-I(ρi,j|Z = 0). Thus we are left with a recursive formula that
-yields a high degree polynomial. From Andoni et al. (2014,
-Theorem 3.1) using gradient descent, a neural network with
-only two layers can learn a polynomial function of degree d
-to arbitrary precision given sufficient hidden units.
-Remark 1. Naïvely the polynomial from the recursive definition of partial correlation is of degree bounded by 2p−2 .
-In the worst case, this would seem to imply that we would
-need an exponentially growing number of hidden nodes to
-approximate it. However, this problem has a great deal
-of structure that can allow efficient approximation. Firstly,
-higher order monomials will go to zero quickly with a uniform prior on ρi,j , which takes values between 0 and 1,
-suggesting that in many cases a concentration bound exists
-that guarantees non-exponential growth. Furthermore, the
-existence result is shown already for a shallow network, and
-we expect a logarithmic decrease in the number of parameters to peform function estimation with a deep network
-(Cohen et al., 2016).
-Moreover, there are a great deal of redundant computations
-in Eq. (4) and an efficient dynamic programming implementation can yield polynomial computation time and require
-only low order polynomial computations with appropriate
-storage of previous computation. Similarly we would like to
-design a network that would have capacity to re-use computations across edges and approximate low order polynomials.
-We also observe that the conditional independence of nodes
-i, j given Z can be computed equivalently in many ways by
-considering many paths through the nodes Z. Thus we can
-choose any valid ordering for traversing the nodes starting
-from a given edge.
-
-We now describe an efficient architecture for this problem
-which uses a series of shared operations at each edge. We
-consider a feedforward network where each edge i, j is associated with a vector, oki,j , at each layer k > 0. For each edge,
-i, j, we start with a neighborhood of the 6 adjacent nodes,
-i, j, i-1, i+1, j-1, j+1 for which we take all corresponding
-edge values from the covariance matrix and construct o1i,j .
-We proceed at each layer to increase the nodes considered
-for each oki,j , the output at each layer progressively increasing the receptive field making sure all values associated with
-the considered nodes are present. The entries used at each
-layer are illustrated in Figure 1. The receptive field here
-refers to the original covariance entries which are accessible
-by a given, oki,j (Luo et al., 2010). The equations defining
-the process are shown in Figure 1. Here a neural network
-fwk is applied at each edge at each layer and a dilation sequence dk is used. We call a network of this topology a
-D-Net of depth l. We use dilation here to allow the receptive
-field to grow fast, so the network does not need a great deal
-of layers. We make the following observations:
-Proposition 2. For general P it is a necessary condition
-for P-consistency that the receptive field of D-Net covers all
-entries of the covariance, Σ̂, at any edge it is applied.
-Proof. Consider nodes i and j and a chain graph such that
-i and j are adjacent to each other in the matrix but are at
-the terminal nodes of the chain graph. One would need
-to consider all other variables to be able to explain away
-the correlation. Alternatively we can see this directly from
-expanding Eq. (4).
-Proposition 3. A p × p matrix Σ̂ will be covered by the
-receptive field for a D-Net of depth log2 (p) and dk = 2k−1
-Proof. The receptive field of a D-Net with dilation sequence
-dk = 2k−1 of depth l is O(2l ). We can see this as oki,j will
-receive input from ok−1
-a,b at the edge of it’s receptive field,
-effectively doubling it. It now follows that we need at least
-log2 (p) layers to cover the receptive field.
-Intuitively adjacent edges have a high overlap in their
-receptive fields and can easily share information about
-the non-overlapping components. This is analogous to a
-parametrized message passing. For example if edge (i, j) is
-explained by node k, as k enters the receptive field of edge
-(i, j − 1), the path through (i, j) can already be discounted.
-In terms of Eq. (4) this can correspond to storing computations that can be used by neighbor edges from lower levels
-in the recursion.
-As fwk is identical for all nodes, we can simultaneously
-implement all edge predictions efficiently as a convolutional
-network. We make sure that to have considered all edges
-relevant to the current set of nodes in the receptive field
-which requires us to add values from filters applied at the
-diagonal to all edges. In Figure 1 we illustrate the nodes
-
-Learning to Discover Sparse Graphical Models
-layer 1, edge 4,13
-
+ity, and for each coefficient Λij 6= 0, an edge is drawn
+from xi to xj . Each directed edge, therefore, is associated with a coefficient in the SEM, which we will often
+refer to as its structural coefficient. Additionally, when it is
+clear from context, we may abuse notation slightly and use
+coefficients and directed edges interchangeably. The error
+terms, ui , are not shown explicitly in the graph. However,
+a bidirected edge between two nodes indicates that their
+corresponding error terms may be statistically dependent
+while the lack of a bidirected edge indicates that the error
+terms are independent.
+We will use standard graph terminology with P a(y) denoting the parents of y, Anc(y) denoting the ancestors of Y ,
+De(y) denoting the descendants of y, and Sib(y) denoting
+the siblings of y, the variables that are connected to y via
+a bidirected edge. He(E) denotes the heads of a set of directed edges, E, while T a(E) denotes the tails. Additionally, for a node v, the set of edges for which He(E) = v is
+denoted Inc(v). Lastly, we will utilize d-separation (Pearl,
+2009).
+We will use σ(x, y|W ) to denote the partial covariance between two random variables, x and y, given a set of variables, W , and σ(x, y|W )G as the partial covariance between random variables x and y given W implied by the
+graph G. We will assume without loss of generality that
+the model variables have been standardized to mean 0 and
+variance 1.
+Definition 1. For a given unblocked (given the empty set)
+path, π, from x to y, Left(π) is the set of nodes, if any,
+that has a directed edge leaving it in the direction of x in
+addition to x. Right(π) is the set of nodes, if any, that has a
+directed edge leaving it in the direction of y in addition to
+y.
+For example, consider the path π = x ← v1L ← ... ←
+vkL ← v T → vjR → ... → v1R → y. In this case, Left(π)
+= ∪ki=1 viL ∪ {x, v T } and Right(π) = ∪ji=1 viR ∪ {y, v T }.
+v T is a member of both Right(π) and Left(π).
+Definition 2. A set of paths, π1 , ..., πn , has no sided intersection if for all πi , πj ∈ {π1 , ..., πn } such that πi 6= πj ,
+Left(πi )∩Left(πj )=Right(πi )∩Right(πj ) = ∅.
+Wright’s rules (Wright, 1921) allow us to equate the modelimplied covariance, σ(x, y)M , between any pair of variables, x and y, to the sum of products of parameters
+along unblocked paths between x and y.5 Let Π =
 5
 
-14
+Wright’s rules characterize the relationship between the covariance matrix and model parameters. Therefore, any question
+about identification using the covariance matrix can be decided
+by studying the solutions for this system of equations. However,
+since these equations are polynomials and not linear, it can be
+very difficult to analyze identification of models using Wright’s
+rules.
 
-4
+{π1 , π2 , ..., πk } denote the unblocked paths between x and
+y, and let pi be the product of structural coefficients along
+path πi . Then the covariance between variables x and y is
+P
+i pi .
+Lastly, we define auxiliary variables and the augmented
+graph.
+Definition 3 (Auxiliary Variable). Given a linear SEM with
+graph G and a set of edges E whose coefficient values
+are known, an auxiliary variable is a variable, z ∗ = z −
+P
+i ei ti , where {e1 , ..., ek } ⊆ E ∩ Inc(z) and ti = T a(ei )
+for all i ∈ {1, ..., k}.
+If not otherwise specified, z ∗ refers to the auxiliary variable, z − c1 t1 − ... − cl tl , where {c1 , ..., cl } are the coefficients of E ∩ Inc(z) and E is the set of directed
+edges whose coefficient values are known. In other words,
+z ∗ is the auxiliary variable for z where as many known
+coefficients are subtracted out as possible. Chen et al.
+(2016) demonstrated that the covariance between any auxiliary variables and model variables can be computed using
+Wright’s rules on the augmented graph, defined below.
+Definition 4. (Chen et al., 2016) Let M be a linear SEM
+with graph G and a set of directed edges E such that their
+coefficient values are known. The E-augmented model,
+M E+ , includes all variables and structural equations of
+M in addition to new auxiliary variables, y1∗ , ...yk∗ , one
+for each variable in He(E) = {y1 , ..., yk } such that the
+structural equation for yi∗ is yi∗ = yi − ΛXi yi Tit , where
+Xi = T a(E) ∩ P a(yi ), for all i ∈ {1, ..., k}. The corresponding augmented graph is denoted GE+ .
+For example, consider Figure 1a. If the value of β is
+known, we can generate an auxiliary variable x∗ = x − βt.
+The β-augmented graph Gβ+ is depicted in Figure 1b. In
+some cases, x∗ allows the identification of coefficients and
+testable implications using existing methods when x could
+not, due to the fact that the back-door paths from x to y that
+go through β cancel with the back-door paths from x∗ to y
+that go through −β. This can be seen by expressing the
+covariance of x∗ and y in terms of the model parameters
+using Wright’s rules.
 
-13
+3. Auxiliary and Quasi-Instrumental Sets
+Two, perhaps the most common, methods for estimating causal effects are OLS regression and two-stage leastsquares (2SLS) regression. Both of these methods assume that the underlying causal relationships between variables are linear, in addition to other causal assumptions that
+guarantee identification. The single-door criterion (Pearl,
+2009) graphically characterizes when the assumptions sufficient to estimate a causal effect using regression are satisfied in a linear SEM. Similarly, Brito and Pearl (2002a)
+gave a graphical characterization for when a variable z
 
-3
-
-12
+Identification and Model Testing using AVs
 (a)
-
-layer 2, edge 4,13
-1
-2
-3
-4
-5
-6
-7
-8
-9
-10
-11
-12
-13
-14
-15
-16
-
-1
-2
-3
-4
-5
-6
-7
-8
-9
-10
-11
-12
-13
-14
-15
-16
-
-o0i,j =pi,j
-o1i,j =fw1 (o0i,j , o0i-1,j , o0i,j-1 , o0i+1,j-1 , ..)
-o2i,j =fw2 (o1i,j , o1i-d2 ,j , o1i,j-d2 , o1i+d2 ,j-d2 , ..)
-l-1
-l-1
-l-1
-oli,j =fwl (ol-1
-i,j , oi-dl ,j , oi,j-dl , oi+dl ,j-dl ..)
-
-ŷi,j =σ(wl+1 oli,j )
-
-1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16
-
-1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16
 
 (b)
 
 (c)
 
-Figure 1: (a) Illustration of nodes and edges "seen" at edge 4,13 in layer 1 and (b) Receptive field at layer 1. All entries in
-grey show the o0i,j in covariance matrix used to compute o14,13 . (c) shows the dilation process and receptive field (red) at
-higher layers. Finally the equations for each layer output are given, initialized by the covariance entries pi,j
-and receptive field considered with respect to the covariance
-matrix. This also motivates a straightforward implementation using 2D convolutions (adding separate convolutions at
-i, i and j, j to each i, j at each layer to achieve the specific
-input pattern described) shown in Figure 2.
-Ultimately our choice of architecture that has shared computations and multiple layers is highly scalable as compared
-with a naive fully connected approach and allows leveraging existing optimized 2-D convolutions. In preliminary
-work we have also considered fully connected layers but
-this proved to be much less efficient in terms of storage and
-scalibility than using deep convolutional networks.
-Considering the general n  p case is illustrative. However,
-the main benefit of making the computations differentiable
-and learned from data is that we can take advantage of the
-sparsity and structure assumptions to obtain more efficient
-results than naive computation of partial correlation or matrix inversion. As n decreases our estimate of ρ̂i,j becomes
-inexact; a data-driven model that takes better advantage of
-the assumptions on the underlying distribution and can more
-accurately recover the graph structure.
-The convolution structure is dependent on the order of the
-variables used to build the covariance matrix, which is arbitrary. Permuting the input data we can obtain another estimate of the output. In the experiments, we leverage these
-various estimate in an ensembling approach, averaging the
-results of several permutations of input. We observe that this
-generally yields a modest increase in accuracy, but that even
-a single node ordering can show substantially improved
-performance over competing methods in the literature.
+Figure 1. (a) α is not identified using IVs (b) α is identified using x∗ as an auxiliary IV given w1 (c) conditioning on descendants of x
+induces correlation between x∗ and y
 
-Experiments
-Our experimental evaluations focus on the challenging high
-dimensional settings in which p > n and consider both
-synthetic data and real data from genetics and neuroimaging.
-In our experiments we explore how well networks trained on
-parametric samples generalize, both to unseen synthetic data
-and to several real world problems. In order to highlight
+First, we give a simple graphical criterion for when an AV
+would be conditionally independent of another variable,
+which will allow us to incorporate AVs into instrumental
+sets, as well as other identification and model testing methods that require the ability to detect conditional independence in the graph.
 
-the generality of the learned networks, we apply the same
-network to multiple domains. We train networks taking in
-39, 50, and 500 node graphs. The former sizes are chosen
-based on the real data we consider in subsequent sections.
-We refer to these networks as DeepGraph-39, 50, and 500.
-In all cases we have 50 feature maps of 3 × 3 kernels. The
-39 and 50 node network with 6 convolutional layers and
-dk = k + 1. For the 500 node network with 8 convolutional
-layers and dk = 2k+1 . We use ReLU activations. The last
-layer has 1 × 1 convolution and a sigmoid outputing a value
-of 0 to 1 for each edge.
-We sample P (X|G) with a sparse prior on P (G) as follows.
-We first construct a lower diagonal matrix, L, where each
-entry has α probability of being zero. Non-zero entries are
-set uniformly between −c and c. Multiplying LLT gives a
-sparse positive definite precision matrix, Θ. This gives us
-our P (Θ|G) with a sparse prior on P (G). We sample from
-the Gaussian N (0, Θ−1 ) to obtain samples of X. Here α
-corresponds to a specific sparsity level in the final precision
-matrix, which we set to produce matrices 92 − 96% sparse
-and c chosen so that partial correlations range 0 to 1.
-Each network is trained continously with new samples generated until the validation error saturates. For a given precision matrix we generate 5 possible X samples to be used as
-training data, with a total of approximately 100K training
-samples used for each network. The networks are optimized
-using ADAM (Kingma & Ba, 2015) coupled with crossentropy loss as the objective function (cf. Sec. 2.1). We use
-batch normalization at each layer. Additionally, we found
-that using the absolute value of the true partial correlations
-as labels, instead of hard binary labels, improves results.
-Synthetic Data Evaluation To understand the properties
-of our learned networks, we evaluated them on different
-synthetic data than the ones they were trained on. More
-specifically, we used a completely different third party sampler so as to avoid any contamination. We use DeepGraph39, which takes 4 hours to train, on a variety of settings.
-The same trained network is utilized in the subsequent neuroimaging evaluations as well. DeepGraph-500 is also used
+|=
 
-Learning to Discover Sparse Graphical Models
-Input Data
+|=
 
-Standardize
-Estimate
-Covariance
+Theorem 1. Given a linear SEM with graph G, where E ⊆
+Inc(z) is a set of edges whose coefficient values are known,
+if W ∪ {y} does not contain descendants of z and GE−
+represents the graph G with the edges for E removed, then
+(z ∗ y|W )GE+ if and only if (z y|W )GE− .6
+Proof. Proofs for all theorems and lemmas can be found in
+the Appendix (Chen et al., 2017).
+Next, we demonstrate how AVs can be incorporated into
+generalized instrumental sets, defined below.
+6
+The theorem disallows descendants of the generating variable in the conditioning set. At first glance, this may appear to
+limit the ability to block biasing paths among AVs. However, we
+conjecture that if z cannot be separated from y in G, then z ∗ will
+almost surely not be independent of y given W , if W contains
+descendants of z. To illustrate, consider the example shown in
+Figure 1c. x∗ = x − βt is independent of y, as can be verified using Wright’s rules, but x∗ is not independent of y given
+d! An intuitive explanation for this surprising result is that conditioning on d, a descendant of x, in Figure 1c induces correlation between the error term of x and t, since x acts as a “virtual
+collider”. As a result, we have a “virtual path” from x∗ to y,
+x∗ ← x ← ux ↔ t → y. See Pearl (2009, p. 339) for a detailed
+discussion of virtual colliders.
 
-Conv.
-layer
+Theorem 2. (Brito and Pearl, 2002a) Given a linear model
+with graph G, the coefficients for a set of edges E =
+{(x1 , y), ..., (xk , y)} are identified if there exists triplets
+(z1 , W1 , p1 ), ..., (zk , Wk , pk ) such that for i = 1, ..., k,
+|=
 
-Dilated
-Conv.
-layers
+qualifies as an IV so that 2SLS regression provides a consistent estimate of the causal effect. In this section, we give
+a graphical criterion for when AVs can be utilized in generalized instrumental sets, which extends both the singledoor criterion and IVs. Additionally, we introduce quasiinstrumental sets, which utilize AVs to better address the
+problem of z-identification.
 
-1x1
-Conv.
-layer
+(i) (zi y|Wi )GE− , where W does not contain any descendants of y and GE− is the graph obtained by
+deleting the edges, E from G,
+(ii) pi is a path between zi and xi that is not blocked by
+Wi , and
+(iii) the set of paths, {p1 , ..., pk } has no sided intersection.7
+If the above conditions are satisfied, we say that Z is a generalized instrumental set for E or simply an instrumental
+set for E.8
+In some cases, a variable z may not satisfy condition (i)
+above but an auxiliary variable z ∗ does. For example, in
+Figure 1a, we cannot identify α using Theorem 2. Blocking the path x ← t ↔ y by conditioning on t opens the
+path, x ↔ t ↔ y. Moreover, we cannot use t or s in
+an instrumental set due to the edges t ↔ y and s ↔ y.
+However, s is an IV for β, allowing us to generate an AV,
+x∗ = x − β · t1 , as in Figure 1b. Now, α can be identified
+using x∗ as an auxiliary instrument given w1 .
+Theorem 1 tells us when (i) of Theorem 2 can be satisfied
+using an AV, zi∗ . We simply check whether zi can be separated from y in GE∪Ez − , where Ez ⊆ Inc(zi ) is the set
+of zi ’s edges whose coefficient values are known. When an
+instrumental set includes AVs, we call the set an auxiliary
+instrumental set or auxiliary IV set for short.
+7
 
-Figure 2: Diagram of the DeepGraph structure discovery architecture used in this work. The input is first standardized and then the
-sample covariance matrix is estimated. A neural network consisting of multiple dilated convolutions (Yu & Koltun, 2015) and a final
-1 × 1 convolution layer is used to predict edges corresponding to non-zero entries in the precision matrix.
+Brito and Pearl (2002a) provided an alternative statement of
+condition (iii). A proof that the two statement are, in fact, equivalent is given in the Appendix (Chen et al., 2017).
+8
+Note that when k = 1, z1 is an IV for (x1 , y). Further, if
+z1 = x1 , then x1 satisfies the single-door criterion for (x1 , y).
 
-to evaluate larger graphs.
-We used the BDGraph R-package to produce sparse
-precision matrices based on the G-Wishart distribution
-(Mohammadi & Wit, 2015) as well as the R-package
-rags2ridges (Peeters et al., 2015) to generate data from
-small-world networks corresponding to the Watts–Strogatz
-model (Watts & Strogatz, 1998). We compared our learned
-estimator against the scikit-learn (Pedregosa et al,
-2011) implementation of Graphical Lasso with regularizer
-chosen by cross-validation as well as the Birth-Death Rate
-MCMC (BDMCMC) method from Mohammadi & Wit
-(2015).
-For each scenario we repeat the experiment for 100 different graphs and small sample observations showing the
-average area under the ROC curve (AUC), precision@k corresponding to 5% of possible edges, and calibration error
-(CE) (Mohammadi & Wit, 2015).
-For graphical lasso we use the partial correlations to indicate
-confidence in edges; BDGraph automatically returns posterior probabilities as does our method. Finally to understand
-the effect of the regularization parameter we additionally
-report the result of graphical lasso under optimal regularizer
-setting on the testing data.
-Our method dominates all other approaches in all cases with
-p > n (which also corresponds to the training regime). For
-the case of random Gaussian graphs with n=35 (as in our
-training data), and graph sparsity of 95%, we have superior
-performance and can further improve on this by averaging
-permutations. Next we apply the method to less straightforward synthetic data, such as that arising from small-world
-graphs which is typical of many applications. We found
-that, compared to baseline methods, our network performs
-particularly well with high-degree nodes and when the distribution becomes non-normal. In particular our method
-performs well on the relevant metrics with small-world networks, a very common family of graphs in real-world data,
-obtaining superior precision at the primary levels of interest.
-Figure 3 shows examples of random and Watts-Strogatz
-small-world graphs used in these experiments.
-Training a new network for each number of samples can
-
-pose difficulties with our proposed method. Thus we evaluted how robust the network DeepGraph-39 is to input
-covariances obtained from fewer or more samples. We find
-that overall the performance is quite good even when lowering the number of samples to n = 15, we obtain superior
-performance to the other approaches (Table 1). We also
-applied DeepGraph-39 on data from a multivariate generalization of the Laplace distribution (Gómez et al., 1998). As
-in other experiments precision matrices were sampled from
-the G-Wishart at a sparsity of 95%. Gómez et al. (1998,
-Proposition 3.1) was applied to produce samples. We find
-that DeepGraph-39 performs competitively, despite the discrepancy between train and test distributions. Experiments
-with variable sparsity are considered in the supplementary
-material, which find that for very sparse graphs, the networks remain robust in performance, while for increased
-density performance degrades but remains competitive.
-Using the small-world network data generator (Peeters et al.,
-2015), we demonstrate that we can update the generic sparse
-prior to a structured one. We re-train DeepGraph-39 using
-only 1000 examples of small-world graphs mixed with 1000
-examples from the original uniform sparsity model. We
-perform just one epoch of training and observe markedly
-improved performance on this test case as seen in the last
-row of Table 1.
-For our final scenario we consider the very challenging
-setting with 500 nodes and only n = 50 samples. We note
-that the MCMC based method fails to converge at this scale,
-while graphical lasso is very slow as seen in the timing
-performance and barely performs better than chance. Our
-method convincingly outperforms graphical lasso in this
-scenario as shown in Tabel 2. Here we additionally report
-precision at just the first 0.05% of edges since competitors
-perform nearly at chance at the 5% level.
-We compute the average execution time of our method compared to Graph Lasso and BDGraph on a CPU in Table 3.
-We note that we use a production quality version of graph
-lasso (Pedregosa et al, 2011), whereas we have not optimized the network execution, for which known strategies
-may be applied (Denton et al., 2014).
-
-Learning to Discover Sparse Graphical Models
-Experimental Setup
-Gaussian
-Random Graphs
-(n = 35, p = 39)
-
-Gaussian
-Random Graphs
-(n = 100, p = 39)
-
-Gaussian
-Random Graphs
-(n = 15, p = 39)
-
-Laplace
-Random Graphs
-(n = 35, p = 39)
-
-Gaussian
-Small-World Graphs
-(n=35,p=39)
-
-Method
-Glasso
-Glasso (optimal)
-BDGraph
-DeepGraph-39
-DeepGraph-39+Perm
-Glasso
-Glasso (optimal)
-BDGraph
-DeepGraph-39
-DeepGraph-39+Perm
-Glasso
-Glasso (optimal)
-BDGraph
-DeepGraph-39
-DeepGraph-39+Perm
-Glasso
-Glasso (optimal)
-BDGraph
-DeepGraph-39
-DeepGraph-39+Perm
-Glasso
-Glasso (optimal)
-BDGraph
-DeepGraph-39
-DeepGraph-39+Perm
-DeepGraph-39+update
-DeepGraph-39+update+Perm
-
-Prec@5%
-0.361 ± 0.011
-0.384 ± 0.011
-0.441 ± 0.011
-0.463 ± 0.009
-0.487 ± 0.010
-0.539 ± 0.014
-0.571 ± 0.011
-0.648 ± 0.012
-0.567 ± 0.009
-0.581 ± 0.008
-0.233 ± 0.010
-0.263 ± 0.010
-0.261 ± 0.009
-0.326 ± 0.009
-0.360 ± 0.010
-0.312 ± 0.012
-0.337 ± 0.011
-0.298 ± 0.009
-0.415 ± 0.010
-0.445 ± 0.011
-0.387 ± 0.012
-0.453 ± 0.008
-0.428 ± 0.007
-0.479 ± 0.007
-0.453 ± 0.007
-0.560 ± 0.008
-0.555 ± 0.007
-
-AUC
-0.624 ± 0.006
-0.639 ± 0.007
-0.715 ± 0.007
-0.738 ± 0.006
-0.740 ± 0.007
-0.696 ± 0.006
-0.704 ± 0.006
-0.776 ± 0.007
-0.759 ± 0.006
-0.771 ± 0.006
-0.566 ± 0.004
-0.578 ± 0.004
-0.630 ± 0.007
-0.664 ± 0.008
-0.672 ± 0.008
-0.605 ± 0.006
-0.622 ± 0.006
-0.687 ± 0.007
-0.711 ± 0.007
-0.717 ± 0.007
-0.588 ± 0.004
-0.640 ± 0.004
-0.691 ± 0.003
-0.709 ± 0.003
-0.712 ± 0.003
-0.821 ± 0.002
-0.805 ± 0.003
-
-CE
-0.07
-0.07
-0.28
-0.07
-0.07
-0.07
-0.07
-0.16
-0.07
-0.07
-0.07
-0.07
-0.41
-0.08
-0.08
-0.07
-0.07
-0.36
-0.07
-0.07
-0.11
-0.11
-0.17
-0.11
-0.11
-0.11
-0.11
-
-Table 1: For each case we generate 100 sparse graphs with 39
-nodes and data matrices sampled (with n samples) from distributions with those underlying graphs. DeepGraph outperforms other
-methods in terms of AP, AUC, and precision at 5% (the approximate true sparsity). In terms of precision and AUC DeepGraph
-has better performance in all cases except n > p.
-
-Method
-random
-Glasso
-Glasso (optimal)
-DeepGraph-500
-DeepGraph-500+Perm
-
-Prec@0.05%
-0.052 ± 0.002
-0.156 ± 0.010
-0.162 ± 0.010
-0.449 ± 0.018
-0.583 ± 0.018
-
-Prec@5%
-0.053 ± 0.000
-0.055 ± 0.001
-0.055 ± 0.001
-0.109 ± 0.002
-0.116 ± 0.002
-
-AUC
-0.500 ± 0.000
-0.501 ± 0.000
-0.501 ± 0.000
-0.543 ± 0.002
-0.547 ± 0.002
-
-CE
-0.05
-0.05
-0.05
-0.06
-0.06
-
-Table 2: Experiment on 500 node graphs with only 50 samples
-repeated 100 times. This corresponds to the experimental setup of
-Gaussian Random Graphs (n=50,p=500). Improved performance
-in all metrics.
-sklearn GraphLassoCV
-BDgraph
-DeepGraph
-
+Identification and Model Testing using AVs
 (a)
 
 (b)
 
-Figure 3: Example of
-(a) random and (b) small
-world used in experiments
-
-50 nodes (s)
-4.81
-42.13
-0.27
-
-500 nodes (s)
-554.7
-N/A
-5.6
-
-Table 3: Avg. execution time over
-10 trials for 50 and 500 node problem on a CPU for Graph Lasso,
-BDMCMC, and DeepGraph
-
-Cancer Genome Data We perform experiments on a
-gene expression dataset described in Honorio et al. (2012).
-The data come from a cancer genome atlas from 2360 subjects for various types of cancer. We used the first 50 genes
-from Honorio et al. (2012, Appendix C.2) of commonly
-regulated genes in cancer. We evaluated on two groups of
-subjects, one with breast invasive carcinoma (BRCA) consisting of 590 subjects and the other colon adenocarcinoma
-(COAD) consisting of 174 subjects.
-Evaluating edge selection in real-world data is challenging.
-We use the following methodology: for each method we
-select the top-k ranked edges, recomputing the maximum
-likelihood precision matrix with support given by the cor-
-
-responding edge selection method. We then evaluate the
-likelihood on held-out data. We repeat this procedure for a
-range of k. We rely on Algorithm 0 in Hara & Takemura
-(2010) to compute the maximum likelihood precision given
-a support. The experiment is repeated for each of CODA
-and BRCA subject groups 150 times. Results are shown in
-Figure 4. In all cases we use 40 samples for edge selection
-and precision estimation. We compare with graphical lasso
-as well as the Ledoit-Wolf shrinkage estimator (Ledoit &
-Wolf, 2004). We additionally consider the MCMC based
-approach described in previous section. For graphical lasso
-and Ledoit-Wolf, edge selection is based on thresholding
-partial correlation (Balmand & Dalalyan, 2016).
-Additionally, we evaluate the stability of the solutions provided by the various methods. In several applications a low
-variance on the estimate of the edge set is important. On
-Table 4, we report Spearman correlations between pairs of
-solutions, as it is a measure of a monotone link between two
-variables. DeepGraph has far better stability in the genome
-experiments and is competitive in the fMRI data.
-Resting State Functional Connectivity We evaluate our
-graph discovery method to study brain functional connectivity in resting-state fMRI data. Correlations in brain activity measured via fMRI reveal functional interactions
-between remote brain regions. These are an important measure to study psychiatric diseases that have no
-known anatomical support. Typical connectome analysis describes each subject or group by a GGM measuring functional connectivity between a set of regions (Varoquaux & Craddock, 2013). We use the ABIDE dataset
-(Di Martino et al, 2014), a large scale resting state fMRI
-dataset. It gathers brain scans from 539 individuals suffering from autism spectrum disorder and 573 controls over
-16 sites.1 For our experiments we use an atlas with 39
-regions of interest described in Varoquaux et al. (2011).
-Graph Lasso
-Ledoit-Wolfe
-Bdgraph
-DeepGraph
-DeepGraph +Permute
-
-Gene BRCA
-0.25 ± .003
-0.12 ± 0.002
-0.07 ± 0.002
-0.48 ± 0.004
-0.42 ± 0.003
-
-Gene COAD
-0.34 ± 0.004
-0.15 ± 0.003
-0.08 ± 0.002
-0.57 ± 0.005
-0.52 ± 0.006
-
-ABIDE Control
-0.21 ± .003
-0.13 ± .003
-N/A
-0.23 ± .004
-0.19 ± .004
-
-ABIDE Autistic
-0.21 ± .003
-0.13 ± .003
-N/A
-0.17 ± .003
-0.14 ± .004
-
-Table 4: Average Spearman correlation results for real data showing stability of solution amongst 50 trials
-
-We use the network DeepGraph-39, the same network and
-parameters from synthetic experiments, using the same evaluation protocol as used in the genomic data. For both control
-and autism patients we use time series from 35 random subjects to estimate edges and corresponding precision matrices.
-We find that for both the Autism and Control group we can
-obtain edge selection comparable to graph lasso for very
-few selected edges. When the number of selected edges is in
-the range above 25 we begin to perform significantly better
-1
-http://preprocessed-connectomes-project.
-github.io/abide/
-
-Learning to Discover Sparse Graphical Models
-−63
-
-ledoit
-bayesian
-
-−64
-
-−66
-−67
-−68
-−69
-−70
-
-−65
-
-−68
-−69
-−70
-
-−72
-
-−72
-
-40
-
-60
-
-80
-
-100
-
-120
-
-−51.5
-
-−52.0
-−52.5
-−53.0
-−53.5
-−54.0
-−54.5
-
-20
-
-40
-
-Edges in support
-
-60
-
-80
-
-100
-
-Edges in support
-
-120
-
-Edge Selection Control Subjects
-
-−51.0
-
-−51.5
-
-−67
-
-−71
-
-Edge Selection Autism Subjects
-
-−51.0
-
-ledoit
-bayesian
-
-−66
-
-−71
-20
-
-Edge Selection Breast invasive carcinoma Subjects
-DeepGraph
-DeepGraph+Permute
-glasso
-
-Average Test Log-Likehood
-
-−65
-
-Edge Selection Colon adenocarcinoma Subjects
-DeepGraph
-DeepGraph+Permute
-glasso
-
-Average Test Log-Likehood
-
-Log-Likehood Test Data
-
-−64
-
-Log-Likehood Test Data
-
-−63
-
-−52.0
-−52.5
-−53.0
-−53.5
-−54.0
-−54.5
-
-10
-
-20
-
-30
-
-40
-
-50
-
-60
-
-Edges in Graph Support
-
-70
-
-10
-
-20
-
-30
-
-40
-
-50
-
-60
-
-70
-
-Edges in Graph Support
-
-Figure 4: Average test likelihood for COAD and BRCA subject groups in gene data and neuroimaging data using different number of
-selected edges. Each experiment is repeated 50 times for genetics data. It is repeated approximately 1500 times in the fMRI to obtain
-significant results due high variance in the data. DeepGraph with averaged permutation dominates in all cases for genetics data, while
-DeepGraph+Permutation is superior or equal to competing methods in the fMRI data.
-DeepGraph(35 samples)
-
-L
-
-R
-
-GraphLasso(35 Samples)
-
-GraphLasso(368 samples) L
-
-L
-
-R
-
-R
-
-Figure 5: Example solution from DeepGraph and Graph Lasso
-in the small sample regime on the same 35 samples, along with a
-larger sample solution of Graph Lasso for reference. DeepGraph
-is able to extract similar key edges as graphical lasso
-
-in edge selection as seen in Fig. 4. We evaluated stability
-of the results as shown in Tab. 4. DeepGraph outperformed
-the other methods across the board.
-
-proves. Most importantly the learned estimator generalizes
-well to real data finding relevant stable edges. We also observed that the learned estimators generalize to variations
-not seen at training time (e.g. different n or sparsity), which
-points to this potentialy learning generic computations. This
-also shows potential to more easily scale the method to different graph sizes. One could consider transfer learning,
-where a network for one size of data is used as a starting
-point to learn a network working on larger dimension data.
-Penalized maximum likelihood can provide performance
-guarantees under restrictive assumptions on the form of the
-distribution and not considering the regularization path. In
-the proposed method one could obtain empirical bounds
-under the prescribed data distribution. Additionally, at execution time the speed of the approach can allow for resampling based uncertainty estimates and efficient model
-selection (e.g. cross-validation) amongst several trained estimators.
-
-We show the edges returned by Graph Lasso and DeepGraph
-for a sample from 35 subjects (Fig. 5) in the control group.
-We also show the result of a large-sample result based on
-368 subjects from graphical lasso. In visual evaluation of
-the edges returned by DeepGraph we find that they closely
-align with results from a large-sample estimation procedure.
-Furthermore we can see several edges in the subsample
-which were particularly strongly activated in both methods.
-
-We have introduced the concept of learning an estimator for
-determining the structure of an undirected graphical model.
-A network architecture and sampling procedure for learning
-such an estimator for the case of sparse GGMs was proposed. We obtained competitive results on synthetic data
-with various underlying distributions, as well as on challenging real-world data. Empirical results show that our method
-works particularly well compared to other approaches for
-small-world networks, an important class of graphs common
-in real-world domains. We have shown that neural networks
-can obtain improved results over various statistical methods
-on real datasets, despite being trained with samples from
-parametric distributions. Our approach enables straightforward specifications of new priors and opens new directions
-in efficient graphical structure discovery from few examples.
-
-Discussion and Conclusions
+(ii) for i = 1, ..., k, pi is a path between zi and xi that is
+not blocked by Wi , where xi = He(αi ), and
+(iii) the set of paths {p1 , ..., pk } has no sided intersection
+Theorem 3. If Z ∗ is a quasi-instrumental set for E, then
+E is identifiable.
+
+Figure 2. (a) α is not identified using IVs (b) α is identified using
+Z as a quasi-IV after adding auxiliary variable Y ∗
+
+Figure 1a also demonstrates the importance of extending
+the simple auxiliary instrumental sets introduced by Chen
+et al. (2016) to allow for conditioning. α can only be identified if we block the paths x ↔ w1 → y and x ↔ w1 →
+w2 → y by conditioning on w1 .
+When knowledge of coefficient values are known a priori,
+it may be helpful to generate an AV from the outcome variable y. For example, in Figure 2a, α cannot be identified.
+However, suppose that it is possible to run a surrogate experiment and randomize z. This experiment would allow
+us to estimate γ and generate the AV, Y ∗ = Y − γZ. Now,
+z is not technically an instrument for α, but it can be shown
+. Chen et al. (2016) called such variables
+that α = rYr∗Z.W
+XZ
+quasi-instrumental variables or quasi-IVs for short.
+Interestingly, while quasi-IVs are valuable for the problem
+of z-identification, they do no better than instrumental sets
+when applied to the standard identification problem, where
+no external knowledge of coefficient values is available.
+For example, consider again Figure 2a. In order to use z
+as a quasi-IV for α, we would first have to identify γ using
+an IV. If such a variable existed, say z 0 , then we could have
+simply identified {α, γ} using the IV set {z, z 0 }.
+Next, we formally define quasi-instrumental sets or quasiIV sets for short. Note that auxiliary IV sets are also quasiIV sets.
+Definition 5. Given a linear SEM with graph G, a set of
+edges EK whose coefficient values are known, and a set of
+structural coefficients α = {α1 , α2 , ..., αk }, the set Z =
+{z1 , ..., zk } is a quasi-instrumental set if there exist triples
+(z1 , W1 , p1 ), ..., (zk , Wj , pk ) such that:
+(i) For i = 1, ..., k, either:
+
+|=
+
+|=
+
+(a) the elements of Wi are non-descendants of
+and (zi y|Wi )GE∪Ey where Ey = EK
+Inc(y).
+(b) the elements of Wi are non-descendants of
+and y, and (zi y|Wi )GE∪Ezy where Ezy
+EK ∩ (Inc(z) ∪ Inc(y)).
+
+Lastly, the following corollary provides a simple graphical
+condition for when a single variable or AV qualifies as a
+quasi-IV.
+Corollary 1. Given a linear SEM with graph G, z ∗ is a
+quasi-IV for α given W if W does not contain any descendants of z, and z is an IV for α given W in GEz ∪Ey − ,
+where Ez ⊆ Inc(z) and Ey ⊆ Inc(y) are sets of edges
+whose coefficient values are known.
+Auxiliary and quasi-IV sets enable a bootstrapping procedure whereby complex models can be identified by iteratively identifying coefficients and using them to generate
+new auxiliary variables. For example, consider Figure 3a.
+First, we are able to identify b and c using IVs, but no other
+coefficients. Once b is identified, Corollary 1 tells us that e
+is identified using v3∗ since v3 is an IV for e when the edge
+for b is removed (see Figure 3b). Now, the identification of
+e allows us to identify a and d using v5∗ , since v5 is an IV
+for a and d when the edge for e is removed (see Figure 3c).
+This general strategy is the basis for our identification, zidentification, and model testing algorithm, described next.
+
+4. Identification and z-Identification
+Algorithm
+In this section, we construct an identification algorithm
+that operationalizes the bootstrapping approach described
+in Section 3. First, we describe how to algorithmically find
+a quasi-instrumental set for a set of coefficients E, given a
+set of known coefficients, IDEdges.
+The problem of finding generalized instrumental sets was
+addressed by van der Zander and Liskiewicz (2016). They
+provided an algorithm, TestGeneralIVs, that determines
+whether a given set Z is a generalized instrumental set for
+a set of edges, E, that runs in polynomial time if we bound
+the size of the coefficient set to be identified. More specifically, their algorithm has a running time of O((k!)2 nk ),
+where n is the number of variables in the graph and k =
+|E|.9
+
+y,
+∩
+
+Our method, TestQIS, given in the Appendix (Chen et al.,
+2017), generalizes TestGeneralIVs, for quasi-IV sets.
+
+zi
+=
+
+9
+van der Zander and Liskiewicz (2016) also give an algorithm
+that tests whether Z is a simple conditional instrumental sets in
+O(nm) time. A simple conditional instrumental set is a generalized instrumental set where W1 = W2 = ... = Wk
+
+Identification and Model Testing using AVs
+(a)
+
+(b)
+
+(c)
+
+Figure 3. (a) b is identified using either v2 or v1 as an instrument and c is identified using w as an instrument (b) e is identified using v3∗
+as an auxiliary instrument given (c) a and d are identified using v5∗ as an auxiliary instrument
+
+FindQIS, also given in the Appendix (Chen et al., 2017),
+searches for a quasi-IV set by checking all subsets of Z ⊆
+(Anc(zi ) ∪ Anc(y)) using TestQIS. It returns a quasi-IV
+set, as well as its conditioning sets, if one exists.
+In some cases an instrumental set may not exist for C,
+0
+0
+but one exists for C , where C ⊂ C . Conversely, there
+0
+may not be an instrumental set for C , but there is one for
+0
+C ⊂ C . As a result, we may have to check all possible subsets of a variable’s coefficients in order to determine
+whether a given subset is identifiable using auxiliary instrumental sets. This search can be simplified somewhat
+by noting that if E is a connected edge set (defined below)
+0
+with no instrumental set, then there is no superset E with
+an instrumental set.
+Definition 6. (Chen et al., 2014) For an arbitrary variable,
+V , let P a1 , P a2 , ..., P ak be the unique partition of Pa(V)
+such that any two parents are placed in the same subset,
+P ai , whenever they are connected by an unblocked path. A
+connected edge set with head V is a set of directed edges
+from P ai to V for some i ∈ {1, 2, ..., k}.
+The ID algorithm, called qID utilizes FindQIS to identify as many coefficients as possible in a given model with
+graph G. It iterates through each connected edge set and
+attempts to identify it using FindQIS. If it is unable to
+identify the connected edge set, it then attempts to identify subsets of the connected edge set. After the algorithm has attempted to identify each connected edge set, it
+again attempts to identify each unidentified connected edge
+set, since each newly identified coefficient may enable the
+identification of previously unidentifiable coefficients. This
+process is repeated until all coefficients have been identified or no new coefficients have been identified in the last
+iteration. The algorithm is polynomial if the degree of each
+node in the graph is bounded.
+Our algorithm identifies the model depicted in Figure 4b in
+the following way. First, let us assume that the connected
+edge sets are arbitrarily ordered, ({a}, {b, c, f }, {d}, {e}).
+Now, the first edge to be identified would be a using w1
+as an IV. There is no auxiliary IV set for {b, c, f }, and we
+would attempt to find one for its subsets. We find that {b}
+is identified using {x} as an IV set with conditioning set
+
+{w1 }. Now, {d} is identified using y ∗ = y − bx, and e
+is identified using t∗2 . In the second iteration, we return to
+{b, c, f } and find that it is now identified using the auxiliary
+IV set, {x, w1 , t∗3 }.
+Algorithm 1 qID(G, Σ, IDEdges)
+Initialize: EdgeSets ← all connected edge sets in G
+repeat
+for all ES in EdgeSets such that
+ES 6⊆ IDEdges do
+y ← He(ES)
+for all E ⊆ ES such that E 6⊆ IDEdges do
+(Z, W ) ← FindQIS(G, ES, IDEdges)
+if (Z, W ) 6=⊥ then
+Identify ES using Z ∗ as an auxiliary
+instrumental set in G(IDEdges∩Inc(Z))+
+IDEdges ← IDEdges ∪ ES
+end if
+end for
+end for
+until All coefficients have been identified or no coefficients have been identified in the last iteration
+
+In contrast, Figure 4b is not identified using simple instrumental sets and auxiliary variables. We cannot identify b
+without conditioning on w1 , which means that the only coefficients identified using auxiliary simple instrumental sets
+is a. Since Chen et al. (2016) showed that any coefficient
+identified using the generalized half-trek criterion (g-HTC)
+can be identified using auxiliary variables and simple instrumental sets, we know that qID is able to identify coefficients and models that the g-HT algorithm is not. Moreover, qID will identify any coefficients that are identifiable
+using auxiliary variables and simple instrumental sets, giving us the following theorem.
+Theorem 4. Given an arbitrary linear causal model, if a
+set of coefficients is identifiable using the g-HT algorithm,
+then it is identifiable using qID. Additionally, there are
+models that are not identified using the g-HT algorithm,
+but identified using qID.
+
+Identification and Model Testing using AVs
+
+σ(y,z1 )
+, and, equivFigure 4. (a) σ(z2 , y ∗ ) = 0, where y ∗ = y − σ(x,z
+1)
+alently, α is overidentified using z1 and z2 as IVs (b) the model
+is identified using auxiliary instrumental sets, but not the g-HT
+algorithm
+
+5. Deriving Testable Implications using AVs
+Theorem 1 also enables us to derive new vanishing partial
+correlation constraints that can be used to test the model.
+For example, in Figure 4a, α can be identified using z1 as
+an instrument. Once α is identified, we can generate the
+σ(y,z1 )
+AV y ∗ = y − αx = y − σ(x,z
+x, and Theorem 1 tells us
+1)
+that the correlation of z2 and y ∗ should vanish. As a result,
+we can test the model specification by verifying that this
+constraint holds in the data.
+Theorem 1 also tells us that the correlation between z1 and
+y ∗ should also vanish. However, upon closer inspection,
+we find that this implication does not actually constrain the
+covariance matrix:
+σ(z1 , y ∗ ) =σ(z1 , y − αx)
+=σ(z1 , y) −
+
+σ(y, z1 )
+σ(z1 , x) = 0.
+σ(x, z1 )
+
+In other words, our “testable implication” that σ(z1 , y ∗ ) =
+0 is equivalent to stating σ(z1 , y) − σ(z1 , y) = 0–a tautology! In contrast,
+σ(z2 , y ∗ ) = σ(z2 , y) −
+
+σ(z1 , y)
+σ(z2 , x) = 0
+σ(x, z1 )
+
+does provide a true testable implication.
+Shpitser et al. (2009) noticed a similar phenomenon when
+deriving dormant independences in non-parametric models, and their explanation applies to conditional independence constraints among AVs as well. The idea is the following: When the model implies that two variables are conditionally independent, it relies on the modeled assumption
+that there is no edge between those variables. As a result,
+verifying that the constraint holds in data represents a test
+that this assumption is valid. However, unlike conditional
+independence constraints between model variables, conditional independence constraints among AVs rely upon the
+absence of certain edges in order to identify the coefficients
+
+In the above example, we identified α using z1 as an IV.
+σ(z2 , y ∗ ) = 0 follows from the lack of edge between z2
+and y. However, even if this edge did exist, z ∗ still equals
+σ(y,z1 )
+x. In contrast, σ(z1 , y ∗ ) = 0 follows from the
+z − σ(x,z
+1)
+lack of edge between z1 and y. The existence of this edge
+would disallow z1 as an instrument and z ∗ = z − αx 6=
+σ(y,z1 )
+z − σ(x,z
+x.
+1)
+Another way to derive the constraint σ(z2 , y ∗ ) = 0 is via
+overidentification. α can be identified using either z1 or z2
+and equating the corresponding expressions yields the conσ(y,z2 )
+σ(y,z1 )
+= σ(x,z
+, which is clearly equivalent to the
+straint σ(x,z
+1)
+2)
+previous constraint σ(z2 , y ∗ ) = 0. In fact, we show (Theorem 6) that whenever a variable z cannot be separated from
+another variable y, but z ∗ can be, the resulting AV conditional independence, if it is non-vacuous, is equivalent to an
+overidentifying constraint that can be derived using quasiIVs. As a result, all non-vacuous AV conditional independences are captured by overidentifying constraints derived
+using quasi-IVs!
+First, we give a sufficient condition for when a set of edges
+α is overidentified.
+Theorem 5. Let Z be a quasi-IV set for structural coefficients α = {α1 , ..., αk } and E be a set of known edges. If
+there exists a node s satisfying the conditions listed below,
+then α is overidentified and we obtain the constraint .
+(i) s ∈
+/Z
+(ii) There exists an unblocked path between s and y including an edge in α
+(iii) There exists a conditioning set W that does not block
+the path p, such that either:
+(a) the elements of W are non-descendants of y, and
+(s y|W )Gα∪Ey − , where Ey = E ∩ Inc(y))
+(b) the elements of W are non-descendants of s and
+y, and (s y|W )Gα∪Es ∪Ey − where Es = E ∩
+Inc(s).
+|=
+
+(a)
+
+necessary to generate the AV. The key point is that this
+identification cannot rely on the same lack of edge whose
+existence we are trying to test!
+
+|=
+
+(b)
+
+The above theorem can be used to derive an overidentifying
+constraint for every variable that satisfies (i)-(iii) above. It
+can also be applied when α is known a priori, yielding a
+z-overidentifying constraint. In this case, Z = ∅ would be
+a quasi-IV set that trivially identifies α.
+The following theorem states that non-vacuous AV conditional independence constraints are subsumed by quasi-IV
+overidentifying and z-overidentifying constraints.
+
+Identification and Model Testing using AVs
+
+|=
+
+|=
+
+Theorem 6. Let z ∗ = z − e1 t1 − ... − ek tk and suppose
+there does not exist W such that (z y|W )G . There exists W such that W ∩ De(z) = ∅ and (z ∗ y|W ) is nonvacuous if and only if y satisfies the conditions of Theorem
+5 for E = {e1 , ..., ek }.
+
+|=
+
+|=
+
+The above theorem also applies when y is an AV, called
+y ∗ . In this case, we simply replace (z y|W )G with
+(z y ∗ |W )GEy + , where Ey ⊆ Inc(y) is a set of edges
+whose coefficient values are known.
+Algorithm 2 uses quasi-IV sets to output overidentifiying
+constraints in a graph given an optional set of identified
+edges. It uses isEIV, which is a slightly modified version
+of FindQIS that tests whether w fits the conditions of Theorem 6. Details of isEIV can be found in the Appendix
+(Chen et al., 2017).
+Algorithm 2 Finds overidentifying constraints for G
+function CONSTRAINT F INDER(G,Σ,IDEdges)
+for all ES ∈ Edge Sets of G do
+(Z, W ) ← F IND QIS(ES,G,IDEdges)
+if (Z, W ) 6= ⊥ then
+for all w ∈ V \ Z ∪ {He(ES)} do
+if I S EIV(w,ES,G,IDEdges) then
+Add constraint aw A−1 b = bw
+end if
+end for
+end if
+end for
+end function
+
+6. Discussion and Related Work
+In this section, we discuss how (single-variable) auxiliary
+IVs encompass a number of previous identification methods developed in economics (Hausman and Taylor, 1983),
+computer science (Chan and Kuroki, 2010), and epidemiology (Shardell, 2012).
+Hausman and Taylor (1983) showed that if the equation for
+a given variable, z = β1 p1 + ... + βk pk + uz , is identified,
+then the error term uz can be estimated and used as an instrument for other coefficients. In this case, the auxiliary
+variable z ∗ = z − β1 p1 − ... − βk pk is equal to the error
+term uz . As a result, whenever the error term is estimable
+and can be used as an IV, we can also generate an auxiliary instrument. However, there are times when only some
+of the coefficients in an equation are identifiable, and as a
+result, the error term cannot be used as an instrument, but
+we can nevertheless generate an auxiliary instrument. As a
+result, auxiliary IVs strictly subsume error term IVs.
+Chan and Kuroki (2010) gave sufficient conditions for
+when a descendant of x and a descendant of y could be
+
+used in analogous manner to IVs to identify the effect of
+x on y. In the context of AVs, this method is equivalent
+to generating an auxiliary instrument from the descendant
+by subtracting the total effect of x on the descendant or the
+total effect of y on the descendant (depending on whether
+the variable is a descendant of x or y). In this paper, we
+generated AVs by subtracting out direct effects, but clearly
+the work can be extended to subtracting out total effects.
+The benefit of AVs over these descendant IVs is that they
+can be generated from a variety of variables, not just descendants of x and y. Additionally, descendants of x or y
+can generate AVs from other total or direct effects, not just
+the effect of x or y on the descendant.
+The notion of “subtracting out a direct effect” in order to
+turn a variable into an instrument was also noted by Shardell (2012) when attemping to identify the total effect of x
+on y. It was noticed that in certain cases, the violation of the
+independence restriction of a potential instrument z (i.e. z
+is not independent of the error term of y) could be remedied
+by identifying, using ordinary least squares regression, and
+then subtracting out the necessary direct effects on y. AVs
+generalize and operationalize this notion so that it can be
+used on arbitrary sets of known coefficient values and be
+utilized in conjunction with existing graphical methods for
+identification and enumeration of testable implications.
+Additionally, as we have alluded to earlier, the highly algebraic, state-of-the-art g-HTC can also be understood in
+terms of auxiliary instruments. Identification using the gHTC is equivalent to identification using auxiliary simple
+instrumental sets.
+In summary, auxiliary instruments are not only the basis
+for the most general identification algorithm yet devised,
+but they also unify disparate identification methods under
+a single framework. Moreover, AVs are directly applicable
+to the tasks of z-identification and model testing. Finally,
+they can, in principle, enhance any method for identification, model testing, or other tasks that relies on graphical
+separation.
+
+7. Conclusion
+In this paper, we graphically characterized conditional independence among AVs, allowing us to demonstrate how
+they can help generalized instrumental sets in the problem
+of identification. We provided an algorithm that identifies
+more models than the g-HT algorithm, subsuming the stateof-the-art for identification in linear models. Additionally,
+we introduced quasi-IV sets, and constructed an algorithm
+that utilizes them to attack the problem of z-identification.
+Finally, we proved that AV conditional independences are
+subsumed by overidentifying constraints and gave an algorithm for deriving overidentifying constraints.
+
+Identification and Model Testing using AVs
 
 Acknowledgements
-
-Learned graph estimation outperformed strong baselines
-in both accuracy and speed. Even in cases that deviate
-from standard GGM sparsity assumptions (e.g. Laplace,
-small-world) it performed substantially better. When finetuning on the target distribution performance further im-
-
-This work is partially funded by Internal Funds KU Leuven, FP7-MC-CIG 334380, DIGITEO 2013-0788D - SOPRANO, and ANR-11-BINF-0004 NiConnect. We thank
-Jean Honorio for providing pre-processed Genome Data.
-
-ABIDE has high variability across sites and subjects. As
-a result, to resolve differences between approaches, we
-needed to perform 1000 folds to obtain well-separated error
-bars. We found that the birth-death MCMC method took
-very long to converge on this data, moreover the need for
-many folds to obtain significant results amongst the methods
-made this approach prohibitively slow to evaluate.
-
-Learning to Discover Sparse Graphical Models
+We would like to thank Judea Pearl, Mathias Drton,
+Thomas Richardson, and Luca Weihs for helpful discussions. This research was supported in parts by grants from
+NSF #IIS-1302448 and #IIS-1527490 and ONR #N0001413-1-0153 and #N00014-13-1-0153.
 
 References
-Andoni, Alexandr, Panigrahy, Rina, Valiant, Gregory, and Zhang,
-Li. Learning polynomials with neural networks. In ICML, 2014.
-Balan, Anoop Korattikara, Rathod, Vivek, Murphy, Kevin, and
-Welling, Max. Bayesian dark knowledge. In NIPS, 2015.
-Balmand, Samuel and Dalalyan, Arnak S. On estimation of the
-diagonal elements of a sparse precision matrix. Electronic
-Journal of Statistics, 10(1):1551–1579, 2016.
-Belilovsky, Eugene, Varoquaux, Gaël, and Blaschko, Matthew B.
-Hypothesis testing for differences in Gaussian graphical models:
-Applications to brain connectivity. In NIPS, 2016.
-Cai, Tony, Liu, Weidong, and Luo, Xi. A constrained `1 minimization approach to sparse precision matrix estimation. Journal of
-the American Statistical Association, 106(494):594–607, 2011.
-Cohen, Nadav, Sharir, Or, and Shashua, Amnon. On the expressive
-power of deep learning: a tensor analysis. In COLT, 2016.
-Danaher, Patrick, Wang, Pei, and Witten, Daniela M. The joint
-graphical lasso for inverse covariance estimation across multiple
-classes. Journal of the Royal Stat. Society(B), 76(2):373–397,
-2014.
-Denton, Emily L, Zaremba, Wojciech, Bruna, Joan, LeCun, Yann,
-and Fergus, Rob. Exploiting linear structure within convolutional networks for efficient evaluation. In NIPS, 2014.
-Di Martino et al, Adriana. The autism brain imaging data exchange: Towards a large-scale evaluation of the intrinsic brain
-architecture in autism. Molecular psychiatry, 19:659, 2014.
-Duvenaud et al, David K. Convolutional networks on graphs for
-learning molecular fingerprints. In NIPS, 2015.
-Friedman, Jerome, Hastie, Trevor, and Tibshirani, Robert. Sparse
-inverse covariance estimation with the graphical lasso. Biostatistics, 9(3):432–441, 2008.
-Gómez, E, Gomez-Viilegas, MA, and Marin, JM. A multivariate
-generalization of the power exponential family of distributions.
-Commun Stat Theory Methods, 27(3):589–600, 1998.
-Gregor, Karol and LeCun, Yann. Learning fast approximations of
-sparse coding. In ICML, 2010.
-Hara, Hisayuki and Takemura, Akimichi. A localization approach
-to improve iterative proportional scaling in Gaussian graphical
-models. Commun Stat Theory Methods, 39(8-9):1643–1654,
-2010.
-Henaff, Mikael, Bruna, Joan, and LeCun, Yann. Deep convolutional networks on graph-structured data. arXiv:1506.05163,
-2015.
-Honorio, Jean, Jaakkola, Tommi, and Samaras, Dimitris. On the
-statistical efficiency of `1,p multi-task learning of Gaussian
-graphical models. arXiv:1207.4255, 2012.
-Kingma, Diederik and Ba, Jimmy. Adam: A method for stochastic
-optimization. ICLR, 2015.
-Lauritzen, Steffen L. Graphical models. Oxford University Press,
-1996.
-Ledoit, Olivier and Wolf, Michael. A well-conditioned estimator
-for large-dimensional covariance matrices. Journal of multivariate analysis, 88(2):365–411, 2004.
-Lenkoski, Alex. A direct sampler for G-Wishart variates. Stat, 2
-(1):119–128, 2013.
-Li, Yujia, Tarlow, Daniel, Brockschmidt, Marc, and Zemel,
-Richard. Gated graph sequence neural networks. ICLR, 2016.
-Lopez-Paz, David, Muandet, Krikamol, Schölkopf, Bernhard, and
-Tolstikhin, Iliya. Towards a learning theory of cause-effect
-inference. In ICML, 2015.
-Luo, Wenjie, Li, Yujia, Urtasun, Raquel, and Zemel, Richard.
-Understanding the effective receptive field in deep convolutional
-neural networks. In ICML, 2010.
-Meinshausen, Nicolai and Bühlmann, Peter. High-dimensional
+BAREINBOIM , E. and P EARL , J. (2012). Causal inference
+by surrogate experiments: z-identifiability. In Proceedings of the Twenty-Eighth Conference on Uncertainty
+in Artificial Intelligence (N. de Freitas and K. Murphy,
+eds.). AUAI Press, Corvallis, OR.
+BAREINBOIM , E. and P EARL , J. (2016). Causal inference and the data-fusion problem. Proceedings of the
+National Academy of Sciences 113 7345–7352.
+B EKKER , P., M ERCKENS , A. and WANSBEEK , T. (1994).
+Identification, Equivalent Models, and Computer Algebra. Statistical Modeling and Decision Science, Academic Press.
+B OWDEN , R. and T URKINGTON , D. (1984). Instrumental Variables. Cambridge University Press, Cambridge,
+England.
+B RITO , C. and P EARL , J. (2002a). Generalized instrumental variables. In Uncertainty in Artificial Intelligence,
+Proceedings of the Eighteenth Conference (A. Darwiche
+and N. Friedman, eds.). Morgan Kaufmann, San Francisco, 85–93.
+B RITO , C. and P EARL , J. (2002b). A graphical criterion
+for the identification of causal effects in linear models.
+In Proceedings of the Eighteenth National Conference
+on Artificial Intelligence. AAAI Press/The MIT Press,
+Menlo Park, CA, 533–538.
+B RITO , C. and P EARL , J. (2002c). A new identification
+condition for recursive models with correlated errors.
+Journal Structural Equation Modeling 9 459–474.
+B RITO , C. and P EARL , J. (2006). Graphical condition for
+identification in recursive SEM. In Proceedings of the
+Twenty-Third Conference on Uncertainty in Artificial Intelligence. AUAI Press, Corvallis, OR, 47–54.
+C HAN , H. and K UROKI , M. (2010). Using descendants
+as instrumental variables for the identification of direct
+causal effects in linear sems. In Proceedings of the
+Thirteenth International Conference on Artificial Intelligence and Statistics (AISTATS).
+C HEN , B. (2016). Identification and overidentification of
+linear structural equation models. In Advances In Neural
+Information Processing Systems. 1579–1587.
 
-graphs and variable selection with the lasso. The Annals of
-Statistics, pp. 1436–1462, 2006.
-Moghaddam, Baback, Khan, Emtiyaz, Murphy, Kevin P, and Marlin, Benjamin M. Accelerating Bayesian structural inference for
-non-decomposable Gaussian graphical models. In NIPS, 2009.
-Mohammadi, Abdolreza and Wit, Ernst C. Bayesian structure
-learning in sparse Gaussian graphical models. Bayesian Analysis, 10(1):109–138, 2015.
-Mohan, Karthik, Chung, Mike, Han, Seungyeop, Witten, Daniela,
-Lee, Su-In, and Fazel, Maryam. Structured learning of Gaussian
-graphical models. In NIPS, pp. 620–628, 2012.
-Pedregosa et al, Fabian. Scikit-learn: Machine learning in python.
-JMLR, 12:2825–2830, 2011.
-Peeters, C.F.W., Bilgrau, A.E., and van Wieringen, W.N.
-rags2ridges: Ridge estimation of precision matrices from highdimensional data. R package, 2015.
-Ravikumar, Pradeep, Wainwright, Martin J, Raskutti, Garvesh, and
-Yu, Bin. High-dimensional covariance estimation by minimizing `1 -penalized log-determinant divergence. EJS, 5:935–980,
-2011.
-Ryali et al, Srikanth. Estimation of functional connectivity in fMRI
-data using stability selection-based sparse partial correlation
-with elastic net penalty. NeuroImage, 59(4):3852–3861, 2012.
-Varoquaux, Gaël and Craddock, R Cameron. Learning and comparing functional connectomes across subjects. NeuroImage,
-80:405–415, 2013.
-Varoquaux, Gaël, Gramfort, Alexandre, Poline, Jean-Baptiste, and
-Thirion, Bertrand. Brain covariance selection: Better individual
-functional connectivity models using population prior. In NIPS,
-2010.
-Varoquaux, Gaël, Gramfort, Alexandre, Pedregosa, Fabian, Michel,
-Vincent, and Thirion, Bertrand. Multi-subject dictionary learning to segment an atlas of brain spontaneous activity. In IPMI,
-2011.
-Vinyals, Oriol, Fortunato, Meire, and Jaitly, Navdeep. Pointer
-networks. In NIPS, 2015.
-Wang, Wei, Wainwright, Martin J, and Ramchandran, Kannan.
-Information-theoretic bounds on model selection for gaussian
-markov random fields. In ISIT, pp. 1373–1377. Citeseer, 2010.
-Watts, Duncan J. and Strogatz, Steven H. Collective dynamics of
-‘small-world’ networks. Nature, 393(6684):440–442, 06 1998.
-Xin, Bo, Wang, Yizhou, Gao, Wen, and Wipf, David. Maximal
-sparsity with deep networks? arXiv preprint arXiv:1605.01636,
-2016.
-Yu, Fisher and Koltun, Vladlen. Multi-scale context aggregation by
-dilated convolutions. arXiv preprint arXiv:1511.07122, 2015.
+C HEN , B., K UMOR , D. and BAREINBOIM , E. (2017).
+Identification and model testing in linear structural equation models using auxiliary variables. arXiv preprint
+arXiv:1612.03451; Technical report R-27, Purdue AI
+Lab, Dept. of Computer Science, Purdue University. .
+C HEN , B. and P EARL , J. (2014). Graphical tools for
+linear structural equation modeling. Tech. Rep. R432, <http://ftp.cs.ucla.edu/pub/stat ser/r432.pdf>, Department of Computer Science, University of California,
+Los Angeles, CA. Forthcoming, Psychometrika.
+C HEN , B., P EARL , J. and BAREINBOIM , E. (2016). Incorporating knowledge into linear structural equation models using auxiliary variables. In Proceedings of the
+Twenty-fifth International Joint Conference on Artificial
+Intelligence (S. Kambhampati, ed.).
+C HEN , B., T IAN , J. and P EARL , J. (2014). Testable
+implications of linear structual equation models.
+In Proceedings of the Twenty-eighth AAAI
+Conference on Artificial Intelligence (C. E. Brodley and P. Stone, eds.). AAAI Press, Palo, CA.
+<http://ftp.cs.ucla.edu/pub/stat ser/r428-reprint.pdf>.
+D RTON , M. and W EIHS , L. (2016). Generic identifiability of linear structural equation models by ancestor
+decomposition.
+Scandinavian Journal of Statistics
+n/a–n/a10.1111/sjos.12227.
+URL
+http://dx.doi.org/10.1111/sjos.
+12227
+F ISHER , F. (1966). The Identification Problem in Econometrics. McGraw-Hill, New York.
+F OYGEL , R., D RAISMA , J. and D RTON , M. (2012). Halftrek criterion for generic identifiability of linear structural equation models. The Annals of Statistics 40 1682–
+1713.
+H AUSMAN , J. A. and TAYLOR , W. E. (1983). Identification in linear simultaneous equations models with covariance restrictions: an instrumental variables interpretation. Econometrica: Journal of the Econometric Society 1527–1549.
+M OOIJ , J. M., P ETERS , J., JANZING , D., Z SCHEIS CHLER , J. and S CH ÖLKOPF, B. (2016). Distinguishing
+cause from effect using observational data: methods and
+benchmarks. Journal of Machine Learning Research 17
+1–102.
+P EARL , J. (2004). Robustness of causal claims. In Proceedings of the Twentieth Conference Uncertainty in Artificial Intelligence (M. Chickering and J. Halpern, eds.).
+AUAI Press, Arlington, VA, 446–453.
+
+Identification and Model Testing using AVs
+
+P EARL , J. (2009). Causality: Models, Reasoning, and Inference. 2nd ed. Cambridge University Press, New York.
+R IGDON , E. E. (1995). A necessary and sufficient identification rule for structural models estimated in practice.
+Multivariate Behavioral Research 30 359–383.
+S HARDELL , M. (2012). Methods to overcome violations
+of an instrumental variable assumption: Converting a
+confounder into an instrument. Computational statistics
+& data analysis 56 2317–2333.
+S HIMIZU , S., H OYER , P. O., H YV ÄRINEN , A. and K ER MINEN , A. (2006). A linear non-gaussian acyclic model
+for causal discovery. Journal of Machine Learning Research 7 2003–2030.
+S HPITSER , I., R ICHARDSON , T. S. and ROBINS , J. M.
+(2009). Testing edges by truncations. In IJCAI.
+S PIRTES , P., G LYMOUR , C. N. and S CHEINES , R. (2000).
+Causation, prediction, and search, vol. 81. MIT press.
+S PIRTES , P., R ICHARDSON , T., M EEK , C., S CHEINES ,
+R. and G LYMOUR , C. (1998). Using path diagrams as
+a structural equation modelling tool. Sociological Methods and Research 27 182–225.
+T IAN , J. (2005). Identifying direct causal effects in linear
+models. In Proceedings of the National Conference on
+Artificial Intelligence, vol. 20. Menlo Park, CA; Cambridge, MA; London; AAAI Press; MIT Press; 1999.
+T IAN , J. (2007). A criterion for parameter identification
+in structural equation models. In Proceedings of the
+Twenty-Third Conference Annual Conference on Uncertainty in Artificial Intelligence (UAI-07). AUAI Press,
+Corvallis, Oregon.
+T IAN , J. (2009). Parameter identification in a class of linear structural equation models. In Proceedings of the
+Twenty-First International Joint Conference on Artificial
+Intelligence (IJCAI-09).
+Z ANDER , B. and L ISKIEWICZ , M. (2016).
+Searching for generalized instrumental variables. In Proceedings of the 19th International Conference on Artificial Intelligence and Statistics (AISTATS-16)).
+
+VAN DER
+
+Z ANDER , B., T EXTOR , J. and L ISKIEWICZ , M.
+(2015). Efficiently finding conditional instruments for
+causal inference. In Proceedings of the Twenty-Fourth
+International Joint Conference on Artificial Intelligence
+(IJCAI 2015).
+
+VAN DER
+
+W RIGHT, S. (1921). Correlation and causation. Journal of
+Agricultural Research 20 557–585.
+
+Z HANG , K. and H YV ÄRINEN , A. (2009). On the identifiability of the post-nonlinear causal model. In Proceedings
+of the Twenty-Fifth Conference on Uncertainty in Artificial Intelligence. AUAI Press.
 
 

@@ -1,1530 +1,1114 @@
-Neural Taylor Approximations:
-Convergence and Exploration in Rectifier Networks
+Deep Tensor Convolution on Multicores
 
-David Balduzzi 1 Brian McWilliams 2 Tony Butler-Yeoman 1
+David Budden 1 Alexander Matveev 1 Shibani Santurkar 1 Shraman Ray Chaudhuri 1 Nir Shavit 1
 
 Abstract
-Modern convolutional networks, incorporating
-rectifiers and max-pooling, are neither smooth
-nor convex; standard guarantees therefore do not
-apply. Nevertheless, methods from convex optimization such as gradient descent and Adam are
-widely used as building blocks for deep learning
-algorithms. This paper provides the first convergence guarantee applicable to modern convnets,
-which furthermore matches a lower bound for
-convex nonsmooth functions. The key technical tool is the neural Taylor approximation – a
-straightforward application of Taylor expansions
-to neural networks – and the associated Taylor
-loss. Experiments on a range of optimizers, layers, and tasks provide evidence that the analysis
-accurately captures the dynamics of neural optimization. The second half of the paper applies
-the Taylor approximation to isolate the main difficulty in training rectifier nets – that gradients
-are shattered – and investigates the hypothesis
-that, by exploring the space of activation configurations more thoroughly, adaptive optimizers
-such as RMSProp and Adam are able to converge
-to better solutions.
+Deep convolutional neural networks (ConvNets)
+of 3-dimensional kernels allow joint modeling of
+spatiotemporal features. These networks have
+improved performance of video and volumetric
+image analysis, but have been limited in size due
+to the low memory ceiling of GPU hardware. Existing CPU implementations overcome this constraint but are impractically slow. Here we extend and optimize the faster Winograd-class of
+convolutional algorithms to the N -dimensional
+case and specifically for CPU hardware. First,
+we remove the need to manually hand-craft algorithms by exploiting the relaxed constraints
+and cheap sparse access of CPU memory. Second, we maximize CPU utilization and multicore scalability by transforming data matrices to
+be cache-aware, integer multiples of AVX vector
+widths. Treating 2D ConvNets as a special case,
+we demonstrate a 5 to 25-fold improvement in
+throughput compared to previous state-of-the-art.
 
 1. Introduction
-Deep learning has achieved impressive performance on a
-range of tasks (LeCun et al., 2015). The workhorse underlying deep learning is gradient descent or backprop. Gradient descent has convergence guarantees in settings that
-are smooth, convex or both. However, modern convnets
-are neither smooth nor convex. Every winner of the ImageNet classification challenge since 2012 has used rectifiers which are not smooth (Krizhevsky et al., 2012; Zeiler
+Although convolutional neural networks (ConvNets) have
+been successfully applied to solve non-trivial image processing problems since the 1990s (LeCun et al., 1989;
+2012), their adoption as a de facto standard for image classification (Russakovsky et al., 2015) and segmentation (Long et al., 2015) is due largely to recent
+breakthroughs in network architecture. Beginning with
+AlexNet in 2012 (Krizhevsky et al., 2012), the annual ImageNet classification challenge (ILSVRC) has been dominated by progressively deeper networks with smaller kernels (Szegedy et al., 2015; Simonyan & Zisserman, 2014b).
+Recent solutions to the issues of vanishing and exploding
+gradients (Glorot & Bengio, 2010) have allowed these networks to extend even deeper, with the ILSVRC15 winner
+(ResNet (He et al., 2016)) being 8-fold deeper than VGG.
 1
+Massachusetts Institute of Technology. Correspondence to:
+David Budden <budden@csail.mit.edu>.
 
-Victoria University of Wellington, New Zealand 2 Disney Research, Zürich, Switzerland. Correspondence to: David Balduzzi
-<dbalduzzi@gmail.com>.
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-Fig. 1: Shattered gradients in a PL-function.
+It is easy to see why the “deeper is better” trend has led to
+better performing ConvNets. Constructing even a modest
+7 x 7 receptive field with stacked k = 3 kernels requires
+45% fewer parameters than a single kernel of size k = 7.
+Intuitively it also captures a richer set of features due to additional non-linearity. Recent studies have begun to formalize the expressive power of deep versus shallow networks,
+finding that classification boundaries acquire local curvature and expressivity as an exponential function of network
+depth but not breadth (Poole et al., 2016). The only obvious
+trade-off to this performance is the extra memory necessary
+to store the intermediate activations in deeper networks.
+Motivated by the success of these models in image processing tasks, researchers have begun to investigate ConvNet applications in the video processing domain. Example applications include video classification (Karpathy
+et al., 2014), segmentation (Couprie et al., 2013) and denoising (Shi et al., 2016b). An important observation
+that has emerged from these studies is the importance of
+3D convolutional primitives for modelling joint spatiotemporal features; the naı̈ve application of traditional 2D
+ConvNets frame-by-frame does not capture motion continuity or other rich temporal correlations (Ledig et al.,
+2016; Tran et al., 2015). It is thus unsurprising that simple
+3D ConvNets have yielded state-of-the-art performance on
+video classification benchmarks (Tran et al., 2015) and volumetric image segmentation, e.g. tracing neurons between
+electron microscopy samples (Lee et al., 2015).
+Given the early success and conceptual simplicity of 3D
+ConvNets, it is interesting to note that many popular deep
+learning libraries (e.g. Caffe (Jia et al., 2014)) do not provide native support. One simple explanation is that these
+libraries are optimized for execution on GPUs, and higherorder convolutions require prohibitively large volumes of
+data with respect to the 16 GB ceiling of today’s most advanced GPU hardware. These limitations are clear in previous studies, which either (a) limit the network size (Tran
+et al., 2015), (b) down-sample images to lower resolution (Ji et al., 2013), or (c) include 3D primitives for only a
+subset of network layers (Lee et al., 2015).
+There are many potential options for circumventing the issue of ConvNet memory usage. The first is to split the
+network across multiple GPUs, which requires the careful
 
-& Fergus, 2014; Simonyan & Zisserman, 2015; Szegedy
-et al., 2015; He et al., 2015). Even in convex settings,
-convergence
-for nonsmooth functions is lower-bounded by
-√
-1/ N (Bubeck, 2015).
-The paper’s main contribution is the first convergence result for modern convnets, Theorem 2. The idea is simple: backprop constructs linear snapshots (gradients) of a
-neural net’s landscape; section 2 introduces neural Taylor
-approximations which are used to construct Taylor losses
-as convex snapshots closely related to backprop. We then
-use the online convex
-√ optimization framework (Zinkevich,
-2003) to show 1/ N convergence to the Taylor optimum,
-matching the lower bound in (Bubeck, 2015). Section 2.4
-investigates the Taylor optimum and regret terms empirically. We observe
-that convergence to the Taylor optimum
-√
-occurs at 1/ N in practice. The theorem applies to any
-neural net with a loss convex in the output of the net (for
-example, the cross-entropy loss is convex in the output but
-not the parameters of a neural net).
-The nonsmoothness of rectifier nets is perhaps underappreciated (Balduzzi et al., 2017). Fig. 1 shows a piecewiselinear (PL) function and its gradient. The gradient is discontinuous or shattered. Shattering is problematic for accelerated and Hessian-based methods which speed up convergence by exploiting the relationship between gradients
-at nearby points (Sutskever et al., 2013). The success of
-these methods on rectifier networks, where the number of
-kinks grows exponentially with depth (Pascanu et al., 2014;
-Telgarsky, 2016), requires explanation since gradients at
-nearby points can be very different (Balduzzi et al., 2017).
-Section 3 addresses the success of adaptive optimizers
+Deep Tensor Convolution on Multicores
 
-Neural Taylor Approximations
+coordination of activation and gradient flow (Dean et al.,
+2012). Even in the case of the most successful distributed
+frameworks for ConvNets (Abadi et al., 2016), GPU memory management is largely unresolved. The TensorFlow
+authors propose two partial solutions warranting further investigation: (a) re-computing versus storing large tensors;
+and (b) transferring long-lived tensors from GPU to host
+CPU memory. Instead, we propose an alternative to horizontal scalability for overcoming GPU memory constraints
+– a fast implementation of N -dimension convolution optimized for multicore CPU systems, which have access to
+practically unbounded memory on a single node.
 
-in rectifier nets.1 Adaptive optimizers normalize gradients by their root-mean-square; e.g. AdaGrad, RMSProp,
-Adam and RadaGrad (Duchi et al., 2011; Hinton et al.,
-2012; Kingma & Ba, 2015; Krummenacher et al., 2016).
-Dauphin et al. (2015) argue
-p that RMSProp approximates
-the equilibriation matrix diag(H 2 ) which approximates
-the absolute Hessian |H| (Dauphin et al., 2014). However, the argument is at best part of the story when gradients are shattered. In fact, curvature-based explanations
-for RMS-normalization schemes do not tell the whole story
-even in smooth convex settings: Krummenacher et al.
-(2016) and Duchi et al. (2013) show that diagonal normalization schemes show no theoretical improvement over
-vanilla SGD when the coordinates are not axis-aligned or
-extremely sparse respectively.
-The only way an optimizer can estimate gradients of a shattered function is to compute them directly. Effective optimizers must therefore explore the space of smooth regions
-– the bound in theorem 2 is only as good as the optimum
-over the Taylor losses encountered during backprop. Observations 1 and 2 relate smooth regions in rectifier nets and
-the Taylor losses to configurations of active neurons. We
-hypothesize that root-mean-square normalization increases
-exploration through the set of smooth regions in a rectifier
-net’s landscape. Experiments in section 3.3 provide partial
-support for the hypothesis.
-1.1. Comparison with related work
-Researchers have applied convex techniques to neural networks. Bengio et al. (2006) show that choosing the number
-of hidden units converts neural optimization into a convex
-problem, see also Bach (2014). A convex multi-layer architectures are developed in Aslan et al. (2014); Zhang et al.
-(2016). However, these approaches have not achieved the
-practical success of convnets. In this work, we analyze convnets as they are rather than proposing a more tractable, but
-potentially less useful, model. A Taylor decomposition for
-neural networks was proposed in Montavon et al. (2015).
-They treat inputs as variable instead of weights and study
-interpretability instead of convergence. Taylor approximations to neural nets have also been used in Schraudolph
-(2002); Martens et al. (2012) to construct the generalized
-Gauss-Newton matrix as an alternative to the Hessian.
-Our results are closely related to Balduzzi (2016), which
-uses game-theoretic techniques to prove convergence in
-rectifier nets. The approach taken here is more direct and
-holds in greater generality.
+forms, Step (2) by their transformed element-wise product
+and Step (3) by the final inverse transform.
+Theorem 1 (CRT for Polynomials)
+Let m(x) = Πrk=1 m(k) (x), where m(k) (x) are pairwise
+coprime. If b(1) (x), ..., b(r) (x) are a set of polynomials then
+there must exist a unique polynomial s(x) which satisfies
+the set of congruences:
+s(x) ≡ b(1) (x) mod m(1) (x)
+s(x) ≡ b(2) (x) mod m(2) (x)
+..
+.
+s(x) ≡ b(r) (x) mod m(r) (x),
+
+2. Prior Art
+Algorithms for fast convolution have existed in signal processing literature since the 1980s (Winograd, 1980). The
+general recipe is to transform both data and kernel into
+a new space, where expensive sliding window-style convolutions reduce to cheaper element-wise products. The
+first examples of this approach in ConvNet literature involved Fast Fourier Transforms (FFTs) exploiting the convolution theorem (Mathieu et al., 2013; Vasilache et al.,
+2014). More recently, Lavin and Gray have pioneered
+the use of the more general class of Winograd-style algorithms (Lavin & Gray, 2016; Winograd, 1980). Their
+implementation and its cuDNN derivatives (Chetlur et al.,
+2014) have produced state-of-the-art GPU performance on
+deep networks of small kernels. In this Section we provide
+a brief overview of the theory underlying this approach, focusing on the aspects that are important for exploiting the
+architecture of multicore CPUs.
+
+provided the degree of m(x) is not less than that of s(x).
+Algorithm 1 Fast Vector Convolution
+Input: g(x), d(x), m(x)
+for k = 1 to r do
+(1) Compute residual polynomials for g(x) and d(x):
+g (k) (x) ≡ g(x) mod m(k) (x)
+d(k) (x) ≡ d(x) mod m(k) (x)
+(2) Compute residual polynomial multiplications:
+h
+i
+s(k) (x) = g (k) (x)d(k) (x) mod m(k) (x)
+end for
+(3) Reduce partial convolutions to solve s(x):
+s(x) =
+
+2.1. Fast Vector Convolution
+
+r
+X
+
+s(k) (x)a(k) (x)
+
+k=1
+
+Consider the 1-dimension convolution s = g ∗d, where the
+kernel and data vectors are of length G and D. This problem can be rephrased as one of polynomial multiplication
+by introducing the associated polynomials d(x),
+Pg(x) and
+s(x) = g(x)d(x), where the coefficients si = k gi−k dk
+of xi are the solution to the desired convolution. This computation can be distributed across a set of efficient local
+computations by considering the Chinese Remainder Theorem (CRT) (Ding et al., 1996), as summarized in Theorem
+1. By observing that s(x) = [g(x)d(x)] mod m(x) for any
+polynomial m(x) of sufficiently high degree, we can exploit Theorem 1 to efficiently calculate s(x), as shown in
+Algorithm 1, which can be conveniently rephrased in terms
+matrix-vector products:
+s = A [ (Cg)  (Bd) ] ,
+
+(1)
+
+where C, B and A are introduced as the kernel, data and
+inverse transforms respectively. With respect to Algorithm
+1, Step (1) is implemented by the kernel and data trans-
+
+2.2. Minimal Winograd Algorithms
+In the above formulation (1), the matrices C and B are the
+remainders of the polynomial divisions g(x) and d(x) by
+m(k) (x) respectively. The derivation of A is more involved
+and is omitted for brevity. Importantly, the only parameter
+required to synthesize these matrices (in addition to the kernel g(x) and data d(x)) is the polynomial m(x).
+Traditionally, the selection of m(x) has been subject to
+many constraints. First, it should be chosen such that the
+transform matrices contain only degree-1 (scalar) values.
+Lavin has published code that automates this procedure using the Cook-Toom algorithm to produce transformed kernels and data both of length D (Lavin, 2016). For an unpadded convolution s = g ∗ d of length S = D − G + 1
+and ignoring the cost of applying the transforms, this fast
+algorithm therefore requires SG/D fewer computations to
+
+Deep Tensor Convolution on Multicores
+
+calculate than the standard sliding-window approach. Inappropriate selection of m(x) would yield matrices of polynomials (degree > 1) that require considerably more scalar
+multiplications to compute.
+In reality, the transformations themselves require expensive
+matrix multiplications that can outweigh the above saving.
+Accordingly, existing implementations of fast convolution
+aim to synthesize matrices enriched for “simple” (e.g. integer) values. There are two motivations for this. First,
+it improves numeric stability which can have an impact
+on double-precision convolutions (Lavin & Gray, 2016).
+More importantly, it supports the hand-crafting of minimal
+algorithms. These algorithms reduce the cost of applying
+transform matrices by identifying and eliminating redundant sub-expressions. A famous instance of this approach
+was documented by Winograd (Winograd, 1980). Consider
+the following matrices:
+
+
+1 1 1
+0
+0 1 −1 −1
+
+
+1 0 −1 0
+0 1
 1
-For simplicity, we restrict to fully connected rectifier (ReLU)
-nets. The results also apply to convolutions, max-pooling,
-dropout, dropconnect, maxout, PReLUs and CReLUs (Srivastava
-et al., 2014; Wan et al., 2013; Goodfellow et al., 2013; He et al.,
-2015; Shang et al., 2016).
+0
+
+B=
+0 −1 1
+0
+0 1
+0 −1
 
-2. Convergence of Neural Networks
-Before presenting the main result, we highlight some issues that arise when studying convergence in rectifier nets.
-Many optimization methods have guarantees that hold in
-convex or smooth settings. However, none of the guarantees extend to rectifier nets. For example, the literature provides no rigorous account of when or why Adam
-or Adagrad converges faster on rectifier nets than vanilla
-gradient descent. Instead, we currently have only intuition,
-empirics and an analogy with convex or smooth settings.
-Gradient-based optimization on neural nets can converge
-on local optima that are substantially worse than the global
-optimum. Fortunately, “bad” local optima are rare in practice. A partial explanation for the prevalence of “good
-enough” local optima is Choromanska et al. (2015). Nevertheless, it is important to acknowledge that neural nets
-can and do converge to bad local optima. It is therefore
-impossible to prove (non-stochastic) bounds relative to the
-global optimum. Such a result may be provable under further assumptions. However, since the result would contradict empirical evidence, the assumptions would necessarily
-be unrealistic.
-2.1. What kind of guarantee is possible?
-The landscape of a rectifier net decomposes into smooth
-regions separated by kinks (Pascanu et al., 2014; Telgarsky, 2016), see figure 2. Gradients on different sides of
-a kink are unrelated since the derivative is discontinuous.
-Gradient-based optimizers cannot “peer around” the kinks
-in rectifier nets.
-Gradient-based optimization on rectifier nets thus decomposes into two components. The first is steepest descent
-in a smooth region; the second moves between smooth regions. The first component is vanilla optimization whereas
-the second involves an element of exploration: what the
-optimizer encounters when it crosses a kink cannot be predicted.
-The convergence guarantee in theorem 2 takes both components of the factorization into account in different ways.
-It is formulated in the adversarial setting of online convex
-optimization. Intuitively, the adversary is the nonsmooth
-geometry of the landscape, which generates what may-aswell-be a new loss whenever backprop enters a different
-smooth region.
-Backprop searches a vast nonconvex landscape with a linear flashlight (the Taylor losses are a more sharply focused
-convex flashlight, see A4). The adversary is the landscape: from backprop’s perspective its geometry – especially across kinks – is an unpredictable external force.
-The Taylor losses are a series of convex problems that back-
+A=
 
-Neural Taylor Approximations
+
 
-smooth regions
+1
 
-n−1
+0
+1
+2
+− 12
+
+1
+2
+C = 1
+2
+0
+
+0
+
+0
+
+
+
+1
+2
+1 .
+2
+
+1
+
+By substituting these matrices into (1) and factoring out redundant computations, we arrive at the following minimal
+algorithm for vector convolution:
+
+d∗g =
+
+"
+#
+m1 + m2 + m3
+m2 − m3 − m4
+
+,
+
+3. Deep Tensor Convolution
+Below we present an alternative approach to fast convolution that removes the need to hand-craft minimal algorithms. This new approach is better suited to video and
+volumetric image processing for two main reasons. First,
+the number of terms involved in a closed-form solution for
+3 and higher-dimensional convolutions makes Winogradstyle refactoring impractical. Second, by removing numeric simplicity as a constraint we are instead able to
+synthesize transforms optimized to CPU architectural constraints, e.g. data that are integer multiples of the AVX
+register width. This is made possible by the relaxed memory constraints of CPUs and allows us to close the previous
+CPU-GPU performance gap by a full order-of-magnitude.
+We first define N -dimensional convolution and describe
+how existing fast algorithms can be extended to this general case. Instead of crafting a minimal algorithm, we show
+how relaxed memory constraints and efficient sparse linear
+algebra of CPU systems can be leveraged to amortize transform costs. Later we show how architecture-aware transform synthesis can lead to further acceleration.
+3.1. Convolution in N -Dimensions
+Mathematically, the standard convolutional layer used in
+2D ConvNets extends trivially to higher-dimensional tensors. Consider a network where for each layer i, kernel j
+and channel m, the kernel weights G (i,j,m) = (g p,q,r ) and
+resulting feature map D (i,j) = (d x,y,z ) are both 3D tensors. This calculation can be expressed element-wise as:
+!
+XX
+(i+1,j)
+(i,j)
+(i,j,m) (i, j)
+d x,y,z = f b
++
+g p,q,r d x+p, y+q, z+r ,
+m p,q,r
+
+where:
+m1 = (d0 − d2 )g0 ,
+m4 = (d1 − d3 )g2 ,
+
+g0 + g1 + g2
+,
+2
+g0 − g1 + g2
+m3 = (d2 − d1 )
+.
+2
+
+m2 = (d1 + d2 )
+
+This is a so-called F (S, G) algorithm for vector convolution, here for S = 2 and G = 3. Importantly, this algorithm only works for fixed length kernel and data vectors
+(here D = 4). Generating F (S, G) algorithms for different
+combinations requires both (a) searching over the space of
+possible m(x) polynomials as input to Lavin’s or similar
+code (Lavin, 2016), and (b) reducing the matrix multiplications to a minimal set of addition, multiplication and shifting operations. To our knowledge there are no automated
+solutions to either step and thus only a small set of handcrafted Winograd-style algorithms (e.g. F (2, 3), F (3, 4)
+and F (2, 5)) have been released as fast CPU (Dukhan,
+2016) or GPU primitives (Chetlur et al., 2014).
+
+(2)
+where b(i,j) is the bias term and f is a ReLU or other nonlinear activation function. This extends to higher dimensions by looping over additional subscripts on g and d.
+The dimensionality of feature maps is clearly preserved in
+(2), e.g. a video at the input produces a video at the output. The triple (p, q, r)-loop ranges from 0 to the layer-i
+kernel size to perform sliding-window convolution, and the
+m-loop is a reduction over the previous layer’s output channels. This differs from previous studies where the temporal
+axis is encoded as network channels and flattened after the
+first layer (Karpathy et al., 2014; Simonyan & Zisserman,
+2014a), producing a single 2D image or class label at the
+output. These methods have been shown to produce less
+accurate results on a broad range of video processing tasks
+when compared to true 3D ConvNets (Tran et al., 2015).
+It is also evident from (2) why higher-dimensional ConvNets suffer from issues of impractical memory consumption. Each layer of an N -dimensional network requires G
+
+Deep Tensor Convolution on Multicores
+
+and D to be stored as N +2 and N +1–dimensional tensors,
+owing to their operation over multiple kernels and channels. We believe that this multiplicative effect has likely
+stalled the adoption of the deeper network architectures that
+dominate image processing tasks, with recent studies instead compromising on network expressiveness to fit within
+the 16 GB memory constraints of today’s top-end GPUs (Ji
+et al., 2013; Lee et al., 2015; Tran et al., 2015).
+3.2. Accelerating Tensor Convolution
+Sidestepping memory constraints by shifting from GPU
+to CPU hardware is conceptually trivial, as most popular ConvNet frameworks support execution on both CPU
+and GPU environments. However, the issue preventing the
+widespread adoption of CPU implementations is not a lack
+of software support but the large perceived gap between
+CPU and GPU performance. This is reminiscent of a large
+ongoing CPU-vs-GPU debate, with various studies claiming that GPUs provide anywhere from 100-to-1000x speedup across broad problem domains (Lee et al., 2010). A recent review has demonstrated a similar performance gap in
+the order of 50x across the most popular ConvNet frameworks (Shi et al., 2016a). Even if distributed GPU solutions like TensorFlow require tensors to be re-computed
+or swapped between GPU and host CPU memory (Abadi
+et al., 2016), this overhead is easy to justify if the alternative is a 50-fold increase in single-node execution time.
+Here we describe how fast algorithms for convolution can
+be extended to the general case of N -dimensional tensors,
+where the theoretical speed-up is a substantial (SG/D)N .
+Although recent studies have begun to explore extensions
+of FFT-based convolution to 3-dimensions (Zlateski et al.,
+2016), to our knowledge there have been no attempts to
+extend Lavin and Gray’s Winograd-style approach (Lavin
+& Gray, 2016). In order to extend the fast vector algorithm
+to 1 to N -dimensions, we consider the n-mode product of
+a tensor, X ∈ RI1 ×I2 ×···×IN , with a matrix, U ∈ RJ×In ,
+herein denoted as X ×n U (Kolda & Bader, 2009):
+(X ×n U)i1 ,...,in−1 ,j,in+1 ,...,iN =
+
+In
+X
+
+xi1 ,...,iN uj,in . (3)
+
+in =1
+
+In our case U is sparse and X is dense, so we implement
+(3) such that U is traversed in the outermost two loops. We
+also introduce the following notation for brevity:
+X ×N
+n=1 Un = X ×1 U1 ×2 · · · ×N UN .
+The fast algorithm for tensor convolution applies the transforms Cn , Bn and An separately to each dimension n of
+the kernel and data tensors, G and D:
+
+ N
+N
+S = (G ×N
+n=1 Cn )  (D ×n=1 Bn ) ×n=1 An . (4)
+
+It is straightforward to show that (1) is a special case of (4)
+by considering the following equivalence:
+Y = X ×n U ⇔ Y(n) = UX(n) ,
+where the matrix X(n) is the mode-n major unfolding of
+tensor X (Kolda & Bader, 2009). In the 1-dimensional
+case, X(1) is simply x and thus X ×1 U = Ux. Likewise
+in 2D, as X ×1 U = UX and X ×2 U = UX> then (4)
+reduces to the case reported by (Lavin & Gray, 2016):
+
+
+S = A (CGC> )  (BDB> ) A> .
+3.3. Amortizing Transform Costs
+Manually reducing transform costs via Winograd-style
+minimal algorithms is important for 2-dimensional GPU
+implementations. However, this is less important for a CPU
+implementation of higher-dimensional convolution. The
+reasons are two-fold: (a) the matrix multiplication cost can
+be amortized across a larger number of kernels and channels due to relaxed memory constraints; and (b) CPUs are
+able to directly leverage the sparse structure of these matrices for further acceleration. Although efficient sparse linear
+algebra is possible on GPUs, this typically involves reshuffling sparse matrices into a dense representation (e.g. COO,
+CSR or ELLPACK (Grewe & Lokhmotov, 2011)) and introduces unnecessary computational overhead.
+As a simple example, consider Winograd’s minimal F(2,3)
+algorithm presented in Section 2.2. Computing the output
+s of length S = 2 requires a total of 6 multiplications –
+4 between the data and kernel, and 2 by a constant factor
+of 0.5. The 4 additions are ignored as modern CPUs can
+compute fused multiply-accumulate operations in a single
+cycle. By contrast, computing s explicitly by equation (1)
+requires 28 multiplications – 4 for the element-wise product, 16 for the data transform and 8 for the inverse transform (assuming transformed kernels are cached at training
+time). Even leveraging sparsity in the transform matrices
+requires 19 multiplications, which is more than triple that
+required for Winograd’s minimal algorithm.
+The game changes when one considers these approaches
+in the context of a ConvNet layer with multiple channels
+and kernels. Without loss of generality, assume the numbers of kernels and channels are both equal to M . As the
+inverse transform can be applied once over the reduced output and the data transform once across all kernels, the required number of multiplications is just 4M 2 + 24M (versus 6M 2 for Winograd). This can be reduced further to
+4M 2 + 15M by exploiting the sparsity of A and B.
+Although it is also possible to restructure Winograd’s algorithm to exploit the size of the network, for larger networks the 4M 2 multiplications required by the elementwise product quickly renders the linear transform cost neg-
+
+Deep Tensor Convolution on Multicores
+
+∞ kernels
+100 kernels
+
+speed-up
+
+6
+
+10 kernels
+
+4
+2
+0
+
+1 kernel
+0
+
+50
+
+channels
+
+100
+
+Figure 1. Reduction in computations achieved by fast tensor convolution (forward pass) for a C3D kernel (3 × 3 × 3) as a function
+of number of layer channels and kernels. Dashed line indicates
+direct convolution baseline.
+
+ligible. It is also impractical to construct similar minimal algorithms in higher dimensions. Consider the C3D
+network of 3 × 3 × 3 kernels that has yielded state-ofthe-art performance across many video processing benchmarks (Tran et al., 2015). As an example, we synthesize the
+following transform matrices such that convolution reduces
+to a 6 × 6 × 6 element-wise product:
+
+
+1 1 1
+1
+1
+0
+0 1 −1 1
+− 13 0
+3
+
+A=
+1
+1
+0 1 1
+0
+9
+9
+1
+1
+0 1 −1 27
+− 27
+1
+1
+
+10
+0 −9
+0
+1 0
+9
+0 − 1 − 1
+1
+1 0
+9
+9
+
+
+1
+1
+0
+−
+−1
+1 0
+9
+9
+
+
+B=
+1
+1
+1 0
+3
+ 0 −13 −1
+
+0
+−1 − 13 1 0
+3
+1
+0
+0
+− 10
+0 1
+9
+9
+
+>
+9
+81
+9
+− 81
+− 16
+0
+9 16
+16
+16
+9
+9
+27
+− 16
+− 27
+0 .
+C = 0 16
+16
+16
+9
+9
+9
+9
+0 16
+− 16 − 16 1
+16
+The theoretical ceiling on speed-up obtainable using these
+matrices is 8-fold, ignoring the cost of the matrix-tensor
+products required when applying (4). Figure 1 demonstrates the actual reduction in computations as a function
+of kernels and channels. For a network of just 100 kernels
+and 100 channels, it is possible to obtain greater than 6-fold
+acceleration with respect to direct sliding-window convolution. This is triple the performance margin that could be
+gained if the network was constrained to 10 kernels and
+channels due to a lower memory ceiling.
+We can further improve this performance margin by exploiting the sparsity of the matrices themselves, as it
+is comparatively straightforward to implement efficient
+sparse linear algebra for CPUs. One might worry that the
+transform matrix sparsity is inversely proportional to the
+degree of m(x). However, this simply suggests that our
+
+fast algorithm is best suited for networks of small kernels,
+which is fortunately well-aligned with recent trends in deep
+ConvNet architecture (He et al., 2016; Simonyan & Zisserman, 2014b; Szegedy et al., 2015). Sparsity and numerical precision also decrease as a function of D. In practice,
+the data matrix D is not the full feature map (e.g. an ImageNet image) but rather one of many small, overlapping
+input tiles (each of size D × D, stepping by S along both
+axes) whose S × S outputs are stitched together to form the
+final convolution result. In Section 4.2 we discuss how the
+fully-automated nature of our implementation can leverage
+this property for further performance improvement.
+
+4. Optimizing for CPU Architecture
+There are a myriad of algorithmic tricks that can be applied
+to reduce the number of computations required for convolution. Consider the special case where our transforms
+are the discrete Fourier transform (DFT) and inverse DFT
+matrices. As the Fourier transform of a real-valued signal
+has Hermitian symmetry, the number of unique terms in
+the element-wise product can be reduced (Mathieu et al.,
+2013). More generally, one could also apply the Strassen
+algorithm to reduce the number of steps required for matrix
+multiplication (Cong & Xiao, 2014).
+In practice, the merit of any of these approaches depends
+intimately on whether they can be implemented to effectively leverage hardware. Consider the 50-to-1 performance ratio observed between existing GPU and CPU implementations (Shi et al., 2016a). For the devices used
+in this study (Titan X versus Xeon E7-8890), the ratio of
+theoretical throughput is actually less than to 5-to-1. This
+seems to suggest that current CPU performance limitations
+are largely issues of software rather than hardware.
+Although some previous studies have discussed CPUspecific performance optimizations for neural networks (Vanhoucke et al., 2011), these guidelines have not
+necessarily translated to optimal implementations. For
+example, the Eigen 3.2 linear algebra library (used until
+recently by TensorFlow) does not provide native support
+for AVX (vectorized) instructions, introducing a tight
+bottleneck on theoretical throughput. Looking beyond a
+single core, a recent review demonstrates poor multicore
+scalability across all major ConvNet frameworks (Shi et al.,
+2016a). Solving these two issues alone has the potential to
+close the CPU-GPU gap by a full order-of-magnitude, and
+this improvement is multiplicative with the algorithmic
+savings described earlier.
+4.1. Single-Core Utilization
+Although our fast algorithm requires theoretically fewer
+computations to execute than naı̈ve convolution (e.g. 8-fold
+
+Deep Tensor Convolution on Multicores
+
+(i : i+W )
+
+FMA ŝ t, k
+end for
+end for
+
+(i : i+W )
+
+, d̂ t, m
+
+×
+
+D̂
+
+Algorithm 2 N -Dimensional Convolution with SIMD
+for i = 1 by W to DN do
+for m = 1 to M do
+
+
+D2
+
+=
+
+Ĝ
+
+D2
+
+D2
+
+(i : i+W )
+
+, ĝ m, k
 
 T
 
-a lower-bound. It cannot be improved without additional
-assumptions.
+M
+M
 
-fW (x)
+W
 
-2.3. Neural Taylor Approximation
+reshuffle
+D
+D
 
-Tn
-Tn+1
-Wn−1 Wn
+T
+K
 
-Wn+1
+Ŝ
 
-Fig. 2: Neural Taylor approximation.
-prop de facto optimizes – the gradients of the actual and
-Taylor losses are identical. The Taylor optimum improves
-when, stepping over a kink, backprop shines its light on a
-new (better) region of the landscape (fig. 2). Regret quantifies the gap between the Taylor optimal loss and the losses
-incurred during training.
-2.2. Online Convex Optimization
-In online convex optimization (Zinkevich, 2003), a learner
-is given convex loss functions `1 , . . . `N . On the nth round,
-the learner predicts Wn prior to observing `n , and then
-incurs loss `n (Wn ). Since the losses are not known in advance, the performance of the learner is evaluated post hoc
-via the regret, the difference between the incurred losses
-and the optimal loss in hindsight:
-Regret(N ) :=
+K
 
-N h
-X
-n=1
+for C3D kernels), it is considerably more difficult to implement with high CPU utilization. Consider the element-wise
+product G 0  D 0 , summed for each channel m = 1 . . . , M
+to produce the N -dimensional tensor S 0 . We can compute
+the ratio of computations, i.e. 1 multiply and 1 accumulate
+operation per (g, d)-pair, to the volume of memory loaded:
 
-`n (Wn ) −
-| {z }
+Figure 2. Illustration of Algorithm 2 using 2-dimensional ConvNets as an example. Both the element-wise product G0  D0
+and reduction down M channels are captured within matrix multiplication. Multiple elements in ŝ t, k can be calculated simultaneously by filling AVX registers into-the-page. This technique
+generalizes trivially to N -dimensions by substituting D2 for DN .
 
-losses incurred
-
-where V∗ := argminV∈H
-
-hP
-
-`n (V∗ )
-| {z }
-
-i
-
-optimal-in-hindsight
-
-i
-
-N
-n
-n=1 ` (V)
-
-. An algorithm
-
-has no-regret if limN →∞ Regret(N )/N = 0 for any sequence of convex losses with bounded gradients. For example, Kingma & Ba (2015) prove:
-Theorem 1 (Adam has no-regret).
-Suppose the convex losses `n have bounded gradients
-k ∇W `n (W)k2 ≤ G and k ∇W `n (W)k∞ ≤ G for all
-W ∈ H and suppose that the weights chosen by the algorithm satisfy kWm − Wn k2 ≤ D and kWm − Wn k∞ ≤
-D for all m, n ∈ {1, . . . , N }. Then Adam satisfies
- √ 
-for all N ≥ 1. (1)
-Regret(N )/N ≤ O 1/ N
-The regret of gradient descent, AdaGrad (Duchi et al.,
-2011), mirror descent and a variety of related algorithms
-satisfy (1), albeit with different constant terms
-√ that are hidden in the big-O notation. Finally, the 1/ N rate is also
-
-Consider a network with L − 1 hidden layers and weight
-matrices W := {W1 , . . . , WL }. Let x0 denote the input.
-For hidden layers l ∈ {1, . . . , L − 1}, set al = Wl · xl−1
-and xl = s(al ) where s(·) is applied coordinatewise. The
-last layer outputs xL = aL = WL · xL−1 . Let pl denote the size of the lth layer; p0 is the size of the input
-and pL is the size of the output. Suppose the loss `(f , y)
-is smooth and convex in the first argument. The training
-data is (xd , y d )D
-d=1 . The network is trained on stochastic samples from the training data on a series of rounds
-n = 1, . . . , N . For simplicity we assume minibatch size
-1; the results generalize without difficulty.
-We recall backprop using notation from Martens et al.
-(2012). Let Jab denote the Jacobian matrix of the vector a
-with respect to the vector b. By the chain rule the gradient
-decomposes as
-l+1
-⊗xl−1 (2)
-∇Wl ` fW (x0 ), y) = JEL · JL
-L−1 · · · Jl
-{z
-}
-|
-δl
-
+2DN M
+computations
 =
+= 1.
+memory accesses
+2DN M
 
-JEL
-|{z}
+This margin is expected to double with the introduction of
+512-bit AVX registers for Intel Skylake and Xeon Phi.
 
-·
+Little’s Law shows this is problematic for effective CPU
+utilization, as convolution expressed in this form is bottlenecked by memory bandwidth (Little, 1961). To solve this
+problem, recall that D is one of many small, overlapping
+tiles that span the full-size feature map. Considering T of
+these tiles, we introduce the following matrices:
+Ŝ(i) = D̂(i) × Ĝ(i) ,
 
-JL
-⊗ xl−1
-| l {z }
+(5)
 
-∇f `(f ,y) ∇Wl fW (x0 )=:Gl
-
-where δ l = JEl is the backpropagated error computed recursively via δ l = δ l+1 · Jl+1
-.2 The middle expression in
-l
-(2) is the standard representation of backpropagated gradients. The expression on the right factorizes the backpropaE
-gated error δ l = JEL ·JL
-l into the gradient of the loss JL and
-the Jacobian JL
-between
-layers,
-which
-describes
-gradient
-l
-flow within the network.
-The first-order Taylor approximation to a differentiable
-function f : R → R near a is Ta (x) = f (a)+f 0 (a)·(x−a).
-The neural Taylor approximation for a fully connected network is as follows.
-Definition 1. The Jacobian tensor of layer l, Gl := JL
-l ⊗
-xl−1 , is the gradient of the output of the neural network
-with respect to the weights of layer l. It is the outer product of a (pL × pl )-matrix with a pl−1 -vector, and so is a
-(pL , pl , pl−1 )-tensor.
-Given Gl and (pl × pl−1 )-matrix V, the expression
-hGl , Vi := JL
-l · V · xl−1 is the pL -vector computed via
-matrix-matrix-vector multiplication. The neural Taylor approximation to f in a neighborhood of Wn , given input xn0 ,
-2
-Note: we suppress the dependence of the Jacobians on the
-round n to simplify notation.
-
-Neural Taylor Approximations
-
-Tnl/α (Vl/α ) := `(Tnl/α (Vl/α ), y n ). Then,
-
-is the first-order Taylor expansion
-Tn (V) := fWn (xn0 ) +
-
-L
-X
-
-
-
-Gl , Vl − Wln ≈ fV (xn0 ).
-l=1
-
-Finally, the Taylor loss of the network on round n is
-Tn (V) = `(Tn (V), y n ).
-
-N
-1 X
-` (fWn (xn0 ), y n ) ≤ min
-Vl/α
-N n=1
-|
-{z
-} |
-running average of training errors
-
-
-
-
-Tnl (Vl ) := fWn (xn0 ) + Gl , Vl − Wln .
-We can also construct the Taylor approximation to neuron
-L
-α in layer l. Let the pL -vector JL
-α := Jl [ :, α] denote the
-Jacobian with respect to neuron α and let the (pL × pl−1 )matrix Gα := JL
-α ⊗ xl−1 denote the Jacobian with respect
-to the weights of neuron α. The Taylor approximation to
-neuron α is
-
-
-
-n
-Tnα (Vα ) := fWn (xn0 ) + Gα , Vα − Wα
+where D̂(i) ∈ RT ×M (tiles-by-channels) and Ĝ(i) ∈
+RM ×K (channels-by-kernels). Each matrix i ∈ 1, . . . , DN
+captures a single (x, y) coordinate in the earlier G 0  D 0
+element-wise product, which is fused with the channelwise reduction into end-to-end matrix multiplications:
+computations
+2DN M T K
+2TK
+= N
+=
 .
-The Taylor losses are the simplest non-trivial (i.e. nonaffine) convex functions encoding the information generated by backprop, see section A4.
-The following theorem provides convergence guarantees at
-mutiple spatial scales: network-wise, layer-wise and neuronal. See sections A2 for a proof of the theorem. It is not
-currently clear which scale provides the tightest bound.
-Theorem 2 (no-regret relative to Taylor optimum).
-Suppose, as in Theorem 1, the Taylor losses have bounded
-gradients and the weights of the neural network have
-bounded diameter during training.
-Suppose the neural √
-net is optimized by an algorithm with
-Regret(N ) ≤ O( N ) such as gradient descent, AdaGrad, Adam or mirror descent.
-• Network guarantee:
-The running average of the training error of the neural
-network satisfies
-N
-1 X
-` (fWn (xn0 ), y n ) ≤ min
-V
-N n=1
-|
-{z
-} |
-running average of training errors
+memory accesses
+D (M T + M K)
+T +K
+As T can be any number of the small DN input tiles, we
+can select T = K to demonstrate a compute-to-memory
+ratio that grows linearly in the number of kernels.
+The fast convolutional form in (5) is also well-suited
+to a number of other practical CPU performance optimizations (Vanhoucke et al., 2011). Foremost among
+these is the effective use of AVX (vectorized) and FMA
+(fused multiply-accumulate) floating-point SIMD operations. Consider the function FMA(x, y, z), which calculates the sum of vector x with the element-wise product
+y  z and stores the result in x, all in a single CPU cycle.
+This function can be leveraged for an efficient practical implementation of (5), as presented in Algorithm 2 for a sin(i)
+gle tile-kernel pair s t, k ∈ Ŝ(i) and an AVX vector of width
+W . An illustration of the 2-dimensional case is provided
+in Figure 2. On our Xeon CPU with 256-bit AVX registers and two dedicated FMA units, this optimization alone
+can yield a 32-fold speed-up over naı̈ve implementations.
 
-(
+We benchmarked the performance of our fast convolution
+algorithm on a 1.44 TFLOP/s Xeon E7-8890 CPU and observe that it executes at ∼70% maximum utilization. This
+includes all steps from input to output, including all necessary data reshuffling. As a point of comparison, Intel’s own
+MKL convolutional primitive runs at just 20% (excluding
+reshuffling) on the same processor. The Eigen 3.2. linear
+algebra library is lower utilization still, capped at just 3.5%
+due to a lack of AVX and FMA support. Both of these libraries have been widely used by popular ConvNet frameworks including Caffe, CNTK, TensorFlow and Torch.
+4.2. AVX-Aware Transform Synthesis
+The fully automated nature of our transform generation allows for the synthesis of transform matrices that optimize
+for CPU architectural constraints. From Figure 2, it is clear
+the full utilization can only be achieved if DN is an integer
+multiple of the AVX vector width W . This is an important
+optimization, as data volumes are constantly small (invariant of numbers of channels and kernels) and thus there is
+little opportunity to amortize padding overhead.
+Table 1 summarizes statistics for example transforms that
+we have generated for square 2 and 3-dimensional kernels, enumerated automatically using (Lavin, 2016). In
+each case, we generate transforms for the smallest possible
+D ∈ RD×D such that SG/D > 1 and D2 mod W = 0.
+The matrices are provided in the Supplementary Materials.
+4.3. Multicore Scalability
+Single-core utilization is just one dimension of performance optimization. Many modern systems contain both
+multiple CPU chips, with shared access to host RAM; and
+multiple cores per chip, with shared access to faster L3
+cache. We adopt a relatively simple parallelization scheme
+where threads simultaneously operate on different subsets
 
-)
-N
-1 X n
-T (V) (3)
-N n=1
-{z
-}
+Deep Tensor Convolution on Multicores
 
-Taylor optimum
+(a)
+(b)
+(c)
+(d)
+(e)
 
-
-
-
-1
-+O √
-.
-N
-| {z }
-Regret(N )/N
-
-• Layer-wise / Neuron-wise guarantee:
-The Taylor loss of [layer-l / neuron-α] is
-
-)
-N
-1 X n
-T (Vl/α )
-N n=1 l/α
-{z
-}
-
-layer-wise/neuronal Taylor optimum
-
-(4)
-
-
-The Taylor approximation to layer l is
-
-(
-
-
-
-1
-+O √
-.
-N
-| {z }
-Regret(N )/N
-
-The running average of errors during training (or cumulative loss) is the same quantity that arises in the analyses
-of Adam and Adagrad (Kingma & Ba, 2015; Duchi et al.,
-2011).
-
-Implications of the theorem. The global optima of neural nets are not computationally accessible. Theorem 2
-sidesteps the problem by providing a guarantee relative to
-the Taylor optimum. The bound is path-dependent; it depends on the convex snapshots encountered by backprop
-during training.
-Path-dependency is a key feature of the theorem. It is a
-simple matter to construct a deep fully connected network
-(> 100 layers) that fails to learn because gradients do not
-propagate through the network (He et al., 2016). A convergence theorem for neural nets must also be applicable
-in such pathological cases. Theorem 2 still holds because
-the failure of gradients to propagate through the network
-results in Taylor losses with poor solutions.
-Although the bound in theorem 2 is path-dependent, it is
-nevertheless meaningful. The right-hand-side is given by
-the Taylor optimum, which is the optimal solution to the
-best convex approximations to the actual losses; best in the
-sense that they have the same value and have the same gradient for the encountered weights. The theorem replaces a
-seemingly intractable problem – neither smooth nor convex
-– with a sequence of convex problems.
-Empirically, see below, we find that the Taylor optimum is
-a tough target on a range of datasets and settings: MNIST
-and CIFAR10; supervised and unsupervised learning; convolutional and fully-connected architectures; under a variety of optimizers (Adam, SGD, RMSProp), and for individual neurons as well as entire layers.
-Finally, the decomposition of learning over rectifier networks into vanilla optimization and exploration components suggests investigating the exploratory behavior of
-different optimizers – with the theorem providing concrete
-tools to do so, see section 3.
-
-Neural Taylor Approximations
-
-6
+D
 4
-Layer 1
-Layer 2
-Layer 3
-
-2
-0
-
-20
-
-40
-
-60
-
-epochs
-
-(a) All conv layers
-
-80
-
-100
-
-Neuron loss
-Taylor optimal
-Regret
-Network loss
-
-16
-
-Cumul. Loss
-
-16
-
-Cumul. Loss
-
-Cumul. Regret
-
-8
-
-8
-
-0
-
-20
-
-40
-
-60
-
-80
-
-epochs
-
-(b) Layer 1 (input layer)
-
-100
-
-Neuron loss
-Taylor optimal
-Regret
-Network loss
-
-8
-
-0
-
-20
-
-40
-
-60
-
-80
-
-100
-
-epochs
-
-(c) Layer 2
-
-Fig. 3: Average normalized cumulative regret for RMSProp on CIFAR-10. (a) Average regret incurred by neurons in
-each layer over 50 neurons/layer. (b)-(c) Average regret incurred eachs neuron in layers 1 and 2 respectively, along with
-average loss, Taylor optimum and cumulative network loss. Shaded areas represent one standard deviation.
-2.4. Empirical Analysis of Online Neural Optimization
-This section empirically investigates the Taylor optimum
-and regret terms in theorem 2 on two tasks:
-Autoencoder trained on MNIST. Dense layers with architecture 784 → 50 → 30 → 20 → 30 → 50 → 784 and
-ReLU non-linearities. Trained with MSE loss using minibatches of 64.
-Convnet trained on CIFAR-10. Three convolutional layers with stack size 64 and 5 × 5 receptive fields, ReLU nonlinearities and 2 × 2 max-pooling. Followed by a 192 unit
-fully-connected layer with ReLU before a ten-dimensional
-fully-connected output layer. Trained with cross-entropy
-loss using minibatches of 128.
-For both tasks we compare the optimization performance of
-Adam, RMSProp and SGD (figure 6 in appendix). Learning rates were tuned for optimal performance. Additional
-parameters for Adam and RMSProp were left at default.
-For the convnet all three methods perform equally well:
-achieving a small loss and an accuracy of ≥ 99% on the
-training set. However, SGD exhibits slightly more variance. For the autoencoder, although it is an extremely simple model, SGD with the best (fixed) learning rate performs
-significantly worse than the adaptive optimizers.
-The neuronal and layer-wise regret are evaluated for each
-model. At every iteration we record the training error – the
-left-hand-side of eq. (4). To evaluate the Taylor loss, we
-record the input to the neuron/layer, its weights, the output
-of the network and the gradient tensor Gl . After training,
-we minimize the Taylor loss with respect to V to find the
-Taylor optimum at each round. The regret is the difference
-between the observed training loss and the optimal Taylor
-loss.
-The figures show cumulative losses√and regret. For illustrative purposes we normalize by 1/ N : quantities growing
-
-√
-at N therefore flatten out. Figure 3(a) compares the average regret incurred by neurons in each convolutional layer
-of the convnet. Shaded regions show one standard deviation. Dashed lines are the regret of individual neurons –
-importantly the regret behaviour of neurons holds both on
-average and individually. Figs 3(b) and 3(c) show the regret, cumulative loss incurred by the network, the average
-loss incurred and the Taylor optimal loss for neurons in layers 1 and 2 respectively.
-Fig. 4 compares Adam, RMSProp and SGD. Figure 4(a)
-shows the layer-wise regret √
-on the convnet. The regret of all
-of the optimizers scales as N for both models, matching
-the bound in Theorem 2. The additional variance exhibited by SGD explains the difference in regret magnitude.
-Similar behaviour was observed in the other layers of the
-networks and also for convnets trained on MNIST.
-Figure 4(b) shows the same plot
-√ for the autoencoder. The
-regret of all methods scales as N (this also holds for the
-other layers in the network). The gap in performance can
-be further explained by examining the difference between
-the observed loss and Taylor optimal loss. Figure 4(c) compares these quantities for each method on the autoencoder.
-The adaptive optimizers incur lower losses than SGD. Further, the gap between the actually incurred and optimal loss
-is smaller for adaptive optimizers. This is possibly because
-adaptive optimizers find better activation configurations of
-the network, see discussion in section 3.
-Remarkably,
-figures 3 and 4 confirm that regret scales as
-√
-N for a variety of optimizers, datasets, models, neurons
-and layers – verifying the multi-scale guarantee of Theorem 2. A possible√explanation for why optimizers match
-the worst-case (1/ N ) regret is that the adversary (that is,
-the landscape) keeps revealing Taylor losses with better solutions. The optimizer struggles to keep up with the hindsight optimum on the constantly changing Taylor losses.
-
-Neural Taylor Approximations
-16
-
-8
-Adam
-RMSProp
-SGD
-
 4
-20
+8
+8
+8
 
-40
-
-60
-
-80
-
-0.3
-
+size
+G
+2
+3
+4
+5
 6
+
+S
+3
+2
 5
 4
-Adam
-RMSProp
-SGD
-
 3
-2
 
-100
+A
+0.33
+0.25
+0.20
+0.19
+0.17
 
-20
+sparsity
+B
+0.50
+0.50
+0.31
+0.31
+0.31
 
-epochs
+D
+0.25
+0.33
+0.19
+0.20
+0.21
 
-(a) Convnet regret, layer 2
+speed-up
+2D
+3D
+2.25 3.38
+2.25 3.38
+6.25 15.63
+6.25 15.63
+5.06 11.39
 
-Cumul. Loss
+of T input tiles. To avoid memory contention and other
+concurrency issues we adopt the Cilk Plus work-stealing
+scheduler supported by GCC 4.8 (Blumofe et al., 1996; Robison, 2013), simply applying its fork-join primitive to all
+for-loops with no iteration dependencies. The number of
+tiles T per thread is empirically tuned to simultaneously
+maximize L3 cache utilization (T cannot be too large) and
+compute-to-memory ratio (T cannot be too small).
+We observe that even this simple parallelization scheme
+yields near-optimal linear scalability. In Figure 3 we
+present ConvNet throughput as a function of processor
+cores for both (a) our fast algorithm, and (b) our own multicore implementation of naı̈ve convolution (which is comparatively simple to implement). Scalability is measured
+across a single convolution layer for a 1024 × 1024 image with kernels of size 4 × 4. To avoid NUMA issues
+relating to expensive inter-chip communication, we spawn
+independent instances for each CPU in our 4-socket sharedmemory server such that all 18 threads in Figure 3 are
+bound to a single chip. When using all 18 cores of our
+Intel Xeon E7-8890 CPU the scalability of (a) is 95% theoretically optimal. As a point of comparison, a recent review examined the scalability of popular ConvNet frameworks Caffe, CNTK, TensorFlow and Torch on a similar
+16-core Xeon E5-2630 CPU (Shi et al., 2016a). They reported multicore scalability ranging from 16% (Caffe) to
+42% (TensorFlow), which is equivalent to a 2.3 to 5.9-fold
+improvement with our implementation.
+4.4. Performance Benchmarking
+The most popular ConvNet benchmarks focus exclusively
+on GPU performance (Chintala, 2015). The only study we
+could find presenting thorough CPU benchmarking is that
+of Shi et al., comparing the throughput of Caffe, CNTK,
+Tensorflow and Torch for the AlexNet and ResNet architectures (Shi et al., 2016a). Although this is a useful study
+for ball-parking our multicore scalability, it is difficult to
+extrapolate fair comparisons to our overall system throughput for many reasons. Foremost is that the authors do not
+select CPU-optimized implementations. They adopt an ear-
 
+speed-up
+
+Table 1. Size, transform sparsity and algorithmic speed-up statistics for example transforms matrices. Associated matrices are
+provided in the Supplementary Materials.
+
+18
+16
+14
 12
-
-Cumul. Regret
-
-Cumul. Regret
-
-7
-
-40
-
-60
-
-0.2
-Taylor optimal
-loss
-0.1
-
-80
-
-20
-
-epochs
-
-40
-
-60
-
-80
-
-epochs
-
-(b) Autoencoder regret, layer 3
-
-(c) Cumul. losses for autoencoder
-
-Fig. 4: Comparison of regret for Adam, RMSProp and SGD. The y-axis in (b) is scaled by ×1000. (c) reports cumulative loss and Taylor optimal loss on layer 3 for each method.
-
-3. Optimization and Exploration in Rectifier
-Neural Networks
-Poor optima in rectifier nets are related to shattered gradients: backprop cannot estimate gradients in nearby smooth
-regions without directly computing them; the flashlight
-does not shine across kinks. Two recent papers have shown
-that noise improves the local optima found during training: Neelakantan et al. (2016) introduce noise into gradients whereas Gulcehre et al. (2016) use noisy activations to
-extract gradient information from across kinks. Intuitively,
-noise is a mechanism to “peer around kinks” in shattered
-landscapes.
-Introducing noise is not the only way to find better optima.
-Not only do adaptive optimizers often converge faster than
-vanilla gradient descent, they often also converge to better
-local minima.
-This section investigates how adaptive optimizers explore
-shattered landscapes. Section 3.1 shows that smooth regions in rectifier nets correspond to configurations of active
-neurons and that neural Taylor approximations clamp the
-activation configuration – i.e. the convex flashlight does
-not shine across kinks in the landscape. Section 3.2 observes that adaptive optimizers incorporate an exploration
-bias and hypothesizes that the success of adaptive optimizers derives from exploring the set of smooth regions more
-extensively than SGD. Section 3.3 evaluates the hypothesis
-empirically.
-3.1. The Role of Activation Configurations in
-Optimization
-We describe how configurations of active neurons relate to
-smooth regions of rectifier networks and to neural Taylor
-approximations. Recall that the loss of a neural net on its
-
-training data is
-D
-
-1 X
-ˆ
-`(W)
-=
-` fW (xd ), y d .
-D
-d=1
-
-Definition 2. Enumerate the data as [D] = {1, . . . , D}
-and neurons as [M ]. The activation configuration A(W)
-is a (D ×M ) binary matrix representing the active neurons
-for each input. The set of all possible activation configurations corresponds to the set of all (D×M ) binary matrices.
-Observation 1 (activation configurations correspond to
-smooth regions in rectifier networks).
-A parameter value exhibits a kink in `ˆ iff an infinitesimal
-change alters the of activation configuration, i.e. `ˆ is not
-smooth at W iff there is a V s.t. A(W) 6= A(W + δV)
-for all δ > 0.
-The neural Taylor approximation to a rectifier net admits a
-natural description in terms of activation configurations.
-Observation 2 (the Taylor approximation clamps activation configurations in rectifier networks).
-Suppose datapoint d is sampled on round n. Let 1k :=
-A(Wn )[d, layer k] be the pk -vector given by entries of
-row d of A(Wn ) corresponding to neurons in layer k of a
-rectifier network. The Taylor approximation Tnl is
-
-Tnl (Vl ) = 1l · 
-|
-
-
-Y
-
-Wkn · diag(1k ) · (Vl − Wln )
-|
-{z
-}
-k6=l
-free
-{z
-}
-clamped
-
-which clamps the activation configuration, and weights of
-all layers excluding l.
-Observations 1 and 2 connect shattered gradients in rectifier nets to activation configurations and the Taylor loss.
-The main implication is to factorize neural optimization
-
-Neural Taylor Approximations
-
-into hard (finding “good” smooth regions) and easy (optimizing within a smooth region) subproblems that correspond, roughly, to finding “good” Taylor losses and optimizing them respectively.
-
-as a (D × M ) binary matrix, recall definition 2. The set of
-activation configurations encountered by a network over N
-rounds of training is represented by an (N, D, M ) binary
-tensor denoted A where An := A[n, :, :] := A(Wn ).
-
-3.2. RMS-Normalization encourages Exploration
-
-Figure 5 quantifies exploration in the space of activation
-configurations in three ways:
-
-Adaptive optimizers based on root-mean-square normalization exhibit an up-to-exponential improvement over nonadaptive methods when gradients are sparse (Duchi et al.,
-2013) or low-rank (Krummenacher et al., 2016) in convex
-settings. We propose an alternate explanation for the performance of adaptive optimizers in nonconvex nonsmooth
-settings.
-PD
-1
-Let ∇` := D
-d=1 ∇ `d denote the average gradient over
-a dataset. RProp replaces the average gradient with its coordinatewise sign (Riedmiller & Braun, 1993). An interesting characterization of the signed-gradient is
-Observation 3 (signed-gradient is a maximizer).
-Suppose none of the coordinates in ∇` are zero. The
-signed-gradient satisfies
-o
-n
-
-
-
-sign(∇`) = argmax kxk1 : x, ∇` ≥ 0 ,
-p
-x∈B∞
-
-p
-where B∞
-= {x ∈ Rp : max |xi | ≤ 1}.
-i=1,...,p
-
-The signed-gradient therefore has two key properties.
-Firstly, small weight updates using the signed-gradient decrease the loss since h∇`, sign(∇`)i > 0. Secondly, the
-signed-gradient is the update that, subject to an `∞ constraint, has the largest impact on the most coordinates. To
-adapt RProp to minibatches, Hinton and Tieleman suggested to approximate the signed gradient by P
-normalizing
-D
-d=1 ∇ `d
-√
-with the root-mean-square: sign(∇`) ≈ PD
-,
+10
+8
+6
+4
 2
-d=1 (∇ `d )
 
-where (∇ `d )2 is the square taken coordinatewise. Viewing
-the signed-gradient as changing weights – or exploring –
-maximally suggests the following hypothesis:
-Hypothesis 1 (RMS-normalization encourages exploration
-over activation configurations).
-Gradient descent with RMS-normalized updates (or running average of RMS) performs a broader search through
-the space of activation configurations than vanilla gradient
-descent.
-3.3. Empirical Analysis of Exploration by Adaptive
-Optimizers
-Motivated by hypothesis 1, we investigate how RMSProp
-and SGD explore the space of activation configurations on
-the tasks from section 2.4; see A6 for details.
-For fixed parameters W, the activation configuration of a
-neural net with M neurons and D datapoints is represented
+(a)
+(b)
 
-5(a): Hamming distance plots mink<n kAn − Ak k2F , the
-minimum Hamming distance between the current activation configuration and all previous configurations. It indicates the novelty of the current activation configuration.
-PN −1 
-1
+2
 
-5(b): Activation-state switches plots tot
-n=1 An [d, :
-2
+4
 
-]−An−1 [d, :] F , the total number of times each data point
-(sorted) switches its activation state across all neurons and
-epochs as a proportion of possible switches. It indicates the
-variability of the network response.
-5(c): Log-product of singular values. The matrix A[ :, :
-, m] specifies the rounds and datapoints that activate neuron
-m. The right column plots the log-product of A[ :, :, m]’s
-first 50 singular values for each neuron (sorted).3 It indicates the (log-)volume of configuration space covered by
-each neuron. Note that values reaching the bottom of the
-plot indicate singular values near 0.
-We observe the following.
-RMSProp explores the space of activation configurations far more than SGD. The result holds on both tasks,
-across all three measures, and for multiple learning rates
-for SGD (including the optimally tuned rate). The finding
-provides evidence for hypothesis 1.
-RMSProp converges to a significantly better local optimum on the autoencoder, see Fig. 6. We observe no
-difference on CIFAR-10. We hypothesize that RMSProp
-finds a better optimum through more extensive exploration
-through the space of activation configurations. CIFAR is
-an easier problem and possibly requires less exploration.
-Adam explores less than RMSProp. Adam achieves the
-best performance on the autoencoder. Surprisingly, it explores substantially less than RMSProp according to the
-Hamming distance and activation-switches, although still
-more than SGD. The singular values provide a higherresolution analysis: the ±40 most exploratory neurons
-match the behavior of RMSProp, with a sharp dropoff from
-neuron 60 onwards. A possible explanation is that momentum encourages targeted exploration by rapidly discarding avenues that are not promising. The results for Adam
-are more ambiguous than for RMSProp compared to SGD.
-3
-The time-average is subtracted from each column of A[ :, :
-, m]. If the response of neuron m to datapoint d is constant over
-all rounds, then column A[ :, d, m] maps to (0, . . . , 0) and does
-not contribute to the volume.
+6
 
-Neural Taylor Approximations
+8
 
-RMSProp
+10 12 14 16 18
 
-Adam
-0.06
+cores
 
-500
+Figure 3. Multicore scalability of our cache-aware and Cilkoptimized implementations of (a) fast convolution, and (b) naı̈ve
+convolution. Dashed line indicates theoretical scalability limit
+with respect to a single-core implementation. Executed on 18core Intel Xeon E7-8890 processor with 45 MB L3-cache.
 
-0.06
+lier version of TensorFlow that uses the Eigen 3.2 library
+(no AVX/FMA support), and otherwise use the default
+framework-specific implementations of convolution rather
+than linking to optimized packages such as Intel MKL.
+We benchmark 2D ConvNet performance against two popular frameworks: TensorFlow, using the newer Eigen 3.3
+library (with AVX support); and Caffe, compiled to use Intel’s optimized MKL library. We consider the propagation
+time of a 224×224 ImageNet image through three convolution layers to capture any necessary inter-layer reshuffling.
+We choose this simple architecture over a named network
+because we are not interested in comparing execution times
+of pooling, fully-connected or other layers. We also select
+an obscure kernel size (4 × 4) for which there have been
+no Winograd-style fast algorithms published, in order to
+demonstrate the generality of our implementation to arbitrary kernels. Each layer contains a modest 32 channels
+and 32 kernels for spreading the cost associated with applying transform matrices. Results presented are the fastest
+across batch sizes of 1, 20 and 200. An important innovation of our approach is that it is batch size-agnostic, making
+it suitable for single-image autoregressive models common
+in generative modelling and deep reinforcement learning.
+Our performance benchmarks are presented in Figure 4.
+The single-core throughput of (a) our fast algorithm is 0.89
+MVox/s, compared to (b) 0.18 for TensorFlow and (c) 0.19
+for Caffe. Increasing cores from 1 to 18, our throughput
+improves to 10.9 MVox/s compared to 1.77 for TensorFlow
+and 0.41 for Caffe. This is equivalent to an approximate 5
+to 25-fold improvement in overall performance. In terms
+of multicore scalability, this is (a) 68% versus (b) 55% and
+(c) 12%. We note that our performance here is lower than
+the 95% presented in Figure 3 for a larger input size (i.e. T
+is much larger, yielding a better compute-to-memory ratio),
 
-0.05
+Deep Tensor Convolution on Multicores
+(a)
 
+throughput
+
+10
+8
+6
+4
+2
 0
 
-0.04
-
-0.04
-
-Convnet
-
-SGD lr=0.1
-
-0.07
-
-0.05
-
-0.03
-
--1000
-
-0.02
-
-0.02
-
--1500
-
-0.01
-
-0.01
-20
-
-40
-
-60
-
-epochs
-
-80
-
-100
-
-0.00
-
--2000
-0
-
-200
-
-400
-
-600
-
-data (ordered)
-
-800
-
-1000
-
-0.06
-
-500
-
-0.06
-
-0.05
-
-0
-
-0.05
-
-0.04
-
-0.00
-
-0
-
-20
-
-40
-
-60
-
-epochs
-
-80
-
-100
-
-(a) Minimum hamming distance.
-
-0.00
-0
-
-2000 2500 3000
-
--1500
-
-0.01
-
-0.01
-
-1000 1500
-
--1000
-
-0.02
-
-0.02
-
-500
-
--500
-
-0.03
-
-0.03
-
-0
-
-neurons (ordered)
-
-0.07
-
-0.04
-
-SGD lr=0.01
-
--500
-
-0.03
-
-0.00
-0
-
-Autoencoder
-
-SGD lr=1.0
-
-10000 20000 30000 40000 50000
-data (ordered)
-
-(b) Activation-state switches.
-
--2000
-0
-
-20 40 60 80 100 120 140 160 180
-
-neurons (ordered)
-
-(c) Log-product of singular values.
-
-Fig. 5: Top: results for a CIFAR-trained convnet. Bottom: MNIST-trained autoencoder. (a) Minimum hamming
-distance between the activation configuration at curent epoch and all previous epochs. (b) Number of activation-state
-switches undergone for all neurons over all epochs for each data point (sorted). (c) Log-product of the first 50 singular
-values of each neuron activation configuration (sorted).
-More generally, the role of momentum in nonsmooth nonconvex optimization requires more investigation.
-
-4. Discussion
-Rectifier convnets are the dominant technology in computer vision and a host of related applications. Our main
-contribution is the first convergence result applicable to
-convnets as they are used in practice, including rectifier
-nets, max-pooling, dropout and related methods. The key
-analytical tool is the neural Taylor approximation, the firstorder approximation to the output of a neural net. The Taylor loss – the loss on the neural Taylor approximation – is a
-convex approximation to the loss of the network. Remarkably, the convergence rate matches known lower bounds on
-convex nonsmooth functions (Bubeck, 2015). Experiments
-in section 2.4 show the regret matches the theoretical analysis under a wide range of settings.
-The bound in theorem 2 contains an easy term to optimize
-(the regret) and a hard term (finding “good” Taylor losses).
-Section 3.1 observes that the Taylor losses speak directly to
-the fundamental difficulty of optimizing nonsmooth functions: that gradients are shattered – the gradient at a point
-is not a reliable estimate of nearby gradients.
-Smooth regions of rectifier nets correspond to activation
-
-configurations. Gradients in one smooth region cannot be
-used to estimate gradients in another. Exploring the set of
-activation configurations may therefore be crucial for optimizers to find better local minima in shattered landscapes.
-Empirical results in section 3.3 suggest that the improved
-performance of RMSProp over SGD can be explained in
-part by a carefully tuned exploration bias.
-Finally, the paper raises several questions:
-1. To what extent is exploration necessary for good performance?
-2. Can exploration/exploitation tradeoffs in nonsmooth
-neural nets be quantified?
-3. There are exponentially more kinks in early layers
-(near the input) compared to later layers. Should optimizers explore more aggressively in early layers?
-4. Can exploring activation configurations help design
-better optimizers?
-The Taylor decomposition provides a useful tool for separating the convex and nonconvex aspects of neural optimization, and may also prove useful when tackling exploration in neural nets.
-
-Neural Taylor Approximations
+(b)
+(c)
+1 2
+
+4
+
+6
+
+8
+
+10 12 14 16 18
+
+cores
+
+Figure 4. Measured throughput (megavoxels per second) of (a)
+our fast 2D convolution implementation (as a special case of our
+N -dimensional algorithm), (b) TensorFlow, using the latest Eigen
+3.3, and (c) Caffe, using Intel MKL. Throughput is calculated by
+propagating 224 × 224 images through 3 convolutional layers.
+
+and that the scalability for TensorFlow and Caffe are both
+similar to those reported in (Shi et al., 2016a).
+
+5. Discussion
+Motivated by the recent success of 3-dimensional ConvNets in video and volumetric image processing (Lee et al.,
+2015; Tran et al., 2015), we have proposed a transition to
+CPU hardware to overcome the memory constraints limiting the size and expressivity of these networks. Key to
+this transition is overcoming the impractical performance
+gap between existing CPU and GPU implementations. To
+achieve this, we extended previous algorithms of fast convolution to the N -dimensional case, yielding an order-ofmagnitude reduction in computations for popular networks
+such as C3D. Importantly, our implementation diverges
+from previous studies that focus on the hand-crafting of
+minimal Winograd-style algorithms. We instead exploit
+the relaxed memory constraints, efficient sparse access and
+other architectural considerations of CPU hardware to overcome the cost of applying transform matrices.
+The obvious alternative to our approach is to overcome
+memory constraints by splitting large networks across multiple GPU devices. Distributed frameworks such as TensorFlow are valuable for a broad class of machine learning
+problems, e.g. many of the data mining tasks faced by large
+organizations where the data itself is often sharded across
+different machines. However, it is important to recognize
+that the horizontal scalability paradigm is not a one-sizefits-all solution. Consider the increasing demand for realtime CPU solutions to image and video processing, particularly on mobile devices. Moving forward, we expect
+that intensive ConvNet-driven tasks such as video classification and de-noising will continue to migrate from the
+realm of academic research to practical realization (Shi
+
+et al., 2016b). Efficient CPU implementations of ConvNets
+and other deep learning algorithms will play a fundamental
+role in this transition.
+At the opposite end of the spectrum, some “big data”
+problems in the image processing domain are, counterintuitively, too big to be solved in a distributed setting.
+Consider the emerging field of high-throughput connectomics (Meirovitch et al., 2016). Multi-beam electron microscopes image cross-sectional slices of neural tissue at
+nanometer-resolution, which are then segmented by ConvNets to reconstruct the 3-dimensional morphology and interconnectivity of individual neurons (Ronneberger et al.,
+2015). The major issue here is simply one of scale – a
+seemingly modest cubic millimeter volume of neural tissue
+takes several months to image at the TB/hr pace of modern electron microscopes, which exceeds maximum data
+transfer rates. To avoid introducing communication bottlenecks to the connectomics pipeline, it is necessary that
+segmentation can execute in real-time on a server physically co-located in the same room as the microscope (Lichtman et al., 2014; Matveev et al., 2017). Shared-memory
+CPU systems can support hundreds of cores and terabytes
+of memory in a single server, and it is critical that systems
+be implemented to exploit these valuable resources.
+Treating 2D ConvNets as a special case of tensor convolution, our implementation yields 5 to 25-fold improved
+throughput compared to previous state-of-the-art on CPU.
+This is an important step toward bridging the performance
+gap between CPU and GPU hardware and is particularly
+important in the context of emerging hardware trends, e.g.
+Intel announcing that future generations of CPUs will contain dedicated deep learning accelerators. More importantly, we believe that removing constraints on 3D ConvNet size will herald new opportunities in the machine
+learning community; particularly in the context of generative models (Denton et al., 2015; Goodfellow et al.,
+2014), where rich temporal correlations are currently ignored when learning latent manifolds (Ledig et al., 2016).
 
 Acknowledgements
-We thank L. Helminger and T. Vogels for useful discussions and help with TensorFlow. Some experiments were
-performed using a Tesla K80 kindly donated by Nvidia.
+Support is gratefully acknowledged from the National Science Foundation (NSF) under grants IIS-1447786 and
+CCF-1563880, and the Intelligence Advanced Research
+Projects Activity (IARPA) under grant 138076-5093555.
 
 References
-Aslan, O, Zhang, X, and Schuurmans, Dale. Convex Deep Learning via Normalized Kernels. In NIPS, 2014.
+Abadi, Martın, Agarwal, Ashish, Barham, Paul, Brevdo,
+Eugene, Chen, Zhifeng, Citro, Craig, Corrado, Greg S,
+Davis, Andy, Dean, Jeffrey, Devin, Matthieu, et al. Tensorflow: Large-scale machine learning on heterogeneous
+distributed systems. arXiv preprint arXiv:1603.04467,
 
-Hinton, G, Srivastava, Nitish, and Swersky, Kevin. Lecture 6a:
-Overview of minibatch gradient descent. 2012.
-Kingma, Diederik P and Ba, Jimmy Lei. Adam: A method for
-stochastic optimization. In ICLR, 2015.
-Krizhevsky, A, Sutskever, I, and Hinton, G E. Imagenet classification with deep convolutional neural networks. In Advances
-in Neural Information Processing Systems (NIPS), 2012.
+Deep Tensor Convolution on Multicores
 
-Bach, Francis. Breaking the Curse of Dimensionality with Convex Neural Networks. In arXiv:1412.8690, 2014.
-
-Krummenacher, Gabriel, McWilliams, Brian, Kilcher, Yannic,
-Buhmann, Joachim M., and Meinshausen, Nicolai. Scalable
-adaptive stochastic optimization using random projections. In
-NIPS, 2016.
-
-Balduzzi, David. Deep Online Convex Optimization with Gated
-Games. In arXiv:1604.01952, 2016.
-
-LeCun, Yann, Bengio, Yoshua, and Hinton, Geoffrey. Deep learning. Nature, 521:436–444, 2015.
-
-Balduzzi, David, Frean, Marcus, Leary, Lennox, Ma, Kurt WanDuo, and McWilliams, Brian. The Shattered Gradients Problem: If resnets are the answer, then what is the question? In
-ICML, 2017.
-Bengio, Yoshua, Roux, Nicolas Le, Vincent, Pascal, Delalleau,
-Olivier, and Marcotte, Patrice. Convex Neural Networks. In
-NIPS, 2006.
-Bubeck, Sébastien. Convex Optimization: Algorithms and Complexity. Foundations and Trends in Machine Learning, 8(3-4):
-231–358, 2015.
-Choromanska, A, Henaff, M, Mathieu, M, Arous, G B, and LeCun, Y. The loss surface of multilayer networks. In Journal of
-Machine Learning Research: Workshop and Conference Proceeedings, volume 38 (AISTATS), 2015.
-Dauphin, Yann, Pascanu, Razvan, Gulcehre, Caglar, Cho,
-Kyunghyun, Ganguli, Surya, and Bengio, Yoshua. Identifying and attacking the saddle point problem in high-dimensional
-non-convex optimization. In NIPS, 2014.
-Dauphin, Yann, de Vries, Harm, and Bengio, Yoshua. Equilibrated adaptive learning rates for non-convex optimization. In
-NIPS, 2015.
-Duchi, John, Hazan, Elad, and Singer, Yoram. Adaptive Subgradient Methods for Online Learning and Stochastic Optimization.
-JMLR, 12:2121–2159, 2011.
-Duchi, John, Jordan, Michael I, and McMahan, Brendan. Estimation, optimization, and parallelism when data is sparse. In Advances in Neural Information Processing Systems, pp. 2832–
-2840, 2013.
-Goodfellow, Ian J, Warde-Farley, David, Mirza, Mehdi, Courville,
-Aaron, and Bengio, Yoshua. Maxout Networks. In ICML,
-2013.
-Gulcehre, Caglar, Moczulski, Marcin, Denil, Misha, and Bengio,
-Yoshua. Noisy Activation Functions. In ICML, 2016.
-He, Kaiming, Zhang, Xiangyu, Ren, Shaoqing, and Sun, Jian.
-Delving Deep into Rectifiers: Surpassing Human-Level Performance on ImageNet Classification. In ICCV, 2015.
-He, Kaiming, Zhang, Xiangyu, Ren, Shaoqing, and Sun, Jian.
-Deep Residual Learning for Image Recognition. In CVPR,
 2016.
+Blumofe, Robert D, Joerg, Christopher F, Kuszmaul,
+Bradley C, Leiserson, Charles E, Randall, Keith H, and
+Zhou, Yuli. Cilk: An efficient multithreaded runtime
+system. Journal of parallel and distributed computing,
+37(1):55–69, 1996.
+Chetlur, Sharan, Woolley, Cliff, Vandermersch, Philippe,
+Cohen, Jonathan, Tran, John, Catanzaro, Bryan, and
+Shelhamer, Evan. cudnn: Efficient primitives for deep
+learning. arXiv preprint arXiv:1410.0759, 2014.
+Chintala,
+Soumith.
+Convnet
+benchmarks.
+github.com/soumith/convnet-benchmarks, 2015.
+Cong, Jason and Xiao, Bingjun. Minimizing computation in convolutional neural networks. In International
+Conference on Artificial Neural Networks, pp. 281–290.
+Springer, 2014.
+Couprie, Camille, Farabet, Clément, Najman, Laurent, and
+LeCun, Yann. Indoor semantic segmentation using depth
+information. arXiv preprint arXiv:1301.3572, 2013.
+Dean, Jeffrey, Corrado, Greg, Monga, Rajat, Chen, Kai,
+Devin, Matthieu, Mao, Mark, Senior, Andrew, Tucker,
+Paul, Yang, Ke, Le, Quoc V, et al. Large scale distributed
+deep networks. In Advances in neural information processing systems, pp. 1223–1231, 2012.
+Denton, Emily L, Chintala, Soumith, Fergus, Rob, et al.
+Deep generative image models using a laplacian pyramid
+of adversarial networks. In Advances in neural information processing systems, pp. 1486–1494, 2015.
+Ding, Cunsheng, Pei, Dingyi, and Salomaa, Arto. Chinese
+remainder theorem: applications in computing, coding,
+cryptography. World Scientific, 1996.
+Dukhan, M.
+Nnpack.
+https://github.com/
+Maratyszcza/NNPACK, 2016.
+Glorot, Xavier and Bengio, Yoshua. Understanding the difficulty of training deep feedforward neural networks. In
+Aistats, volume 9, pp. 249–256, 2010.
+Goodfellow, Ian, Pouget-Abadie, Jean, Mirza, Mehdi, Xu,
+Bing, Warde-Farley, David, Ozair, Sherjil, Courville,
+Aaron, and Bengio, Yoshua. Generative adversarial nets.
+In Advances in Neural Information Processing Systems,
+pp. 2672–2680, 2014.
+Grewe, Dominik and Lokhmotov, Anton. Automatically
+generating and tuning gpu code for sparse matrix-vector
+multiplication from a high-level representation. In Proceedings of the Fourth Workshop on General Purpose
+Processing on Graphics Processing Units, pp. 12. ACM,
+2011.
 
-Martens, James, Sutskever, Ilya, and Swersky, Kevin. Estimating
-the Hessian by Backpropagating Curvature. In ICML, 2012.
-Montavon, G, Bach, S, Binder, A, Samek, W, and Müller, K. Explaining NonLinear Classification Decisions with Deep Taylor
-Decomposition. In arXiv:1512.02479, 2015.
-Neelakantan, Arvind, Vilnis, Luke, Le, Quoc, Sutskever, Ilya,
-Kaiser, Lukasz, Kurach, Karol, and Martens, James. Adding
-Gradient Noise Improves Learning for Very Deep Networks.
-In ICLR, 2016.
-Pascanu, Razvan, Gulcehre, Caglar, Cho, Kyunghyun, and Bengio, Yoshua. On the number of inference regions of deep feed
-forward networks with piece-wise linear activations. In ICLR,
+He, Kaiming, Zhang, Xiangyu, Ren, Shaoqing, and Sun,
+Jian. Deep residual learning for image recognition. In
+The IEEE Conference on Computer Vision and Pattern
+Recognition (CVPR), June 2016.
+Ji, Shuiwang, Xu, Wei, Yang, Ming, and Yu, Kai. 3d convolutional neural networks for human action recognition.
+IEEE transactions on pattern analysis and machine intelligence, 35(1):221–231, 2013.
+Jia, Yangqing, Shelhamer, Evan, Donahue, Jeff, Karayev,
+Sergey, Long, Jonathan, Girshick, Ross, Guadarrama,
+Sergio, and Darrell, Trevor. Caffe: Convolutional architecture for fast feature embedding. In Proceedings of
+the 22nd ACM international conference on Multimedia,
+pp. 675–678. ACM, 2014.
+Karpathy, Andrej, Toderici, George, Shetty, Sanketh, Leung, Thomas, Sukthankar, Rahul, and Fei-Fei, Li. Largescale video classification with convolutional neural networks. In Proceedings of the IEEE conference on Computer Vision and Pattern Recognition, pp. 1725–1732,
 2014.
-Riedmiller, Martin and Braun, H. A direct adaptive method for
-faster backpropagation learning: The RPROP algorithm. In
-IEEE Int Conf on Neural Networks, pp. 586 – 591, 1993.
-Schraudolph, Nicol N. Fast Curvature Matrix-Vector Products
-for Second-Order Gradient Descent. Neural Comp, 14:1723–
-1738, 2002.
-Shang, Wenling, Sohn, Kihyuk, Almeida, Diogo, and Lee,
-Honglak. Understanding and Improving Convolutional Neural
-Networks via Concatenated Rectified Linear Units. In ICML,
+Kolda, Tamara G and Bader, Brett W. Tensor decompositions and applications. SIAM review, 51(3):455–500,
+2009.
+Krizhevsky, Alex, Sutskever, Ilya, and Hinton, Geoffrey E.
+Imagenet classification with deep convolutional neural
+networks. In Advances in neural information processing
+systems, pp. 1097–1105, 2012.
+Lavin, A.
+Wincnn.
+https://github.com/
+andravin/wincnn, 2016.
+Lavin, Andrew and Gray, Scott. Fast algorithms for convolutional neural networks. In The IEEE Conference on
+Computer Vision and Pattern Recognition (CVPR), June
 2016.
-Simonyan, Karen and Zisserman, Andrew. Very Deep Convolutional Networks for Large-Scale Image Recognition. In ICLR,
+LeCun, Yann, Boser, Bernhard, Denker, John S, Henderson, Donnie, Howard, Richard E, Hubbard, Wayne, and
+Jackel, Lawrence D. Backpropagation applied to handwritten zip code recognition. Neural computation, 1(4):
+541–551, 1989.
+LeCun, Yann A, Bottou, Léon, Orr, Genevieve B, and
+Müller, Klaus-Robert. Efficient backprop. In Neural networks: Tricks of the trade, pp. 9–48. Springer, 2012.
+Ledig, Christian, Theis, Lucas, Huszár, Ferenc, Caballero,
+Jose, Aitken, Andrew, Tejani, Alykhan, Totz, Johannes,
+Wang, Zehan, and Shi, Wenzhe. Photo-realistic single image super-resolution using a generative adversarial
+network. arXiv preprint arXiv:1609.04802, 2016.
+
+Deep Tensor Convolution on Multicores
+
+Lee, Kisuk, Zlateski, Aleksandar, Ashwin, Vishwanathan,
+and Seung, H Sebastian. Recursive training of 2d-3d
+convolutional networks for neuronal boundary prediction. In Advances in Neural Information Processing Systems, pp. 3573–3581, 2015.
+Lee, Victor W, Kim, Changkyu, Chhugani, Jatin, Deisher,
+Michael, Kim, Daehyun, Nguyen, Anthony D, Satish,
+Nadathur, Smelyanskiy, Mikhail, Chennupaty, Srinivas,
+Hammarlund, Per, et al. Debunking the 100x gpu vs. cpu
+myth: an evaluation of throughput computing on cpu and
+gpu. ACM SIGARCH Computer Architecture News, 38
+(3):451–460, 2010.
+Lichtman, Jeff W, Pfister, Hanspeter, and Shavit, Nir. The
+big data challenges of connectomics. Nature neuroscience, 17(11):1448–1454, 2014.
+Little, John DC. A proof for the queuing formula: L= λ w.
+Operations research, 9(3):383–387, 1961.
+Long, Jonathan, Shelhamer, Evan, and Darrell, Trevor.
+Fully convolutional networks for semantic segmentation.
+In Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition, pp. 3431–3440, 2015.
+Mathieu, Michael, Henaff, Mikael, and LeCun, Yann. Fast
+training of convolutional networks through FFTs. arXiv
+preprint arXiv:1312.5851, 2013.
+Matveev, Alexander, Meirovitch, Yaron, Saribekyan,
+Hayk, Jakubiuk, Wiktor, Kaler, Tim, Odor, Gergely,
+Budden, David, Zlateski, Aleksandar, and Shavit, Nir. A
+multicore path to connectomics-on-demand. In Proceedings of the 22nd ACM SIGPLAN Symposium on Principles and Practice of Parallel Programming. ACM, 2017.
+Meirovitch, Yaron, Matveev, Alexander, Saribekyan,
+Hayk, Budden, David, Rolnick, David, Odor, Gergely,
+Jones, Seymour Knowles-Barley Thouis Raymond, Pfister, Hanspeter, Lichtman, Jeff William, and Shavit,
+Nir. A multi-pass approach to large-scale connectomics.
+arXiv preprint arXiv:1612.02120, 2016.
+
+Russakovsky, Olga, Deng, Jia, Su, Hao, Krause, Jonathan,
+Satheesh, Sanjeev, Ma, Sean, Huang, Zhiheng, Karpathy, Andrej, Khosla, Aditya, Bernstein, Michael, et al.
+Imagenet large scale visual recognition challenge. International Journal of Computer Vision, 115(3):211–252,
 2015.
-Srivastava, Nitish, Hinton, Geoffrey, Krizhevsky, Alex, Sutskever,
-Ilya, and Salakhutdinov, Ruslan. Dropout: A Simple Way to
-Prevent Neural Networks from Overfitting. JMLR, 15:1929–
-1958, 2014.
-Sutskever, Ilya, Martens, James, Dahl, George, and Hinton, Geoffrey. On the importance of initialization and momentum in
-deep learning. In Proceedings of the 30th International Conference on Machine Learning (ICML-13), pp. 1139–1147, 2013.
-Szegedy, Christian, Liu, Wei, Jia, Yangqing, Sermanet, Pierre,
-Reed, Scott, Anguelov, Dragomir, Erhan, Dumitru, Vanhoucke, Vincent, and Rabinovich, Andrew. Going Deeper With
-Convolutions. In CVPR, 2015.
-Telgarsky, Matus. Benefits of depth in neural networks. In COLT,
-2016.
-
-Neural Taylor Approximations
-Wan, Li, Zeiler, Matthew, Zhang, Sixin, LeCun, Yann, and Fergus, Rob. Regularization of Neural Networks using DropConnect. In ICML, 2013.
-Zeiler, Matthew and Fergus, Rob. Visualizing and Understanding
-Convolutional Networks. In ECCV, 2014.
-Zhang, Yuchen, Liang, Percy, and Wainwright, Martin J. Convexified Convolutional Neural Networks. In arXiv:1609.01000,
-2016.
-Zinkevich, Martin. Online Convex Programming and Generalized
-Infinitesimal Gradient Ascent. In ICML, 2003.
-
-APPENDIX
-A1. Background on convex optimization
-A continuous function f is smooth if there exists a β > 0
-such that k ∇ f (x)−∇ f (y)k2 ≤ β ·kx−yk2 for all x and
-y in the domain. Rectifiers are not smooth for any value of
-β.
-Nonsmooth convex functions. Let X ⊂ Rp be a convex
-set contained in a ball of radius R. Let ` : X → R be a
-convex function. Section 3.1 of Bubeck (2015) shows that
-projected gradient descent has convergence guarantee
-`
-
-N
-1 X n
-w
-N n=1
-
-!
-− `(w∗ ) ≤ O
-
-
-
-1
-√
-N
-
-
-
-where wn are generated by gradient descent and w∗ :=
-argminw∈X `(w) is the minimizer of `. It is also shown,
-section 3.5, that
-
-
-1
-n
-∗
-min `(w ) − `(w ) ≥ Ω √
-1≤n≤N
-N
-where the weights are in the span of the previously observed gradients: wn ∈ span{∇ `(w1 ), . . . , ∇ `(wn−1 )}
-for all n ∈ {1, . . . , N }.
-The gradient of a convex function increases monotonically.
-That is
-
-
-
-∇ `(w) − ∇ `(v), w − v ≥ 0
-for all points w, v where the gradient exists. Gradients at
-one point of a nonsmooth convex function therefore do contain information about other points, although not as much
-information as in the smooth case. In contrast, the gradients of nonsmooth nonconvex functions can vary wildly as
-shown in Fig. 1.
-Smooth convex functions. In the smooth setting, gradient
-descent converges at rate N1 . The lower bound for convergence is even better, N12 . The lower bound is achieved by
-Nesterov’s accelerated gradient descent method.
-
-A2. Proof of Theorem 2
-Proof. We prove the network case; the others are similar.
-The Taylor loss has three key properties by construction:
-T1. The Taylor loss Tn coincides with the loss at
-Wn :
-`(fWn (xn0 ), y n ) = Tn (V)|V=Wn
-T2. The Taylor loss gradient Tn coincides with the
-loss gradient at Wn :
-∇W `(fWn (xn0 ), y n ) = ∇V Tn (V)|V=Wn
-T3. The Taylor losses are convex functions of V because `(f , y) is convex in its first argument and
-convexity is invariant under affine maps. If ` is
-a convex function, then so is g(x) = `(Ax + b),
-where A ∈ Rm×n and b ∈ Rm .
-By T1, the training loss, i.e. the left-hand side of (3), exactly coincides with the Taylor losses. By T2, the gradients
-of the Taylor losses exactly coincide with the errors computed by backpropagation on the training losses. That is,
-the training loss over n rounds is indistinguishable from
-the Taylor losses to the first order:
-losses:
-
-N
-1 X
-` (fWn (xn0 ), y n )
-N n=1
-
-=
-
-N
-1 X n
-T (Wn )
-N n=1
-
-!
-N
-1 X
-n
-n
-` (fWn (x0 ), y )
-gradients: ∇W
-N n=1
-!
-N
-1 X n
-n
-= ∇W
-T (W )
-N n=1
-We can therefore substitute the Taylor losses in place of the
-training loss (fW (x0 ), y) without altering either the losses
-incurred during training or the dynamics of backpropagation (or any first-order method).
-Since the Taylor losses are convex, the bound holds for any
-no-regret optimizer following Zinkevich (2003).
-
-A3. Proof of Observations in Section 3
-Proof of observation 1.
-Proof. The loss `(f , y) is a smooth function of the netˆ
-work’s output f by assumption. Kinks in `(W)
-=
-
-PD
-1
-d
-d
-`
-f
-(x
-),
-y
-can
-therefore
-only
-arise
-when
-a
-W
-d=1
-D
-rectifier changes its activation for at least one element of
-the training data.
-
-Neural Taylor Approximations
-
-Adam
-
-SGD lr=1.0
-
-SGD lr=0.1
-
-2.5
-
-0.12
-
-2.0
-
-0.10
-
-SGD lr=0.01
-
-0.08
-
-1.5
-
-loss
-
-loss
-
-RMSProp
-
-1.0
-0.5
-
-0.06
-0.04
-0.02
-
-0.0
-0
-
-20
-
-40
-
-60
-
-epochs
-
-80
-
-100
-
-(b) Convnet
-
-0.00
-0
-
-20
-
-40
-
-60
-
-epochs
-
-80
-
-100
-
-(c) Autoencoder
-
-Fig. 6: Training loss on CIFAR-10 and MNIST.
-Proof of observation 2. Note that the rectifier is ρ(a) =
-max(0, a) with derivative ρ0 (a) = 1 if a > 0 and ρ0 (a) = 0
-if a < 0.
-Proof. Recall that the Taylor approximation to layer l is
-
-
-
-Tnl (Vl ) := fWn (xn0 ) + Gl , Vl − Wln
-n
-n
-= fWn (xn0 ) + JL
-l · (Vl − Wl ) · xl−1
-!
-l+1
-Y
-= fWn (xn0 ) +
-Jkk−1 · (Vl − Wln ) · xnl−1
-
-A4. Comparison of Taylor loss with Taylor
-approximation to loss
-It is instructive to compare the Taylor loss in definition 1
-with the Taylor approximation to the loss. The Taylor loss
-is
-L
-
-
-X
-
-
-
-` Tn (V), y n = ` fWn (xn0 ) +
-Gl , Vl − Wln , y n
-l=1
-
-In contrast, the Taylor approximation to the loss is
-
-k=L
-
-is the function Jk+1
-(ak )
-k
-
-The Jacobianof layer k
-= Wk+1 ·
-diag s0 (ak ) which in general varies nonlinearly with ak .
-The Taylor approximation clamps the Jacobian by setting
-it as constant.
-Jk+1
-k
-
-For a layer of rectifiers,
-=
- s(·) = ρ(·), the Jacobian
-Wk+1 · diag ρ0 (ak ) is constructed by zeroing out the
-rows of Wk+1 corresponding to inactive neurons in layer
-k. It follows that the Taylor loss can be written as
-!
-l+1
-Y
-n
-n
-Tl (Vl ) =
-Wk · diag(1k−1 ) ·(Vl −Wln )·xnl−1
-k=L
-
-Finally, observe that
-xnl−1
-
-=
-
-1
-Y
-
-!
-diag(1k ) ·
-
-Wkn
-
-· xn0
-
-L
-
- E
-
- X
-JL · Gl , Vl − Wln
-T`n (V) = ` fWn (xn0 ), y n +
-{z
-}
-|
-{z
-} l=1
-|
-loss incurred on round n
-
-= `n +
-
-L
-X
-
-
-
-δl
-
-
-∇Wl `, Vl − Wln .
-
-l=1
-
-The constant term is the loss incurred on round n; the linear
-coefficients are the backpropagated errors.
-It is easy to see that the two expressions have the same gradient. Why not work directly with the Taylor approximation to the loss? The problem is that the Taylor approximation to the loss is affine, and so decreases without bound.
-Upgrading to a second order Taylor approximation is no
-help since it is not convex.
-
-k=l−1
-
-
-since diag(1k ) · Wkn · xnk−1 = diag ρ0 (ak ) · Wkn xnk−1 =
-ρ(Wkn · xnk−1 ).
-Proof of observation 3.
-Proof. Immediate.
-
-A5. Details on experiments on regret
-See section 2.4 for the architecture of the autoencoder and
-convnet used. The hyperparameters used for different optimizers are as follows: the autoencoder uses learning rate
-η = 0.001 for RMSprop and η = 0.01 for Adam, while the
-convnet uses learning rate η = 0.0005 for RMSprop and
-
-!
-
-Neural Taylor Approximations
-
-η = 0.0002 for Adam. All other hyperparameters are kept
-at their literature-standard values.
-Fig. 6 shows the training losses obtained by the convnet on
-CIFAR-10 and the autoencoder on MNIST.
-The gradient tensor Gl is not computed explicitly by TensorFlow. Instead, it is necessary to compute the gradient
-of each component of the output layer (e.g. 10 in total for
-a network trained on CIFAR-10, 784 for an autoencoder
-trained on MNIST) with respect to Wl and then assemble
-the gradients into a tensor. When the loss is the squared
-error, the Taylor optimal at round n can be computed in
-closed form. Otherwise we use SGD.
-
-A6. Details on experiments on exploration
-Given matrix or vector A or a, the squared Frobenius norm
-is
-kAk2F =
-
-M,N
-X
-m,n=1
-
-A2m,n
-
-and kak2F =
-
-N
-X
-
-a2n .
-
-n=1
-
-The Hamming distance between two binary vectors a and
-b can be computed as ka − bk2F .
-For tractability in the convnet, we only record activations
-for 1% of the CIFAR dataset, and at most 10000 units of
-each convolutional layer. We record the full network state
-on all inputs for the autoencoder. The singular value plots
-in figure 5 are calculated only on the first 50 epochs.
+Shi, Shaohuai, Wang, Qiang, Xu, Pengfei, and Chu, Xiaowen. Benchmarking state-of-the-art deep learning
+software tools. arXiv preprint arXiv:1608.07249, 2016a.
+Shi, Wenzhe, Caballero, Jose, Huszár, Ferenc, Totz, Johannes, Aitken, Andrew P, Bishop, Rob, Rueckert,
+Daniel, and Wang, Zehan. Real-time single image and
+video super-resolution using an efficient sub-pixel convolutional neural network. In Proceedings of the IEEE
+Conference on Computer Vision and Pattern Recognition, pp. 1874–1883, 2016b.
+Simonyan, Karen and Zisserman, Andrew. Two-stream
+convolutional networks for action recognition in videos.
+In Advances in Neural Information Processing Systems,
+pp. 568–576, 2014a.
+Simonyan, Karen and Zisserman, Andrew. Very deep convolutional networks for large-scale image recognition.
+arXiv preprint arXiv:1409.1556, 2014b.
+Szegedy, Christian, Liu, Wei, Jia, Yangqing, Sermanet,
+Pierre, Reed, Scott, Anguelov, Dragomir, Erhan, Dumitru, Vanhoucke, Vincent, and Rabinovich, Andrew.
+Going deeper with convolutions. In Proceedings of
+the IEEE Conference on Computer Vision and Pattern
+Recognition, pp. 1–9, 2015.
+Tran, Du, Bourdev, Lubomir, Fergus, Rob, Torresani,
+Lorenzo, and Paluri, Manohar. Learning spatiotemporal
+features with 3d convolutional networks. In 2015 IEEE
+International Conference on Computer Vision (ICCV),
+pp. 4489–4497. IEEE, 2015.
+Vanhoucke, Vincent, Senior, Andrew, and Mao, Mark Z.
+Improving the speed of neural networks on CPUs. 2011.
+
+Poole, Ben, Lahiri, Subhaneil, Raghu, Maithra, SohlDickstein, Jascha, and Ganguli, Surya. Exponential
+expressivity in deep neural networks through transient
+chaos. arXiv preprint arXiv:1606.05340, 2016.
+
+Vasilache, Nicolas, Johnson, Jeff, Mathieu, Michael, Chintala, Soumith, Piantino, Serkan, and LeCun, Yann. Fast
+convolutional nets with fbfft: A gpu performance evaluation. arXiv preprint arXiv:1412.7580, 2014.
+
+Robison, Arch D. Composable parallel patterns with intel
+cilk plus. Computing in Science and Engineering, 15(2):
+66–71, 2013.
+
+Winograd, Shmuel. Arithmetic complexity of computations,
+volume 33. Siam, 1980.
+
+Ronneberger, Olaf, Fischer, Philipp, and Brox, Thomas. Unet: Convolutional networks for biomedical image segmentation. In International Conference on Medical Image Computing and Computer-Assisted Intervention, pp.
+234–241. Springer, 2015.
+
+Zlateski, Aleksandar, Lee, Kisuk, and Seung, H Sebastian.
+Znni-maximizing the inference throughput of 3d convolutional networks on multi-core cpus and gpus. arXiv
+preprint arXiv:1606.05688, 2016.
 
 

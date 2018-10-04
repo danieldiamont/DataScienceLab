@@ -1,1024 +1,1180 @@
-Forward and Reverse Gradient-Based Hyperparameter Optimization
+Bayesian inference on random simple graphs
+with power law degree distributions
 
-Luca Franceschi 1 2 Michele Donini 1 Paolo Frasconi 3 Massimiliano Pontil 1 2
+Juho Lee 1 Creighton Heaukulani 2 Zoubin Ghahramani 2 3 Lancelot F. James 4 Seungjin Choi 1
 
 Abstract
-We study two procedures (reverse-mode and
-forward-mode) for computing the gradient of the
-validation error with respect to the hyperparameters of any iterative learning algorithm such as
-stochastic gradient descent. These procedures
-mirror two methods of computing gradients for
-recurrent neural networks and have different
-trade-offs in terms of running time and space requirements. Our formulation of the reverse-mode
-procedure is linked to previous work by Maclaurin et al. (2015) but does not require reversible
-dynamics. The forward-mode procedure is suitable for real-time hyperparameter updates, which
-may significantly speed up hyperparameter optimization on large datasets. We present experiments on data cleaning and on learning task interactions. We also present one large-scale experiment where the use of previous gradient-based
-methods would be prohibitive.
+We present a model for random simple graphs
+with power law (i.e., heavy-tailed) degree distributions. To attain this behavior, the edge
+probabilities in the graph are constructed from
+Bertoin–Fujita–Roynette–Yor (BFRY) random
+variables, which have been recently utilized in
+Bayesian statistics for the construction of power
+law models in several applications. Our construction readily extends to capture the structure
+of latent factors, similarly to stochastic blockmodels, while maintaining its power law degree distribution. The BFRY random variables
+are well approximated by gamma random variables in a variational Bayesian inference routine,
+which we apply to several network datasets for
+which power law degree distributions are a natural assumption. By learning the parameters of the
+BFRY distribution via probabilistic inference, we
+are able to automatically select the appropriate
+power law behavior from the data. In order to
+further scale our inference procedure, we adopt
+stochastic gradient ascent routines where the gradients are computed on minibatches (i.e., subsets) of the edges in the graph.
 
 1. Introduction
-The increasing complexity of machine learning algorithms
-has driven a large amount of research in the area of hyperparameter optimization (HO) — see, e.g., (Hutter et al.,
-2015) for a review. The core idea is relatively simple: given
-a measure of interest (e.g. the misclassification error) HO
-methods use a validation set to construct a response function of the hyperparameters (such as the average loss on
-the validation set) and explore the hyperparameter space to
-seek an optimum.
-Early approaches based on grid search quickly become impractical as the number of hyperparameters grows and are
-even outperformed by random search (Bergstra & Bengio,
-2012). Given the high computational cost of evaluating the
+In statistical applications, random graphs serve as Bayesian
+models for network data, that is, data consisting of objects
+and the observed linkages between them. Here we will focus on models for random simple graphs (that is, graphs
+with edges that take binary values), which are appropriate
+for applications where we observe either the presence or
 1
+Pohang University of Science and Technology, Pohang,
+South Korea 2 University of Cambridge, Cambridge, UK 3 Uber
+AI Labs, San Francisco, CA, USA 4 Hong Kong University
+of Science and Technology, Hong Kong. Correspondence
+to: Juho Lee <stonecold@postech.ac.kr>, Seungjin Choi <seungjin@postech.ac.kr>.
 
-Computational Statistics and Machine Learning, Istituto Italiano di Tecnologia, Genoa, Italy 2 Department of Computer Science, University College London, UK 3 Department of Information Engineering, Università degli Studi di Firenze, Italy. Correspondence to: Luca Franceschi <luca.franceschi@iit.it>.
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-response function, Bayesian optimization approaches provide a natural framework and have been extensively studied
-in this context (Snoek et al., 2012; Swersky et al., 2013;
-Snoek et al., 2015). Related and faster sequential modelbased optimization methods have been proposed using random forests (Hutter et al., 2011) and tree Parzen estimators (Bergstra et al., 2011), scaling up to a few hundreds of
-hyperparameters (Bergstra et al., 2013).
-In this paper, we follow an alternative direction, where
-gradient-based algorithms are used to optimize the performance on a validation set with respect to the hyperparameters (Bengio, 2000; Larsen et al., 1996). In this setting, the
-validation error should be evaluated at a minimizer of the
-training objective. However, in many current learning systems such as deep learning, the minimizer is only approximate. Domke (2012) specifically considered running an iterative algorithm, like gradient descent or momentum, for
-a given number of steps, and subsequently computing the
-gradient of the validation error by a back-optimization algorithm. Maclaurin et al. (2015) considered reverse-mode
-differentiation of the response function. They suggested the
-idea of reversing parameter updates to achieve space efficiency, proposing an approximation capable of addressing
-the associated loss of information due to finite precision
-arithmetics. Pedregosa (2016) proposed the use of inexact gradients, allowing hyperparameters to be updated before reaching the minimizer of the training objective. Both
-(Maclaurin et al., 2015) and (Pedregosa, 2016) managed to
-optimize a number of hyperparameters in the order of one
-thousand.
-In this paper, we illustrate two alternative approaches to
-compute the hypergradient (i.e., the gradient of the response function), which have different trade-offs in terms
-of running time and space requirements. One approach
-is based on a Lagrangian formulation associated with
-the parameter optimization dynamics. It encompasses
-the reverse-mode differentiation (RMD) approach used by
-Maclaurin et al. (2015), where the dynamics corresponds
-to stochastic gradient descent with momentum. We do
-not assume reversible parameter optimization dynamics. A
-well-known drawback of RMD is its space complexity: we
-need to store the whole trajectory of training iterates in order to compute the hypergradient. An alternative approach
-that we consider overcomes this problem by computing
+absence of links between objects in the network. For example, in social networks, nodes may represent individuals
+and a link (i.e., a nonzero value of an edge) could represent
+friendship. In a protein-protein interaction network, nodes
+may represent proteins and links could represent an observed physical or chemical interaction between proteins.
+Many domains involving network data (including social
+and protein-protein interaction networks) have been shown
+to exhibit power law, i.e., heavy-tailed, degree distributions
+(Barabási & Albert, 1999). Models for random graphs with
+power law degree distributions, also called scale-free random graphs, have therefore become one of the most actively studied areas of graph theory and network science
+(Bollobás et al., 2001; Albert & Barabási, 2002; Dorogovtsev & Mendes, 2002). In this paper we present a model
+for simple, scale-free random graphs, which we apply as a
+probabilistic model for several network datasets.
+The model we present in this paper is a special case of the
+generalized random graph defined by Britton et al. (2006),
+and studied further by van der Hofstad (2016, Ch. 6),
+which outlines a framework for defining scale-free random
+graphs, but does not provide practical constructions, much
+less algorithms for performing statistical inference on the
+model components given data. Here we provide one such
+practical construction, along with a variational inference
+routine (Jordan et al., 1999) for efficient posterior inference. What’s more, our construction readily generalizes to
+include the structure of latent factors/clusters, as captured
+by the popular stochastic blockmodels (Nowicki & Snijders, 2001; Airoldi et al., 2009), while maintaining power
+law behavior in the graph.
+Applying Bayesian inference algorithms on network
+datasets is a challenge because likelihood computations,
+in general, scale with the number of edges in the graph,
+which is O(n2 ) in a network with n nodes. To help overcome these difficulties, we follow Hoffman et al. (2013)
+and develop a stochastic variational inference algorithm in
+which we approximate many likelihood computations on
+only subsets of the data, called minibatches. In the case of
+a network dataset, the minibatches are comprised of subsets
+of edges in the graph.
+We apply this inference procedure to several network
 
-Forward and Reverse Gradient-Based Hyperparameter Optimization
+Power law simple graphs
 
-the hypergradient in forward-mode and it is efficient when
-the number of hyperparameters is much smaller than the
-number of parameters. To the best of our knowledge, the
-forward-mode has not been studied before in this context.
-As we shall see, these two approaches have a direct correspondence to two classic alternative ways of computing gradients for recurrent neural networks (RNN) (Pearlmutter, 1995): the Lagrangian (reverse) way corresponds
-to back-propagation through time (Werbos, 1990), while
-the forward way corresponds to real-time recurrent learning (RTRL) (Williams & Zipser, 1989). As RTRL allows
-one to update parameters after each time step, the forward
-approach is suitable for real-time hyperparameter updates,
-which may significantly speed up the overall hyperparameter optimization procedure in the presence of large datasets.
-We give experimental evidence that the real-time approach
-is efficient enough to allow for the automatic tuning of crucial hyperparameters in a deep learning model. In our experiments, we also explore constrained hyperparameter optimization, showing that it can be used effectively to detect
-noisy examples and to discover the relationships between
-different learning tasks.
-The paper is organized in the following manner. In Section 2 we introduce the problem under study. In Section 3.1
-we derive the reverse-mode computation. In Section 3.2 we
-present the forward-mode computation of the hypergradient, and in Section 3.3 we introduce the idea of real-time
-hyperparameter updates. In Section 4 we discuss the time
-and space complexity of these methods. In Section 5 we
-present empirical results with both algorithms. Finally in
-Section 6 we discuss our findings and highlight directions
-of future research.
+datasets that are commonly observed to possess power law
+structure. Our experiments show that accurately capturing
+this power law structure improves performance on tasks
+predicting missing edges in the networks.
 
-2. Hyperparameter Optimization
-We focus on training procedures based on the optimization of an objective function J(w) with respect to w (e.g.
-the regularized average training loss for a neural network
-with weights w). We see the training procedure by stochastic gradient descent (or one of its variants like momentum,
-RMSProp, Adam, etc.) as a dynamical system with a state
-st ∈ Rd that collects weights and possibly accessory variables such as velocities and accumulated squared gradients.
-The dynamics are defined by the system of equations
-st = Φt (st−1 , λ) t = 1, . . . , T
-
+2. Bayesian models for simple graphs
+We represent a simple graph with n nodes by an adjacency
+matrix X := (Xi,j )i,j≤n , where Xi,j = 1 if there is a
+link between nodes i and j and Xi,j = 0 otherwise. Here
+we will only consider undirected graphs, in which case X
+represents a symmetric matrix. Furthermore, we do not allow self links, so the diagonal entries in X are meaningless. Most probabilistic models for simple graphs take the
+entries in X to be conditionally independent Bernoulli random variables; in particular, for every i, j ≤ n, let pi,j be
+the (random) probability of a link between nodes i and j,
+and let Xi,j | pi,j ∼ Bernoulli(pi,j ). For every simple
+graph x := (xi,j )i,j≤n , we may then write the likelihood
+for the parameters p := (pi,j )i,j≥1 given X as
+Y x
+P (X = x | p) =
+pi,ji,j (1 − pi,j )1−xi,j ,
 (1)
+i<j≤n
 
-where T is the number of iterations, s0 contains initial
-weights and initial accessory variables, and, for every t ∈
-{1, . . . , T },
-Φt : (Rd × Rm ) → Rd
-is a smooth mapping that represents the operation performed by the t-th step of the optimization algorithm (i.e.
+where in our case it should be clear that the product is only
+over i, j ≤ n such that i < j and i 6= j. Random simple
+graphs date back to the Erdös–Rényi model, which may be
+reviewed, along with the more general theory of random
+graphs, in the text by Bollobás (1998). A random graph is
+called scale-free when the fraction of nodes in the network
+having k connections to other nodes behaves like k −τ for
+large values of k and
+P some exponent τ > 1. More precisely, let Dn,i := j6=i Xi,j denote the (random) degree
+of node i, for every i ≤ n. Then X is (asymptotically)
+scale-free when, for every node i ≤ n,
+P{Dn,i = k} ∼ ck −τ ,
 
-on mini-batch t). Finally, λ ∈ Rm is the vector of hyperparameters that we wish to tune.
-As simple example of these dynamics occurs when training a neural network by gradient descent with momentum
-(GDM), in which case st = (vt , wt ) and
-vt
-wt
-
-= µvt−1 + ∇Jt (wt−1 )
-= wt−1 − η(µvt−1 − ∇Jt (wt−1 ))
+as n → ∞,
 
 (2)
 
-where Jt is the objective associated with the t-th minibatch, µ is the rate and η is the momentum. In this example,
-λ = (µ, η).
-Note that the iterates s1 , . . . , sT implicitly depend on the
-vector of hyperparameters λ. Our goal is to optimize the
-hyperparameters according to a certain error function E
-evaluated at the last iterate sT . Specifically, we wish to
-solve the problem
-min f (λ)
-(3)
-λ∈Λ
+for some constant c > 0, a power law exponent τ > 1, and
+k sufficiently large. Here the notation A ∼ B denotes that
+the ratio A/B → 1 in the specified limit.
+In order to model scale-free random graphs, Britton et al.
+(2006) suggested reparameterizing the model in Eq. (1) by
+a sequence of odds ratios ri,j := pi,j /(1 − pi,j ), for every i < j ≤ n, which factorize as ri,j = Ui Uj , for some
+U := (U1 , . . . , Un ). The
+√ node-specific factors Ui are then
+modeled as Ui := Wi / L for some sequence of nonnegative random
+variables W := (W1 , . . . , Wn ) and where
+Pn
+L := i=1 Wi . In a series of results, (Britton et al., 2006,
+Thms. 3.1 & 3.2) and (van der Hofstad, 2016, Cor. 6.11 &
+Thm. 6.13) assert conditions on the random variables W so
+that the limiting distribution of the degrees Dn,i is a mixed
+Poisson distribution. We will further detail these previous
+results in Section 4.
 
-d
+The distribution of Wi is interpreted here as a prior distribution for the degree Dn,i of node i, and if its distribution
+has heavy tails, then so will the distribution of Dn,i . Conversely, if the distribution of Wi does not have heavy tails,
+then neither will the distribution of the degrees Dn,i . We
+explore this alternative in Section 7.
+Previous authors did not suggest any particular choices for
+the distribution of Wi , and so we elect to model them with
+BFRY random variables (Bertoin et al., 2006; Devroye &
+James, 2014), which have a heavy-tailed distribution and
+have recently played a role in the construction of several
+power law models in Bayesian statistics. Other heavy tailed
+distributions, such as those exhibited by log normal random
+variables, may also be used to model the Wi , and these options may be explored. One benefit of the BFRY distribution is that the thickness of its tails, and thus the power law
+behavior of the resulting graph, may be straightforwardly
+controlled by the discount parameter α.
 
-where the set Λ ⊂ R incorporates constraints on the hyperparameters, and the response function f : Rm → R is
-defined at λ ∈ Rm as
-f (λ) = E(sT (λ)).
+3. A generalized random graph
+Consider the model from the previous section, parameterized by the odds ratios r := (ri,j : i < j ≤ n). Define
+Y
+Y
+G(r) :=
+(1 + ri,j ) =
+(1 + Ui Uj ), (3)
+i<j≤n
 
+i<j≤n
+
+and note that the conditional likelihood in Eq. (1) may be
+rewritten in terms of the degrees Dn,i as
+Y
+P (X = x | r) = G(r)−1
+(Ui Uj )xi,j
 (4)
+i<j≤n
+−1
 
-We highlight the generality of the framework. The vector of hyperparameters λ may include components associated with the training objective, and components associated with the iterative algorithm. For example, the training
-objective may depend on hyperparameters used to design
-the loss function as well as multiple regularization parameters. Yet other components of λ may be associated with
-the space of functions used to fit the training objective (e.g.
-number of layers and weights of a neural network, parameters associated with the kernel function used within a kernel
-based method, etc.). The validation error E can in turn be
-of different kinds. The simplest example is to choose E as
-the average of a loss function over a validation set. We may
-however consider multiple validation objectives, in that the
-hyperparameters associated with the iterative algorithm (µ
-and γ in the case of momentum mentioned above) may
-be optimized using the training set, whereas the regularization parameters would typically require a validation set,
-which is distinct from the training set (in order to avoid
-over-fitting).
+= G(r)
 
-3. Hypergradient Computation
-In this section, we review the reverse-mode computation
-of the gradient of the response function (or hypergradient)
-under a Lagrangian perspective and introduce a forwardmode strategy. These procedures correspond to the reversemode and the forward-mode algorithmic differentiation
-schemes (Griewank & Walther, 2008). We finally introduce a real-time version of the forward-mode procedure.
+Y
 
-Forward and Reverse Gradient-Based Hyperparameter Optimization
+Dn,i
 
-Algorithm 1 R EVERSE -HG
+Ui
 
-Algorithm 2 F ORWARD -HG
-
-Input: λ current values of the hyperparameters, s0 initial optimization state
-Output: Gradient of validation error w.r.t. λ
-for t = 1 to T do
-st = Φt (st−1 , λ)
-end for
-αT = ∇E(sT )
-g =0
-for t = T − 1 downto 1 do
-g = g + αt+1 Bt+1
-αt = αt+1 At+1
-end for
-return g
-
-Input: λ current values of the hyperparameters, s0 initial optimization state
-Output: Gradient of validation error w.r.t. λ
-Z0 = 0
-for t = 1 to T do
-st = Φt (st−1 , λ)
-Zt = At Zt−1 + Bt
-end for
-return ∇E(s)ZT
-
-where for every t ∈ {1, . . . , T }, we define the matrices
-At =
-
-∂Φt (st−1 , λ)
-∂Φt (st−1 , λ)
-, Bt =
 .
-∂st−1
-∂λ
-
-(11)
-
-3.1. Reverse-Mode
-The reverse-mode computation leads to an algorithm
-closely related to the one presented in (Maclaurin et al.,
-2015). A major difference with respect to their work is that
-we do not require the mappings Φt defined in Eq. (1) to
-be invertible. We also note that the reverse-mode calculation is structurally identical to back-propagation through
-time (Werbos, 1990).
-We start by reformulating problem (3) as the constrained
-optimization problem
-min
-
-λ,s1 ,...,sT
-
-E(sT )
-
-subject to st = Φt (st−1 , λ), t ∈ {1, . . . , T }.
 
 (5)
 
-This formulation closely follows a classical Lagrangian approach used to derive the back-propagation algorithm (LeCun, 1988). Furthermore, the framework naturally allows
-one to incorporate constraints on the hyperparameters.
-The Lagrangian of problem (5) is
-L(s, λ, α) = E(sT ) +
+i≤n
 
-T
-X
+The random simple graph X is called a generalized random
+graph, and we will henceforth write X | r ∼ GRG(n, r).
+Let α ∈ (0, 1), which we call the discount parameter, and
+let C1 , C2 , . . . be a sequence of positive values satisfying
+lim Cn = ∞
 
-αt (Φt (st−1 , λ) − st )
+n→∞
+
+and
+
+lim Cnα /n = 0.
+
+n→∞
 
 (6)
 
-t=1
-d
-
-where, for each t ∈ {1, . . . , T }, αt ∈ R is a row vector
-of Lagrange multipliers associated with the t-th step of the
-dynamics.
-
-Note that At ∈ Rd×d and Bt ∈ Rd×m .
-The optimality conditions are then obtained by setting each
-derivative to zero. In particular, setting the right hand side
-of Equations (8) and (9) to zero gives
-
-
-if t = T,
-∇E(sT )
-αt =
-
-
-∇E(sT )AT · · · At+1 if t ∈ {1, . . . , T −1}.
-Combining these equations with Eq. (10) we obtain that
-!
-T
-T
-X
-Y
-∂L
-= ∇E(sT )
-As B t .
-∂λ
-t=1 s=t+1
-As we shall see this coincides with the expression for
-the gradient of f in Eq. (15) derived in the next section.
-Pseudo-code of R EVERSE -HG is presented in Algorithm
-1.
-3.2. Forward-Mode
-The second approach to compute the hypergradient appeals
-to the chain rule for the derivative of composite functions,
-to obtain that the gradient of f at λ satisfies1
-∇f (λ) = ∇E(sT )
-
-The partial derivatives of the Lagrangian are given by
-∂L
-= Φt (st−1 , λ) − st , t ∈ {1, . . . , T }
-∂αt
-∂L
-= αt+1 At+1 − αt , t ∈ {1, . . . , T −1}
-∂st
-∂L
-= ∇E(sT ) − αT
-∂sT
-T
-X
-∂L
-=
-αt Bt ,
-∂λ
-t=1
+Let the weights W1 , . . . , Wn be i.i.d. with density
+fn (w) ∝ w−α−1 (1 − e−w )1{0≤w≤Cn } .
 
 (7)
-(8)
-(9)
-(10)
 
-dsT
-dλ
+(These are truncated BFRY random variables and will be
+discussed, along with a method for simulation, in Section 3.1.) Then the corresponding generalized random
+graph has an (asymptotic) power law degree distribution
+with power law exponent τ = 1 + α. We summarize this
+construction in the following theorem:
+Theorem 3.1. For every n, let W1 , . . . , Wn be i.i.d. with
+density fn and let (Dn,i )i≤n be the degrees of the generalized random graph X | r ∼ GRG(n, r), where
 
-(12)
+Power law simple graphs
+104
 
-T
-where ds
-dλ is the d×m matrix formed by the total derivative
-of the components of sT (regarded as rows) with respect to
-the components of λ (regarded as columns).
+106
 
-Recall that st = Φt (st−1 , λ). The operators Φt depends on
-the hyperparameter λ both directly by its expression and
-indirectly through the state st−1 . Using again the chain
-1
+α = 0.2
+α = 0.8
 
-tor.
+103
 
-Remember that the gradient of a scalar function is a row vec-
+# links
 
-Forward and Reverse Gradient-Based Hyperparameter Optimization
+degree
 
-rule we have, for every t ∈ {1, . . . , T }, that
-dst
-∂Φt (st−1 , λ) dst−1
-∂Φt (st−1 , λ)
-=
-+
-.
-dλ
-∂st−1
-dλ
-∂λ
+105
+102
 
-(13)
+104
 
-t
-Defining Zt = ds
-dλ for every t ∈ {1, . . . , T } and recalling
-Eq. (11), we can rewrite Eq. (13) as the recursion
+β = 0.6
+β = 0.9
+β = 1.2
 
-Zt = At Zt−1 + Bt , t ∈ {1, . . . , T }.
+101
 
-(14)
+100 0
+10
 
-∇f (λ) = ∇E(sT )ZT
-= ∇E(sT )(AT ZT −1 + BT )
-= ∇E(sT )(AT AT −1 ZT −2 + AT BT −1 + BT )
-..
-.
-!
-T
-T
-X
-Y
-= ∇E(sT )
-As B t .
-(15)
-s=t+1
+101
+102
+# nodes with degree
 
-Note that the recurrence (14) on the Jacobian matrix is
-structurally identical to the recurrence in the RTRL procedure described in (Williams & Zipser, 1989, eq. (2.10)).
-From the above derivation it is apparent that ∇f (λ) can be
-computed by an iterative algorithm which runs in parallel
-to the training algorithm. Pseudo-code of F ORWARD -HG
-is presented in Algorithm 2. At first sight, the computation of the terms in the right hand side of Eq. (14) seems
-prohibitive. However, in Section 4 we observe that if m
-is much smaller than d, the computation can be done efficiently.
-3.3. Real-Time Forward-Mode
-For every t ∈ {1, . . . , T } let ft : Rm → R be the response function at time t: ft (λ) = E(st (λ)). Note that
-fT coincides with the definition of the response function
-in Eq. (4). A major difference between R EVERSE -HG and
-F ORWARD -HG is that the partial hypergradients
-∇ft (λ) =
+103
 
-dE(st )
-= ∇E(st )Zt
-dλ
-
-4. Complexity Analysis
-We discuss the time and space complexity of Algorithms 1
-and 2. We begin by recalling some basic results from the
-algorithmic differentiation (AD) literature.
-
-Using Eq. (14), we obtain that
-
-t=1
-
-has been processed. Algorithm 2 can be easily modified
-to yield a partial hypergradient when t mod ∆ = 0 (for
-some hyper-batch size ∆) and letting t run from 1 to ∞,
-reusing examples in a circular or random way. We use this
-strategy in the phone recognition experiment reported in
-Section 5.3.
-
-(16)
-
-are available in the second procedure at each time step t
-and not only at the end.
-The availability of partial hypergradients is significant
-since we are allowed to update hyperparameters several
-times in a single optimization epoch, without having to
-wait until time T . This is reminiscent of the real-time updates suggested by Williams & Zipser (1989) for RTRL.
-The real-time approach may be suitable in the case of a
-data stream (i.e. T = ∞), where R EVERSE -HG would
-be hardly applicable. Even in the case of finite (but large)
-datasets it is possible to perform one hyperparameter update after a hyper-batch of data (i.e. a set of minibatches)
-
-Let F : Rn 7→ Rp be a differentiable function and suppose it can be evaluated in time c(n, p) and requires space
-s(n, p). Denote by JF the p × n Jacobian matrix of F .
-Then the following facts hold true (Griewank & Walther,
-2008) (see also Baydin et al. (2015) for a shorter account):
-(i) For any vector r ∈ Rn , the product JF r can be evaluated in time O(c(n, p)) and requires space O(s(n, p))
-using forward-mode AD.
-(ii) For any vector q ∈ Rp , the product JF| q has time and
-space complexities O(c(n, p)) using reverse-mode
-AD.
-(iii) As a corollary of item (i), the whole JF can be
-computed in time O(nc(n, p)) and requires space
-O(s(n, p)) using forward-mode AD (just use unitary
-vectors r = ei for i = 1, . . . , n).
-(iv) Similarly, JF can be computed in time O(pc(n, p))
-and requires space O(c(n, p)) using reverse-mode
-AD.
-Let g(d, m) and h(d, m) denote time and space, respectively, required to evaluate the update map Φt defined by
-Eq. (1). Then the response function f : Rm 7→ R defined
-in Eq. (3) can be evaluated in time O(T g(d, m)) (assuming
-the time required to compute the validation error E(λ) does
-not affect the bound2 ) and requires space O(h(d, m)) since
-variables st may be overwritten at each iteration. Then, a
-direct application of Fact (i) above shows that Algorithm 2
-runs in time O(T mg(d, m)) and space O(h(d, m)). The
-same results can also be obtained by noting that in Algorithm 2 the product At Zt−1 requires m Jacobian-vector
-products, each costing O(g(d, m)) (from Fact (i)), while
-computing the Jacobian Bt takes time O(mg(d, m)) (from
-Fact (iii)).
-Similarly, a direct application of Fact (ii) shows that
-Algorithm 1 has both time and space complexities
-O(T g(d, m)). Again the same results can be obtained by
-2
-This is indeed realistic since the number of validation examples is typically lower than the number of training iterations.
-
-Forward and Reverse Gradient-Based Hyperparameter Optimization
-
-noting that αt+1 At1 and αt Bt are transposed-Jacobianvector products that in reverse-mode take both time
-O(g(d, m)) (from Fact (ii)). Unfortunately in this case
-variables st cannot be overwritten, explaining the much
-higher space requirement.
-As an example, consider training a neural network with
-k weights3 , using classic iterative optimization algorithms
-such as SGD (possibly with momentum) or Adam, where
-the hyperparameters are just learning rate and momentum
-terms. In this case, d = O(k) and m = O(1). Moreover,
-g(d, m) and h(d, m) are both O(k). As a result, Algorithm 1 runs in time and space O(T k), while Algorithm 2
-runs in time O(T k) and space O(k), which would typically
-make a dramatic difference in terms of memory requirements.
-
-5. Experiments
-In this section, we present numerical simulations with
-the proposed methods. All algorithms were implemented
-in TensorFlow and the software package used to reproduce our experiments is available at https://github.
-com/lucfra/RFHO. In all the experiments, hypergradients were used inside the Adam algorithm (Kingma & Ba,
-2014) in order to minimize the response function.
-5.1. Data Hyper-cleaning
-The goal of this experiment is to highlight one potential advantage of constraints on the hyperparameters. Suppose we
-have a dataset with label noise and due to time or resource
-constraints we can only afford to cleanup (by checking and
-correcting the labels) a subset of the available data. Then
-we may use the cleaned data as the validation set, the rest
-as the training set, and assign one hyperparameter to each
-training example. By putting a sparsity constraint on the
-vector of hyperparameters λ, we hope to bring to zero the
-influence of noisy examples, in order to generate a better
-model. While this is the same kind of data sparsity observed in support vector machines (SVM), our setting aims
-to get rid of erroneously labeled examples, in contrast to
-SVM which puts zero weight on redundant examples. Although this experimental setup does not necessarily reflect
-a realistic scenario, it aims to test the ability of our HO
-method to effectively make use of constraints on the hyperparameters4
-We instantiated the above setting with a balanced subset of
-N = 20000 examples from the MNIST dataset, split into
-three subsets: Dtr of Ntr = 5000 training examples, V of
-3
-This includes linear SVM and logistic regression as special
-cases.
-4
-We note that a related approach based on reinforcement learning is presented in (Fan et al., 2017).
-
-Nval = 5000 validation examples and a test set containing
-the remaining samples. Finally, we corrupted the labels of
-2500 training examples, selecting a random subset Df ⊂
-Dtr .
-We considered a plain softmax regression model with parameters W (weights) and b (bias). The error of a model
-(W, b) on an example x was evaluated by using the crossentropy `(W, b, x) both in the training objective function, Etr , and in the validation one, Eval . We added in
-Etr an hyperparameter vector λ ∈ [0, 1]Ntr that weights
-eachPexample in the training phase, i.e. Etr (W, b) =
-1
-i∈Dtr λi `(W, b, xi ).
-Ntr
-According to the general HO framework, we fit the parameters (W, b) to minimize the training loss and the hyperparameters λ to minimize the validation error. The sparsity
-constraint was implemented by bounding the L1-norm of
-λ, resulting in the optimization problem
-min Eval (WT , bT )
-λ∈Λ
-
-(PHO )
-
-where Λ = {λ : λ ∈ [0, 1]Ntr , kλk1 ≤ R} and (WT , bT )
-are the parameters obtained after T iterations of gradient
-descent on the training objective. Given the high dimensionality of λ, we solved (PHO ) iteratively computing the
-hypergradients with R EVERSE -HG method and projecting
-Adam updates on the set Λ.
-We are interested in comparing the following three test set
-accuracies:
-• Oracle: the accuracy of the minimizer of Etr trained
-on clean examples only, i.e. (Dtr \Df )∪V; this setting
-is effectively taking advantage of an oracle that tells
-which examples have a wrong label;
-• Baseline: the accuracy of the minimizer of Etr trained
-on all available data D ∪ V;
-• DH-R: the accuracy of the data hyper-cleaner with
-a given value of the L1 radius, R. In this case, we
-first optimized hyperparameters and then constructed
-a cleaned training set Dc ⊂ Dtr (keeping examples
-with λi > 0); we finally trained on Dc ∪ V.
-We are also interested in evaluating the ability of the hypercleaner to detect noisy samples. Results are shown in Table 1. The data hyper-cleaner is robust with respect to the
-choice of R and is able to identify corrupted examples, recovering a model that has almost the same accuracy as a
-model produced with the help of an oracle.
-Figure 1 shows how the accuracy of DH-1000 improves
-with the number of hyper-iterations and the progression of
-the amount of discarded examples. The data hyper-cleaner
-starts by discarding mainly corrupted examples, and while
-
-Forward and Reverse Gradient-Based Hyperparameter Optimization
-Table 1: Test accuracies for the baseline, the oracle, and DH-R
-for four different values of R. The reported F1 measure is the
-performance of the hyper-cleaner in correctly identifying the corrupted training examples.
-
-Accuracy %
-
-F1
-
-90.46
-87.74
-90.07
-90.06
-90.00
-90.09
-
-1.0000
-0.9137
-0.9244
-0.9211
-0.9217
-
-Accuracy and sparsity of λ
-
-3500
-3000
-
-ΩC,ρ (W ) =
-
-92
-
-88
+103
 
 2000
 
-86
+4000
 
-1500
+6000
+# nodes
 
-Validation
-Test
-TP
-FP
+8000
 
-1000
-500
-0
+Figure 1. The number of nodes with various degrees for two simulated graphs with n = 3000 nodes and differing values for α.
 
-100
+Figure 2. The average number of links in simulated graphs with
+varying sparsity parameter β.
 
-200
+r := (ri,j )i<j≤n is the sequence of odds ratios
 
-300
+obtained by upper truncating the random variable Z at Cn .
+By our requirements on the sequence Cn (c.f. Eq. (6)), the
+density function fn of W approaches the density function
+of the BFRY random variable Z as n → ∞, that is,
 
-400
-
-84
-
-K
-X
-j,k=1
-
-90
-
-2500
-
-0
-
-The choice of small training set sizes is due to the strong
-discriminative power of the selected features. In fact, using
-larger sample sizes would not allow to appreciate the advantage of MTL. In order to leverage information among
-the different classes, we employed a multitask learning
-(MTL) regularizer (Evgeniou et al., 2005)
-
-Accuracy
-
-Number of discarded examples
-
-Oracle
-Baseline
-DH-1000
-DH-1500
-DH-2000
-DH-2500
-
-examples as training set, different 50 examples as validation set and the remaining for testing. From CIFAR-100,
-we selected 300 examples as training set, 300 as validation
-set and the remaining for testing. Finally, we used a onehot encoder of the labels obtaining a set of labels in {0, 1}K
-(K = 10 or K = 100).
-
-82
-80
-500
-
-Hyper-iterations
-
-Figure 1: Right vertical axis: accuracies of DH-1000 on validation and test sets. Left vertical axis: number of discarded examples among noisy (True Positive, TP) and clean (False Positive,
-FP) ones.
-
-Cj,k kwj −
-
-wk k22
-
-+ρ
-
-K
-X
-
-kwk k2 ,
-
-k=1
-
-where wk are the weights for class k, K is the number of classes, and the symmetric non-negative matrix C
-models the interactions between the classes/tasks. We
-used
-P a regularized training error defined as Etr (W ) =
-i∈Dtr `(W xi + b, yi ) + ΩC,ρ (W ) where `(·, ·) is the categorical cross-entropy and b = (b1 , . . . , bK ) is the vector
-of thresholds associated with each linear model. We wish
-solve the following optimization problem:
-
-	
-min Eval (WT , bT ) subject to ρ ≥ 0, C = C | , C ≥ 0 ,
-where (WT , bT ) is the T -th iteration obtained by running
-gradient descent with momentum (GDM) on the training
-objective. We solve this problem using R EVERSE -HG and
-optimizing the hyperparameters by projecting Adam updates on the set {(ρ, C) : ρ ≥ 0, C = C | , C ≥ 0}.
-We compare the following methods:
-
-the optimization proceeds, it begins to remove also a portion of cleaned one. Interestingly, the test set accuracy continues to improve even when some of the clean examples
-are discarded.
-
-• SLT: single task learning, i.e. C = 0, using a validation set to tune the optimal value of ρ for each task;
-
-5.2. Learning Task Interactions
-
-• NMTL: we considered the naive MTL scenario in
-which the tasks are equally related, that is Cj,k = a
-for every 1 ≤ j, k ≤ K. In this case we learn the two
-non-negative hyperparameters a and ρ;
-
-This second set of experiments is in the multitask learning
-(MTL) context, where the goal is to find simultaneously
-the model of multiple related tasks. Many MTL methods
-require that a task interaction matrix is given as input to
-the learning algorithm. However, in real applications, this
-matrix is often unknown and it is interesting to learn it from
-data. Below, we show that our framework can be naturally
-applied to learning the task relatedness matrix.
-We used CIFAR-10 and CIFAR-100 (Krizhevsky & Hinton, 2009), two object recognition datasets with 10 and 100
-classes, respectively. As features we employed the preactivation of the second last layer of Inception-V3 model
-trained on ImageNet5 . From CIFAR-10, we extracted 50
-5
-
-Available at tinyurl.com/h2x8wws
-
-• HMTL: our hyperparameter optimization method
-R EVERSE -HG to tune C and ρ;
-• HMTL-S: Learning the matrix C with only few examples per class could bring the discovery of spurious relationships. We tryPto remove this effect by imposing
-the constraint that j,k Cj,k ≤ R, where6 R = 10−3 .
-In this case, Adam updates are projected
-P onto the set
-{(ρ, C) : ρ ≥ 0, C = C | , C ≥ 0,
-j,k Cj,k ≤ R}.
-Results of five repetitions with different splits are presented
-in Table 2. Note that HMTL gives a visible improvement in
-6
-
-We observed that R = 10−4 yielded very similar results.
-
-Forward and Reverse Gradient-Based Hyperparameter Optimization
-Table 3: Frame level phone-state classification accuracy on standard TIMIT test set and execution time in minutes on one Titan X
-GPU. For RS, we set a time budget of 300 minutes.
-
-Accuracy %
-Figure 2: Relationship graph of CIFAR-10 classes. Edges represent interaction strength between classes.
-Table 2: Test accuracy±standard deviation on CIFAR-10 and
-CIFAR-100 for single task learning (STL), naive MTL (NMTL)
-and our approach without (HMTL) and with (HMTL-S) the L1norm constraint on matrix C.
-
-STL
-NMTL
-HMTL
-HMTL-S
-
-CIFAR-10
-
-CIFAR-100
-
-67.47±2.78
-69.41±1.90
-70.85±1.87
-71.62±1.34
-
-18.99±1.12
-19.19±0.75
-21.15±0.36
-22.09±0.29
-
+ri,j = Wi Wj /L,
+i < j ≤ n,
 P
-performance, and adding the constraint that j,k Cj,k ≤ R
-further improves performance in both datasets. The matrix
-C can been interpreted as an adjacency matrix of a graph,
-highlighting the relationships between the classes. Figure
-2 depicts the graph for CIFAR-10 extracted from the algorithm HMTL-S. Although this result is strongly influenced
-by the choice of the data representations, we can note that
-animals tends to be more related to themselves than to vehicles and vice versa.
-5.3. Phone Classification
-The aim of the third set of experiments is to assess the efficacy of the real-time F ORWARD -HG algorithm (RTHO).
-We run experiments on phone recognition in the multitask framework proposed in (Badino, 2016, and references therein). Data for all experiments was obtained from
-the TIMIT phonetic recognition dataset (Garofolo et al.,
-1993). The dataset contains 5040 sentences corresponding to around 1.5 million speech acoustic frames. Training,
-validation and test sets contain respectively 73%, 23% and
-4% of the data. The primary task is a frame-level phone
-state classification with 183 classes and it consists in learning a mapping fP from acoustic speech vectors to hidden
-Markov model monophone states. Each 25ms speech frame
-is represented by a 123-dimensional vector containing 40
-Mel frequency scale cepstral coefficients and energy, augmented with their deltas and delta-deltas. We used a window of eleven frames centered around the prediction target
-to create the 1353-dimensional input to fP . The secondary
-(or auxiliary) task consists in learning a mapping fS from
-acoustic vectors to 300-dimensional real vectors of contextdependent phonetic embeddings defined in (Badino, 2016).
+and L := i Wi . Then the following hold:
 
-Vanilla
-RS
-RTHO
-RTHO-NT
+(8)
 
-59.81
-60.36
-61.97
-61.38
+1. For y  1, P{Dn,i = y} ∼ cy −1−α , for every node i
+and for some constant c, as n → ∞.
+2. For any m, the collection Dn,1 , . . . , Dn,m are asymptotically independent, as n → ∞.
+This construction is closely related to the model described
+by van der Hofstad (2016, Thm. 6.13), and the proof of
+Theorem 3.1, which is provided in the supplementary material, follows analogously to the results by Britton et al.
+(2006, Thms. 3.1 & 3.2). Note that the power law exponent
+τ = 1 + α of the graph (as described by Eq. (2)) is determined by the parameter α ∈ (0, 1), and takes values in
+(1, 2). While power law exponents in (2, 3) has often been
+suggested in the past, it has more recently been shown that
+exponents within the (1, 2) range of our model is more appropriate in many domains (van der Hofstad, 2016, Ch. 1);
+(Crane & Dempsey, 2015).
 
-Time (min)
-12
-300
-164
-289
+lim fn (w) =
 
-As in previous work, we assume that the two mappings fP
-and fS share inputs and an intermediate representation, obtained by four layers of a feed-forward neural network with
-2000 units on each layer. We denote by W the parameter
-vector of these four shared layers. The network has two
-different output layers with parameter vectors W P and W S
-each relative to the primary and secondary task. The network is trained to jointly minimize Etot (W, W P , W S ) =
-EP (W, W P ) + ρES (W, W S ), where the primary error EP
-is the average cross-entropy loss on the primary task, the
-secondary error ES is given by mean squared error on the
-embedding vectors and ρ ≥ 0 is a design hyperparameter. Since we are ultimately interested in learning fP , we
-formulate the hyperparameter optimization problem as
-
-	
-min Eval (WT , WTP ) subject to ρ, η ≥ 0, 0 ≤ µ ≤ 1 ,
-where Eval is the cross entropy loss computed on a validation set after T iterations of stochastic GDM, and η and
-µ are defined in (2). In all the experiments we fix a minibatch size of 500. We compare the following methods:
-1. Vanilla: the secondary target is ignored (ρ = 0); η and
-µ are set to 0.075 and 0.5 respectively as in (Badino,
-2016).
-2. RS: random search with ρ ∼ U(0, 4), η ∼ E(0.1) (exponential distribution with scale parameter 0.1) and
-µ ∼ U(0, 1) (Bergstra & Bengio, 2012).
-3. RTHO: real-time hyperparameter optimization with
-initial learning rate and momentum factor as in Vanilla
-and initial ρ set to 1.6 (best value obtained by gridsearch in Badino (2016)).
-4. RTHO-NT: RTHO with “null teacher,” i.e. when the
-initial values of ρ, η and µ are set to 0. We regard
-this experiment as particularly interesting: this initial
-setting, while clearly not optimal, does not require any
-background knowledge on the task at hand.
-We also tried to run F ORWARD -HG for a fixed number of
-epochs, not in real-time mode. Results are not reported
+n→∞
 
-Forward and Reverse Gradient-Based Hyperparameter Optimization
+α
+w−α−1 (1 − e−w ),
+Γ(1 − α)
 
-since the method could not make any appreciable progress
-after running 24 hours on a Titan X GPU.
-Test accuracies and execution times are reported in Table 3.
-Figure 3 shows learning curves and hyperparameter evolutions for RTHO-NT. In Experiments 1 and 2 we employ a
-standard early stopping procedure on the validation accuracy, while in Experiments 3 and 4 a natural stopping time
-is given by the decay to 0 of the learning rate (see Figure 3
-left-bottom plot). In Experiments 3 and 4 we used a hyperbatch size of ∆ = 200 (see Eq. (16)) and a hyper-learning
-rate of 0.005.
-100
+(10)
 
-Training and validation accuracies
+which is heavy-tailed with infinite moments. It is straightforward to simulate these truncated BFRY random variables by repeatedly simulating g and b as in Eq. (9), accepting W := g/b as a sample when W < Cn .
+The truncation of W at Cn produces a random variable
+with finite mean (for n < ∞), which is essential when
+constructing the generalized random graph and motivates
+the construction by van der Hofstad (2016, Thm. 6.13) alluded to earlier; see Section 4. For simplicity, one could
+take Cn = n, but the flexibility to set this parameter allows
+us to control other properties of the model. For example, in
+the next section we show how to vary this truncation level
+to control the sparsity of the graph.
+3.2. Controlling power law and sparsity in the graph
 
-Validation error
+3.1. Truncated BFRY random variables
+A random variable W with density function fn given by
+Eq. (7) is a ratio of gamma and beta random variables, upper truncated at Cn . In particular let
+g ∼ gamma(1 − α, 1)
 
-6
+and b ∼ beta(α, 1),
 
-80
-60
+(9)
 
-4
+be independent, then the ratio Z := g/b has density p(z) ∝
+z −α−1 (1 − e−z ) on (0, ∞) (by construction), which is
+known as the Bertoin-Fujita-Roynette-Yor (BFRY) distribution (Bertoin et al., 2006; Devroye & James, 2014) and
+has been used in the construction of power law models in
+some recent applications in machine learning (James et al.,
+2015; Lee et al., 2016). The random variable W is then
 
-40
-Training
-Validation
+The discount parameter α ∈ (0, 1) controls the power law
+behavior of the graph, where decreasing α results in heavier tails in the degree distribution of the nodes in the graph.
+We can visualize this behavior by simulating graphs at different values of α. In Section 3, we set Cn = n and show
+the number of nodes of varying degrees in two simulated
+graphs, one with α = 0.2 and one with α = 0.8.
+The degree distribution of the nodes in a graph of course
+affects the sparsity of the graph; to characterize this relationship, we can upper bound the expected number of links
+in the graph as follows:
+Theorem 3.2. Let En be the number of positive edges in
+the graph. Then E[En ] = O(nCn1−α ).
 
-20
+Power law simple graphs
 
-2
+The derivation of this result is provided in the supplementary material. While varying α can thus control the sparsity of the graph in addition to the power law behavior,
+we often want to decouple these behaviors, in which case
+we could parameterize the truncation level as Cn = nβ ,
+for some sparsity parameter β > 0. Note the restriction
+α < min{1, 1/β} must be enforced in order to ensure
+that the conditions in Eq. (6) are satisfied. In this case, the
+bound in Theorem 3.2 becomes E[En ] = O(n1+β(1−α) ).
+The interpretation here is that increasing the upper bound
+Cn increases the likelihood that any particular node will
+link to others, but does not affect the (asymptotic) power
+law characterized by Theorem 3.1. In Section 3.2, we display the average number of positive edges in graphs that
+were simulated with fixed α = 0.3 and varying values of
+the sparsity parameter β. We note that in simulations, we
+encountered numerical issues in β > 1.4 regimes.
+
+4. Related work
+Referring to the construction for generalized random
+graphs in Section 2, Britton et al. (2006, Thm. 3.1) shows
+that when the weights Wi have finite first and second moments, then the limiting distribution of the degree Dn,i is
+a mixed Poisson distribution. Most such distributions are
+light-tailed, however, in which case the degrees will not
+exhibit power law behavior. Britton et al. (2006, Thm. 3.2)
+therefore provides an alternative construction in which Wi
+may have infinite moments (so that it may exhibit a heavy
+tail), which results in a graph with a power law exponent of
+τ = 2. Finally, van der Hofstad (2016, Thm. 6.13) suggests
+yet another construction where the Wi are upper truncated
+to be of order o(n), where n is the number of nodes in the
+graph. The resulting random variables therefore have finite
+moments, yet exhibit a heavy tail, and the resulting random
+graph has a heavy tailed degree distribution with an arbitrary power law exponent. None of these results suggest a
+particular choice for the distribution of Wi , however, and
+so we have elected to use BFRY random variables (which
+are heavy tailed) that are upper truncated (so that they have
+finite moments). We note that the requirements on our truncation level (c.f. Eq. (6)) is less strict than the o(n) criterion
+of the van der Hofstad (2016, Thm. 6.13) construction.
+The reader may consult the surveys by Bollobás & Riordan (2003); Albert & Barabási (2002); Dorogovtsev &
+Mendes (2002) for a background on scale-free random
+graphs, which is too large to review here. While these models are numerous, the following recent pieces of work in the
+Bayesian statistics and machine learning communities may
+be of interest to the reader: Caron & Fox (2014); Veitch
+& Roy (2015); Crane & Dempsey (2016); Cai & Broderick (2015). This collection of work discusses power law
+degree distributions, albeit in some cases in multi-graphs
+
+(i.e., graphs with nonnegative integer-valued edges) and in
+some cases the power law behavior is not characterized,
+only numerically observed in simulations. Many of these
+models can be seen to invoke their power law properties
+from the Pitman–Yor process (Pitman & Yor, 1997) (or related stochastic processes), where the extent of this behavior is controlled by the discount parameter α ∈ (0, 1) of
+the Pitman–Yor model, which, like the BFRY distribution,
+is related to a stable subordinator of index α.
+
+5. Incorporating latent factors
+Latent factor models for relational data assume that a set
+of latent clusters underlie the network. For example, in a
+social network, the latent factors could be the unobserved
+hobbies or interests of individuals, which determine the observed friendships in the network. Bayesian models for latent factors in relational data are widespread, with some of
+the most popular based on stochastic blockmodels, where
+models for unsupervised learning, or clustering, are used
+to infer the latent factors (Nowicki & Snijders, 2001; Kemp
+et al., 2006; Airoldi et al., 2009; Miller et al., 2009). In this
+section, we present extensions of the generalized random
+graph that incorporate latent factors by scaling the odds ratios, while maintaining their power law degree distribution.
+We will first provide a general result showing how to incorporate random scaling variables into the model, followed by specific examples that model these scaling variables with latent clusters. Let the odds ratios in the generalized random graph be given by ri,j = Ai,j Ui Uj for
+some Ai,j ≥ 0. Note that pi,j → 1 as Ai,j → ∞ and
+pi,j → 0 as Ai,j → 0, and so the edge-specific weight
+Ai,j simply scales the link probability. The random graph
+X | r ∼ GRG(n, r) then has the likelihood
+Y x Y D
+P (X = x | r) = G(r)−1
+Ai,ji,j
+Ui n,i , (11)
+i<j≤n
+
+i≤n
+
+where the normalization term G(r) in Eq. (3) is now
+Y
+G(r) :=
+(1 + Ai,j Ui Uj )
+(12)
+i<j≤n
+
+=
+
+X Y
+x i<j≤n
+
+x
+
+Ai,ji,j
+
+Y
+
+Dn,i
+
+Ui
+
+,
+
+(13)
+
+i≤n
+
+where
+the final equality follows simply because
+P
+P
+(X
+= x | r) = 1. So constructed, the odds
+x
+ratios r will influence the link probabilities in the generalized random graph, but will not affect the power
+law behavior of the degree distributions (under some
+assumptions on the random variables Ai,j ). We summarize
+this construction in the following theorem, the proof for
+which is provided in the supplementary material:
+
+Power law simple graphs
+
+Theorem 5.1. Let (Wi )i≤n be i.i.d. random variables with
+density function fn (w) (in Eq. (7)). Let (Ai,j )i<j≤n be a
+collection of uniformly bounded random variables, where,
+for every i ≤ n, the collection (Ai,j )j>i is exchangeable. Let (Dn,i )i≤n be the degrees of the random graph
+X | r ∼ GRG(n, r), where r := (ri,j )i<j≤n is the sequence of odds ratios
+
+and construct the random graph X as in Theorem 5.1.
+Miller et al. (2009) derived a nonparametric extension of
+this model that in a sense takes the limit K → ∞, in which
+case the marginal law of the vectors Z1 , . . . , Zn is that of
+an Indian buffet process (with mass parameter γ and concentration parameter c) (Ghahramani et al., 2007).
+
+ri,j = Ai,j Wi Wj /L,
+i < j ≤ n,
+(14)
+P
+and where L := i Wi . Then the degrees (Dn,i )i≤n satisfy statements (1) and (2) in Theorem 3.1.
+
+6. Variational inference
+
+For example, we may construct stochastic blockmodels,
+such as those introduced by Nowicki & Snijders (2001), as
+follows: For every i ≤ n, let Zi be a random variable taking values in {1, . . . , K}, indicating which one (and only
+one) of K different factors to associate with node i. We
+want the latent cluster assignments for two nodes i and j
+to influence their link probability, which we could capture
+with a set of parameters θk,` , for k, ` = 1, . . . , K. Then the
+parameter θZi ,Zj could represent, or influence, the probability of a link between nodes i and j. Taking a Bayesian
+approach, the indicator variables Zi may be modeled with
+a Dirichlet-categorical conjugate distribution and their values may be inferred via probabilistic inference. An example of such a model could be summarized as follows: Let
+Zi ∼ categorical(π),
+
+i ≤ n,
+
+(15)
+
+where c > 0,
+
+(16)
+
+θ`,k ∼ gamma(aθ , bθ ),
+
+`, k ≤ K,
+
+(17)
+
+Ai,j = θZi ,Zj ,
+
+i < j ≤ n,
+
+(18)
+
+π ∼ Dirichlet(c/K),
+
+and construct the random graph X as in Theorem 5.1.
+Kemp et al. (2006) developed a nonparametric extension
+of a similar model that in a sense takes the limit K → ∞,
+allowing an appropriate number of clusters to be automatically inferred from the data. In this case, the marginal law
+of the indicator variables Z1 , . . . , Zn is given by a Chinese
+restaurant process (with concentration parameter c).
+Several generalizations of the stochastic blockmodel allow
+the clusters underlying the network to overlap, leading to
+mixed membership stochastic blockmodels (Airoldi et al.,
+2009) or the related latent feature relational models (Miller
+et al., 2009). To capture this structure, we may generalize
+the indicators Zi to now represent a binary K-vector with
+entry Zi,k = 1 indicating node i is associated with cluster k, now called a feature, and Zi,k = 0 otherwise. One
+example of such a model could be summarized as follows:
+Zi,k ∼ Bernoulli(pk ),
+pk ∼ beta(c, cγ/K),
+
+i ≤ n, k ≤ K,
+
+θ`,k ∼ gamma(aθ , bθ ), `, k = 1, 2, . . . ,
+X
+θk,` Zi,k Zj,` , i < j ≤ n,
+Ai,j =
+k,`
+
+(19)
+
+k ≤ K, and c, γ > 0, (20)
+(21)
+(22)
+
+We derive a variational Bayesian inference algorithm (Jordan et al., 1999) that approximates the (optimal state of
+the) posterior distribution of the model components, given
+a network dataset. We approximate the required gradients in this procedure with stochastic gradient ascent (Bottou, 2010; Hoffman et al., 2013), computed on minibatches
+(i.e., subsets) of edges in the graph.
+6.1. The variational lower bound
+In variational inference, we approximate the posterior distribution on the latent variables W := (W1 , . . . , Wn )
+with a variational distribution q(W ; θ), the parameters θ
+of which are fit to maximize the following lower bound on
+the marginal likelihood
+h
+p(X | W ; α)p(W ; α) i
+,
+log p(X) ≥ Eq(W ;θ) log
+q(W ; θ)
+
+(23)
+
+where p(X | W ) is the likelihood function computed as
+in Eq. (5), and p(W ; α) is the prior on W represented by
+the density function in Eq. (7). The (non random) discount
+parameter α is inferred by corresponding gradient ascent
+updates maximizing the likelihood of the model, which is
+described in Section 6.4.
+We specify a mean field variational distribution q(W ; θ) =
+Q
+n
+i=1 q(Wi ; θi ). We considered several approximations
+for the marginals q(Wi ; θi ) including truncated BFRY and
+truncated gamma distributions, however, in our experiments we found that the following rectified gamma distribution performed well:
+Wi =q min{Wi0 , Cn },
+
+(24)
+
+Wi0
+
+(25)
+
+∼ gamma(θi,shp , θi,rte ),
+
+independently for every i ≤ n, where θi,shp and θi,rte denote the shape and rate parameters of the gamma distribution, respectively, and the notation =q emphasizes that this
+formula holds under the variational distribution q.
+6.2. Stochastic gradient ascent
+We maximize the lower bound on the right hand side of
+Eq. (23) by stochastic gradient ascent, where on the t-th
+step of the algorithm, we make the following updates to the
+
+Power law simple graphs
+
+6.3. Minibatches of edges in the graph
+
+parameters in parallel
+(t+1)
+θi
+
+←
+
+(t)
+θi
+
++ ρt ∇θi Eq(W ;θ(t) ) [L(X, W ; θ
+
+(t)
+
+)], (26)
+
+for i ≤ n and some sequence (ρt )t≥1 of positive numbers satisfyingP
+the Robbins–Monro
+P criterion (Robbins &
+Monro, 1951) t ρt = ∞ and t ρ2t < ∞, and where
+L(X, W ; θ) := log p(X, W ; α) − log q(W ; θ)
+(27)
+n
+X
+X
+=
+log p(Xi,j | W ) +
+log p(Wi ; α)
+i=1
+
+(i,j)∈E
+
+−
+
+n
+X
+
+log q(Wi ; θi ),
+
+(28)
+
+i=1
+
+where E denotes the observed edges (both links and nonlinks) in the dataset. We cannot evaluate the expectation
+(with respect to the rectified gamma distributions q(W ; θ))
+analytically, and so we elect to use a particular Monte Carlo
+approximation of this gradient detailed by Knowles (2015),
+which was developed for gamma variational distributions
+and easily applies to the rectified gamma case.
+Briefly, for every i ≤ n, create the collection of
+S Monte Carlo samples from the variational distribution as follows: Independently for s ≤ S, let
+(s)
+(s)
+(s)
+zi ∼ Uniform(0, 1), and set Wi = ψ(zi ; θi ), where
+−1
+−1
+ψ(z; θ) := min{Fθ (z), Cn } and Fθ (x) is the inverse
+of the cumulative distribution function for a gamma random variable. For convenience, we recall that
+Z x a
+b a−1 −bt
+t
+e dt.
+(29)
+Fa,b (x) =
+Γ(a)
+0
+For every k ≤ n, the gradient with respect to the parameters θk is then approximated by
+∇θk Eq(W ;θ) [L(X, W ; θ)]
+1X
+(30)
+(s)
+≈
+∇Wk L(X, W (s) ; θ)∇θk ψ(zk ; θk ),
+S s
+(s)
+
+(s)
+
+where W (s) := (W1 , . . . , Wn ). This estimator is unbiased and has low enough variance that often a single sample
+suffices for the approximation (Salimans & Knowles, 2013;
+Kingma & Welling, 2014). The gradient of ψ is nonzero
+(s)
+(zk ) < Cn }, in which case we may imonly when {Fθ−1
+k
+mediately obtain the partial derivative with respect to the
+rate parameter; in particular, we have
+( (s)
+zk
+(s)
+, if Fθ−1
+(zk ) < Cn ,
+(s)
+k
+(31)
+∇θk,rte ψ(zk ; θk ) = θk,rte
+0,
+otherwise.
+The partial derivative with respect to the shape parameter
+(s)
+∇θk,shp ψ(zk ; θk ) does not have a closed form solution and
+must be approximated. Different approximation routines
+are suggested by Knowles (2015) for different regimes of
+the shape parameter θk,shp , and we found these approximations to be accurate and efficient in our experiments.
+
+Computing the n required gradients in Eq. (26) may
+be done in parallel, and this computation, whether performed analytically or with automatic differentiation methods, scales with the number of edges in the graph. This can
+be prohibitive for many network datasets, and we therefore introduce a further approximation where this gradient
+is evaluated on subsets (a.k.a. minibatches) of the dataset,
+a technique from stochastic gradient ascent (Bottou, 2010)
+adopted in the context of variational Bayesian inference by
+Hoffman et al. (2013). In the case of a network dataset,
+we may select minibatches that are subsets of the observed
+edges in the graph. In particular, write the gradient of
+Eq. (28) with respect to the variable Wk (which is required
+by Eq. (30)) as
+X
+g(i,j) (X, W (s) ; k),
+∇Wk L(W (s) ; θ) =
+(32)
+(i,j)∈E
+
+where g(i,j) (X, W ; k) := ∇Wk [log p(Xi,j | W ) +
+|E|−1 log p(W ; α) − |E|−1 log q(W ; θ)] is the gradient that
+ignores all but one edge of the graph. We may therefore
+compute the unbiased estimate of this gradient
+∇Wk L(W (s) ; θ) ≈
+
+|E| X
+g(i,j) (X, W (s) ; k), (33)
+|B|
+(i,j)∈B
+
+on a minibatch B ⊆ E of the observed edges.
+6.4. Inference on the parameters α and β
+Without good prior knowledge of how to set the discount
+parameter α and the sparsity parameter β controlling the
+power law and sparsity behaviors of the graph, respectively,
+we infer their values from the data. First consider the discount parameter, which we infer with gradient ascent. After
+every update to the latent variables W , we fix them to their
+mean under the distribution q, i.e., Ŵ := (Ŵ1 , . . . , Ŵn )
+where Ŵi = Eq(Wi ;θi ) [Wi ], and take a step in the direction
+of the gradient
+∇α log p(Ŵ ; α) =
+=
+
+n
+X
+
+∇α log p(Ŵi ; α)
+
+i=1
+n h
+X
+
+−
+
+i=1
+
+i
+∇α Zα,β
+− log(Ŵi ) ,
+Zα,β
+
+(34)
+(35)
+
+which is straightforward to derive from the density function
+in Eq. (7), and where the normalization term
+Z
+Zα,β :=
+
+Cn
+
+w−α−1 (1 − e−w ) dw
+
+(36)
 
 0
+
+is a function of α and β, if we let Cn = nβ as suggested
+in Section 3.2. We do not have a closed form solution for
+
+Power law simple graphs
+1.0
+
+Table 2. Comparision between the BFRY model and the Gamma
+baseline model on the air traffic, blogs, and social network
+datasets. The test log-likelihoods were averaged over the last
+4,000 of 20,000 gradient descent updates.
+
+0.8
+
+0.6
+α
+
+dataset
+0.4
+
+0.0
 0
 
-50
+4000
 
-100
+8000
+12000
+iteration
 
-150
+16000
 
-200
+20000
 
-250
+Figure 3. Trace plots of the discount parameter α during 10 different inference runs, each time simulating a dataset from the model
+with either α ∈ {0.1, 0.3, 0.5, 0.7} and intializing α randomly.
 
-Plot of η, µ
+Table 1. Comparision between the BFRY model and the Gamma
+baseline model when α is known. The test log-likelihoods were
+averaged over the last 4,000 of 20,000 gradient descent updates.
+true α
+α = 0.3
+α = 0.5
+α = 0.7
 
-0.3
-
-0
-
-50
-
-150
-
-200
-
-250
-
-200
-
-250
-
-Plot of ρ
-
-0.3
+BFRY
+Gamma
+BFRY
+polblogs
+Gamma
+BFRY
+Fb107
+Gamma
+BFRY
+openfl
+Gamma
+500Air
 
 0.2
 
-100
+model
 
-0.2
+max test log-likel
 
-0.1
+avg test log-likel
 
-0.1
+BFRY
+Gamma
+BFRY
+Gamma
+BFRY
+Gamma
 
-η
-µ
+-57323.19 ± 91.62
+-71341.90 ± 116.82
+-21077.62 ± 79.64
+-24430.38 ± 73.06
+-7894.67 ± 41.84
+-8511.48 ± 22.45
 
-0.0
+-57675.72 ± 31.71
+-71841.66 ± 47.38
+-21289.75 ± 34.23
+-24701.06 ± 11.31
+-8027.42 ± 51.08
+-8601.50 ± 15.42
 
-0.0
-0
+this term when Cn < ∞, and, unfortunately, inference on
+model parameters where the likelihood is difficult to evaluate is a challenging problem; for example, see the approaches taken by Murray et al. (2006) on such problems,
+which those authors call doubly intractable distributions.
+Accurate inference for α is important in our model, because it controls the power law behavior of the graph. In
+our experiments, we approximate the gradient in Eq. (35)
+for (fixed β) by approximating Zα,β (via Eq. (36)) and
+RC
+∇α Zα,β = 0 n −w−α−1 (1 − e−w ) log w dw, with line
+integrals. In the Section 7, we demonstrate that this approximation works well in various regimes of α, with slight
+overestimation for moderate values.
+Similar approaches to infer β may be derived with finite difference approximations; we did not find these approaches successful in our experiments, however, and so
+we instead select β by cross validation.
 
-50
+7. Experiments
+We first demonstrate how the inference procedure in Section 6.4 can correctly differentiate between various regimes
 
-100
+model
 
-150
+max test log-likel
 
-200
+avg test log-likel
 
-250
+-1628.51 ± 10.46
+-1842.10 ± 3.97
+-474.67 ± 32.20
+-555.24 ± 18.27
+-18098.38 ± 20.50
+-18403.66 ± 31.76
+-16561.13 ± 137.89
+-17475.52 ± 31.97
 
-0
+-1654.20 ± 6.79
+-1870.35 ± 0.28
+-503.20 ± 37.85
+-596.78 ± 0.78
+-18209.94 ± 12.86
+-18568.05 ± 2.79
+-16947.70 ± 177.21
+-17746.79 ± 6.65
 
-50
+of α. We ran an experiment where for each value α ∈
+{0.1, 0.3, 0.5, 0.7}, we simulated 10 datasets from the
+model with n = 1, 000 nodes, while fixing β = 1.0. For
+each simulated dataset, we ran an instance of the inference
+routine with α randomly initialized. In Fig. 3, we show
+the trace plots of alpha during each instance of the inference routine. For comparison, the true values of α are also
+shown as horizontal dashed lines. We can see that the inference routine can correctly distinguish between these different regimes of α, with slight overestimation in the moderate α regime. Interestingly, despite random initializations
+of α ∈ (0, 1), the algorithm always immediately inflates α
+to around 0.9, and then slowly decreases this value during
+inference, regardless of what value of α generated the data.
+We next demonstrate that accurately capturing power law
+structures in datasets will improve predictive performance.
+While fixing β = 1.0, we simulate three network datasets
+with 5,000 nodes from our model with discount parameters
+α = 0.3, 0.5, and 0.7, respectively, which therefore exhibit
+increasingly lighter-tailed degree distributions. The generated graphs have 117,300, 32,925, and 9,460 links, respectively. To establish a baseline model that does not exhibit
+power law degree distributions but is otherwise comparable
+to our model, we implement the generalized random graph
+where the node-specific weights are constructed from the
+gamma random variables Wi ∼ gamma(θ, 1), for some
+positive parameter θ, i.i.d. for every node i ≤ n. Note
+that the parameter θ controls the sparsity of the generated
+graph; larger values of θ imply denser graphs. It follows
+analogously to Theorem 5.1 that
+P{Dn,i = k} ∼
 
-100
+k θ−1
+,
+2k+θ
 
-150
+(37)
 
-Figure 3: Learning curves and hyperparameter evolutions for
-RTHO-NT: the horizontal axis runs with the hyper-batches. Topleft: frame level accuracy on mini-batches (Training) and on a
-randomly selected subset of the validation set (Validation). Topright: validation error Eval on the same subset of the validation
-set. Bottom-left: evolution of optimizer hyperparameters η and
-µ. Bottom-right: evolution of design hyperparameter ρ.
+for k  1, as n → ∞. This model therefore does not exhibit power law behavior, as desired. We refer to this model
+as “Gamma” and the power law graph model as “BFRY”.
+We ran an experiment holding out 20% of the edges in the
 
-The best results in Table 3 are very similar to those obtained in state-of-the-art recognizers using multitask learning (Badino, 2016; 2017). In spite of the small number of
-hyperparameters, random search yields results only slightly
-better than the vanilla network (the result reported in Table 3 are an average over 5 trials, with a minimum and maximum accuracy of 59.93 and 60.86, respectively). Within
-the same time budget of 300 minutes, RTHO-NT is able
-to find hyperparameters yielding a substantial improvement
-over the vanilla version, thus effectively exploiting the auxiliary task. Note that the model trained has more that
-15 × 106 parameters for a corresponding state of more than
-30 × 106 variables. To the best of our knowledge, reversemode (Maclaurin et al., 2015) or approximate (Pedregosa,
-2016) methods have not been applied to models of this size.
+Power law simple graphs
+Table 3. Inferred hyperparameters in the experiments.
 
-6. Discussion
-We studied two alternative strategies for computing the hypergradients of any iterative differentiable learning dynam-
+BFRY – α
+Gamma – θ
+BFRY – β
 
-ics. Previous work has mainly focused on the reverse-mode
-computation, attempting to deal with its space complexity,
-that becomes prohibitive for very large models such as deep
-networks.
-Our first contribution is the definition and the application of
-forward-mode computation to HO. Our analysis suggests
-that for large models the forward-mode computation may
-be a preferable alternative to reverse-mode if the number of
-hyperparameters is small. Additionally, forward-mode is
-amenable to real-time hyperparameter updates, which we
-showed to be an effective strategy for large datasets (see
-Section 5.3). We showed experimentally that even starting
-from a far-from-optimal value of the hyperparameters (the
-null teacher), our RTHO algorithm finds good values at a
-reasonable cost, whereas other gradient-based algorithms
-could not be applied in this context.
-Our second contribution is the Lagrangian derivation of the
-reverse-mode computation. It provides a general framework to tackle hyperparameter optimization problems involving a wide class of response functions, including those
-that take into account the whole parameter optimization dynamics. We have also presented in Sections 5.1 and 5.2 two
-non-standard learning problems where we specifically take
-advantage of a constrained formulation of the HO problem.
-We close by highlighting some potential extensions of our
-framework and direction of future research. First, the relatively low cost of our RTHO algorithm could suggest to
-make it a standard tool for the optimization of real-valued
-critical hyperparameters (such as learning rates, regularization factors and error function design coefficient), in
-context where no previous or expert knowledge is available (e.g. novel domains). Yet, RTHO must be thoroughly validated on diverse datasets and with different
-models and settings to empirically asses its robustness and
-its ability to find good hyperparameter values. Second,
-in order to perform gradient-based hyperparameter optimization, it is necessary to set a descent procedure over
-the hyperparameters. In our experiments we have always
-used Adam with a manually adjusted value for the hyperlearning rate. Devising procedures which are adaptive in
-these hyper-hyperparameters is an important direction of
-future research. Third, extensions of gradient-based HO
-techniques to integer or nominal hyperparameters (such as
-the depth and the width of a neural network) require additional design efforts and may not arise naturally in our
-framework. Future research should instead focus on the integration of gradient-based algorithm with Bayesian optimization and/or with emerging reinforcement learning hyperparameter optimization approaches (Zoph & Le, 2016).
-A final important problem is to study the converge properties of RTHO. Results in Pedregosa (2016) may prove
-useful in this direction.
+true α = 0.3
 
-Forward and Reverse Gradient-Based Hyperparameter Optimization
+true α = 0.5
+
+true α = 0.7
+
+500Air
+
+polblogs
+
+Fb107
+
+openfl
+
+0.33 ± 0.00
+5.29 ± 0.01
+–
+
+0.53 ± 0.00
+1.42 ± 0.00
+–
+
+0.68 ± 0.00
+0.51 ± 0.00
+–
+
+0.23 ± 0.03
+5.10 ± 0.01
+1.08 ± 0.16
+
+0.64 ± 0.06
+0.66 ± 0.00
+1.40 ± 0.00
+
+0.00 ± 0.00
+33.58 ± 0.01
+0.80 ± 0.0
+
+0.67 ± 0.21
+0.47 ± 0.00
+1.28 ± 0.10
+
+simulated graphs as test sets, training the two models on
+the remaining 80% of the edges. We used a mini-batch size
+of 5,000 edges (note that the training dataset corresponds
+to almost 10 million observed edges). We ran each inference procedure for 20,000 steps of stochastic gradient ascent updates, using Adam (Kingma & Ba, 2015) to adjust
+the learning rates at each step. We repeated each experiment 5 times, each time holding out a different test set and
+using a different random initialization. Again, for this experiment we fixed β = 1. In Table 1 we report a mean loglikelihood metric for the test datasets, where the metric for
+each run is obtained by averaging the test log-likelihoods
+across the states for the last 4,000 steps of the inference
+procedure; the displayed intervals are at ±1 standard deviation about the metric, from across the 5 repeats. We also
+report a max log-likelihood metric, which simply records
+the maximum test log-likelihood across the last 4,000 steps
+of the inference procedure, instead of the average. The best
+performing method is highlighted in bold (which in each
+case was the BFRY model).
+In each case, we see that the BFRY model achieves higher
+test log-likelihood metrics than the Gamma model, as expected, implying that accurately capturing a power law degree distribution improves predictive performance (when
+power law behavior is truly present in the network). In
+Table 3, we report the inferred values for α, which were
+reasonably accurate, though we see slight overestimation
+for some regimes, as seen in the demonstration earlier. For
+the baseline Gamma model, we optimized the hyperparameter θ using gradient ascent maximizing the evidence lower
+bound of the model (c.f. Eq. (23)), and the inferred values
+are also reported in Table 3.
+Next, we ran similar experiments on the following network
+datasets, each of which are expected to exhibit power law
+degree distributions:
+•
+•
+•
+•
+
+‘USTop500Airports’: 500 nodes, 2,980 links
+‘openflights’: 7,976 nodes, 15,243 links
+‘polblogs’: 1,490 nodes, 9,517 links
+‘Facebook107’: 1,034 nodes, 26,749 links
+
+Where appropriate, we saved only the upper triangular
+parts of the adjacency matrices. The ‘USTop500Airports’
+dataset contains the (undirected, unweighted) flight connections between the 500 busiest US airports. The similar,
+
+though much larger, ‘openflights’ dataset contains the flight
+connections between non-US airports. Scale-free networks
+have been proposed for such traffic networks, detailed for
+these datasets by Colizza et al. (2007). The ‘polblogs’
+dataset contains the links between political blogs (judged
+by hyperlinks between the front webpages of the blogs) in
+the period leading up to the 2004 US presidential election,
+which is observed to exhibit power law degree distributions
+by Adamic & Glance (2005). The ‘Facebook107’ dataset
+contains “friendships” between users of a Facebook app,
+collected by Leskovec & McAuley (2012); social networks
+are widely studied for their power law degree distributions.
+For both the Gamma and BFRY models, we ran our variational inference procedure for 20,000 steps on each dataset.
+As before, we repeated the experiment 5 times for each network, each time holding out a different 20% of the edges
+in the network as a testing set. We selected the value of
+β from among the grid {0.6, 0.9, 1.0, 1.2, 1.4} with 5-fold
+cross validation on the training set. We set the minibatch
+size to be equal to the number of nodes in the graph; for
+example, we used minibatches of 1,490 edges for the polblog dataset. The evaluation metrics on the test datasets
+are summarized in Table 2, and the inferred hyperparameter values are reported in Table 3. We see that the BFRY
+model once again outperforms the Gamma baseline model,
+according to the test log-likelihood metrics.
+Probabilistic inference on α by the BFRY model provides
+some of the most interesting analyses here. With α ≈ 0.00
+(underflowing our machine’s precision), the Facebook107
+social network has the degree distribution with the heaviest tails, followed by the USTop500Airports traffic network
+with α ≈ 0.23, the polblog citation network with α ≈ 0.64,
+and the openflights network has the lightest tailed degree
+distribution with α ≈ 0.67.
+
+8. Future work
+Future work could focus on implementing the latent factor
+modeling generalizations presented in Section 5, which are
+natural assumptions in many domains where networks are
+expected to exhibit power law degree distributions. Alternative approaches to inference on the sparsity parameter β
+should also be explored, since controlling the sparsity in
+the graph was important for good predictive performance.
+
+Power law simple graphs
+
+Acknowledgements
+The authors thank Remco van der Hofstad for helpful advice and anonymous reviewers for helpful feedback. J. Lee
+and S. Choi were partly supported by an Institute for Information & Communications Technology Promotion (IITP)
+grant, funded by the Korean government (MSIP) (No.20140-00147, Basic Software Research in Human-level Lifelong Machine Learning (Machine Learning Center)) and
+Naver, Inc. C. Heaukulani undertook this work in part
+while a visiting researcher at the Hong Kong University
+of Science and Technology, who along with L. F. James
+was funded by grant rgc-hkust 601712 of the Hong Kong
+Special Administrative Region.
 
 References
-Badino, Leonardo. Phonetic context embeddings for dnnhmm phone recognition. In Proceedings of Interspeech,
-pp. 405–409, 2016.
-Badino, Leonardo. Personal communication, 2017.
-Baydin, Atilim Gunes, Pearlmutter, Barak A., Radul,
-Alexey Andreyevich, and Siskind, Jeffrey Mark. Automatic differentiation in machine learning: a survey.
-arXiv preprint arXiv:1502.05767, 2015.
-Bengio, Yoshua. Gradient-based optimization of hyperparameters. Neural computation, 12(8):1889–1900, 2000.
-Bergstra, James and Bengio, Yoshua. Random search
-for hyper-parameter optimization. Journal of Machine
-Learning Research, 13:281–305, 2012.
-Bergstra, James, Yamins, Daniel, and Cox, David D. Making a Science of Model Search: Hyperparameter Optimization in Hundreds of Dimensions for Vision Architectures. ICML, 28:115–123, 2013.
-Bergstra, James S., Bardenet, Rémi, Bengio, Yoshua, and
-Kégl, Balázs. Algorithms for hyper-parameter optimization. In Advances in Neural Information Processing Systems, pp. 2546–2554, 2011.
-Domke, Justin. Generic methods for optimization-based
-modeling. In AISTATS, volume 22, pp. 318–326, 2012.
-Evgeniou, Theodoros, Micchelli, Charles A, and Pontil,
-Massimiliano. Learning multiple tasks with kernel methods. J. Mach. Learn. Res., 6:615–637, 2005.
-Fan, Yang, Tian, Fei, Qin, Tao, Bian, Jiang, and Liu,
-Tie-Yan. Learning what data to learn. arXiv preprint
-arXiv:1702.08635, 2017.
-Garofolo, John S., Lamel, Lori F., Fisher, William M., Fiscus, Jonathon G., and Pallett, David S. DARPA TIMIT
-acoustic-phonetic continous speech corpus CD-ROM.
-NIST speech disc 1-1.1. NASA STI/Recon technical report, 93, 1993.
-Griewank, Andreas and Walther, Andrea. Evaluating
-Derivatives: Principles and Techniques of Algorithmic
-Differentiation. Society for Industrial and Applied Mathematics, second edition, 2008.
-Hutter, Frank, Hoos, Holger H., and Leyton-Brown, Kevin.
-Sequential model-based optimization for general algorithm configuration. In Int. Conf. on Learning and Intelligent Optimization, pp. 507–523. Springer, 2011.
-Hutter, Frank, Lücke, Jörg, and Schmidt-Thieme, Lars. Beyond Manual Tuning of Hyperparameters. KI - Künstliche Intelligenz, 29(4):329–337, 2015.
+Adamic, L. A. and Glance, N.
+The political blogosphere and the 2004 US election: divided they
+blog.
+In Proceedings of the 3rd international
+workshop on Link discovery, pp. 36–43, 2005.
+URL http://www.cise.ufl.edu/research/
+sparse/matrices/Newman/polblogs.
+Airoldi, E. M., Blei, D. M., Fienberg, S. E., and Xing,
+E. P. Mixed membership stochastic blockmodels. In Advances in Neural Information Processing Systems, 2009.
+Albert, R. and Barabási, A-L. Statistical mechanics of complex networks. Reviews of modern physics, 74(1):47,
+2002.
+Barabási, A. and Albert, R. Emergence of scaling in random networks. Science, 286(5439):509–512, 1999.
+Bertoin, J., Fujita, T., Roynette, B., and Yor, M. On a
+particular class of self-decomposable random variables:
+the durations of bessel excursions straddling independent exponential times. Probability and Mathematical
+Statistics, 26:315–366, 2006.
+Bollobás, B. Random graphs. Springer, 1998.
+Bollobás, B. and Riordan, O. M. Mathematical results on
+scale-free random graphs. Handbook of graphs and networks: from the genome to the internet, pp. 1–34, 2003.
+Bollobás, B., Riordan, O., Spencer, J., and Tusnády, G. The
+degree sequence of a scale-free random graph process.
+Random Structures & Algorithms, 18(3):279–290, 2001.
+Bottou, L. Large-scale machine learning with stochastic
+gradient descent. In COMPSTAT, 2010.
+Britton, T., Deijfen, M., and Martin-Löf, A. Generating
+simple random graphs with prescribed degree distribution. Journal of Statistical Physics, 124(6):1377–1397,
+2006.
 
-Kingma, Diederik and Ba, Jimmy. Adam: A Method for
-Stochastic Optimization. arXiv:1412.6980, 2014.
-Krizhevsky, Alex and Hinton, Geoffrey. Learning multiple
-layers of features from tiny images. 2009.
-Larsen, Jan, Hansen, Lars Kai, Svarer, Claus, and Ohlsson,
-M. Design and regularization of neural networks: the
-optimal use of a validation set. In Neural Networks for
-Signal Processing, pp. 62–71. IEEE, 1996.
-LeCun, Yann.
-A Theoretical Framework for BackPropagation. In Hinton, Geoffrey and Sejnowski, Terrence (eds.), Proc. of the 1988 Connectionist models
-summer school, pp. 21–28. Morgan Kaufmann, 1988.
-Maclaurin, Dougal, Duvenaud, David K, and Adams,
-Ryan P. Gradient-based hyperparameter optimization
-through reversible learning. In ICML, pp. 2113–2122,
-2015.
-Pearlmutter, Barak A. Gradient calculations for dynamic
-recurrent neural networks: A survey. IEEE Transactions
-on Neural networks, 6(5):1212–1228, 1995.
-Pedregosa, Fabian. Hyperparameter optimization with approximate gradient. In ICML, pp. 737–746, 2016.
-Snoek, Jasper, Larochelle, Hugo, and Adams, Ryan P.
-Practical bayesian optimization of machine learning algorithms. In Advances in Neural Information Processing
-Systems, pp. 2951–2959, 2012.
-Snoek, Jasper, Rippel, Oren, Swersky, Kevin, Kiros, Ryan,
-Satish, Nadathur, Sundaram, Narayanan, Patwary, Md
-Mostofa Ali, Prabhat, Mr, and Adams, Ryan P. Scalable
-Bayesian Optimization Using Deep Neural Networks. In
-ICML, pp. 2171–2180, 2015.
-Swersky, Kevin, Snoek, Jasper, and Adams, Ryan P. Multitask bayesian optimization. In Advances in Neural Information Processing Systems, pp. 2004–2012, 2013.
-Werbos, Paul J. Backpropagation through time: what it
-does and how to do it. Proceedings of the IEEE, 78(10):
-1550–1560, 1990.
-Williams, Ronald J. and Zipser, David. A learning algorithm for continually running fully recurrent neural networks. Neural computation, 1(2):270–280, 1989.
-Zoph, Barret and Le, Quoc V.
-Neural architecture
-search with reinforcement learning. arXiv preprint
-arXiv:1611.01578, 2016.
+Cai, D. and Broderick, T. Completely random measures
+for modeling power laws in sparse graphs. In NIPS 2015
+Workshop on Networks in the Social and Information
+Sciences, 2015.
+Caron, F. and Fox, E. B. Sparse graphs using exchangeable random measures. arXiv preprint arXiv:1401.1137,
+2014.
+Colizza, V., Pastor-Satorras, R., and Vespignani,
+A.
+Reaction–diffusion processes and metapopulation
+models
+in
+heterogeneous
+networks.
+Nature Physics, 3(4):276–282, 2007.
+URL
+https://sites.google.com/site/cxnets/
+usairtransportationnetwork.
+Crane, H. and Dempsey, W. Atypical scaling behavior persists in real world interaction networks. arXiv preprint
+arXiv:1509.08184, 2015.
+Crane, H. and Dempsey, W. Edge exchangeable models for
+network data. arXiv preprint arXiv:1603.04571, 2016.
+Devroye, L. and James, L. F. On simulation and properties
+of the stable law. Statistical methods & applications, 23
+(3):307–343, 2014.
+Dorogovtsev, S. N. and Mendes, J. F. F. Evolution of networks. Advances in physics, 51(4):1079–1187, 2002.
+Ghahramani, Z., Griffiths, T. L., and Sollich, P. Bayesian
+nonparametric latent feature models. Bayesian Statistics,
+8:201–226, 2007. See also the discussion and rejoinder.
+Hoffman, M. D., Blei, D. M., Wang, C., and Paisley, J. W.
+Stochastic variational inference. Journal of Machine
+Learning Research, 14(1):1303–1347, 2013.
+James, L. F., Orbanz, P., and Teh, Y. W. Scaled subordinators and generalizations of the Indian buffet process.
+arXiv preprint arXiv:1510.07309, 2015.
+Jordan, M. I., Ghahramani, Z., Jaakkola, T. S., and Saul,
+L. K. An introduction to variational methods for graphical models. Machine learning, 37(2):183–233, 1999.
+Kemp, C., Tenenbaum, J. B., Griffiths, T. L., Yamada, T.,
+and Ueda, N. Learning systems of concepts with an infinite relational model. In AAAI, 2006.
+Kingma, D. P. and Ba, J. Adam: a method for stochastic
+optimization. In ICLR, 2015.
+Kingma, D. P. and Welling, M. Auto-encoding variational
+Bayes. In ICLR, 2014.
+Knowles, D. A. Stochastic gradient variational Bayes
+for gamma approximating distributions. arXiv preprint
+arXiv:1509.01631, 2015.
+
+Power law simple graphs
+
+Lee, J., James, L. F., and Choi, S. Finite-dimensional
+BFRY priors and variational Bayesian inference for
+power law models. In Advances In Neural Information
+Processing Systems, pp. 3162–3170, 2016.
+Leskovec, J. and McAuley, J. J.
+Learning to discover social circles in ego networks.
+In Advances in Neural Information Processing Systems 25,
+2012.
+URL https://snap.stanford.edu/
+data/egonets-Facebook.html.
+Miller, K., Jordan, M. I., and Griffiths, T. L. Nonparametric
+latent feature models for link prediction. In Advances in
+neural information processing systems, 2009.
+Murray, I., Ghahramani, Z., and MacKay, D. J. C. Mcmc
+for doubly-intractable distributions. In UAI, 2006.
+Nowicki, K. and Snijders, T. A. B. Estimation and prediction for stochastic blockstructures. Journal of the American Statistical Association, 96(455):1077–1087, 2001.
+Pitman, J. and Yor, M. The two-parameter Poisson–
+Dirichlet distribution derived from a stable subordinator.
+The Annals of Probability, pp. 855–900, 1997.
+Robbins, H. and Monro, S. A stochastic approximation
+method. The Annals of Mathematical Statistics, 22(3):
+400–407, 1951.
+Salimans, T. and Knowles, D. A. Fixed-form variational
+posterior approximation through stochastic linear regression. Bayesian Analysis, 8(4):837–882, 2013.
+van der Hofstad, R. Random graphs and complex networks: Volume 1. Cambridge Series in Statistical
+and Probabilistic Mathematics. Cambridge University
+Press, 2016. URL http://www.win.tue.nl/
+˜rhofstad/NotesRGCN.pdf.
+Veitch, V. and Roy, D. M. The class of random graphs arising from exchangeable random measures. arXiv preprint
+arXiv:1512.03099, 2015.
 
 

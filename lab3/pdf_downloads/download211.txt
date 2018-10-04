@@ -1,1188 +1,973 @@
-Communication-efficient Algorithms for
-Distributed Stochastic Principal Component Analysis
-Dan Garber 1 Ohad Shamir 2 Nathan Srebro 3
+Dropout Inference in Bayesian Neural Networks with Alpha-divergences
+
+Yingzhen Li 1 Yarin Gal 1 2
 
 Abstract
-We study the fundamental problem of Principal
-Component Analysis in a statistical distributed
-setting in which each machine out of m stores
-a sample of n points sampled i.i.d. from a single unknown distribution. We study algorithms
-for estimating the leading principal component
-of the population covariance matrix that are both
-communication-efficient and achieve estimation
-error of the order of the centralized ERM solution that uses all mn samples. On the negative side, we show that in contrast to results obtained for distributed estimation under convexity assumptions, for the PCA objective, simply
-averaging the local ERM solutions cannot guarantee error that is consistent with the centralized
-ERM. We show that this unfortunate phenomena
-can be remedied by performing a simple correction step which correlates between the individual
-solutions, and provides an estimator that is consistent with the centralized ERM for sufficientlylarge n. We also introduce an iterative distributed
-algorithm that is applicable in any regime of n,
-which is based on distributed matrix-vector products. The algorithm gives significant acceleration
-in terms of communication rounds over previous
-distributed algorithms, in a wide regime of parameters.
+To obtain uncertainty estimates with real-world
+Bayesian deep learning models, practical inference approximations are needed. Dropout variational inference (VI) for example has been used
+for machine vision and medical applications,
+but VI can severely underestimates model uncertainty. Alpha-divergences are alternative divergences to VI’s KL objective, which are able
+to avoid VI’s uncertainty underestimation. But
+these are hard to use in practice: existing techniques can only use Gaussian approximating distributions, and require existing models to be
+changed radically, thus are of limited use for
+practitioners. We propose a re-parametrisation
+of the alpha-divergence objectives, deriving a
+simple inference technique which, together with
+dropout, can be easily implemented with existing models by simply changing the loss of the
+model. We demonstrate improved uncertainty estimates and accuracy compared to VI in dropout
+networks. We study our model’s epistemic uncertainty far away from the data using adversarial
+images, showing that these can be distinguished
+from non-adversarial images by examining our
+model’s uncertainty.
 
 1. Introduction
-Principal Component Analysis (PCA) (Pearson, 1901;
-Hotelling, 1933; Jolliffe, 2002) is one of the most celebrated and popular techniques in data analysis and ma1
-Technion - Israel Institute of Technology, Haifa, Israel 2 Weizmann Institute of Science, Rehovot, Israel
-3
-Toyota Technological Institute, Illinois, USA. Correspondence to:
-Dan Garber <dangar@technion.ac.il>, Ohad
-Shamir <ohad.Shamir@weizmann.ac.il>, Nathan Srebro
-<nati@ttic.edu>.
+Deep learning models have been used to obtain state-ofthe-art results on many tasks (Krizhevsky et al., 2012;
+Szegedy et al., 2014; Sutskever et al., 2014; Sundermeyer
+et al., 2012; Mikolov et al., 2010; Kalchbrenner & Blunsom, 2013), and in many pipelines these models have replaced the more traditional Bayesian probabilistic models
+(Sennrich et al., 2016). But unlike deep learning models,
+Bayesian probabilistic models can capture parameter uncertainty and its induced effects over predictions, capturing
+the models’ ignorance about the world, and able to convey
+their increased uncertainty on out-of-data examples. This
+1
+University of Cambridge, UK 2 The Alan Turing Institute,
+UK. Correspondence to: Yingzhen Li <yl494@cam.ac.uk>.
 
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-chine learning. For data that consists of N vectors in
-RdP
-, x1 , ..., xN , with normalized covariance matrix X̂ =
-N
-1
->
-i=1 xi xi , The PCA method finds the k-dimensional
-N
-subspace (which corresponds to the span of the top k principal components) such that the projection of the data onto
-the subspace has largest variance, i.e., it is the solution to
-the optimization problem:
-max
+information can be used, for example, to identify when a vision model is given an adversarial image (studied below),
+or to tackle many problems in AI safety (Amodei et al.,
+2016). With model uncertainty at hand, applications as farreaching as safety in self-driving cars can be explored, using models which can propagate their uncertainty up the
+decision making pipeline (Gal, 2016). With deterministic
+deep learning models this invaluable uncertainty information is often lost.
+Bayesian deep learning – an approach to combining
+Bayesian probability theory together with deep learning –
+allows us to use state-of-the-art models and at the same
+time obtain model uncertainty (Gal, 2016; Gal & Ghahramani, 2016a). Originating in the 90s (Neal, 1995; MacKay,
+1992; Denker & LeCun, 1991), Bayesian neural networks
+(BNNs) in particular have started gaining in popularity
+again (Graves, 2011; Blundell et al., 2015; HernandezLobato & Adams, 2015). BNNs are standard neural networks (NNs) with prior probability distributions placed
+over their weights. Given observed data, inference is
+then performed to find what are the more likely and less
+likely weights to explain the data. But as easy it is to
+formulate BNNs, is as difficult to perform inference in
+them. Many approximations have been proposed over the
+years (Denker & LeCun, 1991; Neal, 1995; Graves, 2011;
+Blundell et al., 2015; Hernandez-Lobato & Adams, 2015;
+Hernández-Lobato et al., 2016), some more practical and
+some less practical. A practical approximation for inference in Bayesian neural networks should be able to scale
+well to large data and complex models (such as convolutional neural networks (CNNs) (Rumelhart et al., 1985;
+LeCun et al., 1989)). Much more importantly perhaps, it
+would be impractical to change existing model architectures that have been well studied, and it is often impractical
+to work with complex and cumbersome techniques which
+are difficult to explain to non-experts. Many existing approaches to obtain model confidence often do not scale to
+complex models or large amounts of data, and require us to
+develop new models for existing tasks for which we already
+have well performing tools (Gal, 2016).
+One possible solution for practical inference in BNNs is
+variational inference (VI) (Jordan et al., 1999), a ubiquitous
+technique for approximate inference. Dropout variational
+distributions in particular (a mixture of two Gaussians with
 
-W2Rd⇥k ,WT W=I
+Dropout Inference in Bayesian Neural Networks with Alpha-divergences
 
-kX̂Wk2F .
+small standard deviations, and with one component fixed at
+zero) can be used to obtain a practical inference technique
+(Gal & Ghahramani, 2016b). These have been used for machine vision and medical applications (Kendall & Cipolla,
+2016; Kendall et al., 2015; Angermueller & Stegle, 2015;
+Yang et al., 2016). Dropout variational inference can be
+implemented by adding dropout layers (Hinton et al., 2012;
+Srivastava et al., 2014) before every weight layer in the NN
+model. Inference is then carried out by Monte Carlo (MC)
+integration over the variational distribution, in practice implemented by simulating stochastic forward passes through
+the model at test time (referred to as MC dropout). Although dropout VI is a practical technique for approximate
+inference, it also has some major limitations. Dropout VI
+can severely underestimate model uncertainty (Gal, 2016,
+Section 3.3.2) – a property many VI methods share (Turner
+& Sahani, 2011). This can lead to devastating results in applications that must rely on good uncertainty estimates such
+as AI safety applications.
+Alternative objectives to VI’s objective are therefore needed.
+Black-box α-divergence minimisation
+(Hernández-Lobato et al., 2016; Li & Turner, 2016; Minka,
+2005) is a class of approximate inference methods extending on VI, approximating EP’s energy function (Minka,
+2001) as well as the Hellinger distance (Hellinger, 1909).
+These were proposed as a solution to some of the difficulties encountered with VI. However, the main difficulty
+with α-divergences is that the divergences are hard to use in
+practice. Existing inference techniques only use Gaussian
+approximating distributions, with the density over the approximation having to be evaluated explicitly many times.
+The objective offers a limited intuitive interpretation which
+is difficult to explain to non-experts, and of limited use
+for engineers (Gal, 2016, Section 2.2.2). Perhaps more
+importantly, current α-divergence inference techniques require existing models and code-bases to be changed radically to perform inference in the Bayesian counterpart to
+these models. To implement a complex CNN structure with
+the inference and code of (Hernández-Lobato et al., 2016),
+for example, one would be required to re-implement many
+already-implemented software tools.
+In this paper we propose a re-parametrisation of the induced α-divergence objectives, and by relying on some
+mild assumptions (justified below), derive a simple approximate inference technique which can easily be implemented with existing models. Further, we rely on the
+dropout approximate variational distribution and demonstrate how inference can be done in a practical way – requiring us to only change the loss of the NN, L(θ), and
+to perform multiple stochastic forward passes at training
+time. Precisely, given l(·, ·) some standard NN loss such
+as cross entropy or the Euclidean loss, and {f ωb k (xn )}K
+k=1
+a set of K stochastic dropout network outputs on input xn
 
-(1)
-
-PCA is often considered in a statistical setting in which the
-assumption is that the input vectors are not arbitrary but
-sampled i.i.d. from some fixed but unknown distribution
-with certain general characteristics D. Then, it is often of
-interest to use the observed sample to estimate the top k
-principal components of the population covariance matrix,
-rather then that of the sample, which leads to the modified
-optimization problem:
-⇥
-⇤
-max
-kEx⇠D xx> Wk2F .
-(2)
-W2Rd⇥k ,WT W=I
-
-Of course the empirical estimation problem (1) and the
-population estimation problem (2) are well connected, and
-it is well-known that under mild assumptions on the distribution D and given a sufficiently large sample, we can
-guarantee small estimation error in (2) by solving optimization problem (1).
-In this work we consider the problem of estimating the first
-principal component (i.e., k = 1) in a statistical and distributed setting. We assume the availability of m machines,
-each of which stores a sample of n vectors sampled i.i.d
-from a fixed distribution D over Rd , and we are interested
-in algorithms that can be applied efficiently to solve Problem (2) for k = 1, with estimation error that approaches
-that of a centralized algorithm, which has access to all mn
-samples and does not pay for communication between machines. Indeed, when considering the efficiency of algorithms, we will mainly focus on the amount of communication between machines they require, since this is often
-the most expensive resource in distributed computing. We
-note that the i.i.d. assumption is standard in many applications of PCA, and can be leveraged to get more efficient
-algorithms than when the data partition is arbitrary. Also,
-we will make a standard assumption that the population covariance matrix has a non-zero additive gap between the
-
-Communication-efficient Algorithms for Distributed Stochastic Principal Component Analysis
-
-first and second eigenvalues, which makes the problem of
-estimating the leading principal component meaningful.
-A main challenge that often arises in many computational
-settings of principal components is that it leads to inherently non-convex optimization problems. While many
-times these problems turn out to admit efficient algorithms,
-the rich toolbox of optimization and statistical estimation
-procedures developed for convex problems often cannot be
-directly applied to problems such as (1) and (2). Instead,
-one often needs to consider a specialized and more involved
-analysis, to get analogous convergence results for the PCA
-problem. This for instance was the case in a recent wave
-of results that applied concepts such as stochastic gradient updates (Balsubramani et al., 2013; Shamir, 2016a; Jain
-et al., 2016b; Allen Zhu & Li, 2016b) and variance reduction (Shamir, 2015; 2016c; Garber & Hazan, 2015; Garber
-et al., 2016; Allen Zhu & Li, 2016a) to the PCA problem.
-This is also the case in our distributed setting. For instance,
-(Zhang et al., 2013) proposed communication-efficient algorithms for a distributed statistical estimation settings,
-similar to ours, but under convexity assumptions. The authors show that under their assumptions, in a wide regime
-of parameters (namely when the per-machine sample size
-n is large enough), then a simple averaging of the empirical
-risk minimizers (ERM), computed locally on each machine,
-leads to estimation error of the population parameters of
-the order the centralized ERM solution. While averaging
-makes perfect sense in a convex setting, it is clear that it
-can completely fail in a non-convex setting. Indeed, we
-show that already for the PCA problem with k = 1, simply
-averaging the local ERM solutions (and normalizing to obtain a unit vector as required), cannot improve significantly
-over the estimation error of any single machine. We then
-show that a simple fix to the above scheme, namely correlating the directions of individual ERM solutions, remedies this phenomena and results in estimation error similar
-to that of the centralized ERM solution. Much like the results of (Zhang et al., 2013), this result only holds in the
-regime when the per-machine sample size n is sufficiently
-large. As discussed, due to the inherent non-convexity of
-the PCA objective, this approach requires a novel analysis
-tailored to the PCA problem. In this context, we view this
-work as an initiation of a research effort to understand how
-to efficiently aggregate statistical estimators in a distributed
-non-convex setting.
-A second line of results for distributed estimation under
-convexity assumptions consider iterative algorithms that
-perform multiple communication rounds and are based on
-distributed gradient computations (some examples include
-(Shamir et al., 2014; Zhang & Lin, 2015; Lee et al., 2015;
-Shamir, 2016b; Jaggi et al., 2014; Reddi et al., 2016)). The
-benefit of these methods is that (a) they provide meaningful
-estimation error guarantees in a much wider regime of pa-
-
-rameters than the “one-shot” aggregation methods (namely
-in terms of the number of samples per machine), and (b),
-due to their iterative nature, they allow to approximate the
-centralized ERM solution arbitrary well. Unfortunately,
-these methods, all of which rely heavily on convexity assumption, cannot be directly applied to the PCA problem.
-Towards designing efficient distributed iterative methods
-for our PCA setting, we consider the application of the
-recently proposed method of Shift-and-Invert power iterations (S&I) for PCA (Garber & Hazan, 2015; Garber et al.,
-2016). The S&I method reduces the problem of computing
-the leading eigenvector of a real positive semidefinite matrix to that of approximately solving a small number (i.e.
-poly-logarithmic in the problem parameters) of systems of
-linear equations. These in turn, could be efficiently solved
-by arbitrary distributed convex solvers. We show that coupling the S&I method with the stochastic pre-conditioning
-technique for linear systems proposed in (Zhang & Lin,
-2015) and well known fast gradient methods such as the
-conjugate gradient method, gives state-of-the-art guarantees in terms of communication costs, and provides a significant improvement over distributed variants of classical
-fast eigenvector algorithms such as power iterations and the
-faster Lanczos algorithm. Much like its convex counterparts, which only rely on distributed gradient computations
-and simple vector aggregations, our iterative method only
-relies on distributed matrix-vector products, i.e., it requires
-each machine to only send products of its local empirical
-covariance matrix with some input vector.
-Beyond the results described so far, (Liang et al., 2014;
-Boutsidis et al., 2016) studied distributed algorithms for
-PCA in a deterministic setting in which the partition of
-the data across machines is arbitrary and communication
-is measured in terms of number of transmitted bits. The
-approximation guarantees provided in these works are in
-terms of the projection of the data onto the leading principal components (instead of alignment between the estimate
-and the optimal solution, studied in this paper). Applying
-these results to our setting will give a number of communication rounds that scales like poly(✏ 1 1 ), where ✏ is the
-desired error and is the population eigengap. In our setting, ✏ will scale with the inverse of the size of the sample,
-i.e., ✏ ⇡ (mn) 1 , which for these algorithms will result in
-amount of communication that is polynomial in the size of
-the data. In contrast, we will be interested in algorithms
-whose communication costs does not scale with n at all. In
-this context we note that, by focusing on algorithms that
-either perform simple aggregation of local ERM solutions,
-or perform only distributed matrix-vector products with the
-empirical covariance matrix, we can circumvent the need to
-measure communication explicitly in terms of the number
-of bits transmitted, which often burdens the analysis of natural algorithms, such as those proposed here.
-
-Communication-efficient Algorithms for Distributed Stochastic Principal Component Analysis
-
-2. Preliminaries
-2.1. Notation and problem setting
-We write vectors in Rd in boldface lower-case letters (e.g.,
-v), matrices in boldface upper-case letters (e.g., X), and
-scalars are written as lightface letters (e.g., c). We let k ·
-k denote the standard Euclidean norm for vectors and the
-spectral norm for matrices.
-We consider the following statistical distributed setting.
-Let D be a distribution over vectors in Rd with squared
-`2 norm at most b, for some b > 0. We consider a setting
-in which m machines, numbered 1...m, are each given a
-dataset of n samples drawn i.i.d. from D. We let v1 denote
-a leading eigenvector of the population covariance matrix
-X = Ex⇠D [xx> ]. Our goal is to efficiently (mainly in
-terms of communication) find an estimate w for v1 , i.e., a
-unit vector that maximizes the product (v1> w)2 with high
-probability. Towards this end, we assume that the population covariance matrix X has a non-zero eigengap , i.e.,
-:= 1 (X)
-2 (X) > 0, where i (·) denotes the ith
-largest eigenvalue of a symmetric real matrix. Note that
-> 0 is necessary for v1 to be uniquely defined (up to
-sign).
-In addition, we let X̂i denote the empirical covariance matrix of the sample stored on machine i for every i 2 [m],
-Pn
-(i) (i)>
-(i)
-(i)
-i.e., X̂i = n1 j=1 xj xj , where x1 ...xn are the
-samples stored on machine i. We let X̂ denote the empirical covariance matrix
-Pmof the union of points across all
-1
-machines i.e., X̂ = m
-i=1 X̂i .
-Our model of communication assumes that the m machines
-work in rounds during which a central machine (w.l.o.g.
-machine 1) can send a single vector in Rd to all other machines, or every machine can send either the leading eigenvector of its local empirical covariance matrix, or the product of a single input vector with its local covariance, to machine 1. We will measure communication complexity in
-terms of number of such rounds required to achieve a certain estimation error.
-2.1.1. T HE CENTRALIZED SOLUTION
-Our primary benchmark for measuring performance will be
-the centralized empirical risk minimizer which is the leading eigenvector of the aggregated empirical covariance matrix X̂.
-The following standard result bounds the error of the centralized ERM.
-Lemma 1 (Risk of centralized ERM). Fix p 2 (0, 1). Suppose that > 0 and let v̂1 denote the leading eigenvector
-of X̂, i.e., v̂1 2 arg maxv:kvk=1 v> X̂v. Then it holds w.p.
-at least 1 p that
-
-32b2 ln(d/p)
-.
-(3)
-mn 2
-Lemma 1 is a direct consequence of the following standard concentration argument for random matrices, and the
-Davis-Kahan sin(✓) theorem (whose proof is given in the
-appendix for completeness):
-Theorem 1 (Matrix Hoeffding, see (Tropp, 2012)). Let D
-be a distribution over vectors with squared `2 norm
-Pn at most
-b, and let X = Ex⇠D [xx> ]. Let X̂ = n1 i=1 xi x>
-i ,
-where x1 , ..., xn are
-⇣ sampled i.i.d.
-⌘ from D. Then,
-⇣ 2it holds
-⌘
-✏ n
-that 8✏ > 0 : Pr kX̂ Xk ✏  d · exp
-16b2 .
-1
-
-(v1> v̂1 )2  ✏ERM (p) :=
-
-Theorem 2 (Davis-Kahan sin(✓) theorem). Let X, Y be
-symmetric real d⇥d matrices with leading eigenvectors vX
-and vY respetively. Also, suppose that (X) := 1 (X)
-2
-Yk2
->
-vX
-vY  2 kX(X)
-2 .
-2 (X) > 0. Then it holds that 1
-2.2. Informal statement of main results and previous
-algorithms
-
-We now informally describe our main results, followed by a
-detailed description of previous approaches that are directly
-applicable to our setting. The algorithmic results (both new
-and old) are summarized in Table 1.
-2.2.1. M AIN RESULTS
-Failure of simple averaging of local ERM solutions We
-show that a natural approach of simply averaging the individual leading eigenvectors of the empirical covariance
-matrices X̂i (and normalizing the obtain a unit vector)
-cannot significantly improve (beyond logarithmic factors)
-over the performance of any of the individual eigenvectors.
-(i)
-More concretely, if we let v̂1 denote the leading eigenvector of X̂i for any i 2 [m], and we denote their average
-Pm (i)
-1
-by v̄1 = m
-i=1 v̂1 , then there exists a distribution D
-over vectors with magnitude O(1) and covariance eigengap = 1, such that
-"
-✓ > ◆2 #
-✓ ◆
-v̄1 v1
-1
-8m, n : ED 1
-=⌦
-,
-kv̄1 k
-n
-See Theorem 3 in Section 3 for the complete and formal
-argument.
-A successful single communication round algorithm via
-correlation of individual ERM solutions We show that
-if prior to averaging the local ERM solutions, as suggested
-above, we correlate their directions by aligning them according to any single machine (say machine number 1),
-Pm
-(i)> (1)
-(i)
-1
-i.e., we let v̄1 = m
-v̂1 )v̂1 , then this
-i=1 sign(v̂1
-guarantees that for any p 2 (0, 1), w.p. at least 1 p,
-⇣ ⌘
-⇣ ⌘1
-0
-2 dm
-dm
-✓ > ◆2
-2
-4
-b
-ln
-b
-ln
-p
-p
-v̄1 v1
-A . (4)
-1
-= O@
-+
-2 mn
-4 n2
-kv̄1 k
-
-Communication-efficient Algorithms for Distributed Stochastic Principal Component Analysis
-(w> v1 )2 w.p. 3/4
-2
-ln d
-✏ERM = ⇥( b 2 mn
-)
-✏ERM · (1 + o(1))
-✏ERM · (1 + o(1))
-O(✏ERM⇣)
-⌘
-
-Method
-Centralized ERM
-Distributed Power Method
-Distributed Lanczos
-“Hot-potato” SGD
-
-1
-
-Average of ERMs with sign-fixing (Theorem 4)
-
-O(✏ERM ) + O
-
-Distributed Shift&Invert + precond. linear systems (Theorem 6)
-
-b4 ln2 d
-4 n2
-
-✏ERM · (1 + o(1))
-
-# communcation rounds
-Õ( 1 / )
-p
-Õ(
-1/ )
-m
-1
-Õ(min{(b/ )1/2 n
-
-1/4
-
-, m1/4 })
-
-Table 1. Comparison of estimation error and number of communication rounds. For simplicity we fix the failure probability to p = 1/4
-and assume mn is in the regime in which Lemma 1 is meaningful, i.e, mn = ⌦(b2 2 ln d). The Õ(·) suppresses logarithmic factors
-in b, d, 1/p, 1/✏ERM . For the result of Theorem 4 we assume the regime m = O(d). The sub-constant o(1) factors could be made, in
-principle, arbitrary small in all relevant results by trading approximation with communication.
-
-See Theorem 4 in Section 3 for the complete and formal
-result.
-In particular, in the likely scenario when m = O(d/p)
-2
-we have that w.p. at least 1 p, 1
-v̄1> v1 /kv̄1 k =
-✏ERM (p)) · O 1 + m2 · ✏ERM (p) , where ✏ERM (p)) is defined in Eq. (3). Another related interpretation of the results is that the bound in Eq. (4) is comparable with ✏ERM
-2 2
-(up to poly-log factors) when n = ⌦
-b m ln(dm/p) .
-We also show a matching lower bound that the bound in
-Eq. (4) is tight (up to poly-log factors) for this aggregation
-method.
-A multi communication round algorithm We present a
-distributed algorithm based on the Shift-and-Invert framework for leading eigenvector computation (Garber &
-Hazan, 2015; Garber et al., 2016) which is applied to explicitly solving the centralized ERM problem. We show
-that for any p 2 (0, 1), when mn = ⌦(b2 ln(d/p)/ 2 ) (i.e.,
-when Lemma 3 is meaningful), the algorithm produces a
-solution w such that w.p. at least 1 p,
-1
-
-(v1> w)2  ✏ERM (p)) · (1 + o(1)) ,
-
-(5)
-
-where ✏ERM (p)) is
-p defined in Eq. (3). The algorithm performs overall Õ( b 1/2 n 1/4 ) distributed matrix-vector
-products with the centralized empirical covariance matrix
-X̂ 1 . The Õ(·) notation hides poly-logarithmic factors in
-1/p, 1/ , d, 1/✏ERM (p). See Theorem 6 in Section 4 for the
-complete and formal result.
-We note that in particular, under our assumption that mn =
-˜ 2 / 2 ), it holds that the number of distributed matrix⌦(b
-vector products is upper bounded by Õ(m1/4 ). Moreover,
-in the regime n = ⌦(b2 2 ), we can see that the number
-of distributed matrix-vector products depends only polylogarithmically on the problem parameters.
-In general, the sub-constant o(1) factor in (5) could be
-made arbitrarily small by trading the approximation error
-1
-
-i.e., on each round, each machine i sends the product of an
-input vector in Rd with its local covariance matrix X̂i .
-
-with the number of distributed matrix-vector products.
-2.2.2. P REVIOUS ALGORITHMS
-Distributed versions of classical iterative algorithms:
-Classical fast iterative algorithms for computing the leading eigenvector of a positive semidefinite matrix, such as
-the well-known Power Method and the Lanczos Algorithm, require iterative multiplications of the input matrix (X̂ in our case) with the current estimate. It is thus
-straightforward to implement these algorithms in our distributed setting, by multiplying the same vector with the
-covariance matrices at each machine, and averaging the
-result. Thus, by well-known convergence guarantees of
-these two methods, we will have that for a fixed ✏ > 0,
-these methods produce a unit vector w such that, for any
-p 2 (0, 1), 1 (w> v̂1 )2  ✏ w.p. at least 1 p, after p
-O( ˆ 1 ˆ 1 ln(d/p✏)) rounds for the Power Method and
-O( ˆ 1 ˆ 1 ln(d/p✏)) for the Lanczos Algorithm, where
-ˆ 1 , ˆ denote the leading eigenvalue and eigengap of X̂,
-respectively. Moreover, in the regime of mn in which
-Lemma 1 is meaningful, we can replace ˆ 1 , ˆ with 1 ,
-in the above bounds, and the result will still hold with high
-probability.
-Simple calculations show that in the regime of mn in which
-Lemma 1 is meaningful, it holds that our Shift-and-Invertbased algorithm outperforms distributed Lanczos (in terms
-˜ 2 / 2 ).
-of worst-case guarantees) whenever n = ⌦(b
-1
-“Hot potato” SGD: Another straightforward approach is
-to apply a sequential algorithm for direct risk minimization that can process the data-points one by one, such as
-stochastic gradient descent (SGD), by passing its state from
-one machine to the next, after completing a full pass over
-the machine’s data. Clearly, this process of making a full
-pass over the data of a certain machine before sending the
-final estimate to the next one, requires overall m communication rounds in order to make a full pass over all mn
-points. SGD for PCA was studied in several results in
-recent years (Balsubramani et al., 2013; Shamir, 2016a;c;
-
-Communication-efficient Algorithms for Distributed Stochastic Principal Component Analysis
-
-Jain et al., 2016a; Allen Zhu & Li, 2016b). For instance
-applying the result of (Jain et al., 2016a) in this way will
-result in a final estimate w satisfying
-✓ 2
-◆
-b ln d
->
-2
-1 (w v1 ) = O
-w.p. at least 3/4. (6)
-2 mn
-We note that in the regime in which the bound in (6) is
-meaningful it holds that the number of communication
-rounds of our Shift-and-Invert-based algorithm is upperbounded by Õ(m1/4 ) which for sufficiently large m dominates the communication complexity of SGD.
-
-3. Single Communication Round Algorithms
-via ERM on Each Machine
-In this section we consider distributed algorithms that require only a single round of communication. Naturally for
-this regime, all algorithms will be based on aggregating the
-ERM solutions of the individual machines, i.e., each machine i only sends the leading eigenvector of its empirical covariance matrix X̂i to a centralized machine (without
-loss of generality, machine 1) which it turn combines them
-to a single unit vector in some manner.
-3.1. Simple averaging of eigenvectors fail
-Perhaps the simplest method to aggregate the individual
-eigenvectors of each machine is to average them, and then
-normalize to obtain a unit vector. For instance, in the
-distributed statistical setting considered in (Zhang et al.,
-2013), in which the objective is strongly convex, it was
-shown that simply averaging the individual ERM solutions
-leads, in a meaningful regime of parameters, to estimation
-error of the order of the centralized ERM solution. However, here we show that for PCA, in which the objective is
-certainly not convex, this approach fails practically in any
-regime, in the sense that the error of the returned aggregated solution can be no better than that returned by any
-single machine.
-Theorem 3. There exists a distribution over vectors in R2
-with `2 norm bounded by a universal constant for which the
-eigengap in the covariance matrix is 1 (i.e., = 1), such
-(i)
-that if each machine i returns an estimate v̂1 which is
-an unbiased leading eigenvector of X̂i (i.e., both outcomes
-(i)
-(i)
-v̂1 , +v̂1 are equally likely), then the aggregated vector
-P
-(i)
-m
-1
-v̄1 = m
-i=1 v̂1 satisfies
-"
-#
-⌧
-2
-v̄1
-8m, n : E 1
-, v1
-= ⌦(1/n).
-kv̄1 k
-The proof is given in the appendix.
-
-3.2. Averaging with Sign Fixing
-As evident from the statement of Theorem 3, an important
-assumption is that each machine produces an unbiased estimate, in the sense that the sign of the outcome is uniform
-and independent of the other machines. This hints that correlating the signs of the different estimates can circumvent
-the lower bound result in Theorem 3. It turns out that this
-is indeed the case, as captured by the following theorem:
-Theorem 4. Let w̃i be the leading eigenvector of X̂i for
-any i 2 [m], and consider
-the unit vector
-Pm
->
-i=1 sign(w̃i w̃1 )w̃i
-w = Pm
-.
-(7)
-k i=1 sign(w̃i> w̃1 )w̃i k
-Then, for any p 2 (0,0
-1), it holds
-⇣ w.p.
-⌘ at least 1 ⇣ p that
-⌘1
-dm
-2
-b log p
-b4 log2 dm
-p
-A.
-1 (v1> w)2 = O @
-+
-2 mn
-4 n2
-
-For ease of presentation, throughout the rest of this section
-we denote the correlated vector ŵi = sign(w̃i> w̃1 )w̃i for
-any i 2 [m].
-
-The main step towards proving Theorem 4 is to consider
-each ŵi as an approximately unbiased perturbation of the
-true leading eigenvector v1 and to upper bound the magnitude of this perturbation. This is carried out in the following much more general and self-contained lemma, which
-might be of independent interest. The proof is given in the
-appendix.
-Lemma 2. Let A be a positive semidefinite matrix with
-some fixed leading eigenvector v1 , a leading eigenvalue 1
-and an eigengap := 1 (A)
-2 (A) > 0. Let Â be some
-positive semidefinite matrix such that kÂ Ak  /4.
-Then there is a unique leading eigenvector v̂1 of Â such
-that hv̂1 , vi 0, and
-ckÂ Ak2
-v̂1 v1 ( 1 I A)† (Â A)v1 
-,
-2
-where † denotes the pseudo-inverse, and c is a positive numerical constant.
-Lemma 2 is central to the proof of the following Lemma,
-of which the proof of Theorem 4 is an easy consequence.
-We defer the proof of both the Lemma and that of Theorem
-4 to the appendix.
-Lemma 3. The following two conditions hold with probability at least 1 p d exp( 2 n/cb2 ), for some numerical
-constants c, c0 > 0:
-• The leading eigenvalue of every X̂i is simple, i.e.,
-1 (X̂i )
-2 (X̂i ) > 0.
-• Fixing v1 , there exist unique leading eigeni
-vectors v̂1i , . . . , v̂m
-of X̂1 , . . . , X̂m , such that
-Pm i
-1
+b k , our proposed objective
+with randomly masked weights ω
+is:
+h
 i
-maxi kv̂1
-v1 k  14 , and m
-i=1 v̂1
-q
-⇣ 2
-⌘
-2
-v1  c0 b log(2dm/p)
-+ b log(2dm/p)
-.
-2n
-2 mn
+1X
+log-sum-exp −αl(yn , f ωb k (xn )) + L2 (θ)
+L(θ) = −
+α n
+with α a real number, θ the set of network weights to
+be optimised, and an L2 regulariser over θ. By selecting
+α = 1 this objective directly optimises the per-point predictive log-likelihood, while picking α → 0 would focus
+on increasing the training accuracy, recovering VI.
+Specific choices of α will result in improved uncertainty estimates (and accuracy) compared to VI in dropout BNNs,
+without slowing convergence time. We demonstrate this
+through a myriad of applications, including an assessment
+of fully connected NNs in regression and classification, and
+an assessment of Bayesian CNNs. Finally, we study the
+uncertainty estimates resulting from our approximate inference technique. We show that our models’ uncertainty
+increases on adversarial images generated from the MNIST
+dataset, suggesting that these lie outside of the training data
+distribution. This in practice allows us to tell-apart such
+adversarial images from non-adversarial images by examining epistemic model uncertainty.
 
-Communication-efficient Algorithms for Distributed Stochastic Principal Component Analysis
+2. Background
+We review background in Bayesian neural networks and
+approximate variational inference. In the next section we
+discuss α-divergences.
+2.1. Bayesian Neural Networks
+Given training inputs X = {x1 , . . . , xN } and their corresponding outputs Y = {y1 , . . . , yN }, in parametric
+Bayesian regression we would like to infer a distribution
+over parameters ω of a function y = f ω (x) that could have
+generated the outputs. Following the Bayesian approach, to
+find parameters that could have generated our data, we put
+some prior distribution over the space of parameters p0 (ω).
+This distribution captures our prior belief as to which parameters are likely to have generated our outputs before
+observing any data. We further need to define a probability distribution over the outputs given the inputs p(y|x, ω).
+For classification tasks we assume a softmax likelihood,
+
+p y|x, ω = Softmax (f ω (x))
+or a Gaussian likelihood for regression. Given a dataset
+X, Y, we then look for the posterior distribution over the
+space of parameters: p(ω|X, Y). This distribution captures
+how likely the function parameters are, given our observed
+data. With it we can predict an output for a new input point
+x∗ by integrating
+Z
+p(y∗ |x∗ , X, Y) = p(y∗ |x∗ , ω)p(ω|X, Y)dω. (1)
 
-3.3. Lower Bound for Sign Fixing
-We now show that the result of Theorem 4 is tight up to
-poly-logarithmic factors and cannot be improved in general:
-Theorem 5. For any 2 (0, 1) and d > 1, there exist a
-distribution over vectors in Rd (of norm at most a universal
-constant) with eigengap in the covariance matrix, such
-that for any number of machines m and for per-machine
-sample size any n sufficiently larger than 1/ 2 , the aggrePm (i)
+Dropout Inference in Bayesian Neural Networks with Alpha-divergences
+
+One way to define a distribution over a parametric set of
+functions is to place a prior distribution over a neural network’s weights ω = {Wi }L
+i=1 , resulting in a Bayesian NN
+(MacKay, 1992; Neal, 1995). Given weight matrices Wi
+and bias vectors bi for layer i, we often place standard matrix Gaussian prior distributions over the weight matrices,
+p0 (Wi ) = N (Wi ; 0, I) and often assume a point estimate
+for the bias vectors for simplicity.
+2.2. Approximate Variational Inference in Bayesian
+Neural Networks
+
+and the mean of one of the Gaussians fixed at zero. The uncertainty in the weights induces prediction uncertainty by
+marginalising over the approximate posterior using Monte
+Carlo integration:
+Z
+p(y = c|x, X, Y) = p(y = c|x, ω)p(ω|X, Y)dω
+Z
+≈ p(y = c|x, ω)qθ (ω)dω
+≈
+
+K
+1 X
+b k)
+p(y = c|x, ω
+K
+k=1
+
+In approximate inference, we are interested in finding the
+distribution of weight matrices (parametrising our functions) that have generated our data. This is the posterior
+over the weights given our observables X, Y: p(ω|X, Y),
+which is not tractable in general. Existing approaches to
+approximate this posterior are through variational inference (as was done in Hinton & Van Camp (1993); Barber
+& Bishop (1998); Graves (2011); Blundell et al. (2015)).
+We need to define an approximating variational distribution
+qθ (ω) (parametrised by variational parameters θ), and then
+minimise w.r.t. θ the KL divergence (Kullback & Leibler,
+1951; Kullback, 1959) between the approximating distribution and the full posterior:
+
+KL qθ (ω)||p(ω|X, Y)
+Z
+∝ − qθ (ω) log p(Y|X, ω)dω + KL(qθ (ω)||p0 (ω))
+=−
+
+N Z
+X
+
+qθ (ω) log p(yi |f ω (xi ))dω + KL(qθ (ω)||p0 (ω)),
+
+i=1
+
+where A ∝ B is slightly abused here to denote equality up
+to an additive constant (w.r.t. variational parameters θ).
+2.3. Dropout Approximate Inference
+Given a (deterministic) neural network, stochastic regularisation techniques in the model (such as dropout (Hinton
+et al., 2012; Srivastava et al., 2014)) can be interpreted
+as variational Bayesian approximations in a Bayesian NN
+with the same network structure (Gal & Ghahramani,
+2016b). This is because applying a stochastic regularisation technique is equivalent to multiplying the NN weight
+matrices Mi by some random noise i (with a new noise
+realisation for each data point). The resulting stochastic
+weight matrices Wi = i Mi can be seen as draws from the
+approximate posterior over the BNN weights, replacing the
+deterministic NN’s weight matrices Mi . Our set of variational parameters is then the set of matrices θ = {Mi }L
+i=1 .
+For example, dropout can be seen as an approximation to
+Bayesian NN inference with dropout approximating distributions, where the rows of the matrices Wi distribute according to a mixture of two Gaussians with small variances
+
+b k ∼ qθ (ω), where qθ (ω) is the Dropout distribuwith ω
+tion (Gal, 2016). Given its popularity, we concentrate on
+the dropout stochastic regularisation technique throughout
+the rest of the paper, although any other stochastic regularisation technique could be used instead (such as multiplicative Gaussian noise (Srivastava et al., 2014) or dropConnect
+(Wan et al., 2013)).
+Dropout VI is an example of practical approximate inference, but it also underestimates model uncertainty (Gal,
+2016, Section 3.3.2). This is because minimising the KL divergence between q(ω) and p(ω|X, Y) penalises q(ω) for
+placing probability mass where p(ω|X, Y) has no mass,
+but does not penalise q(ω) for not placing probability mass
+at locations where p(ω|X, Y) does have mass. We next
+discuss α-divergences as an alternative to the VI objective.
+
+3. Black-box α-divergence minimisation
+In this section we provide a brief review of the black box alpha (BB-α, Hernández-Lobato et al. (2016)) method upon
+which the main derivation in this paper is based. Consider
+approximating the following distribution:
+p(ω) =
+
+Y
 1
-gated vector v̄1 = m
-i=1 v̂1 (even after sign fixing with
-the population
-eigenvector
+p0 (ω)
+fn (ω).
+Z
+n
+
+In Bayesian neural networks context, these factors fn (ω)
+represent the likelihood terms p(yn |xn , ω), Z = p(Y|X),
+and the approximation target p(ω) is the exact posterior
+p(ω|X, Y). Popular methods of approximate inference include variational inference (VI) (Jordan et al., 1999) and
+expectation propagation (EP) (Minka, 2001), where these
+two algorithms are special cases of power EP (Minka,
+2004) that minimises Amari’s α-divergence (Amari, 1985)
+Dα [p||q] in a local way:
+
+
+Z
+1
+1 − p(ω)α q(ω)1−α dω .
+Dα [p||q] =
+α(1 − α)
+We provide details of α-divergences and local approximation methods in the appendix, and in the rest of the paper
+we consider three special cases in this rich family:
+
+Dropout Inference in Bayesian Neural Networks with Alpha-divergences
+
+1. Exclusive KL divergence:
+
+
+q(ω)
+D0 [p||q] = KL[q||p] = Eq log
+;
+p(ω)
+2. Hellinger distance:
+D0.5 [p||q] = 4Hel2 [q||p] = 2
+
+Z p
+
+p(ω) −
+
+p
+
+2
+q(ω) dω;
+
+3. Inclusive KL divergence:
+
+
+p(ω)
+.
+D1 [p||q] = KL[p||q] = Ep log
+q(ω)
+Since α = 0 is used in VI and α = 1.0 is used in EP, in
+later sections we will also refer to these alpha settings as
+the VI value, Hellinger value, and EP value, respectively.
+Power-EP, though providing a generic variational framework, does not scale with big data. It maintains approximating factors attached to every likelihood term fn (ω),
+resulting in space complexity O(N ) for the posterior approximation which is clearly undesirable. The recently proposed stochastic EP (Li et al., 2015) and BB-α (HernándezLobato et al., 2016) inference methods reduce this memory
+overhead to O(1) by sharing these approximating factors.
+Moreover, optimisation in BB-α is done by descending the
+so called BB-α energy function, where Monte Carlo (MC)
+methods and automatic differentiation are also deployed to
+allow fast prototyping.
+BB-α has been successfully applied to Bayesian neural
+networks for regression, classification (Hernández-Lobato
+et al., 2016) and model-based reinforcement learning (Depeweg et al., 2016). They all found that using α 6= 0 often
+returns better approximations than the VI case. The reasons for the worse results of VI are two fold. From the
+perspective of inference, due to the zero-forcing behaviour
+of exclusive KL discussed before, VI often fits to a local
+mode of the exact posterior and is over-confident in prediction. On hyper-parameter learning point of view, as the
+variational lower-bound is used as a (biased) approximation
+to the maximum likelihood objective, the learned model
+could be biased towards over-simplified cases (Turner &
+Sahani, 2011). These problems could potentially be addressed by using α-divergences. For example, inclusive
+KL encourages the coverage of the support set (referred
+as mass-covering), and when used in local divergence minimisation (Minka, 2005), it can fit an approximation to a
+mode of p(ω) with better estimates of uncertainty. Moreover the BB-α energy provides a better approximation to
+the marginal likelihood as well, meaning that the learned
+model will be less biased and thus fitting the data distribution better (Li & Turner, 2016). Hellinger distance seems
+to provide a good balance between zero-forcing and masscovering, and empirically it has been found to achieve the
+best performance.
+
+Given the success of α-divergence methods, it is a natural
+idea to extend these algorithms to other classes of approximations such as dropout. However this task is non-trivial.
+First, the original formulation of BB-α energy is an ad hoc
+adaptation of power-EP energy (see appendix), which applies to exponential family q distributions only. Second,
+the energy function offers a limited intuitive interpretation
+to non-experts, thus of limited use for practitioners. Third
+and most importantly, a naive implementation of BB-α using dropout would bring in a prohibitive computational burden. To see this, we first review the BB-α energy function
+in the general case (Li & Turner, 2016) given α 6= 0:
 "
-#v1 ) satisfies
-⌧
-✓
-◆
-2
-v̄1
+!α #
 1
+fn (ω)p0 (ω) N
+1X
+log Eq
+. (2)
+Lα (q) = −
 1
-E 1
-, e1
-= ⌦
-+ 4 2
-2 mn
-kv̄1 k
-n
-The proof is given in the appendix.
-
-4. A Multi-round Algorithm based on
-Shift-and-Invert Iterations
-In this section we move on to consider distributed algorithms that perform multiple communication rounds. The
-main motivation, beyond improving some poly-logarithmic
-factors in the estimation error, is to obtain a result that does
-not require the per-machine sample size n to grow with the
-number of machines m, as in the result of Theorem 4.
-Towards this end we consider the use of the Shift-andInvert meta-algorithm, originally described in (Garber &
-Hazan, 2015; Garber et al., 2016), to explicitly solve the
-centralized ERM objective, i.e., find a unit vector that is an
-approximate solution to maxv:kvk=1 v> X̂v.
-Throughout this section we let ˆ 1 , ˆ denote the leading
-eigenvalue and eigengap of X̂, respectively. Also, we assume without loss of generality that b = 1 (i.e., all data
-points lie in the unit Euclidean ball).
-Since our approach is to approximate the population risk
-by approximating the empirical risk, we state the following simple lemma for completeness (a proof is given in the
-appendix).
-Lemma 4 (Risk of approximated-ERM for PCA). Let w
-be a unit vector such that (w> v̂1 )2 1 ✏, for some fixed
-✏ > 0, where v̂1 is the leading eigenvector p
-of X̂. Then it
-holds that 1 (w> v1 )2  1 (w> v̂1 )2 + 2✏.
-4.1. The Shift-and-Invert meta-algorithm
-The Shift-and-Invert algorithm (Garber & Hazan, 2015;
-Garber et al., 2016) efficiently reduces the problem of
-computing the leading eigenvector of a positive semidefinite matrix X̂ to that of approximately-solving a polylogarithmic number of linear systems, i.e., finding approximate minimizers of convex quadratic optimization problems of the form
-
-min {F
-
-z2Rd
-
-,w (z)
-
-:=
-
-1 >
-z ( I
-2
-
-X̂)z
-
-z> w},
-
-(8)
-
-where > 1 (X̂) is a shifting parameter. The algorithm is
-essentially based on applying power iterations to a shifted
-and inverted matrix ( I X̂) 1 , where the shifting parameter is carefully chosen. The algorithm that implements
-this reduction, originally described in (Garber & Hazan,
-2015), is given below (see Algorithm 1).
-Algorithm 1 S HIFT- AND -I NVERT P OWER M ETHOD
-1: Input: estimate ˜ for the gap ˆ, accuracy ✏ 2 (0, 1),
-failure probability p
-⇣ ⌘
-2: Set: m1
-d8 ln 144d/p2 e, m2
-d 32 ln 18d
-p2 ✏ e
-n ⇣ ⌘m1 +1 ⇣ ⌘m2 +1 o
+α n
+q(ω) N
+One could verify that this is the same energy function as
+presented in (Hernández-Lobato et al., 2016) by considering q an exponential family distribution. In practice (2)
+might be intractable, hence an MC approximation is introduced:
+"
+!α #
 1
-˜/8
-3: Set: ✏˜
-min 16
-, 4✏ ˜/8
-4: Set: (0)
-1 + ˜ , ŵ0
-random unit vector, s
-0
-5: repeat
-6:
-s
-s + 1 , Ms
-( (s 1) I X̂)
-7:
-for t = 1...m1 do
-8:
-Find approx. minimizer - ŵt of F (s 1) ,ŵt 1 (z)
-such that kŵt Ms 1 ŵt 1 k  ✏˜
-9:
-end for
-10:
-ws
-ŵm1 /kŵm1 k
-11:
-Find approx. minimizer - vs of F (s 1) ,ws (z) such
-that kvs Ms 1 ws k  ✏˜
+1 X
+1X
+fn (b
+ω k )p0 (b
+ωk ) N
+MC
+log
+Lα (q) = −
 1
-1
-s
-12:
-s
-(s)
-(s 1)
-2 · ws> vs ✏˜ ,
-2
-13: until s  ˜
-14: (f )
-( (f ) I X̂)
-(s) , Mf
-15: for t = 1...m2 do
-16:
-Find approx. minimizer - ŵt of F (f ) ,ŵt 1 (z) such
-that kŵt Mf 1 ŵt 1 k  ✏˜
-17: end for
-18: Return: wf
-ŵm2 /kŵm2 k
-Lemma 5 (Efficient reduction of top eigenvector to convex optimization; originally Theorem 4.2 in (Garber &
-Hazan, 2015)). Suppose that ˆ := 1 (X̂)
-2 (X̂) > 0
-and suppose that the estimate ˜ in Algorithm 1 satisfies
-˜ 2 [ ˆ/2, 3 ˆ/4]. Then, with probability at least 1 p,
-Algorithm 1 finds a unit vector wf such that (wf> v̂1 )2
-1 ✏, and the total number of optimization problems of
-the form (8) solved ⇣
-during the run of the algorithm,
-⇣ ⌘⌘ is upd
-1
-ˆ
-per bounded by O ln(d/p) ln(
-) + ln p✏
-. Moreover, throughout the run of the algorithm it holds that
-ˆ 1 = ⌦( ˆ).
-1+ˆ
-(s)
-Remark: the purpose of the repeat-until loop in Algorithm 1 is to efficiently find a shifting parameter (f ) such
-that c1 ˆ  (f ) ˆ 1  c2 ˆ for some universal constants
-c2 > c1 > 0. When n satisfies n = ⌦( 2 ln(d/p)),
-we can directly find (w.h.p) such a shifting parameter, by
-
-Communication-efficient Algorithms for Distributed Stochastic Principal Component Analysis
-
-simply estimating ˆ 1 , ˆ from the data of a single machine.
-Also, we can take ŵ0 to be the leading eigenvector of any
-single machine, since this will already have a constant correlation with v̂1 . Thus, for such n, the total number of
-optimization problems can be reduced to O(ln(p 1 ✏ 1 )).
-Algorithm 1 is a meta-algorithm in the sense that the choice
-of solver for the optimization problems min F ,w is unspecified, and any solver will do. A simple calculation
-shows that a naive application of either the conjugate gradient method or Nesterov’s accelerated gradient method to
-solve these optimization problems in a distributed manner,
-i.e., the computation of the gradient vector
-q is distributed
-ˆ 1 / ˆ commuacross machines, will require overall Õ
-nication rounds, which does not give any improvement over
-the distributed Lanczos approach, described in Subsection
-2.2.2. However, this can be substantially improved by taking advantage of the fact that the data on all machines is
-sampled i.i.d. from the same distribution. In particular,
-we present below an approach based on applying a preconditioner to the optimization Problem (8), in the spirit of
-the one described in (Zhang & Lin, 2015).
-4.2. Faster Distributed Approximation of Linear
-Systems via Local Preconditioning
-Let M = I X̂, for some shift parameter > ˆ 1 , and define the pre-conditioning matrix C = ( +µ)I X̂1 , where
-µ is required so C is invertible. Consider now solving the
-following modified quadratic problem:
-1
-F̃ ,w (y) := y> C 1/2 MC 1/2 y y> C 1/2 w. (9)
-2
-⇤
-Note that if y is the optimal solution to Problem (9), i.e.,
-y⇤ = C1/2 M
-then z := C
-⇤
-
-1
-
-C1/2 C
-
-1/2
-
-w = C1/2 M
-
-1
-
-w,
-
-y is the optimal solution to Problem (8).
-
-1/2 ⇤
-
-The idea behind choosing C this way is very intuitive. Ideally we could have chosen C = M, making the condition number of F̃ ,w equal to (F̃ ,w ) = 1, which is the
-best we can hope for. The problem of course is that this
-requires us to explicitly compute M 1/2 , which is more
-challenging then just computing the leading eigenvector of
-X̂. The next best thing is thus to choose C based only
-on the data available on any single machine, which allows
-computing C 1/2 without additional communication overhead, and leads to the choice described above. The following lemma, rephrased from (Zhang & Lin, 2015), quantifies
-exactly how such a choice of C helps in improving the condition number of the new optimization problem, Problem
-(9). The proof is given in the appendix.
-Lemma 6. Suppose
-⇣ that µ ⌘ kX̂ X̂1 k. Then, F̃ ,w (y)
-is 1-smooth and
-lar, (F̃
-
-,w )
-
-ˆ1
-
-(
-
-ˆ 1 )+2µ
-
- 1 + 2µ/(
-
--strongly convex. In particu-
-
-ˆ 1 ). Moreover, fixing ỹ 2 R ,
-d
-
-if we let z̃ := C 1/2 ỹ, then it holds that kz̃ M 1 wk 
-ˆ 1 ) 1/2 kỹ C1/2 M 1 wk. In particular, for any
-(
-p
-p 2 (0, 1), if we set µ = 4 ln(d/p)/n, then the above
-holds with probability at least 1 p, where this probability
-depends only on the randomness in X̂1 .
-4.2.1. S OLVING THE PRE - CONDITIONED LINEAR
-SYSTEMS
-
-We now discuss the application of gradient-based algorithms for finding an approximate minimizer of the preconditioned problem, Problem (9), in our distributed setting. Towards this end we require a distributed implementation for the first-order oracle of F̃ ,w (y) (i.e., computation of the value and gradient vector at a queried point).
-A straight-forward implementation of the first-order oracle
-in our distributed setting is given in Algorithm 2.
-Algorithm 2 Distributed First-Order Oracle for F̃ ,w (y)
-1: Input: shift parameter > 0, regularization parameter
-µ > 0, vector w 2 Rd , query vector y 2 Rd
-2: send ỹ := C 1/2 y to machines {2, . . . , m} for C :=
-( + µ)I X̂1 {executed on machine 1}
-3: for i = 1...m do
-4:
-send r̃i := X̂i ỹ to machine 1 {executed on each
-machine i}
-5: end for
-Pm
-1
-6: aggregate r̃ := m
-i=1 r̃i {executed on machine 1}
-7: compute F̃ ,w (y) = 12 ( y> C 1 y y> C 1/2 r̃)
-y> C 1/2 w {executed on machine 1}
-8: compute rF̃ ,w (y) = C 1 y C 1/2 r̃ C 1/2 w
-{executed on machine 1}
-9: return: (F̃ ,w (y), rF̃ ,w (y))
-We have the following lemma, the proof of which is deferred to the appendix.
-Lemma 7. Fix some > 1 (X̂) and w 2 Rd , and let
-1
-µ > 0 be as in Lemma 6. Fix ✏ > 0. Consider the
-following two-step algorithm:
-1. Apply either the conjugate gradient method or Nesterov’s accelerated method with the distributed firstorder oracle described in Algorithm 2 to find ỹ 2 Rd
-such that F̃ ,w (ỹ) miny2Rd F̃ ,w (y)  ✏0
-2. Return z̃ = C
-Then, for ✏ =
-0
-
-✏
-2
-1
-
-1/2
-
-⇣
-
-ỹ.
-
-1+
-
-2µ
-ˆ1
-
-⌘
-
-1
-
-(
-
-ˆ 1 ) it holds that
-
-kz̃ ( I X̂1 ) wk  ✏, and the total number distributed matrix-vector products with the empirical covariance matrix X̂ required to compute z̃ is upper-bounded by
-O
-
-✓q
-
-1 + 2µ(
-
-ˆ1)
-
-1
-
-ln
-
-⇣⇣
-
-1+
-
-2µ ⌘
-kwk/[(
-ˆ1
-
-ˆ 1 )✏]
-
-⌘◆
-
-.
-
-Communication-efficient Algorithms for Distributed Stochastic Principal Component Analysis
-
-We now state our main result for this section, which is a
-simple consequence of the previous lemmas. The full proof
-is given in the appendix.
-Theorem 6. Fix ✏ 2 (0, 1) and p 2
-p(0, 1). Suppose that
-mn = ⌦( 2 ln(d/p)). Set µ = 4 ln(3d/p)/n. Applying the Shift-and-Invert algorithm, Algorithm 1, with the
-parameters ✏, p/3, and applying the algorithm in Lemma
-7 with the parameter µ, to approximately solve the linear
-systems, yields with probability at least 1 p a unit vector
-wf such that (wf> v̂1 )2 1 ✏, after executing at most
-0s p
-
-O@
-
-" ✓
-◆
-ln(d/p)
-d
-p
-ln
-ln
-p✏2
+α n
+K
+q(b
+ωk ) N
+k
+(3)
+b k ∼ q(ω). This is a biased approximation as the
+with ω
+expectation in (2) is computed before taking the logarithm.
+But empirically Hernández-Lobato et al. (2016) showed
+that the bias introduced by the MC approximation is often dominated by the variance of the samples, meaning that
+the effect of the bias is negligible. When α → 0 it returns
+the variational free energy (the VI objective)
+X
+L0 (q) = LVFE (q) = KL[q||p0 ] −
+Eq [log fn (ω)] , (4)
 n
 
-+ ln
+and the corresponding MC approximation LMC
+VFE becomes
+→
+LMC
+an unbiased estimator of LVFE . Also LMC
+α
+VFE as the
+number of samples K → 1.
+The original paper (Hernández-Lobato et al., 2016) proposed a naive implementation which directly evaluates the
+b k ∼ q(ω). However
+MC estimation (3) with samples ω
+as discussed before, dropout implicitly samples different
+b ∼ q for different data points.
+masked weight matrices ω
+This indicates that the naive approach, when applied to
+dropout approximation, would gather all these samples for
+all M datapoints in a mini-batch (i.e. M K sets of neural
+network weight matrices in total), which brings prohibitive
+cost if the network is wide and deep. Interestingly, the minimisation of the variational free energy (α = 0) with the
+dropout approximation can be computed very efficiently.
+The main reason for this success is due to the additive structure of the variational free energy: no evaluation of q density is required if the “regulariser” KL[q||p0 ] can be computed/approximated efficiently. In the following section we
 
-2
+Dropout Inference in Bayesian Neural Networks with Alpha-divergences
 
-✓
+propose an improved version of BB-α energy to allow applications with dropout and other flexible approximation
+structures.
 
-d
-p✏2
-
-◆
-
-ln
-
-✓ ◆ ◆
+4. A New Reparameterisation of BB-α Energy
+We propose a reparamterisation of the BB-α energy to reduce the computational overhead. First we denote q̃(ω) as
+a free-form “cavity distribution” (see appendix), and write
+the approximate posterior q as
+
+ α
+q̃(ω) N −α
 1
+,
+(5)
+q̃(ω)
+q(ω) =
+Zq
+p0 (ω)
+where we assume Zq < +∞ is the normalising constant
+to ensure q a valid distribution. When α/N → 0, the unnormalised density in (5) converges to q̃(ω) for every ω,
+and Zq → 1 by the assumption of Zq < +∞ (Van Erven & Harremoës, 2014). Hence q → q̃ when α/N → 0,
+and this happens for example when we choose α → 0, or
+N → +∞ as well as when α grows sub-linearly to N .
+Now we rewrite the BB-alpha energy in terms of q̃:
+
+ α !1− Nα
+Z
+1
+q̃(ω) N −α
+1X
+log
+q̃(ω)
+Lα (q) = −
+α n
+Zq
+p0 (ω)
+α
 
-p
-
-!
-ln(d/p)
-p
-2 n
-s
-
+p0 (ω) N fn (ω)α dω
+
+
+1
+α
+α
+=−
+q̃(ω)fn (ω) − 1 −
+log Zq
+α n
+N
+
+ α
+Z
+α
+q̃(ω) N −α
+N
+1−
+log q̃(ω)
+dω
 =
+α
+N
+p0 (ω)
+1X
+−
+log Eq̃ [fn (ω)α ]
+α n
+1X
+N
+= Rβ [q̃||p0 ] −
+log Eq̃ [fn (ω)α ] , β =
+,
+α n
+N −α
+X Z
 
-Õ
+where Rβ [q̃||p0 ] represents the Rényi divergence (Rényi
+(1961), see appendix) of order β. Furthermore, provided
+Rβ [q̃||p0 ] < +∞ (which holds when assuming Zq <
++∞), we have Rβ [q̃||p0 ] → KL[q̃||p0 ] = KL[q||p0 ] as
+α
+N → 0. This means that for a constant α that scales sublinearly with N , in large data settings we can further approximate the BB-α energy as
+1X
+log Eq [fn (ω)α ] .
+Lα (q) ≈ L̃α (q) = KL[q||p0 ] −
+α n
+Note that here we also use the fact that now q ≈ q̃. Critically, the proposed reparameterisation is continuous in α,
+and by taking α → 0 the variational free-energy (4) is recovered.
+Given a loss function l(·, ·), e.g. l2 loss in regression or
+cross entropy in classification, we can define the (unnormalised) likelihood term fn (ω) ∝ p(yn |xn , ω) ∝
 
+exp[−l(yn , f ω (xn ))], e.g. see (LeCun et al., 2006)1 .
+Swapping fn (ω) for this last expression, and approximating the expectation over q using Monte Carlo sampling, we
+obtain our proposed minimisation objective:
+L̃MC
+(6)
+α (q) = KL[q||p0 ] + const
+X
 1
-p
+log-sum-exp[−αl(yn , f ωb k (xn ))]
+−
+α n
+with log-sum-exp being the log-sum-exp operator over K
+b k ∼ q(ω). This
+samples from the approximate posterior ω
+objective function also approximates the marginal likelihood. Therefore, compared to the original formulation (2),
+the improved version (6) is considerably simpler (both to
+implement and to understand), has a similar form to standard objective functions used in deep learning research, yet
+remains an approximate Bayesian inference algorithm.
+To gain some intuitive understanding of this objective, we
+observe what it reduces to for different α and K settings.
+By selecting α = 1 the per-point predictive log-likelihood
+log Eq [p(yn |xn , ω)] is directly optimised. On the other
+hand, picking the VI value (α → 0) would focus on increasing the training accuracy Eq [log p(yn |xn , ω)]. The
+Hellinger value could be used to achieve a balance between
+reducing training error and improving predictive likelihood, which has been found to be desirable (HernándezLobato et al., 2016; Depeweg et al., 2016). Lastly, for
+K = 1 the log-sum-exp disappears, the α’s cancel out, and
+the original (stochastic) VI objective is recovered.
+In summary, our proposal modifies the loss function by
+multiplying it by α and then performing log-sum-exp with
+a sum over multiple stochastic forward passes sampled
+from the BNN approximate posterior. The remaining KLdivergence term (between q and the prior p) can often be
+approximated. It can be viewed as a regulariser added to
+the objective function, and reduces to L2 -norm regulariser
+for certain popular q choices (Gal, 2016).
+4.1. Dropout BB-α
+We now provide a concrete example where the approximate
+distribution is defined by dropout. With dropout VI, MC
+samples are used to approximate the expectation w.r.t. q,
+which in practice is implemented as performing stochastic
+forward passes through the dropout network – i.e. given an
+input x, the input is fed through the network and a new
+dropout mask is sampled and applied at each dropout layer.
+This gives a stochastic output – a sample from the dropout
+network on the input x. A similar approximation is used
+in our case as well, where to implement the MC sampling
+in eq. (6) we perform multiple stochastic forward passes
+1
+fn (ω) does not need to be a normalised density of yn unless
+one would like to optimise the associated hyper parameters.
 
-n
+Dropout Inference in Bayesian Neural Networks with Alpha-divergences
 
+through the network.
+Recall the neural network f ω (x) is parameterised by the
+variable ω. In classification, cross entropy is often used as
+the loss function l(y, f ω (x)) = −yT log pω (x), where the
+label yn is a one-hot binary vector, and the network output
+pω (xn ) = Softmax(f ω (xn )) encodes the probability vector of class assignments. Applying the re-formulated BB-α
+energy (6) with a Bayesian equivalent of the network, we
+arrive at the objective function
+
+def softmax_cross_ent_with_mc_logits(alpha):
+def loss(y_true, mc_logits):
+# mc_logits: MC samples of shape MxKxD
+mc_log_softmax = mc_logits \
+- K.max(mc_logits, axis=2, keepdims=True)
+mc_log_softmax = mc_log_softmax - \
+logsumexp(mc_log_softmax, 2)
+mc_ll = K.sum(y_true*mc_log_softmax,-1)
+return -1./alpha * (logsumexp(alpha * \
+mc_ll, 1) + K.log(1.0 / K_mc))
+return loss
+
+Figure 1. Code snippet for our induced classification loss.
+1 X ωb k
+1X T
+yn log
+(p (xn ))α
+α n
+K
+i
+k
 !
+5.1. Regression
+X
+X
+X
+1
+1
+bk
+ω
+α
+=
+p (xn )
++
+L2 (Mi ) The first experiment considers Bayesian neural network rel yn ,
+α n
+K
+i
+k
+gression with approximate posterior induced by dropout.
+We use benchmark UCI datasets2 that have been tested
+with {pωb k (xn )}K
+k=1 being K stochastic network outputs
+in related literature. The model is a single-layer neuon input xn , pi equals to one minus the dropout rate of
+ral network with 50 ReLU units for all datasets except
+the ith layer, and the L2 regularization terms coming from
+for Protein and Year, which use 100 units. We consider
+an approximation to the KL-divergence (Gal, 2016). I.e.
+α ∈ {0.0, 0.5, 1.0} in order to examine the effect of masswe raise network probability outputs to the power α and
+covering/zero-forcing behaviour in dropout. MC approxiaverage them as an input to the standard cross entropy loss.
+mation with K = 10 samples is also deployed to compute
+Taking α 6= 1 can be viewed as training the neural network
+the energy function. Other initialisation settings are largely
+with an adjusted “power” loss, regularized by an L2 norm.
+taken from (Li & Turner, 2016).
+Implementing this induced loss with Keras (Chollet, 2015)
+We summarise the test negative log-likelihood (LL) and
+is as simple as a few lines of Python. A code snippet is
+RMSE with standard error (across different random splits,
+given in Figure 1, with more details in the appendix.
+the lower the better) for selected datasets in Figure 2 and 3,
+In regression problems, the loss function is defined as
+respectively. The full results are provided in the appendix.
+l(y, f ω (x)) = τ2 ||y − f ω (x)||22 and the likelihood term can
+Although optimal α may vary for different datasets, using
+be interpreted as y ∼ N (y; f ω (x), τ −1 I). Plugging this
+non-VI values has significantly improved the test-LL perinto the energy function returns the following objective
+formances, while remaining comparable in test error meth
+i
+ric. In particular, α = 0.5 produced overall good results
+X
+1
+ατ
+L̃MC
+log-sum-exp − ||yn − f ωb k (xn )||22
+for
+both test LL and RMSE, which is consistent with preα (q) = −
+α n
+2
+vious findings. We also compare with a BNN with a GausX
+ND
+sian approximation (VI-G) (Li & Turner, 2016), a BNN
+log τ +
++
+pi ||Mi ||22 ,
+(7)
+2
+with HMC, and a sparse Gaussian process model with 50
+i
+inducing points (Bui et al., 2016). In test-LL metric our
+best dropout model out-performs the Gaussian approximawith {f ωb k (xn )}K
+being
+K
+stochastic
+forward
+passes
+on
+k=1
+tion method on almost all datasets, and for some datasets
+input xn . Again, this is reminiscent of the l2 objective in
+is on par with HMC which is the current gold standard
+standard deep learning, and can be implemented by simfor Bayesian neural works, and with the GP model that is
+ply passing the input through the dropout network multiple
+known to be superior in regression.
+times, collecting the stochastic outputs, and feeding the set
+of outputs through our new BB-alpha loss function.
+5.2. Classification
 
-distributed matrix-vector products with the empirical covariance matrix X̂.
+L̃MC
+α (q) =
+
+X
+
+pi ||Mi ||22 −
 
 5. Experiments
-To validate some of our theoretical findings we conducted experiments with single-round algorithms on synthetic data. We generated synthetic datasets using two distributions. For both distributions we used the covariance
-matrix X = U⌃U> with U being a random d ⇥ d orthonormal matrix and ⌃ is diagonal satisfying: ⌃(1, 1) =
-1, ⌃(2, 2) = 0.8, 8j 3 : ⌃(j, j) = 0.9·⌃(j 1, j 1),
-i.e., = 0.2. One dataset was generated according to the
-normal distributions N (0, X), and for p
-the second datasets
-we generated samples by taking x = 3/2X1/2 y where
-y ⇠ U [ 1, 1]. In both cases we set d = 300.
-Beyond the single-round algorithms that are based on
-aggregating the individual ERM solutions described so
-far, we propose an additional natural aggregation approach, based on aggregating the individual projection ma(i)
-trices. More concretely, letting {v̂1 }m
-i=1 denote the leading eigenvectors of the individual machines, let P̄1 :=
-Pm (i) (i)>
-1
-. We then take the final estimate w to
-i=1 v̂1 v̂1
-m
-be the leading eigenvector of the aggregated matrix P̄1 .
-Note that as with the sign-fixing based aggregation, this
-approach also resolves the sign-ambiguity in the estimates
-produced by the different machines, which circumvents the
-lower bound result of Theorem 3.
+We test the reparameterised BB-α on Bayesian NNs with
+the dropout approximation. We assess the proposed inference in regression and classification tasks on standard
+benchmarking datasets, comparing different values of α.
+This last experiment leads us to propose a technique that
+could be used to identify adversarial image attacks. In the
+appendix we further provide a study of run time trade-off.
 
-For both datasets we fixed the number of machines to
-m = 25. We tested the estimation error (i.e., the value
-1 (w> v1 )2 where v1 is the leading eigenvector of X and
-w is the estimator) of five benchmarks vs. the per-machine
-sample size n: the centralized solution v̂1 , the average
-of the individual (unbiased) ERM solutions (normalized to
-unit norm),the average of ERM solutions with sign-fixing,
-and the leading eigenvector of the averaged projection ma-
+We further experiment with a classification task, comparing
+the accuracy of the various α values on the MNIST benchmark (LeCun & Cortes, 1998). We assessed a fully connect
+NN with 2 hidden layers and 100 units in each layer. We
+used dropout probability 0.5 and α ∈ {0, 0.5, 1}. Again,
+we use K = 10 samples at training time for all α values,
+2
+http://archive.ics.uci.edu/ml/datasets.
+html
 
-trix. We also plotted the average loss of the individual ERM
-solutions. Results are averaged over 400 independent runs.
-The results for the normal distribution appear in Figure 1.
-The results for the uniform-based distribution are very similar and are deferred to the appendix. We can see that, as
-our lower bound in Theorem 3 suggests, simply averaging
-and normalizing the individual ERM solutions has significantly worse performance than the centralized ERM solution. Perhaps surprisingly, the performance of this estimator is even worse than the average error of an estimate
-computed using only a single machine. We see that both
-aggregation methods that are based on correlating the individual ERM solutions, namely the sign-fixing-based estimator, and the proposed averaging-of-projections heuristic,
-are asymptotically consistent with the centralized ERM.
-In particular, the averaging-of-projections scheme, at least
-empirically, significantly outperforms the sign-fixing approach, which justifies further theoretical investigation of
-this heuristic. For the sign fixing approach, we can see that
-as suggested by our bounds, the estimator is not consistent
-with the centralized ERM solution for small values of n.
-0.9
+Dropout Inference in Bayesian Neural Networks with Alpha-divergences
 
-centralized ERM
-avg. of ERMs
-sign-fix avg. of ERMs.
-projection avg.
-avg. machine loss
+Figure 2. Negative test-LL results for Bayesian NN regression.
 
-0.8
+and Ktest = 100 samples at test time. We use weight decay
+10−6 , which is equivalent to prior lengthscale l2 = 0.1 (Gal
+& Ghahramani, 2016b). We repeat each experiment three
+times and plot mean and standard error. Test RMSE as well
+as test log likelihood are given in Figure 4. As can be seen,
+Hellinger value α = 0.5 gives best test RMSE, with test
+log likelihood matching that of the EP value α = 1. The
+VI value α = 0 under-performs according to both metrics.
+We next assess a convolutional neural network model
+(CNN). For this experiment we use the standard CNN example given in (Chollet, 2015) with 32 convolution filters,
+100 hidden units at the top layer, and dropout probability
+0.5 before each fully-connected layer. Other settings are as
+before. Average test accuracy and test log likelihood are
+given in Figure 5. In this case, VI value α = 0 seems to
+supersede the EP value α = 1, and performs similarly to
+the Hellinger value α = 0.5 according to both metrics.
+5.3. Detecting Adversarial Examples
+The third set of experiments considers adversarial attacks
+on dropout-trained Bayesian neural networks. We test the
+hypothesis that certain techniques for generating adversarial examples will give images that lie outside of the image
 
-0.7
+(a) NN test accuracy
 
-0.6
+(b) NN test log likelihood
 
-avg. error
+Figure 4. MNIST test accuracy and test log likelihood for a fully
+connected NN in a classification task.
 
-4.3. Putting it all together
+Figure 3. Test RMSE results for Bayesian NN regression.
 
-0.5
+manifold, i.e. far from the data distribution (note though
+that there exist techniques that will guarantee the images
+staying near the data manifold, by minimising the perturbation used to construct the adversarial example). By assessing the BNN uncertainty, we should see increased uncertainty for adversarial images if they indeed lie outside of the
+training data distribution. The tested models are fully connected networks with 3 hidden layers of 1000 units trained
+using dropout rate 0.5 and different alpha values. These
+models are also compared to a benchmark MLP with the
+same architecture but trained by maximum likelihood. The
+adversarial examples are generated on MNIST test data that
+is normalised to be in the range [0, 1]. For the dropout
+trained networks we perform MC dropout at test time with
+Ktest = 10 MC samples.
+The first attack in consideration is the Fast Gradient Sign
+(FGS) method (Goodfellow et al., 2014). This is an untargeted attack, which attempts to reduces the maximum
+value of the predicted class label probability
+xadv = x − η · sgn(∇x max log p(y|x)).
+y
 
-0.4
+We use the single gradient step FGS implemented in Cleverhans (Papernot et al., 2016) with the stepsize η varied
 
-0.3
+(a) CNN test accuracy
 
-0.2
+(b) CNN test log likelihood
 
-0.1
+Figure 5. MNIST test accuracy and test log likelihood for a convolutional neural network in a classification task.
 
-0
-0
+Dropout Inference in Bayesian Neural Networks with Alpha-divergences
 
-100
+Figure 6. Un-targeted attack: classification accuracy results as a
+function of perturbation stepsize. The adversarial examples are
+shown for (from top to bottom) MLP and BNN trained with
+dropout and α = 0.0, 0.5, 1.0.
 
-200
+between 0.0 and 0.5. The left panel in Figure 6 demonstrates the classification accuracy on adversarial examples,
+which shows that the dropout networks, especially the one
+trained with α = 1.0, are significantly more robust to adversarial attacks compared to the deterministic NN. For
+example, for η = 0.1 the adversarial samples still visually close to the original class, and the BNN trained with
+α = 0.0 achieves an accuracy level almost 3 times higher
+than the MLP and around 20% higher than the VI-trained
+version. More interestingly, the test data examples and adversarial images can be told-apart by investigating the uncertainty representation of the dropout models. In the right
+panel of Figure 6 we depict the predictive entropy computed on the neural network output probability vector, and
+show example corresponding adversarial images below the
+axis for each corresponding stepsize. Clearly the deterministic NN model produces over-confident predictions on adversarial samples, e.g. it predicts the wrong label very confidently even when the input is still visually close to digit
+“7” (η = 0.2). While dropout models, though producing
+wrong labels, are very uncertain about their predictions.
+This uncertainty keeps increasing as we move away from
+the data manifold. Hence the dropout networks are much
+more immunised from noise-corrupted inputs, as they can
+be detected using uncertainty estimates in this example.
+The second attack we consider is a targeted version of FGS
+(Goodfellow et al., 2014; Carlini & Wagner, 2016), which
+maximises the predictive probability of a selected class instead. As an example, we fix class 0 as the target and apply
+the iterative gradient-base attack to all non-zero digits in
+test data. At step t, the adversarial output is computed as
+t−1
+xtadv = xt−1
+adv + η · sgn(∇x log p(ytarget |xadv )),
 
-300
+where the stepsize η is fixed at 0.01 in this case. Results are
+presented in the left panel of Figure 7, and again dropout
 
-400
+Figure 7. Targeted attack: classification accuracy results (on both
+original and target class) as a function of the number of iterative
+gradient steps. Note the log scale x-axis in the left panel.
 
-500
+trained models are more robust to this attack compared with
+the MLP. Similarly these adversarial examples could be detected by the Bayesian neural networks’ uncertainty, by examining the predictive entropy. By visually inspecting the
+generated adversarial examples in the right panel of Figure 7, it is clear that the MLP overconfidently classifies a
+digit 7 to class 0. On the other hand, the dropout models
+are still fairly uncertain about their predictions even after
+40 gradient steps. More interestingly, running this iterative
+attack on dropout models produces a smooth interpolation
+between different digits, and when the model is confident
+on predicting the target class, the corresponding adversarial
+images are visually close to digit zero.
+These initial results suggest that assessing the epistemic
+uncertainty of classification models can be used as a viable technique to identify adversarial examples. We would
+note though that we used this experiment to demonstrate
+our techniques’ uncertainty estimates, and much more research is needed to solve the difficulties faced with adversarial inputs.
 
-600
+6. Conclusions
+We presented a practical extension of the BB-alpha objective which allows us to use the technique with dropout approximating distributions. The technique often supersedes
+existing approximate inference techniques (even sparse
+Gaussian processes), and is easy to implement. A code
+snippet for our induced loss is given in the appendix.
+Acknowledgements
+We thank Rich Turner, Nicolas Papernot, and the reviewers
+for comments. YL thanks the Schlumberger Foundation
+FFTF fellowship for supporting her PhD study.
 
-n
-
-Figure 1. Estimation error vs. the per-machine sample size n for
-a normal distribution.
-
-6. Discussion
-We presented communication-efficient algorithms for distributed statistical estimation of principal components. Focusing on our results for methods based on a single communication round, we initiated a study of how to correctly aggregate distributed ERM solutions in a non-convex setting.
-An important take-home message of our work is that in a
-non-convex setting, simply averaging the local solutions is
-not a good idea. On the positive side, we show that a very
-simple correction (i.e., sign-fixing) is possible by leveraging the specific structure of the problem at hand. It is thus
-interesting to develop a richer theory of how to perform
-such aggregations in more involved non-convex problems.
-
-Communication-efficient Algorithms for Distributed Stochastic Principal Component Analysis
+Dropout Inference in Bayesian Neural Networks with Alpha-divergences
 
 References
-Eigenvalues and eigenvectors of 2x2 matrices.
-http://www.math.harvard.edu/archive/
-21b_fall_04/exhibits/2dmatrices/.
+Amari, Shun-ichi. Differential-Geometrical Methods in Statistic.
+Springer, New York, 1985.
+Amodei, Dario, Olah, Chris, Steinhardt, Jacob, Christiano, Paul,
+Schulman, John, and Mane, Dan. Concrete problems in ai
+safety. arXiv preprint arXiv:1606.06565, 2016.
+Angermueller, C and Stegle, O. Multi-task deep neural network to
+predict CpG methylation profiles from low-coverage sequencing data. In NIPS MLCB workshop, 2015.
+Barber, David and Bishop, Christopher M. Ensemble learning in
+Bayesian neural networks. NATO ASI SERIES F COMPUTER
+AND SYSTEMS SCIENCES, 168:215–238, 1998.
+Blundell, Charles, Cornebise, Julien, Kavukcuoglu, Koray, and
+Wierstra, Daan. Weight uncertainty in neural network. In
+ICML, 2015.
+Bui, Thang D, Hernández-Lobato, Daniel, Li, Yingzhen,
+Hernández-Lobato, José Miguel, and Turner, Richard E. Deep
+gaussian processes for regression using approximate expectation propagation. In Proceedings of The 33rd International
+Conference on Machine Learning (ICML), 2016.
+Carlini, Nicholas and Wagner, David. Towards evaluating the robustness of neural networks. arXiv preprint arXiv:1608.04644,
+2016.
+Chollet, Francois.
+Keras.
+fchollet/keras, 2015.
 
-Jain, Prateek, Jin, Chi, Kakade, Sham M, Netrapalli, Praneeth, and Sidford, Aaron. Matching matrix bernstein with little memory: Near-optimal finite sample guarantees for oja’s algorithm. arXiv preprint
-arXiv:1602.06929, 2016b.
+https://github.com/
 
-Allen Zhu, Zeyuan and Li, Yuanzhi. Even faster SVD decomposition yet without agonizing pain. In Advances
-in Neural Information Processing Systems 29: Annual
-Conference on Neural Information Processing Systems
-2016, December 5-10, 2016, Barcelona, Spain, pp. 974–
-982, 2016a.
+Hernández-Lobato, José Miguel, Li, Yingzhen, HernándezLobato, Daniel, Bui, Thang, and Turner, Richard E. Black-box
+alpha divergence minimization. In Proceedings of The 33rd International Conference on Machine Learning, pp. 1511–1520,
+2016.
+Hinton, Geoffrey E and Van Camp, Drew. Keeping the neural
+networks simple by minimizing the description length of the
+weights. In COLT, pp. 5–13. ACM, 1993.
+Hinton, Geoffrey E, Srivastava, Nitish, Krizhevsky, Alex,
+Sutskever, Ilya, and Salakhutdinov, Ruslan R. Improving neural networks by preventing co-adaptation of feature detectors.
+arXiv preprint arXiv:1207.0580, 2012.
+Jordan, Michael I, Ghahramani, Zoubin, Jaakkola, Tommi S, and
+Saul, Lawrence K. An introduction to variational methods for
+graphical models. Machine learning, 37(2):183–233, 1999.
+Kalchbrenner, Nal and Blunsom, Phil.
+translation models. In EMNLP, 2013.
 
-Jolliffe, IT. Principal component analysis. 2002. Springverlag, New York, 2002.
+Recurrent continuous
 
-Allen Zhu, Zeyuan and Li, Yuanzhi. Fast global convergence of online PCA. CoRR, abs/1607.07837, 2016b.
+Kendall, Alex and Cipolla, Roberto. Modelling uncertainty in
+deep learning for camera relocalization. In 2016 IEEE International Conference on Robotics and Automation (ICRA), pp.
+4762–4769. IEEE, 2016.
+Kendall, Alex, Badrinarayanan, Vijay, and Cipolla, Roberto.
+Bayesian segnet: Model uncertainty in deep convolutional
+encoder-decoder architectures for scene understanding. arXiv
+preprint arXiv:1511.02680, 2015.
 
-Liang, Yingyu, Balcan, Maria-Florina F, Kanchanapally,
-Vandana, and Woodruff, David. Improved distributed
-principal component analysis. In NIPS, 2014.
+Denker, John and LeCun, Yann. Transforming neural-net output
+levels to probability distributions. In Advances in Neural Information Processing Systems 3. Citeseer, 1991.
 
-Balsubramani, Akshay, Dasgupta, Sanjoy, and Freund,
-Yoav. The fast convergence of incremental PCA. In
-Advances in Neural Information Processing Systems 26:
-27th Annual Conference on Neural Information Processing Systems 2013, pp. 3174–3182, 2013.
-Boutsidis, Christos, Woodruff, David P, and Zhong, Peilin.
-Optimal principal component analysis in distributed and
-streaming models. In Proceedings of the 48th Annual
-ACM SIGACT Symposium on Theory of Computing, pp.
-236–249. ACM, 2016.
-Garber, Dan and Hazan, Elad. Fast and simple pca via
-convex optimization. arXiv preprint arXiv:1509.05647,
-2015.
-Garber, Dan, Hazan, Elad, Jin, Chi, Kakade, Sham M.,
-Musco, Cameron, Netrapalli, Praneeth, and Sidford,
-Aaron. Faster eigenvector computation via shift-andinvert preconditioning. CoRR, abs/1605.08754, 2016.
-Golub, Gene H and Pereyra, Victor. The differentiation
-of pseudo-inverses and nonlinear least squares problems
-whose variables separate. SIAM Journal on numerical
-analysis, 10(2):413–432, 1973.
-Hotelling, H. Analysis of a complex of statistical variables
-into principal components. J. Educ. Psych., 24, 1933.
-Jaggi, Martin, Smith, Virginia, Takác, Martin, Terhorst,
-Jonathan, Krishnan, Sanjay, Hofmann, Thomas, and Jordan, Michael I. Communication-efficient distributed
-dual coordinate ascent. In Advances in Neural Information Processing Systems, pp. 3068–3076, 2014.
-Jain, Prateek, Jin, Chi, Kakade, Sham M, Netrapalli, Praneeth, and Sidford, Aaron. Matching matrix bernstein with little memory: Near-optimal finite sample guarantees for oja’s algorithm. arXiv preprint
-arXiv:1602.06929, 2016a.
+Krizhevsky, Alex, Sutskever, Ilya, and Hinton, Geoffrey E. Imagenet classification with deep convolutional neural networks.
+In Advances in neural information processing systems, pp.
+1097–1105, 2012.
 
-Lee, Jason D., Ma, Tengyu, and Lin, Qihang. Distributed
-stochastic variance reduced gradient methods. CoRR,
-abs/1507.07595, 2015.
+Depeweg, Stefan, Hernández-Lobato, José Miguel, Doshi-Velez,
+Finale, and Udluft, Steffen. Learning and policy search in
+stochastic dynamical systems with bayesian neural networks.
+arXiv preprint arXiv:1605.07127, 2016.
 
-Magnus, Jan R. On differentiating eigenvalues and eigenvectors. Econometric Theory, 1(02):179–191, 1985.
-Pearson, K. On lines and planes of closest fit to systems of
-points in space. Philosophical Magazine, 2(6):559–572,
-1901.
-Reddi, Sashank J., Konecný, Jakub, Richtárik, Peter,
-Póczos, Barnabás, and Smola, Alexander J. AIDE:
-fast and communication efficient distributed optimization. CoRR, abs/1608.06879, 2016.
-Shamir, Ohad. A stochastic PCA and SVD algorithm with
-an exponential convergence rate. In Proceedings of the
-32nd International Conference on Machine Learning,
-ICML 2015, Lille, France, 6-11 July 2015, pp. 144–152,
-2015.
-Shamir, Ohad. Convergence of stochastic gradient descent
-for PCA:. In Proceedings of the 33nd International Conference on Machine Learning, ICML 2016, New York
-City, NY, USA, June 19-24, 2016, pp. 257–265, 2016a.
-Shamir, Ohad. Without-replacement sampling for stochastic gradient methods. In Advances in Neural Information
-Processing Systems 29: Annual Conference on Neural
-Information Processing Systems 2016, December 5-10,
-2016, Barcelona, Spain, pp. 46–54, 2016b.
-Shamir, Ohad. Fast stochastic algorithms for svd and pca:
-Convergence properties and convexity. In Proceedings of
-The 33rd International Conference on Machine Learning, pp. 248–256, 2016c.
-Shamir, Ohad, Srebro, Nathan, and Zhang, Tong.
-Communication-efficient distributed optimization using
-an approximate newton-type method. In Proceedings of
-the 31th International Conference on Machine Learning,
-ICML 2014, Beijing, China, 21-26 June 2014, pp. 1000–
-1008, 2014.
+Kullback, Solomon. Information theory and statistics. John Wiley
+& Sons, 1959.
 
-Communication-efficient Algorithms for Distributed Stochastic Principal Component Analysis
+Gal, Yarin. Uncertainty in Deep Learning. PhD thesis, University
+of Cambridge, 2016.
 
-Tropp, Joel A. User-friendly tail bounds for sums of random matrices. Foundations of Computational Mathematics, 12(4):389–434, 2012.
-Yu, Yi, Wang, Tengyao, and Samworth, Richard J. A useful variant of the davis–kahan theorem for statisticians.
-Biometrika, 102(2):315–323, 2015.
-Zhang, Yuchen and Lin, Xiao. Disco: Distributed optimization for self-concordant empirical loss. In Proceedings of the 32nd International Conference on Machine
-Learning (ICML-15), pp. 362–370, 2015.
-Zhang, Yuchen, Duchi, John C, and Wainwright, Martin J.
-Communication-efficient algorithms for statistical optimization. Journal of Machine Learning Research, 14:
-3321–3363, 2013.
+Kullback, Solomon and Leibler, Richard A. On information and
+sufficiency. The annals of mathematical statistics, 22(1):79–
+86, 1951.
+
+Gal, Yarin and Ghahramani, Zoubin. Bayesian convolutional neural networks with Bernoulli approximate variational inference.
+ICLR workshop track, 2016a.
+
+LeCun, Yann and Cortes, Corinna. The mnist database of handwritten digits, 1998.
+
+Gal, Yarin and Ghahramani, Zoubin. Dropout as a Bayesian approximation: Representing model uncertainty in deep learning.
+ICML, 2016b.
+
+LeCun, Yann, Boser, Bernhard, Denker, John S, Henderson,
+Donnie, Howard, Richard E, Hubbard, Wayne, and Jackel,
+Lawrence D. Backpropagation applied to handwritten zip code
+recognition. Neural Computation, 1(4):541–551, 1989.
+
+Goodfellow, Ian J, Shlens, Jonathon, and Szegedy, Christian. Explaining and harnessing adversarial examples. arXiv preprint
+arXiv:1412.6572, 2014.
+
+LeCun, Yann, Chopra, Sumit, Hadsell, Raia, Ranzato, M, and
+Huang, F. A tutorial on energy-based learning. Predicting
+structured data, 1:0, 2006.
+
+Graves, Alex. Practical variational inference for neural networks.
+In Advances in Neural Information Processing Systems, pp.
+2348–2356, 2011.
+
+Li, Yingzhen and Turner, Richard E. Rényi divergence variational
+inference. In NIPS, 2016.
+
+Hellinger, Ernst. Neue begründung der theorie quadratischer formen von unendlichvielen veränderlichen. Journal für die reine
+und angewandte Mathematik, 136:210–271, 1909.
+
+Li, Yingzhen, Hernández-Lobato, José Miguel, and Turner,
+Richard E. Stochastic expectation propagation. In Advances
+in Neural Information Processing Systems (NIPS), 2015.
+
+Hernandez-Lobato, Jose Miguel and Adams, Ryan. Probabilistic
+backpropagation for scalable learning of Bayesian neural networks. In ICML, 2015.
+
+MacKay, David JC. A practical Bayesian framework for backpropagation networks. Neural Computation, 4(3):448–472,
+1992.
+
+Dropout Inference in Bayesian Neural Networks with Alpha-divergences
+Mikolov, Tomáš, Karafiát, Martin, Burget, Lukáš, Černockỳ, Jan,
+and Khudanpur, Sanjeev. Recurrent neural network based language model. In Eleventh Annual Conference of the International Speech Communication Association, 2010.
+Minka, Tom. Divergence measures and message passing. Technical report, Microsoft Research, 2005.
+Minka, T.P. Expectation propagation for approximate Bayesian
+inference. In Conference on Uncertainty in Artificial Intelligence (UAI), 2001.
+Minka, T.P. Power EP. Technical Report MSR-TR-2004-149,
+Microsoft Research, 2004.
+Neal, Radford M. Bayesian learning for neural networks. PhD
+thesis, University of Toronto, 1995.
+Papernot, Nicolas, Goodfellow, Ian, Sheatsley, Ryan, Feinman, Reuben, and McDaniel, Patrick. cleverhans v1.0.0:
+an adversarial machine learning library.
+arXiv preprint
+arXiv:1610.00768, 2016.
+Rényi, Alfréd. On measures of entropy and information. Fourth
+Berkeley symposium on mathematical statistics and probability, 1, 1961.
+Rumelhart, David E, Hinton, Geoffrey E, and Williams, Ronald J.
+Learning internal representations by error propagation. Technical report, DTIC Document, 1985.
+Sennrich, Rico, Haddow, Barry, and Birch, Alexandra. Edinburgh
+neural machine translation systems for wmt 16. In Proceedings
+of the First Conference on Machine Translation, pp. 371–376,
+Berlin, Germany, August 2016. Association for Computational
+Linguistics.
+Srivastava, Nitish, Hinton, Geoffrey, Krizhevsky, Alex, Sutskever,
+Ilya, and Salakhutdinov, Ruslan. Dropout: A simple way to
+prevent neural networks from overfitting. The Journal of Machine Learning Research, 15(1):1929–1958, 2014.
+Sundermeyer, Martin, Schlüter, Ralf, and Ney, Hermann. LSTM
+neural networks for language modeling. In INTERSPEECH,
+2012.
+Sutskever, Ilya, Vinyals, Oriol, and Le, Quoc VV. Sequence to
+sequence learning with neural networks. In NIPS, 2014.
+Szegedy, Christian, Liu, Wei, Jia, Yangqing, Sermanet, Pierre,
+Reed, Scott, Anguelov, Dragomir, Erhan, Dumitru, Vanhoucke, Vincent, and Rabinovich, Andrew. Going deeper with
+convolutions. arXiv preprint arXiv:1409.4842, 2014.
+Turner, RE and Sahani, M. Two problems with variational expectation maximisation for time-series models. Inference and
+Estimation in Probabilistic Time-Series Models, 2011.
+Van Erven, Tim and Harremoës, Peter. Rényi divergence
+and Kullback-Leibler divergence. Information Theory, IEEE
+Transactions on, 60(7):3797–3820, 2014.
+Wan, L, Zeiler, M, Zhang, S, LeCun, Y, and Fergus, R. Regularization of neural networks using dropconnect. In ICML-13,
+2013.
+Yang, Xiao, Kwitt, Roland, and Niethammer, Marc. Fast predictive image registration. arXiv preprint arXiv:1607.02504,
+2016.
 
 

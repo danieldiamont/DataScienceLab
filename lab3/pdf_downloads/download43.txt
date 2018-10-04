@@ -1,1198 +1,1404 @@
-An Alternative Softmax Operator for Reinforcement Learning
+Globally Induced Forest: A Prepruning Compression Scheme
 
-Kavosh Asadi 1 Michael L. Littman 1
+Jean-Michel Begon 1 Arnaud Joly 1 Pierre Geurts 1
 
 Abstract
-A softmax operator applied to a set of values
-acts somewhat like the maximization function
-and somewhat like an average. In sequential
-decision making, softmax is often used in
-settings where it is necessary to maximize utility
-but also to hedge against problems that arise
-from putting all of one’s weight behind a single
-maximum utility decision.
-The Boltzmann
-softmax operator is the most commonly used
-softmax operator in this setting, but we show
-that this operator is prone to misbehavior. In
-this work, we study a differentiable softmax
-operator that, among other properties, is a
-non-expansion ensuring a convergent behavior in
-learning and planning. We introduce a variant
-of SARSA algorithm that, by utilizing the new
-operator, computes a Boltzmann policy with
-a state-dependent temperature parameter. We
-show that the algorithm is convergent and that it
-performs favorably in practice.
+Tree-based ensemble models are heavy memorywise. An undesired state of affairs considering nowadays datasets, memory-constrained environment and fitting/prediction times. In this
+paper, we propose the Globally Induced Forest
+(GIF) to remedy this problem. GIF is a fast
+prepruning approach to build lightweight ensembles by iteratively deepening the current forest. It
+mixes local and global optimizations to produce
+accurate predictions under memory constraints
+in reasonable time. We show that the proposed
+method is more than competitive with standard
+tree-based ensembles under corresponding constraints, and can sometimes even surpass much
+larger models.
 
 1. Introduction
-There is a fundamental tension in decision making
-between choosing the action that has highest expected
-utility and avoiding “starving” the other actions. The issue
-arises in the context of the exploration–exploitation
-dilemma (Thrun, 1992),
-non-stationary decision
-problems (Sutton, 1990), and when interpreting observed
-decisions (Baker et al., 2007).
-In reinforcement learning, an approach to addressing the
-tension is the use of softmax operators for value-function
-optimization, and softmax policies for action selection.
-Examples include value-based methods such as SARSA
-(Rummery & Niranjan, 1994) or expected SARSA (Sutton
-& Barto, 1998; Van Seijen et al., 2009), and policy-search
-methods such as REINFORCE (Williams, 1992).
+Decision forests, such as Random Forest (Breiman, 2001)
+and Extremely Randomized Trees (Geurts et al., 2006),
+are popular methods in the machine learning community.
+This popularity is due to their overall good accuracy, relative ease-of-use, short learning/prediction time and interpretability. However, datasets have become bigger and
+bigger over the past decade. The number of instances N
+has increased and the community has turned to very highdimensional learning problems. The former has led to
+bigger trees, as the number of nodes in a tree is O(N ).
+The latter, on the other hand, tends to steer toward larger
+forests. Indeed, the variance of individual trees tends to
+increase with the dimensionality P of the problem (Joly
+et al., 2012). Therefore, the adequate number of trees T
+increases with the dimensionality. Overall, this change of
+focus might render tree-based ensemble techniques impractical memory-wise, as the total footprint is O(N × T (P )).
 1
-Brown University, USA. Correspondence to: Kavosh Asadi
-<kavosh@brown.edu>.
+Department of Electrical Engineering and Computer Science University of Liège, Liège, Belgium. Correspondence
+to: Jean-Michel Begon <jm.begon@ulg.ac.be>, Pierre Geurts
+<p.geurts@ulg.ac.be>.
 
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-An ideal softmax operator is a parameterized set of
-operators that:
-1. has parameter settings that allow it to approximate
-maximization arbitrarily accurately to perform
-reward-seeking behavior;
-2. is a non-expansion for all parameter settings ensuring
-convergence to a unique fixed point;
-3. is differentiable to make it possible to improve via
-gradient-based optimization; and
-4. avoids the starvation of non-maximizing actions.
-Let X = x1 , . . . , xn be a vector of values. We define the
-following operators:
-max(X) =
+Aside from big data, other areas of machine learning suffer
+from the high memory demand of tree-based methods. For
+instance, low-memory devices, such as mobile phones and
+embedded systems, require lightweight models. Smaller
+models also implies faster predictions, which is crucial for
+real-time applications. All in all, tree-based models might
+benefit from lighter memory footprint in many different
+ways.
+In this paper, we propose the Globally Induced Forest
+(GIF), an algorithm which, under a node budget constraint,
+iteratively and greedily deepens multiple trees by optimizing globally the sequence of nodes to develop and their associated weights, while still choosing locally, based on the
+standard local score criterion, the splitting variables and cut
+points at all tree nodes.
+As a pre-pruning approach, GIFs circumvent the need to
+build the whole forest first, thus discarding the need for
+a large temporary storage. This, in addition to the mix
+of global, local and greedy optimization, results in a fast
+method, able to produce lightweight, yet accurate forests
+learned on the whole training set.
+After a discussion of the related work in Section 2, Section
+3 introduces the GIF algorithm and how it can be applied
+for both regression (Section 3.1) and classification (Section
+3.2). In Section 4, we show that our proposed algorithm,
+with its default setting, performs well on many datasets,
+sometimes even surpassing much larger models. We then
+conduct an extensive analysis of its hyper-parameters (Section 4.2). Since GIF shares some resemblance to Boosting, the two approaches are compared in Section 4.3, before concluding and outlining future works in Section 5.
 
-max
+2. Related work
+Memory constraints of tree-based ensemble methods is not
+a new topic and has been tackled from various perspectives, which can be partitioned into tree-agnostic and treeaware methods. The former set of techniques are general
+purpose methods which can deal with any ensembles. We
+can distinguish further between re-learning algorithms (e.g.
+Domingos, 1997; Menke & Martinez, 2009), which try to
+come up with a smaller, equivalent models, and ensemble pruning methods. These latter methods try to eliminate
 
-i∈{1,...,n}
+Globally Induced Forest
 
-mean(X) =
+some of the redundant base models constituting the ensemble but do not attempt to reduce the complexity of the individual models (Tsoumakas et al., 2008; Rokach, 2016).
+Tree-aware methods strive to build smaller trees by limiting the total number of nodes within the forest. Several families have been proposed. For instance, Breiman
+(1999) learns the forest with a subsample of the training
+data. Some authors have proposed to relax the trees into
+DAGs a posteriori at first (e.g., Peterson & Martinez, 2009)
+and more recently a priori (Shotton et al., 2013). Similarly, techniques working on the whole dataset and yielding ensemble of trees can be partitioned into pre- and postpruning methods. Pre-pruning methods aim at stopping the
+development of uninteresting branches in the top down induction procedure. On the other hand, the goal of postpruning methods is to discard a posteriori subtrees which
+do not provide significant accuracy improvements.
+Originally, pruning methods were introduced to control the
+model complexity and avoid overfitting. The advent of
+ensemble methods somewhat cast aside those techniques
+as the averaging mechanism became responsible for reducing the variance and rendered pruning mostly unnecessary from the point of view of accuracy. Nonetheless,
+a few ensemble-wise, post-pruning methods have recently
+emerged with a focus on memory minimization. In both
+(Meinshausen et al., 2009) and (Joly et al., 2012), the compression is formulated as a slightly different global constrained optimization problem. In (Ren et al., 2015), compression is undertook with a sequential optimization approach by removing iteratively the least interesting leaves.
+In (De Vleeschouwer et al., 2015), the authors alleviate
+the leaves’ memory requirements by clustering their conditional distributions. After computing a wavelet coefficient
+for each node, Elisha & Dekel (2016) discard all the nodes
+which are not on the path to a node of sufficient coefficient.
+All these methods are able to retain almost the full forest
+accuracies while offering a significant memory improvement, leaving their requirement for building the whole forest first, and consequently the high temporary memory and
+computational costs, as their only major drawbacks.
+Although our aim is to pre-prune random forests, the GIF
+algorithm shares similarity with Boosting methods (Friedman, 2001), which fit additive tree ensembles based on a
+global criterion and are also able to build accurate yet small
+models. Whereas most Boosting methods only explore ensembles of fixed-size trees, GIF does not put any prior complexity constraint on the individual trees but instead adapts
+their shape greedily. It shares this property with Johnson &
+Zhang (2014)’s regularized greedy forests (RGF), a method
+proposed to overcome several limitations of standard gradient boosting. The link between GIF and these methods
+will be discussed further in Section 3.3.
 
-xi ,
-
-n
-1 X
-xi ,
-n i=1
-
-eps (X) =  mean(X) + (1 − ) max(X) ,
-Pn
-βxi
-i=1 xi e
-boltzβ (X) = P
-.
-n
-βxi
-i=1 e
-
-The first operator, max(X), is known to be a
-non-expansion (Littman & Szepesvári, 1996). However,
-it is non-differentiable (Property 3), and ignores
-non-maximizing selections (Property 4).
-The next operator, mean(X), computes the average of its
-inputs. It is differentiable and, like any operator that takes a
-fixed convex combination of its inputs, is a non-expansion.
-However, it does not allow for maximization (Property 1).
-The third operator eps (X), commonly referred to as
-epsilon greedy (Sutton & Barto, 1998), interpolates
-between max and mean. The operator is a non-expansion,
-because it is a convex combination of two non-expansion
-operators. But it is non-differentiable (Property 3).
-The Boltzmann operator boltzβ (X) is differentiable. It
-also approximates max as β → ∞, and mean as β →
-0. However, it is not a non-expansion (Property 2), and
-therefore, prone to misbehavior as will be shown in the next
-section.
-
-An Alternative Softmax Operator for Reinforcement Learning
-
-0.66
-
-+0.122
-
-0.34
-
-a
-S2
-
-S1
-
-b
-0.99
-
-+0.033
-
-0.01
-
-Figure 1. A simple MDP with two states, two actions, and
-γ = 0.98 . The use of a Boltzmann softmax policy is not sound
-in this simple domain.
-
-In the following section, we provide a simple example
-illustrating why the non-expansion property is important,
-especially in the context of planning and on-policy
-learning.
-We then present a new softmax operator
-that is similar to the Boltzmann operator yet is a
-non-expansion. We prove several critical properties of this
-new operator, introduce a new softmax policy, and present
-empirical results.
-
-2. Boltzmann Misbehaves
-We first show that boltzβ can lead to problematic behavior.
-To this end, we ran SARSA with Boltzmann softmax policy
-(Algorithm 1) on the MDP shown in Figure 1. The edges
-are labeled with a transition probability (unsigned) and a
-reward number (signed). Also, state s2 is a terminal state,
-so we only consider two action values, namely Q̂(s1 , a)
-and Q̂(s2 , b). Recall that the Boltzmann softmax policy
-assigns the following probability to each action:
-eβ Q̂(s,a)
-π(a|s) = P
-.
-β Q̂(s,a)
-ae
-Algorithm 1 SARSA with Boltzmann softmax policy
-Input: initial Q̂(s, a) ∀s ∈ S ∀a ∈ A, α, and β
-for each episode do
-Initialize s
-a ∼ Boltzmann with parameter β
-repeat
-Take action a, observe r, s0
-0
-a ∼ Boltzmann with parameter
-β
-h
-i
-Q̂(s, a) ← Q̂(s, a) + α r + γ Q̂(s0 , a0 ) − Q̂(s, a)
-0
-
-0
-
-s ← s ,a ← a
-until s is terminal
-end for
-
-In Figure 2, we plot state–action value estimates at the end
-of each episode of a single run (smoothed by averaging
-over ten consecutive points). We set α = .1 and β = 16.55.
-The value estimates are unstable.
-
-episode number
-
-Figure 2. Values estimated by SARSA with Boltzmann softmax.
-The algorithm never achieves stable values.
-
-SARSA is known to converge in the tabular setting using
--greedy exploration (Littman & Szepesvári, 1996), under
-decreasing exploration (Singh et al., 2000), and to a region
-in the function-approximation setting (Gordon, 2001).
-There are also variants of the SARSA update rule that
-converge more generally (Perkins & Precup, 2002; Baird
-& Moore, 1999; Van Seijen et al., 2009). However, this
-example is the first, to our knowledge, to show that SARSA
-fails to converge in the tabular setting with Boltzmann
-policy. The next section provides background for our
-analysis of the example.
-
-3. Background
-A Markov decision process (Puterman, 1994), or MDP,
-is specified by the tuple hS, A, R, P, γi, where S is the
-set of states and A is the set of actions. The functions
-R : S × A → R and P : S × A × S → [0, 1] denote the
-reward and transition dynamics of the MDP. Finally, γ ∈
-[0, 1), the discount rate, determines the relative importance
-of immediate reward as opposed to the rewards received in
-the future.
-A typical approach to finding a good policy is to estimate
-how good it is to be in a particular state—the state
-value function. The value of a particular state s given
-a policy π and initial action a is written Qπ (s, a). We
-define the optimal value of a state–action pair Q? (s, a) =
-maxπ Qπ (s, a). It is possible to define Q? (s, a) recursively
-and as a function of the optimal value of the other
-state–action pairs:
-Q? (s, a) = R(s, a) +
-
-X
-
-s0 ∈S
-
-γ P(s, a, s0 ) max
-Q? (s0 , a0 ) .
-0
-a
-
-Bellman equations, such as the above, are at the core
-of many reinforcement-learning algorithms such as Value
-Iteration (Bellman, 1957). The algorithm computes the
-
-An Alternative Softmax Operator for Reinforcement Learning
-
-
-5
-
-5
-
-max Q1 (s, a)
-a
-
-max Q2 (s, a)  max Q1 (s, a)
-a
-
-a
-
-Q2 (s, a)
-
-Figure 4. Fixed points of GVI under boltzβ for varying β. Two
-distinct fixed points (red and blue) co-exist for a range of β.
-
-Figure 3. max is a non-expansion under the infinity norm.
-
-value of the best policy in an iterative fashion:
-X
-Q̂(s, a) ← R(s, a) + γ
-P(s, a, s0 ) max
-Q̂(s0 , a0 ).
-0
-a
-
-s0 ∈S
-
-Regardless of its initial value, Q̂ will converge to Q∗ .
-Littman & Szepesvári (1996) generalized this algorithmN
-by
-replacing the max operator by any arbitrary operator ,
-resulting in the generalized value iteration (GVI) algorithm
-with the following update rule:
-X
-O
-Q̂(s, a) ← R(s, a)+γ
-γP(s, a, s0 )
-Q̂(s0 , a0 ). (1)
-a0
-
-s0 ∈S
-
-fixed point. However, the Boltzmann softmax operator,
-boltzβ , is not a non-expansion (Littman, 1996). Note that
-we can relate GVI to SARSA by observing that SARSA’s
-update is a stochastic implementation of GVI’s update.
-Under a Boltzmann softmax policy π, the target of the
-(expected) SARSA update is the following:
- 
-
-E r + γ Q̂(s0 , a0 )s, a =
-π
-X
-X
-R(s, a) + γ
-P(s, a, s0 )
-π(a0 |s0 )Q̂(s0 , a0 ) .
-s0 ∈S
-
-a0 ∈A
-
-{z
-
-boltzβ Q̂(s0 ,·)
-N
-This matches the GVI update (1) when
-= boltzβ .
-|
-
-}
-
-4. Boltzmann Has Multiple Fixed Points
-Algorithm 2 GVI algorithm
-Input: initial Q̂(s, a) ∀s ∈ S ∀a ∈ A and δ ∈ R+
-repeat
-diff ← 0
-for each s ∈ S do
-for each a ∈ A do
-Qcopy ← Q̂(s, a)
+Algorithm 1 Globally Induced Forest
 P
-Q̂(s, a) ← s0 ∈S R(s, a, s0 )
+1: Input: D = (xi , yi )N
+i=1 , the learning set with xi ∈ R
+K
+and yi ∈ R ; A, the tree learning algorithm; L, the loss
+function; B, the node budget; T , the number of trees; CW ,
+the candidate window size; λ, the learning rate.
+2: Output: An ensemble S of B tree nodes with their corresponding weights.
+3: Algorithm:
+4: S = ∅; C = ∅; t = 1 P
+5: ŷ (0) (.) = arg miny∈RK N
+i=1 L(yi , 0)
+6: Grow T stumps with A on D and add the left and right successors of all stumps to C.
+7: repeat
+8: Ct is a subset of size min{CW, |C|} of C chosen uniformly at random.
+9: Compute:
 N
-0
-0
-+ γP(s,
- a, s ) Q̂(s , .)
-	
-diff ← max diff, |Qcopy − Q̂(s, a)|
-end for
-end for
-until diff < δ
+
+
+X
+(j ∗ , wj∗ ) = arg min
+L yi , ŷ (t−1) (xi ) + wzj (xi )
+j∈Ct ,w∈RK i=1
 
-Crucially, convergence
-N of GVI to a unique fixed point
-follows if operator
-is a non-expansion with respect to
-the infinity norm:
-O
-
-
-
-O
-
-
-
-
-Q̂(s, a) −
-Q̂0 (s, a) ≤ max Q̂(s, a) − Q̂0 (s, a),
-
-a
+S = S ∪ {(j ∗ , wj∗ )}; C = C \ {j ∗ };
+y (t) (.) = y (t−1) (.) + λwj∗ zj ∗ (.)
+11:
+Split j ∗ using A to obtain children jl and jr
+12:
+C = C ∪ {jl , jr }; t = t + 1
+13: until budget B is met
+10:
 
-a
+3. Globally Induced Forest
+GIFs rely on the view of a T trees forest as a linear model
+in the “forest space”, a binary M -dimensional space, where
+M is the total number of nodes in the whole forest (Joly
+et al., 2012; Vens & Costa, 2011):
+ŷ(x) =
 
-a
+M
+X
 
-for any Q̂, Q̂0 and s. As mentioned earlier, the max
-operator is known to be a non-expansion, as illustrated in
-Figure 3. mean and eps operators are also non-expansions.
+wj zj (x),
+
+(1)
+
+j=1
+
+where the indicator function zj (x) is 1 if x reaches node j
+and 0 otherwise, and wj is T1 times the prediction at a node
+j if j is a leaf and 0 otherwise. In regression, the leaf prediction would be the average value of the subset of outputs
+reaching leaf j. In classification, wj ∈ RK is a vector of
+(k)
+dimension K, where wj (k = 1, . . . , K) is T1 times the
+probability associated to class k, typically estimated by the
+proportion of samples of this class falling into leaf j.
+Algorithm 1 describes the GIF training algorithm. A visual
+illustration is given in Figure 1 of the supplementary materials. Starting from a constant model (step 5), it builds
+an additive model in the form (1) by incrementally adding
+new node indicator functions in a stagewise fashion in order to grow the forest. At each step, a subset of candidate nodes Ct is drawn uniformly at random from the total candidate list C (step 8). For each of those nodes, the
+weight is optimized globally according to some loss function L : Y × Y → R expressing the degree to which the
+model predictions disagree with the ground truth (such as
+the L2 norm, for instance). The node j ∗ among those of Ct
+which contributes the most to a decrease of the loss is selected (step 9) and introduced in the model via its indicator
+
+Globally Induced Forest
+
+function zj ∗ and its optimal weight wj∗ tempered by some
+learning rate λ (step 10). This node is then split locally according to the reference tree growing strategy A (step 11)
+and replaced by its two children in the candidate list (step
+12). The process is stopped when the node budget B is
+reached. The node budget B accounts for the total number
+of nodes in the resulting forest, i.e., both internal (splitting)
+and external (decision) nodes. The root nodes are only accounted for when one of its children is taken into the model.
+Contrary to Equation 1, each node has a non-zero weight,
+since it was optimized. Note however that, as soon as both
+its children are inserted, the parent node weight can be removed from the sum by pushing its weight to its successors.
+Node selection and weight optimization. Step 9 of Algorithm 1 can be decomposed into two parts. First, the optimal weight for a given candidate node is computed using:
+
+(t)
+
+wj = arg min
+w∈RK
+
 N
-Therefore, each of these operators can play the role of
-in
-GVI, resulting in convergence to the corresponding unique
-
-Although it has been known for a long time that the
-Boltzmann operator is not a non-expansion (Littman,
-1996), we are not aware of a published example of an
-MDP for which two distinct fixed points exist. The MDP
-presented in Figure 1 is the first example where, as shown
-in Figure 4, GVI under boltzβ has two distinct fixed points.
-We also show, in Figure 5, a vector field visualizing
-GVI updates under boltzβ=16.55 . The updates can move
-the current estimates farther from the fixed points. The
-behavior of SARSA (Figure 2) results from the algorithm
-stochastically bouncing back and forth between the two
-fixed points. When the learning algorithm performs a
-sequence of noisy updates, it moves from a fixed point to
-the other. As we will show later, planning will also progress
-extremely slowly near the fixed points. The lack of the
-non-expansion property leads to multiple fixed points and
-ultimately a misbehavior in learning and planning.
-
-5. Mellowmax and its Properties
-We advocate for an alternative softmax operator defined as
-follows:
-Pn
-log( n1 i=1 eωxi )
-mmω (X) =
-,
-ω
-which can be viewed as a particular instantiation of the
-quasi-arithmetic mean (Beliakov et al., 2016). It can also
-
-An Alternative Softmax Operator for Reinforcement Learning
-
-Pn
-
-
-eω∆i∗ i=1 eωyi
-
-Pn ωy
-/ω 
-= log
-i
-i=1 e
-
-
-
- 
-
-ω∆i∗
-
-)/ω  = ∆i∗  = max xi − yi  ,
-= log(e
-i
-
-allowing us to conclude that mellowmax is a non-expansion
-under the infinity norm.
-5.2. Maximization
-
-Figure 5. A vector field showing GVI updates under boltzβ=16.55 .
-Fixed points are marked in black. For some points, such as the
-large blue point, updates can move the current estimates farther
-from the fixed points. Also, for points that lie in between the two
-fixed-points, progress is extremely slow.
-
-be derived from information theoretical principles as a way
-of regularizing policies with a cost function defined by KL
-divergence (Todorov, 2006; Rubin et al., 2012; Fox et al.,
-2016). Note that the operator has previously been utilized
-in other areas, such as power engineering (Safak, 1993).
-We show that mmω , which we refer to as mellowmax, has
-the desired properties and that it compares quite favorably
-to boltzβ in practice.
-
-Mellowmax includes parameter settings that allow for
-maximization (Property 1) as well as for minimization. In
-particular, as ω goes to infinity, mmω acts like max.
-Let m = max(X) and let W = |{xi = m|i ∈
-{1, . . . , n}}|. Note that W ≥ 1 is the number of maximum
-values (“winners”) in X. Then:
-Pn
-log( n1 i=1 eωxi )
-lim mmω (X) = lim
-ω→∞
-ω→∞
-ω
-Pn
-log( n1 eωm i=1 eω(xi −m) )
-= lim
-ω→∞
-ω
-log( n1 eωm W )
-= lim
-ω→∞
-ω
-log(eωm ) − log(n) + log(W )
-= lim
-ω→∞
-ω
-− log(n) + log(W )
-= m + lim
-ω→∞
-ω
-= m = max(X) .
-
-5.1. Mellowmax is a Non-Expansion
-We prove that mmω is a non-expansion (Property 2), and
-therefore, GVI and SARSA under mmω are guaranteed to
-converge to a unique fixed point.
-Let X = x1 , . . . , xn and Y = y1 , . . . , yn be two vectors
-of values. Let ∆i = xi − yi for i ∈ {1, . . . , n} be the
-difference of the ith components of the two vectors. Also,
-let i∗ be the index with the maximum component-wise
-difference, i∗ = argmaxi ∆i . For simplicity, we assume
-that i∗ is unique and ω > 0. Also, without loss of
-generality, we assume that xi∗ − yi∗ ≥ 0. It follows that:
-
-
-mmω (X) − mmω (Y)
-n
-n
-
-
-1 X ωxi
-1 X ωyi
-=  log(
-e )/ω − log(
-e )/ω 
-n i=1
-n i=1
-P
-n
-1
-
-
-eωxi
-
-=  log n1 Pi=1
-/ω
-n
-ωyi
-i=1 e
-n
-
-Pn ω yi +∆i
-
-
-e
-Pn ωy
-/ω 
-=  log i=1
-i
-i=1 e
-
-Pn ω yi +∆i∗
-
-
-e
-Pn ωy
-≤  log i=1
-/ω 
-i
-i=1 e
-
-That is, the operator acts more and more like pure
-maximization as the value of ω is increased. Conversely,
-as ω goes to −∞, the operator approaches the minimum.
-5.3. Derivatives
-We can take the derivative of mellowmax with respect to
-each one of the arguments xi and for any non-zero ω:
-∂mmω (X)
-eωxi
-= Pn ωx ≥ 0 .
-i
-∂xi
-i=1 e
-
-Note that the operator is non-decreasing in each component
-of X.
-Moreover, we can take the derivative of mellowmax
-with
-Pn
-respect to ω. We define nω (X) = log( n1 i=1 eωxi ) and
-dω (X) = ω. Then:
-Pn
-xi eωxi
-∂nω (X)
-∂dω (X)
-= Pi=1
-and
-=1,
-n
-ωxi
-∂ω
-∂ω
-e
-i=1
-and so:
-
-∂mmω (X)
-=
-∂ω
-
-∂nω (X)
-∂ω dω (X)
-
-ω (X)
-− nω (X) ∂d∂ω
-,
-dω (X)2
-
-ensuring differentiablity of the operator (Property 3).
-
-An Alternative Softmax Operator for Reinforcement Learning
-
-5.4. Averaging
-Because of the division by ω in the definition of mmω ,
-the parameter ω cannot be set to zero. However, we can
-examine the behavior of mmω as ω approaches zero and
-show that the operator computes an average in the limit.
-
-multipliers. Here, the Lagrangian is:
-X
-
-L(π, λ1 , λ2 ) =
-π(a|s) log π(a|s)
-−λ1
-
-Since both the numerator and denominator go to zero as ω
-goes to zero, we will use L’Hôpital’s rule and the derivative
-given in the previous section to derive the value in the limit:
-
-lim mmω (X)
-
-=
-
-ω→0
-
-L’Hôpital
-
-=
-
-lim
-
-ω→0
-
-lim
-
-ω→0
-n
-
-=
-
-log( n1
-
-Pn
-
-i=1
-
-1X
-xi = mean(X) .
-n i=1
-
-6. Maximum Entropy Mellowmax Policy
-As described, mmω computes a value for a list of
-numbers somewhere between its minimum and maximum.
-However, it is often useful to actually provide a probability
-distribution over the actions such that (1) a non-zero
-probability mass is assigned to each action, and (2) the
-resulting expected value equals the computed value. Such
-a probability distribution can then be used for action
-selection in algorithms such as SARSA.
-In this section, we address the problem of identifying
-such a probability distribution as a maximum entropy
-problem—over all distributions that satisfy the properties
-above, pick the one that maximizes information
-entropy (Cover & Thomas, 2006; Peters et al., 2010).
-We formally define the maximum entropy mellowmax
-policy of a state s as:
-
-π
-
-P
-
 X
 
-a∈A
-
-
-π(a|s) log π(a|s)
-
-a∈A
-
-
-π(a|s) − 1
-
-
-π(a|s)Q̂(s, a) − mmω Q̂(s, .) .
-
-
-∂L
-= log π(a|s) +1−λ1 −λ2 Q̂(s, a) = 0 ∀ a ∈ A .
-∂π(a|s)
-
-That is, as ω gets closer to zero, mmω (X) approaches the
-mean of the values in X.
-
-πmm (s) = argmin
-
-a∈A
-
-X
-
-a∈A
-
-Taking the partial derivative of the Lagrangian with respect
-to each π(a|s) and setting them to zero, we obtain:
-
-eωxi )
-
-ω
-Pn
-xi eωxi
-Pi=1
-n
-1
-ωxi
-i=1 e
-n
-
-1
-n
-
-−λ2
-
-X
+
+
+L yi , ŷ (t−1) (xi ) + wzj (xi )
 
 (2)
 
-These |A| equations, together with the two linear
-constraints in (2), form |A| + 2 equations to constrain the
-|A| + 2 variables π(a|s) ∀a ∈ A and the two Lagrangian
-multipliers λ1 and λ2 .
-Solving this system of equations, the probability of taking
-an action under the maximum entropy mellowmax policy
-has the form:
-πmm (a|s) = P
+i=1
 
-eβ Q̂(s,a)
+Closed-form formulas for optimal weights are derived in
+Sections 3.1 and 3.2 for two losses. Second, the optimal
+node—the one which reduces the loss the most—is selected
+with exhaustive search. Computing the loss gain associated
+to a candidate node j can be done efficiently as it requires
+to go only over the instances reaching that node j. Indeed,
+finding the optimal node jt∗ at step t requires to compute:
+jt∗ = arg min
+j∈Ct
 
-a∈A
+where
 
-eβ Q̂(s,a)
+(t)
+errj,i
 
-∀a ∈ A ,
-
-where β is a value for which:
-X β Q̂(s,a)−mm Q̂(s,.)
-
-ω
-Q̂(s, a) − mmω Q̂(s, .) = 0 .
-e
-a∈A
-
-The argument for the existence of a unique root is simple.
-As β → ∞ the term corresponding to the best action
-dominates, and so, the function is positive. Conversely,
-as β → −∞ the term corresponding to the action with
-lowest utility dominates, and so the function is negative.
-Finally, by taking the derivative, it is clear that the function
-is monotonically increasing, allowing us to conclude that
-there exists only a single root. Therefore, we can find β
-easily using any root-finding algorithm. In particular, we
-use Brent’s method (Brent, 2013) available in the Numpy
-library of Python.
-
-Note that this optimization problem is convex and can be
-solved reliably using any numerical convex optimization
-library.
-
-This policy has the same form as Boltzmann softmax, but
-with a parameter β whose value depends indirectly on
-ω. This mathematical form arose not from the structure
-of mmω , but from maximizing the entropy. One way to
-view the use of the mellowmax operator, then, is as a form
-of Boltzmann policy with a temperature parameter chosen
-adaptively in each state to ensure that the non-expansion
-property holds.
-
-One way of finding the solution, which leads to an
-interesting policy form, is to use the method of Lagrange
-
-Finally, note that the SARSA update under the maximum
-entropy mellowmax policy could be thought of as a
-
-subject to
-
-n
-
-π(a|s)Q̂(s, a) = mmω (Q̂(s, .))
-π(a|s)
-≥0
-P
-π(a|s)
-=1.
-a∈A
-a∈A
-
-An Alternative Softmax Operator for Reinforcement Learning
-
-Figure 7. Number of iterations before termination of GVI on the
-example MDP. GVI under mmω outperforms the alternatives.
-Figure 6. GVI updates under mmω=16.55 . The fixed point is
-unique, and all updates move quickly toward the fixed point.
-
-experiment is a policy gradient experiment where a deep
-neural network, with a softmax output layer, is used to
-directly represent the policy.
-
-stochastic implementation of the GVI update under the
-mmω operator:
-7.1. Random MDPs
-
-
-
-The example in Figure 1 was created carefully by hand. It
-E r + γ Q̂(s0 , a0 )s, a =
-πmm
+N
 X
+
+(t)
+
+errj,i = arg max
+
+i=1
+
+j∈Ct
+
+,
+
+(t−1)
+
+L(yi , ŷ
+
+N
 X
- is interesting to know whether such examples are likely to
-R(s, a, s0 ) + γP(s, a, s0 )
-πmm (a0 |s0 )Q̂(s0 , a0 ) be encountered naturally. To this end, we constructed 200
-s0 ∈S
-a0 ∈A
-MDPs as follows: We sampled |S| from {2, 3, ..., 10} and
-{z
-}
-|
-
-|A| from {2, 3, 4, 5} uniformly at random. We initialized
-mmω Q̂(s0 ,.)
-the transition probabilities by sampling uniformly from
-[0, .01]. We then added to each entry, with probability 0.5,
-due to the first constraint of the convex optimization
-Gaussian noise with mean 1 and variance 0.1. We next
-problem (2). Because mellowmax is a non-expansion,
-added, with probability 0.1, Gaussian noise with mean 100
-SARSA with the maximum entropy mellowmax policy is
-and variance 1. Finally, we normalized the raw values to
-guaranteed to converge to a unique fixed point. Note also
-ensure that we get a transition matrix. We did a similar
-that, similar to other variants of SARSA, the algorithm
-process for rewards, with the difference that we divided
-simply bootstraps using the value of the next state while
-each entry by the maximum entry and multiplied by 0.5
-implementing the new policy.
-to ensure that Rmax = 0.5 .
+(t−1)
+(t)
+(erri
+− errj,i ),
 
-7. Experiments on MDPs
-We observed that in practice computing mellowmax can
-yield overflow if the exponentiated values are large. In this
-case, we can safely shift the values by a constant before
-exponentiating them due to the following equality:
-Pn
-Pn
-log( n1 i=1 eωxi )
-log( n1 i=1 eω(xi −c) )
-=c+
-.
-ω
-ω
-A value of c = maxi xi usually avoids overflow.
-We repeat the experiment from Figure 5 for mellowmax
-with ω = 16.55 to get a vector field. The result, presented
-in Figure 6, show a rapid and steady convergence towards
-the unique fixed point. As a result, GVI under mmω can
-terminate significantly faster than GVI under boltzβ , as
-illustrated in Figure 7.
-We present three additional experiments.
-The first
-experiment investigates the behavior of GVI with the
-softmax operators on randomly generated MDPs. The
-second experiment evaluates the softmax policies when
-used in SARSA with a tabular representation. The last
+building the trees in parallel. The search for the best candidate could, however, be run in parallel, as could the search
+for the best split.
+Tree learning algorithm. The tree learning algorithm is
+responsible for splitting the data reaching a node. This
+choice is made locally, meaning that it disregards the current global predictions of the model. As a consequence,
+the tree nodes that are selected by GIF are exactly a subset
+of the nodes that would be obtained using algorithm A to
+build a full ensemble. The motivation for not optimizing
+these splits globally is threefold: (i) our algorithm can be
+framed as a pre-pruning technique for any forest training algorithm, (ii) it introduces some natural regularization, and
+(iii) it leads to a very efficient algorithm as the splits in the
+candidate list do not have to be re-optimized at each iteration. Although any tree learning method can be used, in our
+experiments, we will use the Extremely randomized trees’s
+splitting rule (Geurts et al., 2006): m out of p features are
+selected uniformly at random and, for each feature, a cut
+point is chosen uniformly at random between the current
+minimum and maximum value of this feature.
+3.1. Regression
+Under the L2-norm, optimization (2) becomes:
+(t)
 
-We measured the failure rate of GVI under boltzβ and
-mmω by stopping GVI when it did not terminate in 1000
-iterations. We also computed the average number of
-iterations needed before termination. A summary of results
-is presented in the table below. Mellowmax outperforms
-Boltzmann based on the three measures provided below.
+wj = arg min
+w∈R
 
-boltzβ
-mmω
+(t−1)
 
-MDPs, no
-terminate
-8 of 200
+ri
+
+−w
+
+2
+
+(5)
+
+i∈Zj
+
+(t−1)
+
+where ri
+= yi − ŷ (t−1) (xi ) is the residual at time t −
+1 for the ith training instance. The optimal weight is the
+average residual:
+
+i=1
+
+(xi ) +
+
+wj∗ zj (xi ))
+
+(3)
+and
+
+(t)
+
+wj =
+
+i∈Zj
+
+where Zj = {1 ≤ i ≤ N |zj (xi ) = 1}. Due to the partitioning induced by the tree, at each iteration, computing
+the optimal weights for all the nodes of a given tree is at
+most O(N ), assuming a single weight optimization runs in
+linear time in the number of instances reaching that node.
+Consequently, the asymptotic complexity of the induction
+algorithm is the same as the classical forest.
+Note that, since the optimization is global, the candidate
+node weights must be recomputed at each iteration as the
+addition of the chosen node impacts the optimal weights
+of all the candidates it is sharing learning instances with.
+Arguably, the minimization of a global loss prevent from
+
+1 X (t−1)
+ri
+|Zj |
+
+(6)
+
+i∈Zj
+
+(t−1)
+
+erri
+, L(yi , ŷ (t−1) (xi )). Given that zj (xi ) 6= 0 only
+for the instances reaching node j, Equation (3) can be simplified into:
+X
+(t−1)
+(t)
+jt∗ = arg max
+(erri
+− errj,i )
+(4)
+j∈Ct
+
+X
+
+In the case of a unit learning rate (λ = 1) and a single tree
+(T = 1), the model predictions coincide with the ones the
+underlying tree would provide (see Supplementary material).
+Extending to the multi-output case is straightforward: one
+only needs to fit a weight independently for each output.
+The loss becomes the sum of the individual losses over each
+output.
+3.2. Classification
+Binary classification can either be tackled with the square
+loss, recasting the classes as {−1, +1}, or by employing
+a more appropriate loss function. Indeed, the former has
+the disadvantage that it will penalize correct classification
+if the prediction overshoots the real value.
+In multiclass classification, one has several options. A first
+possibility is to build several binary classification models
+
+Globally Induced Forest
+
+using a binary loss function. Interestingly, this can be
+done in a single learning phase by attributing one output
+per model. In contrast with a pure one-versus-one or oneversus-rest technique, the individual models would not be
+independent as they share the same forest structure.
+A second approach is to employ a custom multiclass loss.
+An example of such a loss function is the multiclass exponential loss discussed in (Zhu et al., 2009). Firstly, we must
+encode the class into a K-dimensional vector so that
+(
+1,
+if the class of yi is k
+(k)
+(7)
+yi =
+1
+, otherwise
+− K−1
+This representation agrees with the binary case and is less
+demanding than a one-versus-rest approach: the negative
+PK
+(k)
+classes weigh the same as the correct one; k=1 yi = 0.
+With this representation, the optimization problem (2) becomes:
+
+N
+
+X
+−1 T  (t−1)
+(t)
+exp
+wj = arg min
+yi ŷ
+(xi ) + wzj (xi )
+K
+w∈RK i=1
+(8)
+whose solution is not unique. In keeping with the output representation (Equation 7), we can impose a zero-sum
+constraint on the prediction to get a unique solution for
+(t,k)
+(t)
+each component wj
+(1 ≤ k ≤ K) of wj . If it is imposed at each stage, it means that
+K
+X
+
+ŷ
+
+(t−1,k)
+
+=
+
+k=1
+
+K
+X
+
+ŷ
+
+(t,k)
+
+k=1
+
+=0=
+
+K
+X
+
+w(k)
+
+(9)
+
+k=1
+
+and this is not impacted by the learning rate. The corresponding analytical solution (see Supplementary material
+for more details) is
+(t−1,k)
+
+(t,k)
+
+wj
+
+=
+
+K
+αj
+K −1X
+log (t−1,l) ,
+K
+αj
+l=1
+
+(10)
+
+where
+(t−1,k)
+αj
+
+,
+
+X
+i∈Zj |yi =k
+
+
+exp −
+
+
+1
+(t−1,k)
+ŷ
+(xi ) (11)
+K −1
+
+Probabilities. Posterior probabilities of an example x belonging to class k can be derived by running the additive
+model through a softmax:
+
+
+1
+exp K−1
+ŷ (t,k) (x)
+
+
+P (t) (k|x) = P
+(12)
+K
+1
+(t,l) (x)
+exp
+ŷ
+l=1
+K−1
+In the case of a unit learning rate (λ = 1) and a single tree
+(T = 1), the probabilities thus derived coincide with the
+ones the underlying tree would provide (see Supplementary
+material).
+
+Trimmed exponential loss. Equation (10) glosses over
+a crucial detail: what happens when some classes are not
+(t−1,k)
+represented, that is the class error αj
+is zero for some
+k? To circumvent this problem, we propose to approximate
+the optimal weight (Equation 10) in the following fashion:
+K
+
+K − 1 X  (t−1,k) (t−1,l) 
+τθ αj
+, αj
+K
+l=1
+
+
+if x2 = 0 or xx12 > eθ
+θ,
+τθ (x1 , x2 ) , −θ,
+if x1 = 0 or xx21 > eθ
+
+
+log xx12 , otherwise
+(t,k)
+
+wj
+
+=
+
+(13)
+
+(14)
+
+The thresholding function τθ acts as an implicit regularization mechanism: it prevents some class errors from weighing too much in the final solution by imposing, through the
+parameter θ, a maximum order of magnitude between the
+class errors. For instance, a saturation θ = 3 means that
+the class errors imbalance is not allowed to count for more
+than e3 ≈ 20.
+3.3. Discussion
+GIF versus Boosting. From a conceptual point of view,
+GIF is very similar to gradient Boosting (Friedman, 2001),
+where, however, the set of base learners would be composed of node indicator functions and would be expanded
+at each iteration, while gradient boosting usually exploits
+depth-constrained decision trees. Also, GIF weights can be
+multidimensional to accommodate for multiclass or multioutput problems, whereas they are usually scalar in Boosting (with potentially multioutput base models). GIF’s forest development mechanism makes it noticeably close to
+Johnson & Zhang (2014)’s RGF method that can also, in
+principle, build a forest greedily by choosing at each iteration the leaf to split based on a global objective function (although, to reduce computing times, only the last tree added
+in the forest can be further expanded in practice). As an important difference, however, splits in RGF are globally optimized based on the current forest predictions, while splits
+in GIF are optimized locally and only the nodes and their
+weights are chosen globally. This local optimization, together with the learning rate and candidate subsampling,
+acts as the main regularizer for GIF, while RGF uses explicit regularization through the objective function.
+Forest shape. Three parameters interact to influence the
+shape of the (pruned) forest: the number of trees T , the
+candidate window size CW and the learning rate λ.
+On the one hand, CW = 1 means that the forest shape
+is predetermined and solely governed by the number of
+trees. Few trees impose a development in depth of the forest, while many trees encourage in-breadth growth. Since
+the selection is uniform over the candidates, it also implies
+
+Globally Induced Forest
+
+that well-developed trees are more likely to get developed
+further, as choosing a node means replacing it in the candidate list by its two children (unless it is a leaf). This
+aggregation effect should somewhat be slowed down when
+increasing the number of trees (in-breadth development).
+Note that subsampling the candidates (i.e. small value of
+CW ) also acts as a regularization mechanism and reduces
+the computing time.
+
+the Scikit-Learn library1 .
+
+On the other hand, CW = +∞ means that the algorithm
+takes the time to optimize completely the node it chooses,
+giving it full rein to adapt the forest shape to the problem at
+hand. In that case, the learning rate plays an important role
+(Figure 2). If it is low, the node will not be fully exploited
+and the algorithm will look for similar nodes at subsequent
+steps. In contrast, if the learning rate is high, the node will
+be fully exploited and the algorithm will turn to different
+nodes. As similar nodes tend to be located roughly at the
+same level in trees, low (resp. high) learning rate will encourage in breadth (resp. in depth) development.
+
+Regression. As we can see from Table 1, this default
+set of parameters performs quite well under heavy memory constraint (i.e. a budget of 1%). GIF1% outperforms
+significantly ET1% four times out of five. Moreover, on
+those four datasets, GIF1% is able to beat the original forest
+with only 1% of its node budget. The mild constraint case
+(i.e. a budget of 10%) is more contrasted. On Friedman1,
+California data housing and CT Slice, GIF10% outperforms
+ET10% . For both Abalone and Hwang, GIF10% overfits; in
+both cases the errors of GIF1% were better than at 10% and,
+as mentioned, better than ET100% .
+
+4. Empirical analysis
+All the results presented in this section are averaged over
+ten folds with different learning sample/testing sample
+splits. See the Supplementary material for detailed information on the datasets.
+4.1. Default hyper-parameters
+Our first experiment was to test the GIF against the Extremely randomized trees (ET). To get an estimate of the
+average number of nodes per tree, we first computed ten
+forests of 1000 fully-developed ET. We then examined how
+GIF compared to ET for 1% and 10% of the original budget. For GIF, these values were directly used as budget
+constraints. For ET, we built forests of 10 (ET1% ) and 100
+(ET10% ) trees. The supplementary materials include further comparisons with three other local pre-pruning baselines, focusing more on the top of the trees. As these baselines tend to perform poorly, we focus our comparison below to the ET1% and ET10% baselines.
+The extremely randomized trees were computed with version 0.18 of Scikit-Learn (Pedregosa et al., 2011) with the
+default parameters proposed in (Geurts et al., 2006). In
+particular, the trees are fully-developed and the number of
+√
+features examined at each split is p in classification and
+p in regression, where p is the initial number of features.
+For GIF, we started with T = 1000 stumps, a learning rate
+of λ = 10−1.5 and CW = 1. The underlying tree building
+algorithm is ET with no restriction regarding the depth and
+√
+p features are examined for each split, in both classification and regression. We will refer to this parameter setting
+as the default one. Note that GIF is implemented on top of
+
+Regression was handled with the square loss. For classification, we tested two methods. The first one is a one-vs-rest
+approach by allocating one output per class with the square
+loss. The second method was to use the trimmed exponential loss with a saturation θ = 3. The results are reported in
+Tables 1 and 2.
+
+Classification. Table 2 draws an interesting conclusion:
+the number of classes should guide the choice of loss. In
+the binary case, the trimmed exponential works well. At
+1%, it loses on Musk2, and the binarized version of Vowel
+and Letter to ET1% . At 10%, it only loses on binary Vowel,
+where it closes the gap somewhat.
+When it comes to multiclassification, however, the trimmed
+exponential seems to suffer. The multi-output square loss
+version is sometimes able to outperform the ET version.
+This is the case of both Waveform and Mnist at 1% and of
+Mnist at 10%.
+The binary versions of Vowel, and Mnist indicate that GIF
+at 10% struggles much more with the number of classes
+than with the the dimensionality of the problem and/or the
+learning sample size.
+Interestingly, GIF’s performance on Madelon with both
+losses are better than the base ET version. This suggests
+that GIF is well capable of handling irrelevant features.
+Needless to say that this default parameter setting, although
+performing well on average, is not optimal for all datasets.
+For instance, on CT slice at 1%, we can reach 20.54 ±
+0.76 by enlarging the candidate window size to 10. For the
+trimmed exponential loss, with λ = 10−1 at 1%, we can
+reach 3.74 ± 0.31 on Twonorm and 3.54 ± 0.3 on Musk2.
+4.2. Influence of the hyper-parameters
+Learning rate. Figure 1 depicts a typical evolution of the
+error with the budget for different learning rates in the case
+1
+The code is readily available at https://github.com/
+jm-begon/globally-induced-forest
+
+Globally Induced Forest
+
+Table 1. Average mean square error at 1% and 10% budgets (m =
+DATASET
+F RIEDMAN 1
+A BALONE
+CT SLICE
+H WANG F5 ×10−2
+C ADATA ×10−2
+
+ET100%
+4.89 ± 0.23
+4.83 ± 0.21
+19.32 ± 1.69
+8.20 ± 0.11
+25.45 ± 0.65
+
+ET10%
+5.02 ± 0.22
+4.87 ± 0.21
+19.62 ± 1.69
+8.25 ± 0.11
+25.71 ± 0.62
+
+√
+p, λ = 10−1.5 , T = 1000, CW = 1).
+
+GIF10%
+2.37 ± 0.24
+5.20 ± 0.21
+19.31 ± 0.61
+8.58 ± 0.10
+21.76 ± 0.66
+
+ET1%
+5.87 ± 0.27
+5.29 ± 0.27
+23.84 ± 1.85
+8.67 ± 0.12
+28.39 ± 0.97
+
+GIF1%
+3.26 ± 0.29
+4.74 ± 0.23
+36.48 ± 1.32
+6.91 ± 0.04
+24.08 ± 0.65
+
+√
+Table 2. Error rate (%) at 1% and 10% budgets (m = p, λ = 10−1.5 , T = 1000, CW = 1). GIFSQ,· relates to the multi-output
+square loss. GIFT E,· relates to the trimmed exponential loss with θ = 3. The six firts datasets are binary classification. The last three
+are multiclass. The three in the middle are their binary versions.
+DATASET
+R INGNORM
+T WONORM
+H ASTIE
+M USK 2
+M ADELON
+M NIST 8 VS 9
+B IN . VOWEL
+B IN . M NIST
+B IN . L ETTER
+WAVEFORM
+VOWEL
+M NIST
+L ETTER
+
+ET100%
+2.91 ± 0.40
+3.13 ± 0.13
+10.30 ± 0.46
+3.65 ± 0.40
+9.75 ± 0.75
+0.99 ± 0.23
+1.96 ± 1.04
+1.92 ± 0.16
+1.80 ± 0.20
+13.95 ± 0.58
+5.92 ± 1.29
+2.63 ± 0.18
+2.53 ± 0.16
+
+25
+
+ET10%
+3.28 ± 0.41
+3.54 ± 0.18
+11.78 ± 0.56
+3.70 ± 0.37
+12.43 ± 0.77
+1.06 ± 0.23
+2.28 ± 1.20
+2.04 ± 0.21
+2.00 ± 0.17
+14.47 ± 0.93
+6.08 ± 1.13
+2.87 ± 0.19
+2.75 ± 0.17
+
+GIFT E,10%
+3.17 ± 0.34
+3.35 ± 0.22
+7.38 ± 0.29
+3.14 ± 0.34
+8.03 ± 0.60
+0.76 ± 0.16
+2.24 ± 1.19
+1.59 ± 0.15
+2.28 ± 0.19
+14.51 ± 0.67
+15.90 ± 1.35
+4.05 ± 0.25
+9.07 ± 0.53
+
+1.0
+
+Learning rate
+
+¸ = 10 ¡3
+¸ = 10 ¡1: 5
+¸=1
+
+15
+
+10
+
+ET1%
+7.43 ± 0.55
+8.00 ± 0.57
+20.38 ± 0.56
+4.22 ± 0.37
+23.91 ± 1.17
+1.58 ± 0.31
+4.18 ± 1.70
+3.37 ± 0.17
+3.59 ± 0.35
+19.11 ± 0.57
+11.74 ± 1.71
+4.94 ± 0.21
+5.34 ± 0.27
+
+GIFSQ,1%
+5.35 ± 0.65
+3.91 ± 0.39
+7.64 ± 0.50
+7.40 ± 0.38
+12.55 ± 0.83
+2.10 ± 0.35
+12.28 ± 2.00
+3.24 ± 0.20
+7.57 ± 0.38
+13.26 ± 0.56
+22.91 ± 2.03
+3.92 ± 0.25
+8.10 ± 0.55
+
+GIFT E,1%
+4.30 ± 0.51
+3.92 ± 0.31
+6.76 ± 0.42
+6.65 ± 0.28
+12.40 ± 0.76
+1.53 ± 0.31
+11.92 ± 2.03
+2.76 ± 0.18
+6.65 ± 0.24
+14.78 ± 0.81
+36.30 ± 2.62
+5.68 ± 0.31
+19.87 ± 0.77
+
+Learning rate
+
+¸ = 10 ¡3
+¸ = 10 ¡1: 5
+¸=1
+
+0.8
+Cumulative node ratio
+
+20
+
+Error
+
+GIFSQ,10%
+4.05 ± 0.45
+3.50 ± 0.24
+10.33 ± 0.41
+3.41 ± 0.34
+9.18 ± 0.83
+0.86 ± 0.24
+2.81 ± 1.17
+1.76 ± 0.15
+2.44 ± 0.25
+14.17 ± 0.62
+7.31 ± 1.18
+2.26 ± 0.17
+2.82 ± 0.19
+
+0.6
+
+0.4
+
+0.2
+5
+0.0
 0
 
-MDPs, > 1
-fixed points
-3 of 200
+10000
+
+20000
+
+30000
+Budget
+
+40000
+
+50000
+
+Figure 1. Friedman1: average
+test set error with respect to the
+√
+budget B (CW = 1, m= 10, T = 1000).
+
+of Friedman1 (the budget maxes out at 59900 nodes, corresponding to 10%). A unit learning rate will usually decrease the test set error rapidly but will then either saturate
+or overfit. Too small a learning rate (e.g. 10−3 ) will prevent the model from reaching its minimum in the alloted
+budget. The learning rate also influences the forest shape,
+provided the candidate window size is large enough. Figure 2 portrays the cumulative node distribution with respect
+to the size-ranks of the trees for CW = ∞, meaning that
+f(x) is the ratio of nodes of the x/T smallest trees. We can
+see that, for the smallest learning rate, 80% of the smallest
+trees account for approximately 43% of the nodes. At the
+same stage, only 17% and 13% of the nodes are covered for
+the average and biggest learning rates, respectively.
+
 0
 
-average
-iterations
-231.65
-201.32
+200
 
-7.2. Multi-passenger Taxi Domain
-We evaluated SARSA on the multi-passenger taxi domain
-introduced by Dearden et al. (1998). (See Figure 8.)
-One challenging aspect of this domain is that it admits
-many locally optimal policies.
-Exploration needs
-to be set carefully to avoid either over-exploring
-or under-exploring the state space.
-Note also that
-Boltzmann softmax performs remarkably well on
-this domain, outperforming sophisticated Bayesian
+400
 
-An Alternative Softmax Operator for Reinforcement Learning
-S
+600
 
-F
+800
 
-D
+1000
 
-F
-F
+Ranks
 
-Figure 8. Multi-passenger taxi domain. The discount rate γ is
-0.99. Reward is +1 for delivering one passenger, +3 for two
-passengers, and +15 for three passengers. Reward is zero for all
-the other transitions. Here F , S, and D denote passengers, start
-state, and destination respectively.
+Figure 2. Friedman1: cumulative
+√ node distribution with respect to
+the size-ranks (CW = ∞, m= 10, T = 1000, B = 10%).
 
-reinforcement-learning algorithms (Dearden et al., 1998).
-As shown in Figure 9, SARSA with the epsilon-greedy
-policy performs poorly. In fact, in our experiment, the
-algorithm rarely was able to deliver all the passengers.
-However, SARSA with Boltzmann softmax and SARSA
-with the maximum entropy mellowmax policy achieved
-significantly higher average reward. Maximum entropy
-mellowmax policy is no worse than Boltzmann softmax,
-here, suggesting that the greater stability does not come at
-the expense of less effective exploration.
-7.3. Lunar Lander Domain
-In this section, we evaluate the use of the maximum entropy
-mellowmax policy in the context of a policy-gradient
-algorithm. Specifically, we represent a policy by a
-neural network (discussed below) that maps from states
-to probabilities over actions. A common choice for the
-activation function of the last layer is the Boltzmann
-softmax policy. In contrast, we can use maximum entropy
-mellowmax policy, presented in Section 6, by treating the
-inputs of the activation function as Q̂ values.
-We used the lunar lander domain, from OpenAI Gym
-(Brockman et al., 2016) as our benchmark. A screenshot
-of the domain is presented in Figure 10. This domain has
-a continuous state space with 8 dimensions, namely x-y
-coordinates, x-y velocities, angle and angular velocities,
-and leg-touchdown sensors. There are 4 discrete actions to
-control 3 engines. The reward is +100 for a safe landing in
-the designated area, and −100 for a crash. There is a small
-shaping reward for approaching the landing area. Using the
-engines results in a negative reward. An episode finishes
-when the spacecraft crashes or lands. Solving the domain
-is defined as maintaining mean episode return higher than
-200 in 100 consecutive episodes.
-The policy in our experiment is represented by a neural
-network with a hidden layer comprised of 16 units with
-RELU activation functions, followed by a second layer
-with 16 units and softmax activation functions. We used
-REINFORCE to train the network. A batch episode size
+Number of features. Table 3 shows how the error varies
+at 10% for CW = 1 with respect to both the learning rate
+λ and m, the number of features examined for a split, in
+the case of CT slice and Musk2, two datasets with many
+features. Interestingly, the error tends to vary continuously
+over those two parameters. On both datasets, it appears
+that the choice of learning rate (global parameter) is more
+critical than the number of features (local parameter). The
+optimal number of features remains problem-dependent,
+though.
+Candidate window size. Figure 3 illustrates the influence of the candidate window size on both the error and
+the fitting time for several datasets with λ = 10−1.5 ,
+√
+m = p, T = 1000 and a budget=10%. Firstly, the linear dependence of the window size on the building time
 
-Figure 9. Comparison on the multi-passenger taxi domain.
-Results are shown for different values of , β, and ω. For each
-setting, the learning rate is optimized. Results are averaged over
-25 independent runs, each consisting of 300000 time steps.
+Globally Induced Forest
+Table 3. Average test set error with respect to m and λ (CW = 1,
+√
+T = 1000, B = 10%; θ = 3). In bold is m = p.
+CT slice: mean square error
+10−2.5
+10−2
+10−1.5
+10−1
+10−0.5
+27.28
+20.34
+19.31
+21.97
+29.82
+25.78
+19.51
+18.63
+20.88
+27.62
+25.53
+19.74
+18.79
+20.68
+26.64
+26.55
+20.96
+19.92
+21.62
+26.87
+28.20
+22.43
+20.91
+22.31
+27.64
+31.42
+25.04
+23.11
+24.17
+29.56
+Musk2: error rate (%)
+10−2.5 10−2 10−1.5 10−1 10−0.5
+5.13
+3.74
+3.14
+2.90
+2.86
+5.00
+3.67
+3.11
+2.91
+2.85
+4.50
+3.39
+3.00
+2.93
+2.93
+4.24
+3.26
+2.92
+2.88
+2.90
+4.11
+3.20
+2.89
+2.79
+2.75
+4.11
+3.19
+2.94
+2.84
+2.86
 
-Figure 10. A screenshot of the lunar lander domain.
+m\λ
+19
+38
+96
+192
+288
+385
+m\λ
+12
+16
+41
+83
+124
+166
+3.1
+2.7
+2.3
+0
 
-of 10 was used, as we had stability issues with smaller
-episode batch sizes. We used the Adam algorithm (Kingma
-& Ba, 2014) with α = 0.005 and the other parameters as
-suggested by the paper. We used Keras (Chollet, 2015)
-and Theano (Team et al., 2016) to implement the neural
-network architecture. For each softmax policy, we present
-in Figure 11 the learning curves for different values of
-their free parameter. We further plot average return over
-all 40000 episodes. Mellowmax outperforms Boltzmann at
-its peak.
+2
 
-8. Related Work
-Softmax operators play an important role in sequential
-decision-making algorithms.
-In model-free reinforcement learning, they can help strike
+4
 
-An Alternative Softmax Operator for Reinforcement Learning
+6
 
-Algorithms for inverse reinforcement learning (IRL), the
-problem of inferring reward functions from observed
-behavior (Ng & Russell, 2000), frequently use a
-Boltzmann operator to avoid assigning zero probability
-to non-optimal actions and hence assessing an observed
-sequence as impossible. Such methods include Bayesian
-IRL (Ramachandran & Amir, 2007), natural gradient
-IRL (Neu & Szepesvári, 2007), and maximum likelihood
-IRL (Babes et al., 2011). Given the recursive nature of
-value defined in these problems, mellowmax could be a
-more stable and efficient choice.
-In linearly solvable MDPs (Todorov, 2006), an operator
-similar to mellowmax emerges when using an alternative
-characterization for cost of action selection in MDPs.
-Inspired by this work Fox et al. (2016) introduced an
-off-policy G-learning algorithm that uses the operator to
-perform value-function updates. Instead of performing
-off-policy updates, we introduced a convergent variant
-of SARSA with Boltzmann policy and a state-dependent
-temperature parameter. This is in contrast to Fox et al.
-(2016) where an epsilon greedy behavior policy is used.
+8
 
-Figure 11. Comparison of Boltzmann (top) and maximum
-entropy mellowmax (middle) in Lunar Lander. Mean return over
-all episodes (bottom). Results are 400-run averages.
+10
 
-a balance between exploration (mean) and exploitation
-(max). Decision rules based on epsilon-greedy and
-Boltzmann softmax, while very simple, often perform
-surprisingly well in practice, even outperforming more
-advanced exploration techniques (Kuleshov & Precup,
-2014) that require significant approximation for complex
-domains.
-When learning “on policy”, exploration
-steps can (Rummery & Niranjan, 1994) and perhaps
-should (John, 1994) become part of the value-estimation
-process itself. On-policy algorithms like SARSA can be
-made to converge to optimal behavior in the limit when the
-exploration rate and the update operator is gradually moved
-toward max (Singh et al., 2000). Our use of softmax in
-learning updates reflects this point of view and shows that
-the value-sensitive behavior of Boltzmann exploration can
-be maintained even as updates are made stable.
-Analyses of the behavior of human subjects in choice
-experiments very frequently use softmax. Sometimes
-referred to in the literature as logit choice (Stahl &
-Wilson, 1994), it forms an important part of the most
-accurate predictor of human decisions in normal-form
-games (Wright & Leyton-Brown, 2010), quantal level-k
-reasoning (QLk). Softmax-based fixed points play a crucial
-role in this work. As such, mellowmax could potentially
-make a good replacement.
+Friedman1
+14
+16
 
-9. Conclusion and Future Work
-We proposed the mellowmax operator as an alternative
-to the Boltzmann softmax operator. We showed that
-mellowmax has several desirable properties and that it
-works favorably in practice.
-Arguably, mellowmax
-could be used in place of Boltzmann throughout
-reinforcement-learning research.
-A future direction is to analyze the fixed point
-of planning, reinforcement-learning, and game-playing
-algorithms when using the mellowmax operators. In
-particular, an interesting analysis could be one that bounds
-the sub-optimality of the fixed points found by GVI.
-An important future work is to expand the scope of our
-theoretical understanding to the more general function
-approximation setting, in which the state space or the
-action space is large and abstraction techniques are used.
-Note that the importance of non-expansion in the function
-approximation case is well-established. (Gordon, 1995)
-Finally, due to the convexity of mellowmax (Boyd &
-Vandenberghe, 2004), it is compelling to use it in a
-gradient-based algorithm in the context of sequential
-decision making. IRL is a natural candidate given the
-popularity of softmax in this setting.
+12
 
-10. Acknowledgments
-The authors gratefully acknowledge the assistance of
-George D. Konidaris, as well as anonymous ICML
-reviewers for their outstanding feedback.
+25.0
+21.5
 
-An Alternative Softmax Operator for Reinforcement Learning
+Error
+
+18.0
+0
+
+CT slice
+20
+
+40
+
+60
+
+1
+
+2
+
+80
+
+100
+
+120
+
+140
+
+160
+
+3.46
+3.39
+
+Twonorm
+
+3.32
+0
+
+3
+
+4
+
+5
+
+6
+
+7
+
+8
+
+Table 4. Error rate √
+(%) for the trimmed exponential loss (θ = 3,
+λ = 10−1.5 , m = 10, T = 1000, B = 10%)
+DATASET
+CW=1
+CW=10
+WAVEFORM 14.51 ± 0.67 14.05 ± 0.82
+VOWEL
+15.90 ± 1.35 10.87 ± 1.61
+M NIST
+4.05 ± 0.25
+3.66 ± 0.31
+9.07 ± 0.53
+5.88 ± 0.32
+L ETTER
+Table 5. Test set error with respect to the initial number of trees T
+√
+(m = p, λ = 10−1.5 , same budget B = 10%; θ = 3).
+Friedman1: mean square error
+T
+CW=1
+CW=∞
+10
+7.88 ± 0.64 7.62 ± 0.71
+100
+3.31 ± 0.41 3.60 ± 0.35
+1000
+2.37 ± 0.24 3.05 ± 0.29
+10000 2.26 ± 0.20 3.18 ± 0.28
+Twonorm: misclassification rate (%)
+T
+CW=1
+CW=∞
+10
+7.47 ± 0.73 7.05 ± 0.29
+100
+3.44 ± 0.16 3.52 ± 0.13
+1000
+3.35 ± 0.22 3.43 ± 0.23
+10000 3.53 ± 0.25 3.87 ± 0.32
+
+room for the learning algorithm to optimize globally. The
+more trees is not always better, however. When the candidate window is infinitely large, this might be due to overfitting: there are so many candidates to choose from that
+over-optimization hurts the model. When the window size
+is 1, this is more directly linked to the forest shape.
+
+3.40
+3.25
+Musk2
+
+3.10
+0
+
+50
+
+100
+Fitting time [s]
+
+150
+
+Candidate window size
+
+1
+
+10
+
+100
+
+1000
+
+Figure 3. Average test set error (MSE for Friedman1 and CT slice,
+error rate (%) for Twonorm and Musk2) and fitting time with re√
+spect to CW (λ = 10−1.5 , m = p, T = 1000, B = 10%;
+θ = 3).
+
+is clearly visible. More interestingly, the smaller window
+size (CW = 1) performs best on all four datasets. All in
+all, this seems to be a good regularization mechanism, allowing for a dramatic decrease of computing times while
+ensuring better predictions.
+Although this is representative of the regression and binary
+classification problems, this is not exactly the case of multiclassification, where increasing CW over 1 might improve
+performance slightly (see Table 4).
+Number of trees. The initial number of trees is an intricate parameter, as it impacts model predictions, the fitting
+time and the shape of the forest.
+√
+Table 5 focuses on the errors with m = p and λ =
+−1.5
+10
+. Unsurprisingly, the models perform badly when
+it has only 10 trees at its disposal; this leaves only little
+
+Table 6 holds the normalized entropy of the node distribution across trees for Friedman1. By “normalized”, we
+mean that the entropy was divided by its maximal possible
+value log2 T and then multiplied by 100. Only one value is
+reported for the case CW = 1 as the forest has always the
+same shape, whatever the learning rate λ. The evolution of
+the entropy for a fix number of trees when CW = ∞ has
+already been commented on (see Figure 2). It is rendered
+more obvious when the initial number of trees is larger,
+however, meaning that GIF is able to exploit the greater
+freedom offered by the additional trees. When CW = 1,
+the distribution is much closer to being uniform (entropy
+close to 100) than when the learning algorithm can adapt
+the forest shape. If this shape does not agree with the data,
+the model might perform less well. Nevertheless, as we
+saw, CW = 1 yields better result on all but the multiclass
+problems, and T = 1000 seems to be adequate in average.
+The number of trees also impacts the learning time, as depicted by Table 7. The linear increase in computing time in
+the case of CW = ∞ is due to the global optimization of
+the chosen node that must run through all the candidates.
+In the case of CW = 1, the computing time is almost
+not burdened by the number of trees. The slight increase
+is actually related to the forest shape: since the distribution of node tends to be more uniform, the algorithm must
+run through more examples while optimizing the weights
+(higher part of the trees).
+
+Globally Induced Forest
+Table 6. Friedman1: average normalized node distribution en√
+tropy with respect to T and λ (m = p, same budget B = 10%).
+CW=1
+CW=∞
+T\λ
+*
+10−3 10−1.5
+1
+100
+99.89
+99.84
+99.24
+98.48
+1000
+98.15
+94.49
+87.32
+83.72
+97.20
+89.12
+76.23
+68.99
+10000
+
+Table 7. Friedman1: fitting time (seconds) with respect to T and
+√
+λ (m = p, same budget B = 10%).
+CW=1
+CW=∞
+T\λ
+*
+10−3
+1
+100
+0.34 ± 0.07
+0.35 ± 0.07
+0.32 ± 0.07
+0.59 ± 0.12
+3.84 ± 0.18
+2.78 ± 0.54
+1000
+10000 1.55 ± 0.02 25.95 ± 1.05 20.69 ± 2.92
+
+4.3. A preliminary comparison with Boosting
+In this section, we carry out a first comparison of GIF with
+Boosting. To submit Boosting to the budget constraint, we
+have used stumps as base learners and have made as many
+trees as were necessary to meet the constraint. We have
+used the same learning rate as for GIF in Table 1. Regression has been tackled with least square Boosting (Friedman
+et al., 2001) and classification with Adaboost (Freund &
+Schapire, 1995), so that the same losses are used for GIF
+and Boosting. Scikit-Learn was used as Boosting implementation.
+Table 8 holds the errors for Boosting at 1% and 10%. In
+the default setting, GIF beats Boosting on all regression
+datasets except Abalone where it performs slightly less
+well. Interestingly, Boosting also overfits on Abalone and
+Hwang. The situation is more contrasted in classification,
+where Boosting outperforms GIF on Hastie and Musk2 for
+both budget constraints. Notice that stumps are not optimal
+for Hwang and CT slice, where a depth of 2 would yield
+lower errors of 11.09±0.25 and 8.40±0.19 at 10% and 1%
+respectively for Hwang and 33.53 ± 1.65 and 36.67 ± 1.36
+at 10% and 1% respectively for CT slice. However, this
+does not change the conclusions regarding the comparison
+with GIF.
+GIF (with CW = 1) is faster in both learning and prediction than Boosting, as confirmed in Table 9. Firstly, Boosting’s base learners are traditional decision trees, which are
+slower to fit than ET for a given structure. Secondly, Boosting’s base learners are shallow and they can thus take less
+advantage of the partitioning induced by the trees.
+Overall, the performances of Boosting and GIF in terms of
+errors are somewhat similar. Sometimes GIF’s extra-layers
+of regularization, combined with a greater variety of depths
+pays off and sometimes not. However, GIF is faster in both
+learning and prediction.
+
+Table 8. Test set error (MSE/error rate (%)) for stump least-sqaure
+Boosting/Adaboost under budget constraints (λ = 10−1.5 ).
+DATASETS
+B = 10%
+B = 1%
+F RIEDMAN 1
+4.53 ± 0.23
+3.86 ± 0.10
+A BALONE
+5.17 ± 0.20
+4.83 ± 0.20
+CT SLICE
+82.44 ± 3.80 68.73 ± 1.92
+H WANG ×10−2 97.88 ± 2.33 88.62 ± 1.73
+R INGNORM
+5.48 ± 0.55
+6.71 ± 0.99
+T WONORM
+5.09 ± 0.56
+5.98 ± 0.47
+H ASTIE
+5.65 ± 0.34
+7.10 ± 0.41
+M USK 2
+2.70 ± 0.37
+4.20 ± 0.28
+M ADELON
+11.30 ± 0.68 11.33 ± 0.69
+Table 9. Musk2: fitting/prediction times (seconds). Stump Adaboost versus GIF (trimmed loss with θ = 3, T = 1000,
+√
+m = p, CW = 1) for B = 10% and λ = 10−1.5 .
+Fitting
+Prediction
+
+Adaboost
+399.17 ± 60.91
+28.39 ± 5.43
+
+GIF
+1.53 ± 0.04
+0.31 ± 0.07
+
+5. Conclusion and perspectives
+In this paper, we introduced the Globally Induced Forest
+(GIF) whose goal is to produce lightweight yet accurate
+tree-based ensemble models by sequentially adding nodes
+to the model. Contrary to most tree-aware techniques, our
+method is framed as a pre-pruning method that does not
+require the a priori building of the whole forest. Several
+hyper-parameters govern the learning algorithm. We have
+proposed a set of default parameters which seems to work
+quite well in average, beating the baselines, under mild and
+severe memory constraints. Needless to say that the setting
+of these parameters can be further optimized if necessary,
+although this goes against the philosophy of building directly the pruned forest. Of the most interest is the conclusion that it is usually better not to optimize the choice of
+nodes. In other words, letting the algorithm optimize the
+forest shape is—surprisingly—harmful. Although it complicates the choice of the initial number of trees, this makes
+the algorithm extremely fast.
+The main focus of subsequent works should be to handle
+multiclass problems better. Several extensions can also be
+thought of. For instance, one could consider introducing
+both children at the same time at each iteration or allow for
+the refitting of the already chosen nodes by leaving them
+in the candidate list. Finally, we would also like to explore
+further the comparison between GIF and boosting methods,
+in particular Johnson & Zhang (2014)’s regularized greedy
+forests, which share similar traits with GIF.
+
+Acknowledgements
+Part of this research has been carried out while Arnaud Joly
+was a research fellow of the FNRS, Belgium. Computational resources have been provided by the Consortium
+
+Globally Induced Forest
+
+des Équipements de Calcul Intensif (CÉCI), funded by the
+Fonds de la Recherche Scientifique de Belgique (F.R.S.FNRS) under Grant No. 2.5020.11. This work is also supported by the DYSCO IUAP network of the Belgian Science Policy Office.
+
+Meinshausen, Nicolai et al. Forest garrote. Electronic Journal of Statistics, 3:1288–1304, 2009.
 
 References
-Babes, Monica, Marivate, Vukosi N., Littman, Michael L.,
-and Subramanian, Kaushik. Apprenticeship learning
-about multiple intentions. In International Conference
-on Machine Learning, pp. 897–904, 2011.
-Baird, Leemon and Moore, Andrew W. Gradient descent
-for general reinforcement learning. In Advances in
-Neural Information Processing Systems, pp. 968–974,
-1999.
-Baker, Chris L, Tenenbaum, Joshua B, and Saxe,
-Rebecca R. Goal inference as inverse planning. In
-Proceedings of the 29th Annual Meeting of the Cognitive
-Science Society, 2007.
-Beliakov, Gleb, Sola, Humberto Bustince, and Sánchez,
-Tomasa Calvo.
-A Practical Guide to Averaging
-Functions. Springer, 2016.
-Bellman, Richard. A Markovian decision process. Journal
-of Mathematics and Mechanics, 6(5):679–684, 1957.
-Boyd, S.P. and Vandenberghe, L. Convex optimization.
-Cambridge University Press, 2004.
-Brent, Richard P. Algorithms for minimization without
-derivatives. Courier Corporation, 2013.
-Brockman, Greg, Cheung, Vicki, Pettersson, Ludwig,
-Schneider, Jonas, Schulman, John, Tang, Jie, and
-Zaremba, Wojciech. Openai gym, 2016.
-Chollet, François. Keras. https://github.com/
-fchollet/keras, 2015.
-Cover, T.M. and Thomas, J.A. Elements of Information
-Theory. John Wiley and Sons, 2006.
-Dearden, Richard, Friedman, Nir, and Russell, Stuart.
-Bayesian Q-learning. In Fifteenth National Conference
-on Artificial Intelligence (AAAI), pp. 761–768, 1998.
-Fox, Roy, Pakman, Ari, and Tishby, Naftali. Taming
-the noise in reinforcement learning via soft updates.
-In Proceedings of the Thirty-Second Conference on
-Uncertainty in Artificial Intelligence, pp. 202–211.
-AUAI Press, 2016.
-Gordon, Geoffrey J.
-Stable function approximation
-in dynamic programming.
-In Proceedings of the
-twelfth international conference on machine learning,
-pp. 261–268, 1995.
-Gordon, Geoffrey J.
-Reinforcement learning with
-function approximation converges to a region, 2001.
-Unpublished.
 
-John, George H. When the best move isn’t optimal:
-Q-learning with exploration. In Proceedings of the
-Twelfth National Conference on Artificial Intelligence,
-pp. 1464, Seattle, WA, 1994.
-Kingma, Diederik and Ba, Jimmy.
-method for stochastic optimization.
-arXiv:1412.6980, 2014.
+Pedregosa, Fabian, Varoquaux, Gaël, Gramfort, Alexandre, Michel, Vincent, Thirion, Bertrand, Grisel, Olivier,
+Blondel, Mathieu, Prettenhofer, Peter, Weiss, Ron,
+Dubourg, Vincent, et al. Scikit-learn: Machine learning in python. Journal of Machine Learning Research,
+12(Oct):2825–2830, 2011.
 
-Adam: A
-arXiv preprint
+Breiman, Leo. Pasting small votes for classification in large
+databases and on-line. Machine Learning, 36(1-2):85–
+103, 1999.
+Breiman, Leo. Random forests. Machine learning, 45(1):
+5–32, 2001.
+De Vleeschouwer, Christophe, Legrand, Anthony, Jacques,
+Laurent, and Hebert, Martial. Mitigating memory requirements for random trees/ferns. In Image Processing (ICIP), 2015 IEEE International Conference on, pp.
+227–231. IEEE, 2015.
+Domingos, Pedro. Knowledge acquisition from examples
+via multiple models. In Machine learning-international
+workshop then conference, pp. 98–106. Morgan Kaufmann publishers, INC., 1997.
+Elisha, Oren and Dekel, Shai. Wavelet decompositions of
+random forests-smoothness analysis, sparse approximation and applications. Journal of Machine Learning Research, 17(198):1–38, 2016.
+Freund, Yoav and Schapire, Robert E. A desicion-theoretic
+generalization of on-line learning and an application to
+boosting. In European conference on computational
+learning theory, pp. 23–37. Springer, 1995.
+Friedman, Jerome, Hastie, Trevor, and Tibshirani, Robert.
+The elements of statistical learning, volume 1. Springer
+series in statistics Springer, Berlin, 2001.
+Friedman, Jerome H. Greedy function approximation: a
+gradient boosting machine. Annals of statistics, pp.
+1189–1232, 2001.
+Geurts, Pierre, Ernst, Damien, and Wehenkel, Louis. Extremely randomized trees. Machine learning, 63(1):3–
+42, 2006.
+Johnson, Rie and Zhang, Tong. Learning nonlinear functions using regularized greedy forest. IEEE transactions on pattern analysis and machine intelligence, 36
+(5):942–954, 2014.
+Joly, Arnaud, Schnitzler, François, Geurts, Pierre, and Wehenkel, Louis. L1-based compression of random forest
+models. In 20th European Symposium on Artificial Neural Networks, 2012.
 
-Kuleshov, Volodymyr and Precup, Doina. Algorithms
-for multi-armed bandit problems.
-arXiv preprint
-arXiv:1402.6028, 2014.
-Littman, Michael L. and Szepesvári, Csaba.
-A
-generalized reinforcement-learning model: Convergence
-and applications. In Saitta, Lorenza (ed.), Proceedings
-of the Thirteenth International Conference on Machine
-Learning, pp. 310–318, 1996.
-Littman, Michael Lederman. Algorithms for Sequential
-Decision Making. PhD thesis, Department of Computer
-Science, Brown University, February 1996.
-Also
-Technical Report CS-96-09.
-Neu, Gergely and Szepesvári, Csaba. Apprenticeship
-learning using inverse reinforcement learning and
-gradient methods. In UAI, 2007.
-Ng, Andrew Y. and Russell, Stuart. Algorithms for inverse
-reinforcement learning. In International Conference on
-Machine Learning, pp. 663–670, 2000.
-Perkins, Theodore J and Precup, Doina. A convergent form
-of approximate policy iteration. In Advances in Neural
-Information Processing Systems, pp. 1595–1602, 2002.
-Peters, Jan, Mülling, Katharina, and Altun, Yasemin.
-Relative entropy policy search. In AAAI. Atlanta, 2010.
-Puterman,
-Martin
-L.
-Markov
-Decision
-Processes—Discrete Stochastic Dynamic Programming.
-John Wiley & Sons, Inc., New York, NY, 1994.
-Ramachandran, Deepak and Amir, Eyal. Bayesian inverse
-reinforcement learning. In IJCAI, 2007.
-Rubin, Jonathan, Shamir, Ohad, and Tishby, Naftali.
-Trading value and information in mdps. In Decision
-Making with Imperfect Decision Makers, pp. 57–74.
-Springer, 2012.
-Rummery, G. A. and Niranjan, M. On-line Q-learning
-using connectionist systems.
-Technical Report
-CUED/F-INFENG/TR 166, Cambridge University
-Engineering Department, 1994.
-Safak, Aysel. Statistical analysis of the power sum
-of multiple correlated log-normal components. IEEE
-Transactions on Vehicular Technology, 42(1):58–61,
-1993.
+Menke, Joshua E and Martinez, Tony R. Artificial neural
+network reduction through oracle learning. Intelligent
+Data Analysis, 13(1):135–149, 2009.
 
-An Alternative Softmax Operator for Reinforcement Learning
-
-Singh, Satinder, Jaakkola, Tommi, Littman, Michael L.,
-and Szepesvári, Csaba.
-Convergence results for
-single-step on-policy reinforcement-learning algorithms.
-Machine Learning, 39:287–308, 2000.
-Stahl, Dale O. and Wilson, Paul W.
-Experimental
-evidence on players’ models of other players. Journal of
-Economic Behavior and Organization, 25(3):309–327,
-1994.
-Sutton, Richard S. Integrated architectures for learning,
-planning, and reacting based on approximating dynamic
-programming.
-In Proceedings of the Seventh
-International Conference on Machine Learning, pp.
-216–224, Austin, TX, 1990. Morgan Kaufmann.
-Sutton, Richard S. and Barto, Andrew G. Reinforcement
-Learning: An Introduction. The MIT Press, 1998.
-Team, The Theano Development, Al-Rfou, Rami, Alain,
-Guillaume, Almahairi, Amjad, Angermueller, Christof,
-Bahdanau, Dzmitry, Ballas, Nicolas, Bastien, Frédéric,
-Bayer, Justin, Belikov, Anatoly, et al. Theano: A
-python framework for fast computation of mathematical
-expressions. arXiv preprint arXiv:1605.02688, 2016.
-Thrun, Sebastian B. The role of exploration in learning
-control. In White, David A. and Sofge, Donald A.
-(eds.), Handbook of Intelligent Control: Neural, Fuzzy,
-and Adaptive Approaches, pp. 527–559. Van Nostrand
-Reinhold, New York, NY, 1992.
-Todorov, Emanuel. Linearly-solvable markov decision
-problems. In NIPS, pp. 1369–1376, 2006.
-Van Seijen, Harm, Van Hasselt, Hado, Whiteson, Shimon,
-and Wiering, Marco. A theoretical and empirical
-analysis of Expected Sarsa. In 2009 IEEE Symposium
-on Adaptive Dynamic Programming and Reinforcement
-Learning, pp. 177–184. IEEE, 2009.
-Williams, Ronald J. Simple statistical gradient-following
-algorithms for connectionist reinforcement learning.
-Machine Learning, 8(3):229–256, 1992.
-Wright, James R. and Leyton-Brown, Kevin. Beyond
-equilibrium: Predicting human behavior in normal-form
-games. In AAAI, 2010.
+Peterson, Adam H and Martinez, Tony R. Reducing decision tree ensemble size using parallel decision dags.
+International Journal on Artificial Intelligence Tools, 18
+(04):613–620, 2009.
+Ren, Shaoqing, Cao, Xudong, Wei, Yichen, and Sun, Jian.
+Global refinement of random forest. In Proceedings of
+the IEEE Conference on Computer Vision and Pattern
+Recognition, pp. 723–730, 2015.
+Rokach, Lior. Decision forest: Twenty years of research.
+Information Fusion, 27:111–125, 2016.
+Shotton, Jamie, Sharp, Toby, Kohli, Pushmeet, Nowozin,
+Sebastian, Winn, John, and Criminisi, Antonio. Decision
+jungles: Compact and rich models for classification. In
+Advances in Neural Information Processing Systems, pp.
+234–242, 2013.
+Tsoumakas, Grigorios, Partalas, Ioannis, and Vlahavas,
+Ioannis. A taxonomy and short review of ensemble selection. In ECAI 2008, workshop on supervised and unsupervised ensemble methods and their applications, pp.
+41–46, 2008.
+Vens, Celine and Costa, Fabrizio. Random forest based
+feature induction. In Data Mining (ICDM), 2011 IEEE
+11th International Conference on, pp. 744–753. IEEE,
+2011.
+Zhu, Ji, Zou, Hui, Rosset, Saharon, and Hastie, Trevor.
+Multi-class adaboost. Statistics and its Interface, 2(3):
+349–360, 2009.
 
 

@@ -1,1119 +1,911 @@
-Reduced Space and Faster Convergence in
-Imperfect-Information Games via Pruning
-
-Noam Brown 1 Tuomas Sandholm 1
+A Divergence Bound for Hybrids of MCMC and Variational Inference and an
+Application to Langevin Dynamics and SGVI
+Justin Domke 1
 
 Abstract
-Iterative algorithms such as Counterfactual Regret
-Minimization (CFR) are the most popular way
-to solve large zero-sum imperfect-information
-games. In this paper we introduce Best-Response
-Pruning (BRP), an improvement to iterative algorithms such as CFR that allows poorly-performing
-actions to be temporarily pruned. We prove that
-when using CFR in zero-sum games, adding BRP
-will asymptotically prune any action that is not
-part of a best response to some Nash equilibrium.
-This leads to provably faster convergence and
-lower space requirements. Experiments show that
-BRP results in a factor of 7 reduction in space,
-and the reduction factor increases with game size.
+Two popular classes of methods for approximate inference are Markov chain Monte Carlo
+(MCMC) and variational inference. MCMC
+tends to be accurate if run for a long enough time,
+while variational inference tends to give better
+approximations at shorter time horizons. However, the amount of time needed for MCMC to
+exceed the performance of variational methods
+can be quite high, motivating more fine-grained
+tradeoffs. This paper derives a distribution over
+variational parameters, designed to minimize a
+bound on the divergence between the resulting
+marginal distribution and the target, and gives an
+example of how to sample from this distribution
+in a way that interpolates between the behavior
+of existing methods based on Langevin dynamics and stochastic gradient variational inference
+(SGVI).
 
 1. Introduction
-Imperfect-information extensive-form games model strategic multi-step scenarios between agents with hidden information, such as auctions, security interactions (both physical
-and virtual), negotiations, and military situations. Typically
-in imperfect-information games, one wishes to find a Nash
-equilibrium, which is a profile of strategies in which no
-player can improve her outcome by unilaterally changing
-her strategy. A linear program can find an exact Nash equilibrium in two-player zero-sum games containing fewer
-than about 108 nodes (Gilpin & Sandholm, 2007). For
-larger games, iterative algorithms are used to converge to a
-Nash equilibrium. There are a number of such iterative algorithms (Heinrich et al., 2015; Nesterov, 2005; Hoda et al.,
-2010; Pays, 2014; Kroer et al., 2015), the most popular of
-which is Counterfactual Regret Minimization (CFR) (Zinkevich et al., 2007). CFR minimizes regret independently at
-each decision point in the game. CFR+, a variant of CFR,
-1
-Computer Science Department, Carnegie Mellon University, Pittsburgh, PA, USA. Correspondence to: Noam
-Brown <noamb@cs.cmu.edu>, Tuomas Sandholm <sandholm@cs.cmu.edu>.
-
-Proceedings of the 34 th International Conference on Machine
-Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017 by
-the author(s).
-
-was used to essentially solve Limit Texas Hold’em, the
-largest imperfect-information game ever to be essentially
-solved (Bowling et al., 2015).
-Both computation time and storage space are difficult challenges when solving large imperfect-information games.
-For example, solving Limit Texas Hold’em required nearly
-8 million core hours and a complex, domain-specific streaming compression algorithm to store the 262 TiB of uncompressed data in only 10.9 TiB. This data had to be repeatedly
-decompressed from disk into memory and then compressed
-back to disk in order to run CFR+ (Tammelin et al., 2015).
-In certain situations, pruning can be applied to speed up the
-traversal of the game tree in iterative algorithms (Lanctot
-et al., 2009; Brown & Sandholm, 2015a; Brown et al., 2017).
-However, these past pruning techniques do not reduce the
-space needed to solve a game and lack theoretical guarantees
-for improved performance.
-In this paper we introduce Best-Response Pruning (BRP)1 ,
-a new form of pruning for iterative algorithms such as CFR
-in large imperfect-information games. BRP leverages the
-fact that in iterative algorithms we are typically interested in
-performance against the opponent’s average strategy over all
-iterations, and that the opponent’s average strategy cannot
-change faster than a rate of 1t , where t is the number of iterations conducted so far. Thus, if part-way through a run one
-of our actions has done very poorly relative to other available
-actions against the opponent’s average strategy, then after
-just a few more iterations the opponent’s average strategy
-cannot change sufficiently for the poorly-performing action
-to now be doing well against the opponent’s updated average
-strategy. In fact, we can bound how much an action’s performance can improve over any number of iterations against
-the opponent’s average strategy. So long as the upper bound
-on that performance is still not competitive with the other
-actions, then we can safely ignore the poorly-performing
-action.
-BRP provably reduces the computation time needed to solve
-imperfect-information games. Additionally, a primary advantage of BRP is that in addition to faster convergence,
-1
-
-Earlier versions of this paper referred to Best-Response Pruning as Total Regret-Based Pruning (Total RBP)
-
-Reduced Space and Faster Convergence in Imperfect-Information Games via Pruning
-
-it also reduces the space needed over time. Specifically,
-once pruning begins on a branch, BRP discards the memory
-allocated on that branch and does not reallocate the memory
-until pruning ends and the branch cannot immediately be
-pruned again. In Section 3.1, we prove that after enough
-iterations of CFR are completed, space for certain pruned
-branches will never need to be allocated again. Specifically, we prove that when using BRP it is asymptotically
-only necessary to store data for parts of the game that are
-reached with positive probability in a best response to a
-Nash equilibrium. This is extremely advantageous when
-solving large imperfect-information games, which are often
-constrained by space and in which the set of best response
-actions may be orders of magnitude smaller than the size of
-the game (Schmid et al., 2014).
-While BRP still requires enough memory to store the entire
-game in the early iterations, recent work has shown that
-these early iterations can be skipped in CFR, and possibly
-other iterative algorithms, by first solving a low-memory
-abstraction of the game and then using its solution to warm
-start CFR in the full game (Brown & Sandholm, 2016).
-BRP’s reduction in space is also helpful to the Simultaneous Abstraction and Equilibrium Finding (SAEF) algorithm (Brown & Sandholm, 2015b), which starts CFR with
-a small abstraction of the game and progressively expands
-the abstraction while also solving the game. SAEF’s space
-requirements increase the longer the algorithm runs, and
-may eventually exceed the constraints of a system. BRP
-can counter this increase in space by eliminating the need
-to store suboptimal paths of the game tree.
-BRP shares some similarities to the earlier pruning algorithm Regret-Based Pruning, which has shown empirical
-evidence of improving the performance of CFR. In contrast,
-this paper proves that CFR converges faster when using
-BRP, because suboptimal paths
- in the game tree will only
-need to be traversed O ln(T ) times over T iterations. We
-also prove that BRP uses asymptotically less space, while
-Regret-Based Pruning does not reduce the space needed
-to solve a game. Moreover, Best-Response Pruning easily generalizes to iterative algorithms beyond CFR such as
-Fictitious Play (Heinrich et al., 2015).
-The magnitude of the gains in speed and space that BRP
-provides varies depending on the game. It is possible to
-construct games where BRP provides no benefit. However,
-if there are many suboptimal actions in the game—as is
-frequently the case in large games—BRP can speed up
-CFR by multiple orders of magnitude and require orders of
-magnitude less space. Our experiments show an order of
-magnitude space reduction already in medium-sized games,
-and a reduction factor increase with game size.
-
-2. Background
-In a two-player zero-sum imperfect-information extensiveform game there are two players, P = {1, 2}. Let H be
-the set of all possible histories (nodes) in the game tree,
-represented as a sequence of actions. The actions available
-in a history is A(h) and the player who acts at that history
-is P (h) ∈ P ∪ c, where c denotes chance. Chance plays
-an action a ∈ A(h) with a fixed probability. The history h0
-reached after action a in h is a child of h, represented by
-h · a = h0 , while h is the parent of h0 . More generally, h0 is
-an ancestor of h (and h is a descendant of h0 ), represented
-by h0 @ h, if there exists a sequence of actions from h0 to h.
-Z ⊆ H are terminal histories. For each player i ∈ P, there
-is a payoff function ui : Z → < where u1 = −u2 . Define
-∆i = maxz∈Z ui (z) − minz∈Z ui (z) and ∆ = maxi ∆i .
-Imperfect information is represented by information sets for
-each player i ∈ P by a partition Ii of h ∈ H : P (h) = i.
-For any information set I ∈ Ii , all histories h, h0 ∈ I are
-indistinguishable to player i, so A(h) = A(h0 ). I(h) is
-the information set I where h ∈ I. P (I) is the player i
-such that I ∈ Ii . A(I) is the set of actions such that for
-all h ∈ I, A(I) = A(h). |Ai | = maxI∈Ii |A(I)| and
-|A| = maxi |Ai |. Define U (I) to be the maximum payoff
-reachable from a history in I, and L(I) to be the minimum.
-That is, U (I) = maxz∈Z,h∈I:hvz uP (I) (z) and L(I) =
-minz∈Z,h∈I:hvz uP (I) (z). Define ∆(I) = U (I) − L(I)
-to be the range of payoffs reachable from a history in I.
-Similarly U (I, a), L(I, a), and ∆(I, a) are the maximum,
-minimum, and range of payoffs (respectively) reachable
-from a history in I after taking action a. Define D(I, a) to
-be the set of information sets reachable by player P (I) after
-taking action a. Formally, I 0 ∈ D(I, a) if for some history
-h ∈ I and h0 ∈ I 0 , h · a v h0 and P (I) = P (I 0 ).
-A strategy σi (I) is a probability vector over A(I) for player
-i in information set I. The probability of a particular action
-a is denoted by σi (I, a). Since all histories in an information
-set belonging to player i are indistinguishable, the strategies
-in each of them must be identical. That is, for all h ∈ I,
-σi (h) = σi (I) and σi (h, a) = σi (I, a). Define σi to be a
-probability vector for player i over all available strategies
-Σi in the game. A strategy profile σ is a tuple of strategies,
-one for each player. ui (σi , σ−i ) is the expected payoff
-for player i if all players play according to the strategy
-profile hσi , σ−i i. If a series
-of strategies are played over T
-P
-iterations, then σ̄iT =
-
-t∈T
-
-T
-
-σit
-
-.
-
-π σ (h) = Πh0 →avh σP (h0 ) (h0 , a) is the joint probability of
-reaching h if all players play according to σ. πiσ (h) is the
-contribution of player i to this probability (that is, the probability of reaching h if all players other than i, and chance,
-σ
-always chose actions leading to h). π−i
-(h) is the contribution of all players other than i, and chance. π σ (h, h0 ) is the
-
-Reduced Space and Faster Convergence in Imperfect-Information Games via Pruning
-
-probability of reaching h0 given that h has been reached,
-and 0 if h 6@ h0 . In a perfect-recall game, ∀h, h0 ∈ I ∈ Ii ,
-πi (h) = πi (h0 ). In this paper we focus on perfect-recall
-games. Therefore, for i = P (I) define πi (I) = πi (h) for
-h ∈ I. Moreover, I 0 @ I if for some h0 ∈ I 0 and some
-h ∈ I, h0 @ h. Similarly, I 0 · a @ I if h0 · a @ h. The
-average strategy σ̄iT (I) for an information set I is defined
-as σ̄iT (I) =
-
-σt
-
-P
-
-t∈T
-
-πi i (I)σit (I)
-
-P
-
-t∈T
-
-t
-
-πiσ (I)
-
-.
-
-A best response to σ−i is a strategy σi∗ such that
-ui (σi∗ , σ−i ) = maxσi0 ∈Σi ui (σi0 , σ−i ). A Nash equilibrium σ ∗ is a strategy profile where every player plays a
-∗
-∗
-best response: ∀i, ui (σi∗ , σ−i
-) = maxσi0 ∈Σi ui (σi0 , σ−i
-). A
-Nash equilibrium strategy for player i as a strategy σi that
-is part of any Nash equilibrium. In two-player zero-sum
-games, if σi and σ−i are both Nash equilibrium strategies,
-then hσi , σ−i i is a Nash equilibrium. An -equilibrium
-∗
-as a strategy profile σ ∗ such that ∀i, ui (σi∗ , σ−i
-)+ ≥
-0
-∗
-maxσi0 ∈Σi ui (σi , σ−i ).
-2.1. Counterfactual Regret Minimization
-Counterfactual Regret Minimization (CFR) is a popular algorithm for extensive-form games in which the strategy
-vector for each information set is determined according to a
-regret-minimization algorithm (Zinkevich et al., 2007). We
-use regret matching (RM) (Hart & Mas-Colell, 2000) as the
-regret-minimization algorithm, but the material presented in
-this paper also applies to other regret minimizing algorithms
-such as Hedge (Brown et al., 2017).
-The analysis of CFR makes frequent use of counterfactual
-value. Informally, this is the expected utility of an information set given that player i tries to reach it. For player i at
-information set I given a strategy profile σ, this is defined
-as
-X
-X
-
-σ
-v σ (I) =
-π−i
-(h)
-π σ (h, z)ui (z)
+One of the simplest Markov chain Monte Carlo (MCMC)
+methods is Langevin dynamics (Grenander & Miller, 1994;
+Robert & Casella, 2004, Sec. 7.8.5) where one repeats gradient steps with injected Gaussian noise. Namely, one iterates
+p
+✏
+z
+z + rz log p(z) + ✏⌘,
 (1)
-h∈I
+2
+where ⌘ is sampled from a standard Gaussian distribution
+and ✏ is a step-size that may decay over time. To get exact samples, a Metropolis-Hastings rejection step should
+be used. However, as the step-size ✏ becomes smaller,
+the acceptance probability goes to one, and so this can be
+disregarded. In the Bayesian inference setting, z denotes
+unknown parameters and p(z) represents a posterior over
+1
 
-z∈Z
+College of Computing and Information Sciences, University of Massachusetts, Amherst, USA. Correspondence to: Justin
+Domke <domke@cs.umass.edu>.
+Proceedings of the 34 th International Conference on Machine
+Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
+by the author(s).
 
-The counterfactual value of an action a is
-X
-X
-
-σ
-π−i
-(h)
-v σ (I, a) =
-π σ (h · a, z)ui (z)
-h∈I
+them. Computing p(z) thus requires a full pass over the
+dataset. The idea of Stochastic Gradient Langevin Dynamics (Welling & Teh, 2011) is to get an unbiased estimate
+of the gradient of log p(z) by approximating the posterior
+using a minibatch. Since the gradient term is multiplied by
+2
+✏, the
+p variance of its error has order ✏ , while the variance
+of ✏⌘ has order ✏. Thus, with a small step ✏, the injected
+noise dominates, meaning one can might expect these to
+have a stationary distribution close to the target p(z).
+The idea of variational inference is to posit a simple family of distributions qw (z) and then optimize w to minimize
+the KL-divergence from qw (z) to the target p(z). (In a
+Bayesian setting, this is equivalent to maximizing the evidence lower bound.) If one were to use plain gradient ascent to perform this optimization, this leads to the iterate
+of
+w
+
+✏
+w + rw Eqw (Z) [log p(Z)
+2
+
+log qw (Z)],
 
 (2)
 
-z∈Z
+where the gradient step ✏ is divided by two for convenience,
+and may again decay over time. In practice, doing gradient
+ascent like this has two difficulties. First, in the Bayesian
+inference setting, computing log p(z) requires a full pass
+over the data. This can be approximated without bias using
+a minibatch. The second difficulty stems from the expectation of log p(z) with respect to qw (z) in Eq. 2. The gradient
+of this expectation can be approximated in different ways
+using samples from qw (Z) (Section 3.2). Since this gives
+unbiased estimates of the gradient, stochastic optimization
+methods, such as stochastic gradient descent, will converge
+to a local optima when the step-size becomes small.
+Intuitively, both MCMC and variational methods can be
+thought of as trying to find a high-probability region of
+log p(z), with different strategies to encourage entropy to
+get coverage of the distribution. In MCMC, entropy is created by randomness in the Markov chain, while in variational methods the KL-divergence directly measures the
+entropy of the variational distribution. It is natural to think
+that hybrid methods might employ fractions of these two
+strategies. This paper does so by defining a distribution
+over the parameters w of the approximating family q(z|w).
+This distribution q(w) is designed to minimize a bound on
+the KL-divergence of the resulting marginal distribution
 
-A counterfactual best response (Moravcik et al., 2016)
-(CBR) is a strategy similar to a best response, except that
-it maximizes counterfactual value even at information sets
-that it does not reach due to its earlier actions. Specifically, a counterfactual best response to σ−i is a strategy CBR(σ−i ) such that if CBR(σ−i )(I, a) > 0 then
-v hCBR(σ−i ),σ−i i (I, a) = maxa0 v hCBR(σ−i ),σ−i i (I, a0 ).
-The counterfactual best response value CBV σ−i (I) is similar to counterfactual value, except that player i = P (I)
-plays according to a CBR to σ−i . Formally, CBV σ−i (I) =
-v hCBRi (σ−i ),σ−i i (I).
+A Divergence Bound for Hybrids of MCMC and Variational Inference and an Application to Langevin Dynamics and SGVI
 
-Let σ t be the strategy profile used on iteration t. The instantaneous regret on iteration t for action a in information
-t
-t
-set I is rt (I, a) = v σ (I, a) − v σ (I) andP
-the regret for
-action a in I on iteration T is RT (I, a) = t∈T rt (I, a).
-T
-Additionally, R+
-(I, a) = max{RT (I, a), 0} and RT (I) =
-T
-is
-maxa {R+ (I, a)}.PRegret for player i in the entire game
-
-t
-t
-RiT = maxσi0 ∈Σi t∈T ui (σi0 , σ−i
-) − ui (σit , σ−i
-) .
-In regret matching, a player picks a distribution over actions
-in an information set in proportion to the positive regret on
-those actions. Formally, on each iteration T + 1, player i
-selects actions a ∈ A(I) according to probabilities
+=0
 
-σ
+= .25
 
-T +1
+= .5
 
-(I, a) =
+= .75
 
-
-P
-
+=1
 
-T
-R+
-(I,a)
-T (I,a0 ) ,
-R+
+Figure 1. Inference on toy distributions. Colored contours show the target density p(z). Sampled weights w are drawn equally from
+5 ⇥ 105 iterations and pictured as ellipsoids at one standard deviation. Fewer w are shown for smaller to avoid visual clutter.
 
-a0 ∈A(I)
+q(z) to the target p(z). Intuitively, when defining q(w),
+there are two ways to encourage entropy, namely to give
+higher density to vectors w where q(Z|w) has high entropy
+or to encourage entropy over w itself.
+Given a distribution q(w, z) and a target distribution p(z),
+this paper uses two bounds on the marginal divergence
+Dtrue = KL (q(Z)kp(Z)) . First, one can upper-bound by
+the conditional divergence D0 = KL (q(Z|W )kp(Z)).
+Second, one can “adjoin” some distribution p(w|z) to
+p(z), and bound Dtrue by the joint divergence D1 =
+KL (q(W, Z)kp(W, Z)). This paper takes a convex combination of these two bounds, i.e. uses the family of bounds
+D = (1
+)D0 + D1 . For any between 0 and 1, the
+distribution q(w) is derived that minimizes this bound for
+fixed p and a fixed approximating family q(z|w) (Theorem
+3). Then, one can sample from this distribution over w by
+(stochastic) Langevin dynamics. This turns out to lead to
+the iterate
+⇣
+✏
+w
+w + rw Eqw [log p(Z) + (
+1) log qw (Z)]
+2
+⌘ p
++ log r(w) + ✏ ⌘, (3)
+where r(w) is related to the adjoining distribution p(w|z)
+and may be thought of as a “base measure” 1 over the space
+of w. Of course, exactly computing this gradient is intractable in general, but the same strategies used for variational inference can be used to efficiently compute an un-
 
 1
-|A(I)| ,
+To see why r is necessary, consider a reparameterization of
+w. In order for the marginal distribution q(z) to stay the same, the
+density of the base measure must be transformed corresponding
+to the reparameterization. Put another way, without r(w), the
+results of inference would depend on the parameterization of w,
+even with an arbitrarily small step-size.
 
-if
+biased estimate.
+It can be shown that as ! 0, the solution concentrates
+in the optima of the variational optimization, and thus the
+sampling algorithm reduces to gradient ascent on the variational objective. Meanwhile, as will be discussed in Sections 2.3 and 5 it is best to make r a function of such that
+w with high entropy have less density when approaches
+1. When this is true, then as
+! 1, only w indexing
+highly concentrated distributions over z retain density, and
+so sampling from q(w) is essentially just a reparameterization of sampling from p(z), and the algorithm reduces to
+Langevin dynamics.
+Thus, for the extreme cases of = 0 and = 1, this algorithm reduces to variational inference and Langevin dynamics, respectively. Informally, at these extremes, the algorithm is “fast but approximate” and “slow but accurate”.
+In the intermediate range, the algorithm exhibits new behavior with a fine-grained trade-off between speed and accuracy. Thus, this approach gives a smooth continuum of
+algorithms with different priorities of speed and accuracy.
+1.1. Notation
+This paper uses three notational conventions that are
+not universal. First, the conditional probability q(z|w)
+will alternatively be written as qw (z) when convenient.
+Second, A ' B indicates that A and B have the same
+expected value or (if A is a constant) that B is an unbiased
+estimator of A. Finally, upper and lower-cases indicate
+what terms are random variables in a KL-divergence. So,
+KL (q(Z|w)kp(Z|w)) = Eq(Z|w) log (q(Z|w)/p(Z|w))
+is the divergence between q(z|w) and p(z|w)
+for a fixed w, while KL (q(Z|W )kp(Z|W )) =
 
-P
+A Divergence Bound for Hybrids of MCMC and Variational Inference and an Application to Langevin Dynamics and SGVI
 
-a0
+Eq(W,Z) log (q(Z|W )/p(Z|W )) is a standard conditional divergence.
 
-T
-R+
-(I, a0 ) > 0
+2. Information Theoretic Results
 
-otherwise
+2.2. Divergence Bound and its Minimizer
+This paper is based on convex combination of D0 and D1 ,
+parameterized by some 2 [0, 1], namely
+D = (1
 
-(3)
-If a player plays according topRM on √
-every iteration then on
-iteration T , RT (I) ≤ ∆(I) |A(I)| T .
-If a player plays according to CFR in every iteration then
-P
-RiT
-T
-RiT ≤
-→ 0. In
-I∈Ii R (I). So, as T → ∞, T
-two-player zero-sum games, if both players’ average reRT
-gret Ti ≤ , their average strategies hσ̄1T , σ̄2T i form a 2equilibrium (Waugh et al., 2009). Thus, CFR constitutes
-an anytime algorithm for finding an -Nash equilibrium in
-zero-sum games.
-2.2. Prior Approaches to Pruning
-This section reviews forms of pruning that allow parts of the
-game tree to be skipped in CFR. In vanilla CFR, the entire
-game tree is traversed separately for each player historyby-history. On each traversal, the regret for each action
-of a history’s information set is updated based on the expected value for that action on that iteration, weighed by the
-probability of opponents taking actions to reach the history
-σt
-(that is, weighed by π−i
-(h)). However, if a history h is
-σt
-reached on iteration t in which π−i
-(h) = 0, then from (1)
-and (2) the strategy at h contributes nothing on iteration
-t to the regret of I(h) (or to the information sets above
-it). Moreover, any history that would be reached beyond h
-would also contribute nothing to its information set’s regret
-σt
-because π−i
-(h0 ) = 0 for every history h0 where h @ h0
-0
-and P (h ) = P (h). Thus, when traversing the game tree
-for player i, there is no need to traverse beyond any history
-σt
-h when π−i
-(h) = 0. The benefit of this form of pruning,
-which we refer to as partial pruning, varies depending on
-the game, but empirical results show a factor of 30 improvement in some games (Lanctot et al., 2009).
-While partial pruning allows one to prune paths that an opponent reaches with zero probability, Regret-Based Pruning
-allows one to also prune paths that the traverser reaches
+(7)
 
-Reduced Space and Faster Convergence in Imperfect-Information Games via Pruning
+)D0 + D1.
 
-with zero probability (Brown & Sandholm, 2015a). However, this pruning is necessarily temporary. Consider an
-action a ∈ A(I) such that σ t (I, a) = 0, and assume that it
-is known action a will not be played with positive probability until some far-future iteration t0 (in RM, this would be
-the case if Rt (I, a)  0). Since action a is played with zero
-probability on iteration t, so from (1) the strategy played and
-reward received following action a (that is, in D(I, a)) will
-not contribute to the regret for any information set preceding
-action a on iteration t. In fact, what happens in D(I, a) has
-no bearing on the rest of the game tree until iteration t0 is
-reached. So one could, in theory, “procrastinate” in deciding
-what happened beyond action a on iteration t, t+1, ..., t0 −1
-until iteration t0 .
-However, upon reaching iteration t0 , rather than individually making up the t0 − t iterations over D(I, a), one can
-instead do a single iteration, playing against the average of
-the opponents’ strategies in the t0 − t iterations that were
-missed, and declare that strategy was played on all the t0 − t
-iterations. This accomplishes the work of the t0 −t iterations
-in a single traversal. Moreover, since player i never plays
-action a with positive probability between iterations t and
-t0 , that means every other player can apply partial pruning
-on that part of the game tree for iterations t0 − t, and skip
-it completely. This, in turn, means that player i has free
-rein to play whatever they want in D(I, a) without affecting
-the regrets of the other players. In light of that, and of the
-fact that player i gets to decide what is played in D(I, a)
-after knowing what the other players have played, player
-i might as well play a strategy that ensures zero regret for
-all information sets I 0 ∈ D(I, a) in the iterations t to t0 . A
-CBR to the average of the opponent strategies on the t0 − t
-iterations would qualify as such a zero-regret strategy.
-Regret-Based Pruning only allows a player to skip traversing D(I, a) for as long as σ t (I, a) = 0. Thus, in
-RM, if Rt0 (I, a) < 0, we can prune the game tree
-beyond action
-iteration
-Pt0 a σfrom
-Pt1 t0 untilσt iteration t1 so
-t
-long as
-v
-(I,
-a)
-+
-t=t0 +1 π−i (I)U (I, a) ≤
-Pt1 σt t=1
-t=1 v (I).
+This section derives a few results from an information theoretic viewpoint, without any particular regard for form of
+the target distribution, or how one might sample from it.
+Proofs are given in the appendix.
 
-3. Best-Response Pruning
-This section describes the behavior of BRP. In particular
-we focus on the case where BRP is applied to the most
-popular family of iterative algorithms, CFR. BRP begins
-pruning an action in an information set whenever playing
-perfectly beyond that action against the opponent’s average
-strategy (that is, playing a CBR) still does worse than what
-has
-achieved in the iterations played so far (that is,
-PT been
-σt
-v
-(I)). Pruning continues for the minimum number
-t=1
-of iterations it could take for the opponent’s average strategy
-to change sufficiently such that the pruning starting condition (that is, playing a CBR beyond the action against the
+Since D0 and D1 are upper-bounds, so is D . The following theorem gives the distribution q(w) to minimize D .
 
-opponent’s average strategy does worse than what has been
-achieved in the iterations so far) no longer holds. When
-pruning ends, BRP calculates a CBR in the pruned branch
-against the opponent’s average strategy over all iterations
-played so far, and sets regret in the pruned branch as if that
-CBR strategy were played on every iteration played in the
-game so far—even those that were played before pruning
-began.
-While using a CBR works correctly when applying BRP to
-CFR, it is also sound to choose a strategy that is almost a
-CBR (formalized later in this section), as long as that strat2
-2
-P
-T
-egy ensures a∈A(I) R+
-(I, a) ≤ ∆(I) |A(I)|T . In
-practice, this means that the strategy is close to a CBR, and
-approaches a CBR as T → ∞. We now present the theory
-to show that such a near-CBR can be used. However, in
-practice CFR converges much faster than the theoretical
-bound, so the potential function is typically far lower than
-the theoretical bound. Thus, while choosing a near-CBR
-rather than an exact CBR may allow for slightly longer pruning according to the theory, it may actually result in worse
-performance. All of the theoretical results presented in this
-paper, including the improved convergence bound as well
-as the lower space requirements, still hold if only a CBR is
-used, and our experiments use a CBR. Nevertheless, clever
-algorithms for deciding on a near-CBR may lead to even
-better performance in practice.
-We define a strategy β(σ−i , T ) as a T -near counterfactual
-best response (T -near CBR) to σ−i if for all I belonging to
-player i
+2.1. Preliminaries
 
-X
-a∈A(I)
+Theorem 3. For fixed values of and p(w|z), the distribution q(w) that minimizes D is
 
-2
-xT
-v hβ(σ−i ,T ),σ−i i (I, a)−v hβ(σ−i ,T ),σ−i i (I) + ≤ I2
-T
+Let p(z) be the target distribution. For simplicity, z is
+treated here as a continuous variable, although the results
+in this section remain true if it is discrete. There is some
+fixed set of conditional distributions q(z|w), which may
+also be written as qw (z). In principle, one might like to
+know how to set q(w) such that the resulting marginal distribution over z, is close to p(z), as measured by the KLdivergence,
+Dtrue = KL (q(Z)kp(Z)) = Eq(Z) log
+
+q(Z)
+.
+p(Z)
 
 (4)
-where xTI can be any value in the range 0 ≤ xTI ≤
-2
-∆(I) |A(I)|T . If xTI = 0, then a T -near CBR is
-always a CBR. The set of strategies that are T -near
-CBRs to σ−i is represented as Σβ (σ−i , T ). We also
-define the T -near counterfactual best response value
-0
-as ψ σ−i ,T (I, a) = minσi0 ∈Σβ (σ−i ,T ) v hσi ,σ−i i (I, a) and
-0
-ψ σ−i ,T (I) = minσi0 ∈Σβ (σ−i ,T ) v hσi ,σ−i i (I).
-When applying BRP to CFR, an action is pruned only if it
-would still have negative regret had a T -near CBR against
-the opponent’s average strategy been played on every iteration. Specifically, on iteration T of CFR with RM, if
 
-T
- X
-T
-t
-T ψ σ̄−i ,T (I, a) ≤
-v σ (I)
-t=1
+This quantity is difficult to control directly, since the
+marginal q(z) typically cannot be evaluated in closed form.
+One bound comes from the conditional KL-divergence, as
+stated in the following Lemma.
+Lemma 1. The divergence from q(z) to p(z) is
+KL (q(Z)kp(Z)) = KL (q(Z|W )kp(Z)) Iq [W, Z],
+|
+{z
+}
+D0
 
 (5)
+where D0 = Eq(W,Z) log (q(Z|W )/p(Z)) is the conditional divergence and Iq = KL (q(Z, W )kq(Z)q(W )) denotes mutual information under q.
+A second bound comes from adjoining some distribution
+p(w|z) to p(z). Then, the following lemma is essentially
+just a re-statement of the chain rule for the KL-divergence
+(Cover & Thomas, 2006, Thm. 2.5.3).
+Lemma 2. The KL-divergence between q(z) and p(z) can
+be written as
 
-Reduced Space and Faster Convergence in Imperfect-Information Games via Pruning
+q ⇤ (w) = exp s(w) A)
+Z
+A = log
+exp s(w)
+w
 
-then D(I, a) can be pruned for
+s(w) = log p(w)
+1
 
-T =
+D1
 
-T
-
-t
-
-PT
-
-0
-
-t=1
-
-v σ (I) − ψ σ̄−i ,T (I, a)
-U (I, a) − L(I)
+KL (q(W |Z)kp(W |Z)) .
 
 (6)
 
-iterations. After those T 0 iterations are over, we calculate
-a T + T 0 -near CBR in D(I, a) to the opponent’s average
-strategy and set regret as if that T + T 0 -near CBR had been
-played on every iteration. Specifically, for each t ≤ T + T 0
-T +T 0
+Since the mutual information in Eq. 5 and the conditional
+divergence on the right of Eq. 6 are both non-negative,
+both D0 and D1 are upper-bounds on Dtrue . Note that if
+p(w|z) = q(w), then D1 = D0 , and so Lemma 1 follows
+from Lemma 2.
 
-t
+KL (q(Z|w)kp(Z|w))
 
-we set2 v σ (I, a) = ψ σ̄−i
-R
+1 KL (q(Z|w)kp(Z)) .
 
-T +T 0
+Moreover, at q ⇤ , the objective value is D⇤ =
 
-(I, a) = T +T
+A.
 
-0
+Since
+A is an upper-bound on the KLdivergence, A must be non-positive.
+This can
+also be seen Rdirectly, since it can be written as
+A
+=
+log w p(w) exp( KL (q(Z|w)kp(Z|w))
+1
+1 KL (q(Z|w)kp(Z))), and the inner divergences as well as 1 1 are non-negative.
+To understand the connection of this bound to variational
+inference and MCMC, one can look at behavior where =
+0 or where = 1. For the former case, one obtains a result
+closely related to the solution to the variational inference
+problem.
+Remark 4. In the limit where ! 0 the divergence bound
+at the optimal q ⇤ becomes
+lim D⇤ = inf KL (q(Z|w)kp(Z)) .
+w
 
-,T +T 0
-
-(I, a) so that
-
-0
-
-
-
-ψ
-
-T +T
-σ̄−i
-,T +T 0
-
-
-
-(I, a) −
-
-TX
-+T 0
-
-and for every information set I
-σt
-
-0
-
-0
-
-0
-
-set v (I , a ) = ψ
-T +T 0
-
-ψ σ̄−i
-
-,T +T 0
-
-T +T
-σ̄−i
-,T +T 0
-
-0
-
-t
-
-(7)
-D(I, a) we
-
-∈
-
-Similar to Regret-Based Pruning, the duration of pruning in
-BRP can be increased by giving up knowledge beforehand
-of exactly how many iterations can be skipped. From (2)
-
-σt
-and (1) we see that rT (I, a) ≤ π−i
-(I) U (I, a) − L(I) .
-σt
-Thus, if π−i
-(I) is very low, then (5) would continue to hold
-for more iterations than (6) guarantees. Specifically, we can
-prune D(I, a) from iteration t0 until iteration t1 as long as
-
-v σ (I)
-
-t=1
-0
-
-have very negative regret, and do a check only once every
-several iterations. This would still be safe and would save
-some computational cost of the checks, but would lead to
-less pruning.
-
-t1
-t1
-X
-X
-t0
-
-t
-σt
-t0 ψ σ̄−i ,t0 (I, a) +
-π−i
-(I)U (I, a) ≤
-v σ (I)
-t=t0 +1
-
-t
-
-0
-
-(I , a ) and v σ (I 0 ) =
-
-t=1
+!0
 
 (9)
 
-(I 0 ) so that
-3.1. Best-Response Pruning Requires Less Space
+Similarly, when ! 0, q ⇤ (w) concentrates at the minimizer(s) of this divergence. (Formally, with multiple global
+optima with the same divergence, q(w) will concentrate
+equally around all minimizers.)
+For the case where
 
-R
-
-T +T 0
-
-0
-
-0
-
-(I , a ) =
-
-
-T +T 0
-T +T 0
-0
-0
-T + T 0 ψ σ̄−i ,T +T (I 0 , a0 ) − ψ σ̄−i ,T +T (I 0 )
+KL(q(Z)kp(Z))) = KL (q(W, Z)kp(W, Z))
+|
+{z
+}
 
 (8)
 
-Theorem 1 proves that if (5) holds for some action, then the
-action can be pruned for T 0 iterations, where T 0 is defined
-in (6). The same theorem holds if one replaces the T -near
-counterfactual best response values with exact counterfactual best response values. The proof for Theorem 1 draws
-from recent work on warm starting CFR using only an average strategy profile (Brown & Sandholm, 2016). Essentially,
-we warm start regrets in the pruned branch using only the
-average strategy of the opponent and knowledge of T .
-Theorem 1. Assume T iterations of CFR with RM have
-been played in a two-player zero-sum game and assume
-
-PT
-T
-σt
-T ψ σ̄−i ,T (I, a) ≤
-P (I) = i. Let
-t=1 v (I) where
-
-T ,T
-PT
-σ̄−i
-σt
-v
-(I)−T
-ψ
-(I,a)
-T 0 = b t=1 U (I,a)−L(I)
-c. If both players
-play according to CFR with RM for the next T 0 iterations in all information sets I 00 6∈ D(I, a) except that
-σ(I, a) is set to zero and σ(I) is renormalized, then
-
-PT +T 0 σt
-T +T 0
-0
-(T + T 0 ) ψ σ̄−i ,T +T (I, a) ≤
-t=1 v (I). MoreT +T 0
+D1⇤ =
 
-t
+log
 
-over, if one then sets v σ (I, a) = ψ σ̄−i
-t
+Z
 
-,T +T 0
+= 1 , it is easy to see that
 
-T +T 0
+p(w) exp ( KL (q(Z|w)kp(Z|w))) ,
+w
 
-(I, a) for
-0
+(10)
+which will be zero if p(w) is only supported on w where the
+divergence between q(z|w) and p(z|w) is zero. This may
+initially seem like a strange condition, given that p(w) results from both the target distribution p(z) and the adjoined
+distribution p(w|z). However, the next section gives more
+specifics.
 
-each t ≤ T + T 0 and v σ (I 0 , a0 ) = ψ σ̄−i ,T +T (I 0 , a0 )
-for each I 0 ∈ D(I, a), then after T 00 additional iterations
-0
-00
-of CFR with RM, the bound on exploitability of σ̄ T +T +T
-is no worse than having played T + T 0 + T 00 iterations of
-CFR with RM without BRP.
-In practice, rather than check whether (5) is met for an
-action on every iteration, one could only check actions that
-PT
-σt
-In practice, only the sums
-t=1 v (I) and either
-PT
-σt
-T
-t=1 v (I, a) or R (I, a) are stored.
+A Divergence Bound for Hybrids of MCMC and Variational Inference and an Application to Langevin Dynamics and SGVI
+
+2.3. Specific Form for p(w|z)
+The results in the previous section were written without
+without considering the specific form of p(w|z). This paper
+takes the approach of defining
+p(w|z) =
+
+r(w)q(z|w)
+,
+rz
+
+(11)
+
+where Rr(w) is a possibly improper distribution over w and
+rz = w r(w)q(z|w) is a normalizer. Note that p(w|z) is
+still well-defined as long as the integral defining rz exists.
+
+Here, we assume for convenience that rz is a constant, not
+depending on z. Enforcing rz to be constant essentially
+means choosing r(w) in such a way that it doesn’t “favor”
+any z over any other since if q(w) / r(w) then q(z) is
+uniform over z.
+Lemma 5. If p(w|z) = r(w)q(z|w)/rz and rz is a constant, then the solution in Thm. 3 holds with
+s(w) = log r(w)
++ Eqw (Z) [
+
+1
+
+log rz
+1
+
+log p(Z) + (1
+
+) log qw (Z)].
+
+(12)
+
+This gives a distribution over q(w) that can be written in
+various equivalent ways, such as
+q ⇤ (w) / r(w) exp
+
+1
+
+E(w) + (
+
+=r(w) exp H(w)
+=r(w) exp1/
+
+1
+
+1
+
+(13)
+
+KL (qw (Z)kp(Z))
+
+E [log p(Z) + (
+
+qw (Z)
+
+1)H(w)
+
+1) log qw (Z)] ,
+
+where H(w) = Eqw (Z) [log qw (Z)] is the entropy of qw
+and E(w) = Eqw (z) [log p(Z)].
+Here, r(w) plays a role similar to a base density in an
+exponential family. If one simply used r(w) = 1, then
+p(w|z) may not be well-defined. Further, without a base
+density, the marginal q(z) would depend on the particular
+parameterization of w. To see this, take single parameter
+w, and imagine re-parameterizing so the negative reals are
+“squashed” by a factor of two. The base density must increase by a factor of two for the negative reals to compensate in order to leave the marginal q(z) unchanged under
+the reparameterization.
+2.4. Latent variables in variational inference
+Adjoining p(w|z) to p(z) to define D1 above is strongly
+related to auxiliary random variables (Agakov & Barber,
+2004) explored in variational inference to increase the representative power of q, e.g. by including latent stochastic
+transition operators (Salimans et al., 2015), random Gaussian process mappings (Tran et al., 2016), or hierarchical
+variables (Ranganath et al., 2016). Imagine doing variational inference with q✓ (z, w), where now w is auxiliary
+
+and the goal is to set ✓ so that q✓ (z) ⇡ p(z). Since w
+must be integrated out, the entropy of z under q is typically intractable, but can be bounded by augmenting p with
+some distribution p(w|z) and then optimizing the joint KLdivergence over z and w, similarly to Lemma 2. Note two
+differences. First, here the distribution over w is mathematically derived to minimize the bound, while previous
+work numerically optimizes ✓ at run-time. Second, previous work also optimizes parameters of the distribution
+p(w|z) to further improve the bound, while here it is left
+fixed (for each ) for simplicity (Sec. 5). Future work
+might explore optimizing p(w|z) at run-time in the current
+paper’s framework.
+
+3. Bayesian Inference
+This section considers algorithms to sample from the distribution defined by Eq. 13. Probabilistic inference can
+be used in various settings, but for concreteness the rest of
+this paper will focus on Bayesian inference. To fix notation,
+suppose a set of N inputs xi with corresponding outputs y i .
+(In a generative setting, xi would be empty.) Then, if z is
+a vector of parameters, the posterior distribution over z is,
+up to a constant
+N
+X
+log p(z) = log p0 (z) +
+log p(y i |xi , z) + C, (14)
+i=1
+
+where p0 (z) is the prior, and p(y i |xi , z) is the likelihood
+for the i-th datum. The goal of probabilistic inference is to
+be able to evaluate expectations with respect to p(z).
+3.1. Langevin Dynamics
+The goal of MCMC methods is to obtain samples from
+the target distribution p(z). Langevin dynamics sample by
+an extremely simple process of repeating gradient steps of
+log(z) with injected Gaussian noise. Specifically, the iterate is
+p
+✏
+z
+z + r log p(z) + ✏⌘,
+(15)
+2
+where ⌘ is sampled from a standard Multivariate Gaussian
+distribution and ✏ is a step-size that may decay over time. If
+Langevin dynamics are used as a proposal for a MetropolisHastings sampler, it can be shown that correct acceptance
+ratio is
+exp s(z 0 )
+
+s(z) +
++
+
+1
+(z
 2
 
-A key advantage of BRP is that setting the new regrets according to (7) and (8) requires no knowledge of what the
-regrets were before pruning began. Thus, once pruning
-begins, all the regrets in D(I, a) can be discarded and the
-space that was allocated to storing the regret can be freed.
-That space need only be re-allocated once (9) ceases to hold
-and we cannot immediately begin pruning again (that is,
-(5) does not hold). Theorem 2 proves that for any information set I and action a ∈ A(I) that is not part of a best
-response to a Nash equilibrium, there is an iteration TI,a
-such that for all T ≥ TI,a , action a in information set I
-(and its descendants) can be pruned.3 Thus, once this TI,a
-is reached, it will never be necessary to allocate space for
-regret in D(I, a) again.
-Theorem 2. In a two-player zero-sum game, if
-∗
-for every opponent Nash equilibrium strategy σ−P
-(I) ,
-∗
+✏
+2
+krs(z)k
+8
 
-∗
+✏
+2
+krs(z 0 )k
+8
 
-CBV σ−P (I) (I, a) < CBV σ−P (I) (I), then there exists a
-TI,a and δI,a > 0 such that after T ≥ TI,a iterations of
-T
+z 0 ) · (rs(z) + rs(z 0 )) ,
 
-CFR, CBV σ̄−i (I, a) −
+(16)
 
-PT
+where s(z) = log p(z) up to a constant factor, and z 0 is
+the proposed point from Eq. 15. It is easy to see that as ✏
+becomes small, this acceptance ratio will go to one, and so
+one can disregard the acceptance step with some bias in the
+results determined by the step size.
 
-t
+A Divergence Bound for Hybrids of MCMC and Variational Inference and an Application to Langevin Dynamics and SGVI
 
-v σ (I)
-T
+Langevin dynamics explore the space of z through a random walk, and thus are likely to be slower than alternatives
+such as Hamiltonian Monte Carlo when used as an exact
+method (Neal, 2010, Section 5.2). The main practical advantage of Langevin dynamics comes from the case where
+the number of data N is large. In that case, one can use a
+minibatch of M elements and approximate r log p(z) as
+X
+N
+r log p(y i |xi , z).
+r log p(z) ' r log p0 (z)+
+M
+i2minibatch
+(17)
+Thus, Stochastic Gradient Langevin Dynamics, avoid a full
+pass through the dataset in each iteration, and so can scale
+to large datasets. Though Eq. 17 is an unbiased estimate of
+the gradient of log p(z) this still adds a bias to the stationary distribution of the the chain. (See (Mandt et al., 2016)
+for an analysis.) In the limit of a small step-size, the variance of the noise due to stochastic estimation of the gradient of log p(z) will be of order ✏2 while the variance of the
+injected noise is of order ✏, meaning the latter dominates
+(Welling & Teh, 2011; Teh et al., 2016).
+3.2. Stochastic Gradient Variational Inference
 
-t=1
+log qw (Z)],
 
-≤ −δI,a .
+L(w) = ER [log p(zR,w )] + H(w).
 
-While such a constant TI,a exists for any suboptimal action,
-BRP cannot determine whether or when TI,a is reached.
-Thus, it is still necessary to check whether (5) is satisfied
-whenever (9) no longer holds, and to recalculate how much
-longer D(I, a) can safely be pruned. This requires the algorithm to periodically calculate a best response (or near-best
-response) in D(I, a). However, this (near-)best response
-calculation does not require knowledge of regret in D(I, a),
-3
-If CFR converges to a particular Nash equilibrium, then this
-condition could be broadened to any information set I and action
-a ∈ A(I) that is not a best response to that particular Nash equilibrium. While empirically CFR does appear to always converge
-to a particular Nash equilibrium, there is no known proof that it
-always does so.
+(20)
 
-Reduced Space and Faster Convergence in Imperfect-Information Games via Pruning
+where H(w) = Eqw (Z) log qw (Z) denotes the entropy.
+The advantage of Eq. 20 this is that the expectation is not
+a function of w, and so if computing the gradient of L, the
+gradient moves inside the expectation. Then, provided zr,w
+is differentiable with respect to w, an unbiased estimate of
+the gradient of L is available as
+rw L(w) ' rw log p(zr,w ) + rw H(w).
 
-so it is still never necessary to store regret after iteration
-TI,a is reached.
-While it is possible to discard regrets in D(I, a) without
-penalty once pruning begins, regret is only half the space
-requirement of CFR. Every information
-set I also
- stores a
-PT
-t
-sum of the strategies played t=1 πiσ (I)σ t (I) which is
-normalized once CFR ends in order to calculate σ̄ T (I). Fortunately, if action a in information set I is pruned for long
-enough, then the stored cumulative strategy in D(I, a) can
-also be discarded at the cost of a small increase in the distance of the final average strategy from a Nash equilibrium.
-T
-Specifically, if πiσ̄ (I, a) ≤ √CT , where C is some constant, then setting σ̄ T (I, a) = 0 and renormalizing σ̄ T (I),
-and setting σ̄ T (I 0 , a0 ) = 0 for I 0 ∈ D(I, a), can result in
-√
-at most C|I|∆
-higher exploitability for the whole strategy
-T
-√
-2|I|∆ |A|
-√
-σ̄ T . Since CFR only guarantees that σ̄ T is a
-T
-√
-Nash equilibrium anyway, C|I|∆
-is only a constant factor
-T
-of
-the
-bound.
-If
-an
-action
-is
-pruned
-from T 0 to T , then
- T0
-PT
-σt
-t
-t=1 πi (I)σ (I, a) ≤ T . Thus, if an action is pruned
-
-PT
-t
-for long enough, then eventually t=1 πiσ (I)σ t (I, a) ≤
-
-P
-T
-σt
-t
-√C for any C, so
-t=1 πi (I)σ (I, a) could be set to
-T
-zero (as well as all descendants of I · a), while suffering at
-most a constant factor increase in exploitability. As more
-iterations are played, this penalty will continue to decrease
-and eventually be negligible. The constant C can be set by
-the user: a higher C allows the average strategy to be discarded sooner, while a lower C reduces the potential penalty
-in exploitability.
+(21)
 
-We define IS as the set of information sets that are not guaranteed to be asymptotically pruned by Theorem 2. Specifically, I ∈ IS if I 6∈ D(I 0 , a0 ) for some I 0 and a0 ∈ A(I 0 )
-such that for every opponent Nash equilibrium strategy
-∗
-σ−P
-σ∗
-∗
-(I 0 ) (I 0 , a0 ) < CBV −P (I 0 ) (I 0 ). Theoσ−P
-(I 0 ) , CBV
-rem 2 implies the following.
-Corollary 1. In a two-player zero-sum game with some
-threshold on the average strategy √CT for C > 0, after
-a finite number
-of iterations CFR with BRP requires only
-
-O |IS ||A| space.
-√C
-Using a threshold of C
-T rather than T does not change the
-theoretical properties of the corollary, and may lead to faster
-convergence in some situations, but it may also result in a
-slower reduction in the space used by the algorithm (though
-the asymptotic space used is identical). In particular, if
-BRP can be extended to first-order methods that converge to
-an -Nash equilibrium in O( 1 ) iterations rather than O( 12 )
-iterations, such as the Excessive Gap Technique (Hoda et al.,
-2010; Kroer et al., 2017), then a threshold of C
-T may be more
-appropriate when those algorithms are used. A threshold of
-C
-T may also be preferable when using an algorithm which
+If H(w) cannot be integrated in closed-form an alternative
+estimator based on
+L(w) = ER [log p(zR,w )
 
-empirically converges to an -Nash equilibrium in faster
-than O( 12 ) iterations, such as CFR+ on some games.
-3.2. Best-Response Pruning Converges Faster
-We now prove that BRP in CFR speeds up convergence to an
--Nash equilibrium. Section 3 proved that CFR with BRP
-converges in the same number of iterations as CFR alone. In
-this section, we prove that BRP allows each iteration to be
-traversed more quickly. Specifically, if an action a ∈ A(I)
-is not a CBR to a Nash equilibrium, then D(I, a) need only
-be traversed O(ln(T )) times over T iterations. Intuitively,
-as both players converge to a Nash equilibrium, actions that
-are not a counterfactual best response will eventually do
-worse than actions that are, so those suboptimal actions
-will accumulate increasing amounts of negative regret. This
-negative regret allows the action to be safely pruned for
-increasingly longer periods of time.
-Specifically, let S ⊆ H be the set of histories where h·a ∈ S
-if h ∈ S and action a is part of some CBR to some Nash
-equilibrium. Formally, S contains
-∅ and every history
-h·a
-∗
-∗
-such that h ∈ S and CBV σ−P (I) (I, a) = CBV σ−P (I) (I)
-for some Nash equilibrium σ ∗ .
-Theorem 3. In a two-player zero-sum game, if both players
-choose strategies according to CFR with BRP, then conduct
-ing T iterations requires only O |S|T + |H| ln(T ) nodes
-to be traversed.
-The definition of S uses properties of the Nash equilibria
-of the game, and an action a ∈ A(I) not in S is only
-guaranteed to be pruned by BRP after some TI,a is reached,
-which also depends on the Nash equilibria of the game.
-Since CFR converges to only an -Nash equilibrium, CFR
-cannot determine with certainty which nodes are in S or
-when TI,a is reached. Nevertheless, both S and TI,a are
-fixed properties of the game.
+log qw (zR,w )]
 
-4. Experiments
-We compare the convergence speed of BRP to Regret-Based
-Pruning, to only partial pruning, and to no pruning at all.
-We also show that BRP uses less space as as more iterations
-are conducted, unlike prior pruning algorithms. The experiments are conducted on Leduc Hold’em (Southey et al.,
-2005) and Leduc-5 (Brown & Sandholm, 2015a). Leduc
-Hold’em is a common benchmark in imperfect-information
-game solving because it is small enough to be solved but
-still strategically complex. In Leduc Hold’em, there is a
-deck consisting of six cards: two each of Jack, Queen, and
-King. There are two rounds. In the first round, each player
-places an ante of 1 chip in the pot and receives a single private card. A round of betting then takes place with a two-bet
-maximum, with Player 1 going first. A public shared card is
-then dealt face up and another round of betting takes place.
+(22)
 
-Reduced Space and Faster Convergence in Imperfect-Information Games via Pruning
+is possible, and in some circumstances this can even have
+lower variance (Roeder et al., 2016).
 
-Again, Player 1 goes first, and there is a two-bet maximum.
-If one of the players has a pair with the public card, that
-players wins. Otherwise, the player with the higher card
-wins. The bet size in the first round is 2 chips, and 4 chips in
-the second round. Leduc-5 is like Leduc Hold’em but larger:
-there are 5 bet sizes to choose from. In the first round a
-player may bet 0.5, 1, 2, 4, or 8 chips, while in the second
-round a player may bet 1, 2, 4, 8, or 16 chips.
-Nodes touched is a hardware and implementationindependent proxy for time which we use to measure performance of the various algorithms. Overhead costs are
-counted in nodes touched. CFR+ is a variant of CFR in
-which a floor on regret is set at zero and each iteration
-is weighted linearly in the average strategy (that is, iteration t is weighted by t) rather than each iteration being
-weighted equally. Since Regret-Based Pruning can only
-prune negative-regret actions, Regret-Based Pruning modifies the definition of CFR+ so that regret can be negative, but
-immediately jumps up to zero as soon as regret increases.
-BRP does not require this modification. Still, BRP also
-modifies the behavior of CFR+ because without pruning,
-CFR+ would put positive probability on an action as soon
-as its regret increases, while BRP waits until pruning is over.
-This is not, by itself, a problem. However, CFR+’s linear
-weighting of the average strategy is only guaranteed to converge to a Nash equilibrium if pruning does not occur. While
-both Regret-Based Pruning and BRP do well empirically
-with CFR+, the convergence is noisy. This noise can be
-reduced by using the lowest-exploitability average strategy
-profile found so far, which we do in the experiments.4 BRP
-does not do as well empirically with the linear-averaging
-component of CFR+. Thus, for BRP we only measure performance using RM+ with CFR, which is the same as CFR+
-but without linear averaging. CFR+ with and without linear
-averaging has the same theoretical performance as CFR,
-but CFR+ does better empirically (particularly with linear
-averaging).
-Figure 1 and Figure 2 show the reduction in space needed
-to store the average strategy and regrets for BRP—for various values of the constant threshold C, where an action’s
-probability is set to zero if it is reached with probability
-less than √CT in the average strategy, as we explained in
-Section 3.1. In both games, a threshold between 0.01 and
-0.1 performed well in both space and number of iterations,
-with the lower thresholds converging somewhat faster and
-the higher thresholds reducing space faster. We also tested
-thresholds below 0.01, but the speed of convergence was essentially the same as when using 0.01. In Leduc, all variants
-resulted in a quick drop-off in space to about half the initial
-4
+The goal of variational inference is to maximize
+L(w) = Eqw (Z) [log p(Z)
 
-Exploitability is no harder to compute than one iteration of
-CFR or CFR+. Snapshots are not plotted at every iteration but
-only after every 10,000,000 nodes touched—except for the first
-few snapshots.
+2014; Rezende et al., 2014; Titsias & Lázaro-Gredilla,
+2014), known in the stochastic approximation literature as
+a “pathwise” derivative (Kushner & Yin, 2003, Sec. 2.5.1).
+Suppose that there is a deterministic mapping zr,w from parameters w and random numbers r (from some fixed standard distribution) such that zr,w ⇠ qw (z). Then, we could
+equivalently write
 
-amount. In Leduc-5, a threshold of 0.1 resulted in about a
-factor of 7 reduction for both CFR with RM and CFR with
-RM+. This space reduction factor appears to continue to
-increase.
+(18)
 
-Figure 1. Convergence and space required for CFR using RM and
-RM+ with best-response pruning in Leduc Hold’em. The y-axis
-on the top graph is linear scale.
+equivalent to minimizing the KL divergence between
+qw (z) and p(z). If it were possible to exactly compute L,
+this could be maximized (to a local optima) by a simple
+gradient iteration like
+✏
+w
+w + rw L(w).
+(19)
+2
+While in some cases with specific p and q, one can derive exact updates of L (Ghahramani & Beal, 2000) in general one cannot exactly evaluate the expectation over Z in
+L. One line of approach to this (Ranganath et al., 2014;
+Salimans & Knowles, 2014) is to write the gradient as
+rL = Eqw (Z) [(log qw (Z) log p(Z))r log qw (Z)], and
+estimate this by drawing samples from qw (z). This experimentally seems to result in gradients with large variance, but this can be reduced by two strategies. Firstly, one
+can use control variates, based on either Taylor expansion
+(Paisley et al., 2012) or the fact that the expected value of
+rw log qw (Z) is zero. Secondly, since log p(z) is often a
+sum of terms defined on subsets of variables, one can RaoBlackwellize by integrating out other variables. This approach only needs to be able to compute log p(z)– no other
+access, even to the gradient of p, is needed.
+3.2.1. R EPARAMETERIZATION T RICK
+Another line of approach to variational inference is based
+on the “reparameterization trick” (Kingma & Welling,
 
-Figure 2. Convergence and space required for CFR using RM and
-RM+ with best-response pruning in Leduc-5. The y-axis on the
-top graph is linear scale.
+Computing the gradient of log p(zr,w ) with respect to w
+amounts to computing the derivative of log p(z) with reT
+spect to z multiplied by the Jacobian dzr,w
+/dw. For simple distributions like Gaussians zr,w this is easy to do analytically (Section 5). Alternatively, this can all be done
+efficiently by automatic differentiation, (Kucukelbir et al.,
+2017) the approach used here.
+As with Langevin dynamics, with a large dataset, log p(z)
+can be approximated by taking a sum over a minibatch. The
+most obious approach to this would be to choose a single
+vector r and use it throughout the minibatch. However,
+variance can often be reduced by the “local reparameterization trick” (Kingma et al., 2015) in which a different
+random vector ri is drawn for each datum in the minibatch.
+Intuitively, the motivation is that if i and j are two data in
+the minibatch then log p(y i |xi , zr,w ) should be less correlated with log p(y j |xj , zr0 ,w ) when a different random vector r0 is used for the second datum (consider the limiting
+case where all data are identical). Then, one can write the
+approximation as
+rw L(w) '
 
-Figure 3 and Figure 4 compare the convergence rates of
-BRP, Regret-Based Pruning, and only partial pruning for
-CFR with RM, CFR with RM+, and CFR+. In Leduc, BRP
-and Regret-Based Pruning perform comparably when added
-to CFR. Regret-Based Pruning with CFR+ does significantly
-better, while BRP with CFR using RM+ sees no improve-
+1
+M
 
-Reduced Space and Faster Convergence in Imperfect-Information Games via Pruning
+X
 
-ment over BRP with CFR. In Leduc-5, which is a far larger
-game, BRP outperforms Regret-Based Pruning by a factor
-of 2 when added to CFR. BRP with CFR using RM+ also
-performs comparably to Regret-Based Pruning with CFR+,
-while retaining theoretical guarantees and not suffering from
-noisy convergence.
+i2minibatch
 
-6. Acknowledgments
-This material is based on work supported by the National
-Science Foundation under grant IIS-1617590 and the ARO
-under award W911NF-17-1-0082.
+⇣
+
++ N rw log p(y i |xi , zri ,w )
+
+rw log p0 (zri ,w )
+⌘
+rw log qw (zri ,w ) .
+
+(23)
+
+Note that the approximation on the right-hand side depends
+both on the choice of the minibatch and on the random vectors ri , one chosen per element of the minibatch.
+
+A Divergence Bound for Hybrids of MCMC and Variational Inference and an Application to Langevin Dynamics and SGVI
+
+4. Hybrid Dynamics
+An algorithm that interpolates between the methods in the
+previous section results from applying Langevin dynamics
+to the distribution over w defined by Thm. 3 If the adjoining distribution p(w|z) is chosen as in in Sec. 2.3 with
+some r (w) that depends on , then define
+L(w) =
+
+log r (w)
+
++ Eqw (Z) [log p(z) + (
+
+1) log q(z|w)],
+
+(24)
+
+which is times the form of s(w) derived in 5, with the
+constant term of log rz dropped. Applying Langevin Dynamics2 to this results in the iteration
+p
+✏
+w
+w + rL(w) + ✏ ⌘,
+(25)
+2
+where again ✏ is a step-size that may decrease over time and
+⌘ is sampled from a standard Gaussian distribution.
+This paper uses a closed-form for the entropy H(w) =
+Eqw (Z) log qw (Z), and so uses the gradient estimator
+rL(w) ' r log r (w) + (1
+
++ Eqw (Z) [log p(z) + (
+
+)rH(w)
+1) log q(z|w)].
+
+(26)
+
+5. Specifics For Gaussians
+The following experiments use the simplest common variational distribution for qw (Z), namely a fully-factorized
+Gaussian distribution. To make w unconstrained, let w =
+(µ, ⌫) where µ is a vector of mean components and the
+standard deviation of the i-th dimension is i = 10⌫i . To
+sample from this distribution given a vector r, one can
+simply take zr,w = µ + r
+where is element-wise
+product. P
+The entropy of qw (Z) is, up to constant factors
+H(w) = i ⌫i ln 10.
+
+It remains to set the base density.
+These experiments used
+Q
+an improper prior r (w) / i N (⌫i |u , 1) that is uniform
+over µ with a Gaussian prior on ⌫ with a fixed variance of
+1 and a mean u . Since this is uniform over µ, rz is a constant. The value u was calculated to numerically optimize
+the divergence bound D⇤ for a one-dimensional standard
+Gaussian p(z). Since D⇤ =
+A at the solution (Theorem 3), for any given and u , D⇤ can be evaluated by
+symbolically integrating out µ and then numerically integrating over ⌫. The values used in these experiments are
+below, with linear interpolation used for any other .
+0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 1.0
+u -.33 -.472 -.631 -.792 -.953 -1.11 -1.29 -1.49 -1.74 -2.10 -10
+2
+For some step-size ✏0 , the Langevin dynamics
+would imp
+mediately be w
+w + (✏0 /2)rs(w) + ✏0 ⌘. If we define
+✏ = ✏0 , then this results in the given form since ✏0 rs(w) =
+(✏/ )rs(w) = ✏rL(w).
+
+Figure 2. Performance of the hybrid algorithm with various values
+of on the toy mixture of three Gaussians from Fig. 1.
+
+Theoretically, it’s easy to show that as ! 1, D⇤ is minimized (with a minimum of zero) by u ! 1, meaning that after one iteration, ⌫ = 1, and henceforth,
+zr,w = µ. Thus, Eq. 25 is equivalent to Langevin dynamics
+as in Eq. 15. However, using u = 10, r(w) (a prior centered on a standard deviation of = 10 10 ) is practically
+equivalent and is more useful to guide linear interpolation.
+Meanwhile, when ! 0, the algorithm is independent of
+r(w), though the optimal value of u ⇡ .33 is correct for
+small .
+The above choice of r (w) is quite arbitrary. It is possible that other choices could be better, though performance
+was surprisingly insensitive in practice. With large datasets
+log p(z) dominates log r(w) just as likelihoods dominate
+Bayesian priors. Calling on inspiration from recent work
+in variational inference, it might also be useful to optimize
+p(w|z) at runtime (Section 2.4).
+
+6. Experiments
+There does not appear to be a single standard performance measure to evaluate approximate inference algorithms. For Bayesian inference, test-set accuracy or likelihood are sometimes used, but these measures have high
+variance due to the dataset, and conflate evaluation of the
+inference method with evaluation of the model it is running
+on. (An inference method with poor coverage of p(z) can
+have higher accuracy than a perfect sampler due to model
+mis-specification or dataset peculiarities.)
+For a more fine-grained measure of inference performance,
+this paper uses the Maximum Mean Discrepancy (MMD)
+measure (Gretton et al., 2006; 2012). MMD is essentially the empirical difference of the means of two samples in some feature space. We first draw a sample from
+p(z) by exhaustively running a traditional MCMC algorithm (Stan (Team, 2016), based on a variant of Hamil-
+
+A Divergence Bound for Hybrids of MCMC and Variational Inference and an Application to Langevin Dynamics and SGVI
+
+= 0.0
+
+= 0.2
+
+= 0.4
+
+= 0.6
+
+= 0.8
+
+= 1.0
+
+Stan
+
+Figure 3. Samples on ionosphere after 104 (top row), 105 (middle row) or 106 (bottom row) iterations. One sample z is drawn from
+qw (z) at each iteration and projected onto the first two principal components (computed on Stan samples). Each plot uses the step-size
+✏ with the lowest MMD at that time horizon. The same sequence of random numbers is for all inference methods. (More in appendix.)
+
+tonian Monte Carlo (Hoffman & Gelman, 2014)) for a
+large number of iterations, and compare this to the results
+of approximate inference. Since we have large samples,
+and want to compute the online performance at all iterations, a finite-dimensional feature space must be used to
+avoid the quadratic complexity of computing MMD using an arbitrary kernel. For two-dimensional problems, it
+was beneficial to use random Fourier features (Rahimi &
+Recht, 2007) to approximate the radial-basis function kernel k(x, y) = exp( kx yk2 ). For higher dimensions,
+the original feature space was sufficiently discriminative.
+Approximate inference gives a sequence of vectors wt . For
+each time-step, a set of 100 samples At are drawn from
+q(z|wt ). Then, the MMD between A1 [A2 [· · · At and the
+sample from exhaustive MCMC can be computed for all t
+in linear time. A disadvantage of this approach is the need
+for exhaustive MCMC for comparison, which by definition
+eludes the large-scale cases that motivate Langevin dynamics and stochastic variational inference. However this gives
+a more fine-grained view of performance.
+6.1. Toy Distributions
+For a first demonstration, the algorithm was applied to a
+set of toy 2-dimensional distributions, with various values
+of . A few results are shown in Fig. 1, with more in
+
+the appendix. While the algorithm displays the expected
+trade-offs between speed and accuracy for different (Fig.
+2), the results fairly uninteresting as all curves cross near
+the same time/MMD point where = 0 (variational inference) and = 1 (MCMC) meet. So, for any given amount
+of time, either variational inference or MCMC are nearoptimal, and so intermediate do not much expand the
+“Pareto frontier” on these problems, although one might
+prefer an intermediate since the crossover horizon is not
+known in advance.
+6.2. Bayesian Logistic Regression
+Next, the algorithm was applied to binary logistic regression with several standard datasets, using a minibatch size
+of 25, a different random vector r for each element in the
+minibatch, and a standard multivariate Laplace distribution
+as a prior. Simply picking a single value or schedule for
+the step ✏ is unsatisfactory, as the best schedule for a given
+problem, length of time, and value of varies. To give
+a fair comparison, inference was run for with a range of
+constant ✏ varying by factors of two from 23 /N to 2 2 /N .
+This spans the range from large enough to often diverge
+to below optimal even after 106 iterations. Then, for each
+time, the best value of ✏ was retrospectively chosen (with
+performance averaged over repetitions before this choice).
+It is likely that decaying step-size schedules would perform
+
+A Divergence Bound for Hybrids of MCMC and Variational Inference and an Application to Langevin Dynamics and SGVI
+
+Figure 4. Iterations vs MMD for inference with various values of , averaged over five runs, each using the same random number
+sequence for all . For each , iteration and dataset, the graphs show the MMD for the best step-size ✏ (averaged over the 100 runs
+before computing the best). Since a finite range of ✏ varying by factors of two is used, this can result in visible “kinks” at iterations
+where a different (smaller) ✏ exceeds the old one. From left to right: a1a, australian, ionosphere, and sonar.
+
+better, but this was not pursued since it would reduce transparency of the results.
+The mean errors after 100 repetitions are shown in Fig. 4,
+while samples are compared to the ground truth for ionosphere in Fig. 3. This confirms the basic ideas of the algorithm, namely that it smoothly interpolates between the
+two previous algorithms without introducing any new behavior. The main experimental finding is that there is usually a large range of time horizons for which an intermediate setting of performs better than either of the previous
+existing algorithms. This suggests that, say, someone who
+has a time budget slightly larger than that needed for variational inference could benefit from running the algorithm
+with a small value of for a slightly larger time. This is in
+contrast to the toy two-dimensional examples where for almost all time horizons either = 0 or = 1 was optimal.
+
+7. Discussion
+This paper has two contributions. First, a distribution over
+variational parameters is derived to minimize a bound on
+the marginal divergence to a target distribution. Secondly,
+this is used to derive an algorithm that interpolates between Langevin dynamics and stochastic variational inference. The Bayesian logistic regression experiments show
+that the intermediate values of this algorithm are useful in
+the sense that there are several orders of magnitude of time
+horizons where an intermediate algorithm performs better
+than either Langevin dynamics or variational inference.
+Many improvements to stochastic Langevin dynamics and
+variational inference have been proposed beyond the simple algorithms used here. For Langevin dynamics, Welling
+& Teh (2011) and Li et al. (2016) suggest adding a preconditioner, Patterson & Teh (2013) propose Riemannian
+Langevin Dynamics, and Dubey et al. (2016) propose to
+make use of the finite sum structure in a Bayesian posterior
+p(z) by incorporating techniques for incremental optimization. For stochastic variational inference, Hoffman et al.
+
+(2013) propose to use the natural gradient, Mandt & Blei
+(2014) propose using smoothed gradients, and Sakaya &
+Klami (2016) propose a strategy of re-using previous gradient computations. It would be interesting to consider using
+these ideas with the hybrid algorithm, which could give insight into the relationship between the two different methods.
+There is other work based on combining the advantages
+of variational inference and MCMC. Stochastic Gradient Fisher Scoring (Ahn et al., 2012) interpolates between Langevin dynamics and a Gaussian approximation
+of the target. However, this approximation is based on the
+Bayesian central limit theorem and so will not be the same
+in general as the optimal variational distribution, even when
+a Gaussian is used as the variational family. Another line of
+research is that of interpreting the path of a MCMC algorithm as a variational distribution, and then fitting parameters to tighten a variational bound (Salimans et al., 2015;
+Rezende & Mohammed, 2015). While motivationally quite
+similar, the contribution of this paper is orthogonal, in that
+one could conceivably use these same ideas to define the
+variational family qw (z) used in this paper. This would result in a somewhat unusual method that runs MCMC over
+the parameters of variational family of distributions that are
+themselves defined in terms of a (different) MCMC algorithm.
 
 References
-Bowling, Michael, Burch, Neil, Johanson, Michael, and
-Tammelin, Oskari. Heads-up limit hold’em poker is
-solved. Science, 347(6218):145–149, January 2015.
-Brown, Noam and Sandholm, Tuomas. Regret-based pruning in extensive-form games. In Advances in Neural
-Information Processing Systems, pp. 1972–1980, 2015a.
+Agakov, Felix V. and Barber, David. An auxiliary variational method. In NIPS, 2004. 2.4
+Ahn, Sungjin, Balan, Anoop Korattikara, and Welling,
+Max. Bayesian posterior sampling via stochastic gradient fisher scoring. In ICML, 2012. 7
+Cover, Thomas M. and Thomas, Joy A. Elements of Information Theory. Wiley-Interscience, 2006. 2.1, 8
+Dubey, Kumar Avinava, Reddi, Sashank J., Williamson,
 
-Figure 3. Convergence for partial pruning, regret-based pruning,
-and best-response pruning in Leduc. “CFR - No Prune” is CFR
-without any pruning.
+A Divergence Bound for Hybrids of MCMC and Variational Inference and an Application to Langevin Dynamics and SGVI
 
-Brown, Noam and Sandholm, Tuomas. Simultaneous abstraction and equilibrium finding in games. In Proceedings of the International Joint Conference on Artificial
-Intelligence (IJCAI), 2015b.
-Brown, Noam and Sandholm, Tuomas. Strategy-based
-warm starting for regret minimization in games. In AAAI
-Conference on Artificial Intelligence (AAAI), 2016.
-Brown, Noam, Kroer, Christian, and Sandholm, Tuomas.
-Dynamic thresholding and pruning for regret minimization. In AAAI Conference on Artificial Intelligence
-(AAAI), 2017.
+Sinead A., Póczos, Barnabás, Smola, Alexander J., and
+Xing, Eric P. Variance reduction in stochastic gradient
+langevin dynamics. In NIPS, 2016. 7
 
-Figure 4. Convergence for partial pruning, regret-based pruning,
-and best-response pruning in Leduc-5. “CFR - No Prune” is CFR
-without any pruning.
+Neal, Radford. MCMC using Hamiltonian dynamics, volume Handbook of Markov Chain Monte Carlo, pp. 113–
+162. Chapman & Hall / CRC Press, 2010. 3.1
 
-5. Conclusions
-We introduced BRP, a new form of pruning that provably reduces both the space needed to solve an imperfectinformation game and the time needed to reach an -Nash
-equilibrium. This addresses both of the major bottlenecks
-in solving large imperfect-information games. Experimentally, BRP reduced the space needed to solve a game by a
-factor of 7, with the reduction factor increasing with game
-size. While the early iterations may still be slow and require the same amount of space as CFR without BRP, these
-early iterations can be skipped by warm starting CFR with
-an abstraction of the game (Brown & Sandholm, 2016).
-This paper focused on the theory of BRP when applied
-to CFR, the most popular algorithm for solving imperfectinformation games. However, BRP can also be applied to
-Fictitious Play (Heinrich et al., 2015) and likely extends to
-other iterative algorithms as well (Hoda et al., 2010).
+Ghahramani, Zoubin and Beal, Matthew J. Propagation
+algorithms for variational bayesian learning. In NIPS,
+2000. 3.2
 
-Gilpin, Andrew and Sandholm, Tuomas. Lossless abstraction of imperfect information games. Journal of the ACM,
-54(5), 2007. Early version ‘Finding equilibria in large
-sequential games of imperfect information’ appeared in
-the Proceedings of the ACM Conference on Electronic
-Commerce (EC), pages 160–169, 2006.
-Hart, Sergiu and Mas-Colell, Andreu. A simple adaptive
-procedure leading to correlated equilibrium. Econometrica, 68:1127–1150, 2000.
-Heinrich, Johannes, Lanctot, Marc, and Silver, David. Fictitious self-play in extensive-form games. In International
-Conference on Machine Learning (ICML), pp. 805–813,
-2015.
-Hoda, Samid, Gilpin, Andrew, Peña, Javier, and Sandholm,
-Tuomas. Smoothing techniques for computing Nash equilibria of sequential games. Mathematics of Operations
-Research, 35(2):494–512, 2010. Conference version appeared in WINE-07.
-Kroer, Christian, Waugh, Kevin, Kılınç-Karzan, Fatma,
-and Sandholm, Tuomas. Faster first-order methods for
-extensive-form game solving. In Proceedings of the ACM
-Conference on Economics and Computation (EC), 2015.
+Paisley, John William, Blei, David M., and Jordan,
+Michael I. Variational bayesian inference with stochastic
+search. In ICML, 2012. 3.2
 
-Reduced Space and Faster Convergence in Imperfect-Information Games via Pruning
+Grenander, Ulf and Miller, Michael. Representations of
+knowledge in complex systems. J. R. Statist. Soc., 56
+(4):549–603, 1994. 1
 
-Kroer, Christian, Waugh, Kevin, Kılınç-Karzan, Fatma, and
-Sandholm, Tuomas. Theoretical and practical advances
-on smoothing for extensive-form games. In Proceedings
-of the ACM Conference on Economics and Computation
-(EC), 2017.
-Lanctot, Marc, Waugh, Kevin, Zinkevich, Martin, and Bowling, Michael. Monte Carlo sampling for regret minimization in extensive games. In Proceedings of the Annual
-Conference on Neural Information Processing Systems
-(NIPS), pp. 1078–1086, 2009.
-Moravcik, Matej, Schmid, Martin, Ha, Karel, Hladik, Milan,
-and Gaukrodger, Stephen. Refining subgames in large
-imperfect information games. In AAAI Conference on
-Artificial Intelligence (AAAI), 2016.
-Nesterov, Yurii. Excessive gap technique in nonsmooth
-convex minimization. SIAM Journal of Optimization, 16
-(1):235–249, 2005.
-Pays, François. An interior point approach to large games
-of incomplete information. In AAAI Computer Poker
-Workshop, 2014.
-Schmid, Martin, Moravcik, Matej, and Hladik, Milan.
-Bounding the support size in extensive form games with
-imperfect information. In AAAI Conference on Artificial
-Intelligence (AAAI), pp. 784–790, 2014.
-Southey, Finnegan, Bowling, Michael, Larson, Bryce, Piccione, Carmelo, Burch, Neil, Billings, Darse, and Rayner,
-Chris. Bayes’ bluff: Opponent modelling in poker. In
-Proceedings of the 21st Annual Conference on Uncertainty in Artificial Intelligence (UAI), pp. 550–558, July
-2005.
-Tammelin, Oskari, Burch, Neil, Johanson, Michael, and
-Bowling, Michael. Solving heads-up limit texas hold’em.
-In Proceedings of the International Joint Conference on
-Artificial Intelligence (IJCAI), pp. 645–652, 2015.
-Waugh, Kevin, Schnizlein, David, Bowling, Michael, and
-Szafron, Duane. Abstraction pathologies in extensive
-games. In International Conference on Autonomous
-Agents and Multi-Agent Systems (AAMAS), 2009.
-Zinkevich, Martin, Johanson, Michael, Bowling, Michael H,
-and Piccione, Carmelo. Regret minimization in games
-with incomplete information. In Proceedings of the Annual Conference on Neural Information Processing Systems (NIPS), pp. 1729–1736, 2007.
+Patterson, Sam and Teh, Yee Whye. Stochastic gradient riemannian langevin dynamics on the probability simplex.
+In NIPS, 2013. 7
+
+Gretton, Arthur, Borgwardt, Karsten M., Rasch, Malte J.,
+Schölkopf, Bernhard, and Smola, Alexander J. A kernel
+method for the two-sample-problem. In NIPS, 2006. 6
+
+Rahimi, Ali and Recht, Benjamin. Random features for
+large-scale kernel machines. In NIPS, 2007. 6
+
+Gretton, Arthur, Borgwardt, Karsten M., Rasch, Malte J.,
+Schölkopf, Bernhard, and Smola, Alexander J. A kernel
+two-sample test. Journal of Machine Learning Research,
+13:723–773, 2012. 6
+Hoffman, Matthew D. and Gelman, Andrew. The no-u-turn
+sampler: adaptively setting path lengths in hamiltonian
+monte carlo. Journal of Machine Learning Research, 15
+(1):1593–1623, 2014. 6
+Hoffman, Matthew D., Blei, David M., Wang, Chong,
+and Paisley, John William. Stochastic variational inference. Journal of Machine Learning Research, 14(1):
+1303–1347, 2013. 7
+Kingma, Diederik P and Welling, Max. Stochastic gradient
+vb and the variational auto-encoder. In ICLR, 2014. 3.2.1
+Kingma, Diederik P., Salimans, Tim, and Welling, Max.
+Variational dropout and the local reparameterization
+trick. In NIPS, 2015. 3.2.1
+Kucukelbir, Alp, Tran, Dustin, Ranganath, Rajesh, Gelman, Andrew, and Blei, David M. Automatic differentiation variational inference. Journal of Machine Learning
+Research, 18(14):1–45, 2017. 3.2.1
+
+Ranganath, Rajesh, Gerrish, Sean, and Blei, David M.
+Black box variational inference. In AISTATS, 2014. 3.2
+Ranganath, Rajesh, Tran, Dustin, and Blei, David M. Hierarchical variational models. In ICML, 2016. 2.4
+Rezende, Danilo Jimenez and Mohammed, Shakir. Variational inference with normalizing flows. In ICML, 2015.
+7
+Rezende, Danilo Jimenez, Mohamed, Shakir, and Wierstra,
+Daan. Stochastic backpropagation and variational inference in deep latent gaussian models. In International
+Conference on Machine Learning, 2014. 3.2.1
+Robert, Christian and Casella, George. Monte Carlo Statistical Methods. Springer-Verlag, 2 edition, 2004. 1
+Roeder, Geoffrey, Wu, Yuhuai, and Duvenaud, David.
+Sticking the landing: A simple reduced-variance gradient for advi. NIPS workshop in Advances in Approximate Bayesian Inference, 2016. 3.2.1
+Sakaya, Joseph and Klami, Arto. Re-using gradient computations in automatic variational inference. Technical
+report, 2016. NIPS workshop on approximate Bayesian
+Inference. 7
+
+Kushner, Harold and Yin, George. Stochastic Approximation and Recursive Algorithms and Applications.
+Springer-Verlag, 2003. 3.2.1
+
+Salimans, Tim and Knowles, David A. On using control
+variates with stochastic approximation for variational
+bayes and its connection to stochastic linear regression.
+In ICLR, 2014. 3.2
+
+Li, Chunyuan, Chen, Changyou, Carlson, David E., and
+Carin, Lawrence. Preconditioned stochastic gradient
+langevin dynamics for deep neural networks. In AAAI,
+2016. 7
+
+Salimans, Tim, Kingma, Diedrik, and Welling, Max.
+Markov chain monte carlo and variational inference:
+Bridging the gap. In ICML, 2015. 2.4, 7
+
+Mandt, Stephan and Blei, David M. Smoothed gradients
+for stochastic variational inference. In NIPS, 2014. 7
+Mandt, Stephan, Hoffman, Matthew D., and Blei, David M.
+A variational analysis of stochastic gradient algorithms.
+In ICML, 2016. 3.1
+
+Team, Stan Development. Stan Modeling Language Users
+Guide and Reference Manual, 2.14.0. edition, 2016. 6
+Teh, Yee Whye, Thiery, Alexandre H., and Vollmer, Sebastian J. Consistency and fluctuations for stochastic gradient langevin dynamics. J. Mach. Learn. Res., 17(1):
+193–225, 2016. 3.1
+
+A Divergence Bound for Hybrids of MCMC and Variational Inference and an Application to Langevin Dynamics and SGVI
+
+Titsias, Michalis K. and Lázaro-Gredilla, Miguel. Doubly
+stochastic variational bayes for non-conjugate inference.
+In ICML, 2014. 3.2.1
+Tran, Dustin, Ranganath, Rajesh, and Blei, David M. The
+variational gaussian process. In ICLR, 2016. 2.4
+Welling, Max and Teh, Yee Whye. Bayesian learning via
+stochastic gradient langevin dynamics. In ICML, 2011.
+1, 3.1, 7
 
 

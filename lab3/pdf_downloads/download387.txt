@@ -1,1730 +1,967 @@
-How Close Are the Eigenvectors of the Sample and Actual Covariance
-Matrices?
-Andreas Loukas 1
+Learned Optimizers that Scale and Generalize
+Olga Wichrowska 1 Niru Maheswaranathan 2 3 Matthew W. Hoffman 4 Sergio Gómez Colmenarejo 4
+Misha Denil 4 Nando de Freitas 4 Jascha Sohl-Dickstein 1
 
 Abstract
-How many samples are sufficient to guarantee
-that the eigenvectors of the sample covariance
-matrix are close to those of the actual covariance matrix? For a wide family of distributions,
-including distributions with finite second moment and sub-gaussian distributions supported in
-a centered Euclidean ball, we prove that the inner product between eigenvectors of the sample and actual covariance matrices decreases proportionally to the respective eigenvalue distance
-and the number of samples. Our findings imply
-non-asymptotic concentration bounds for eigenvectors and eigenvalues and carry strong consequences for the non-asymptotic analysis of PCA
-and its applications. For instance, they provide
-conditions for separating components estimated
-from O(1) samples and show that even few samples can be sufficient to perform dimensionality
-reduction, especially for low-rank covariances.
+Learning to learn has emerged as an important direction for achieving artificial intelligence. Two
+of the primary barriers to its adoption are an inability to scale to larger problems and a limited
+ability to generalize to new tasks. We introduce a learned gradient descent optimizer that
+generalizes well to new tasks, and which has
+significantly reduced memory and computation
+overhead. We achieve this by introducing a
+novel hierarchical RNN architecture, with minimal per-parameter overhead, augmented with
+additional architectural features that mirror the
+known structure of optimization tasks. We
+also develop a meta-training ensemble of small,
+diverse, optimization tasks capturing common
+properties of loss landscapes. The optimizer
+learns to outperform RMSProp/ADAM on problems in this corpus. More importantly, it performs comparably or better when applied to
+small convolutional neural networks, despite seeing no neural networks in its meta-training set.
+Finally, it generalizes to train Inception V3 and
+ResNet V2 architectures on the ImageNet dataset
+for thousands of steps, optimization problems
+that are of a vastly different scale than those it
+was trained on.
 
+1. Introduction
+Optimization is a bottleneck for almost all tasks in machine learning, as well as in many other fields, including engineering, design, operations research, and statistics. Advances in optimization therefore have broad impact. Historically, optimization has been performed using hand-designed algorithms. Recent results in machine
 1
 
-Introduction
-
-The covariance matrix C of an n-dimensional distribution
-is an integral part of data analysis, with numerous occurrences in machine learning and signal processing. It is
-therefore crucial to understand how close is the sample coe estimated from a finite numvariance, i.e., the matrix C
-ber of samples m, to the actual covariance matrix. Following developments in the tools for the concentration of
-measure, (Vershynin, 2012) showed that a sample size of
-m = O(n) is up to iterated logarithmic factors sufficient
-for all distributions with finite fourth moment
-supported in
-√
-a centered Euclidean ball of radius O( n). Similar results
-hold for sub-exponential (Adamczak et al., 2010) and finite
-second moment distributions (Rudelson, 1999).
-We take an alternative standpoint and ask if we can do
-1
-École Polytechnique Fédérale de Lausanne, Switzerland.
-Correspondence to: Andreas Loukas <andreas.loukas@epfl.ch>.
-
+Google Brain 2 Work done during an internship at Google
+Brain. 3 Stanford University 4 Deepmind. Correspondence to:
+Olga Wichrowska <olganw@google.com>.
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-better when only a subset of the spectrum is of interest.
-Concretely, our objective is to characterize how many samples are sufficient to guarantee that an eigenvector and/or
-eigenvalue of the sample and actual covariance matrices
-are, respectively, sufficiently close. Our approach is motivated by the observation that methods that utilize the covariance commonly prioritize the estimation of principal
-eigenspaces. For instance, in (local) principal component
-analysis we are usually interested in the direction of the
-first few eigenvectors (Berkmann & Caelli, 1994; Kambhatla & Leen, 1997), where in linear dimensionality reduction one projects the data to the span of the first few eigenvectors (Jolliffe, 2002; Frostig et al., 2016). In the nonasymptotic regime, an analysis of these methods hinges on
-characterizing how close are the principal eigenvectors and
-eigenspaces of the sample and actual covariance matrices.
-Our finding is that the “spectral leaking” occurring in the
-eigenvector estimation is strongly concentrated along the
-eigenvalue axis. In other words, the eigenvector u
-ei of the
-sample covariance is far less likely to lie in the span of
-an eigenvector uj of the actual covariance when the eigenvalue distance |λi − λj | is large, and the concentration of
-the distribution in the direction of uj is small. This agrees
-with the intuition that principal components are easier to
-estimate, exactly because they are more likely to appear in
-the samples of the distribution.
-We provide a mathematical argument confirming this phenomenon. Under fairly general conditions, we prove that
-!
-!
-kj2
-ki2
-(1)
-m=O
-and m = O
-(λi − λj )2
-λ2i
-samples are asymptotically almost surely (a.a.s.) sufficient
-ei −λi |/λi , respectively, is
-to guarantee that |he
-ui , uj i| and |λ
-small for all distributions with finite second moment. Here,
-kj2 is a measure of the concentration of the distribution in
-the direction of uj . We also attain a high probability bound
-for sub-gaussian distributions supported in a centered Euclidean ball. Interestingly, our results lead to sample estimates for linear dimensionality reduction, and suggest that
-linear reduction is feasible even from few samples.
-To the best of our knowledge, these are the first nonasymptotic results concerning the eigenvectors of the sam-
+learning show that, given sufficient data, well-trained neural networks often outperform hand-tuned approaches on
+supervised tasks. This raises the tantalizing possibility that
+neural networks may be able to outperform hand-designed
+optimizers.
+Despite the promise in this approach, previous work on
+learned RNN optimizers for gradient descent has failed to
+produce neural network optimizers that generalize to new
+problems, or that continue to make progress on the problems for which they were meta-trained when run for large
+numbers of steps (see Figure 2). Current neural network
+optimizers are additionally too costly in both memory and
+computation to scale to larger problems.
+We address both of these issues. Specifically, we improve
+upon existing learned optimizers by:
+1. Developing a meta-training set that consists of an ensemble of small tasks with diverse loss landscapes
+2. Introducing a hierarchical RNN architecture with
+lower memory and compute overhead, and which is
+capable of capturing inter-parameter dependencies.
+3. Incorporating features motivated by successful handdesigned optimizers into the RNN, so that it can build
+on existing techniques. These include dynamically
+adapted input and output scaling, momentum at multiple time scales, and a cross between Nesterov momentum and RNN attention mechanisms.
+4. Improving the meta-optimization pipeline, for instance by introducing a meta-objective that better
+encourages exact convergence of the optimizer, and
+by drawing the number of optimization steps during
+training from a heavy tailed distribution.
 
-How Close Are the Eigenvectors of the Sample and Actual Covariance Matrices?
-ũ1
-ũ4
-ũ20
-ũ100
+2. Related work
+Learning to learn has a long history in psychology (Ward,
+1937; Harlow, 1949; Kehoe, 1988; Lake et al., 2016). Inspired by it, machine learning researchers have proposed
+meta-learning techniques for optimizing the process of
+learning itself. Schmidhuber (1987), for example, considers networks that are able to modify their own weights.
 
-0.4
+Learned Optimizers that Scale and Generalize
 
-|hũi , uj i|
+This leads to end-to-end differentiable systems which allow, in principle, for extremely general update strategies to
+be learned. There are many works related to this idea, including (Sutton, 1992; Naik & Mammone, 1992; Thrun &
+Pratt, 1998; Hochreiter et al., 2001; Santoro et al., 2016).
+A series of papers from Bengio et al. (1990; 1992; 1995)
+presents methods for learning parameterized local neural
+network update rules that avoid back-propagation. Runarsson & Jonsson (2000) extend this to more complex update
+models. The result of meta learning in these cases is an
+algorithm, i.e. a local update rule.
+Andrychowicz et al. (2016) learn to learn by gradient descent by gradient descent. Rather than trying to distill
+a global objective into a local rule, their work focuses
+on learning how to integrate gradient observations over
+time in order to achieve fast learning of the model. The
+component-wise structure of the algorithm allows a single
+learned algorithm to be applied to new problems of different dimensionality. While Andrychowicz et al. (2016) consider the issue of transfer to different datasets and model
+structures, they focus on transferring to problems of the
+same class. In fact, they report negative results when transferring optimizers, meta-trained to optimize neural networks with logistic functions, to networks with ReLU functions.
+Li & Malik (2017) proposed an approach similar to
+Andrychowicz et al. (2016), around the same time, but they
+rely on policy search to compute the meta-parameters of the
+optimizer. That is, they learn to learn by gradient descent
+by reinforcement learning.
+Zoph & Le (2017) also meta-train a controller RNN, but
+this time to produce a string in a custom domain specific
+language (DSL) for describing neural network architectures. An architecture matching the produced configuration
+(the “child” network) is instantiated and trained in the ordinary way. In this case the meta-learning happens only at
+the network architecture level.
+Ravi & Larochelle (2017) modify the optimizer of
+Andrychowicz et al. (2016) for 1 and 5-shot learning tasks.
+They use test error to optimize the meta learner. These
+tasks have the nice property that the recurrent neural networks only need to be unrolled for a small number of steps.
+Wang et al. (2016) show that it is possible to learn to
+solve reinforcement learning tasks by reinforcement learning. They demonstrate their approach on several examples
+from the bandits and cognitive science literature. A related
+approach was proposed by Duan et al. (2016).
+Finally, Chen et al. (2016) also learn reinforcement learning, but by supervised meta-training of the meta-learner.
+They apply their methods to black-box function optimiza-
 
-|hũi , uj i|
+tion tasks, such as Gaussian process bandits, simple lowdimensional controllers, and hyper-parameter tuning.
 
-0.6
+3. Architecture
+At a high level, a hierarchical RNN is constructed to act as
+a learned optimizer, with its architecture matched to the parameters in the target problem. The hierarchical RNN’s parameters (called meta-parameters) are shared across all target problems, so despite having an architecture that adapts
+to the target problem, it can be applied to new problems. At
+each optimization step, the learned optimizer receives the
+gradients for every parameter along with some additional
+quantities derived from the gradients, and outputs an update to the parameters. Figure 1 gives an overview.
+Global RNN
 
-0.8
+E[·]
+Tensor RNN
 
-0.2
-0
+E[·]
+[✓1 ]1 [✓1 ]2 [✓1 ]3
+
+Tensor RNN
+
+E[·]
+[✓2 ]1 [✓2 ]2
+
+Tensor RNN
+
+…
+
+…
+
+Parameter RNNs
+
+Inputs
+Scaled gradients,
+…
+
+Parameter RNN
+
+[✓i ]j
+
+Outputs
+Update direction,
+change in magnitude, …
+
+Figure 1. Hierarchical RNN architecture. At the lowest level, a
+small Parameter RNN processes the inputs and outputs (Section
+3.3) for every parameter (✓ij ) in the target problem. At the intermediate level, a medium-sized Tensor RNN exists for every
+parameter tensor (denoted by ✓i ) in the target problem. It takes as
+input the average latent state across all Parameter RNNs belonging to the same tensor. Its output enters those same Parameter
+RNNs as a bias term. At the top level, a single Global RNN receives as input the average hidden state of all Parameter RNNs,
+and its output enters the Tensor RNNs as a bias term and is added
+to the Parameter RNN bias term. This architecture has low perparameter overhead, while the Tensor RNNs are able to capture
+inter-parameter dependencies, and the Global RNN is able to capture inter-tensor dependencies.
+
+3.1. Hierarchical architecture
+In order to effectively scale to large problems, the optimizer
+RNN must stay quite small while maintaining enough flexibility to capture inter-parameter dependencies that shape
+the geometry of the loss surface. Optimizers that account
+for this second order information are often particularly
+effective (e.g. quasi-Newton approaches). We propose
+a novel hierarchical architecture to enable both low per-
+
+Learned Optimizers that Scale and Generalize
+
+parameter computational cost, and aggregation of gradient
+information and coordination of update steps across parameters (Figure 1). At the lowest level of the hierarchy,
+we have a small Parameter RNN that receives direct perparameter (scalar) gradient inputs. One level up, we have
+an intermediate Tensor RNN that incorporates information
+from a subset of the Parameter RNNs (where the subsets
+are problem specific). For example, consider a feedforward
+fully-connected neural network. There would be a Tensor
+RNN for each layer of the network, where each layer contains an (n⇥m) weight matrix and therefore nm Parameter
+RNNs.
+At the highest level of the hierarchy is a Global RNN which
+receives output from every Tensor RNN. This allows the
+Parameter RNN to have very few hidden units with larger
+Tensor and Global RNNs keeping track of problem-level
+information. The Tensor and Global RNNs can also serve
+as communication channels between Parameter and Tensor
+RNNs respectively. The Tensor RNN outputs are fed as
+biases to the Parameter RNN, and the new parameter state
+is averaged and fed as input to the Tensor RNN. Similarly,
+the Global RNN state is fed as a bias to each Tensor RNN,
+and the output of the Tensor RNNs is averaged and fed as
+input to the Global RNN (Figure 1).
+The architecture used in the experimental results has a Parameter RNN hidden state size of 10, and a Tensor and
+Global RNN state size of 20 (the architecture used by
+Andrychowicz et al. (2016) had a two layer RNN for each
+parameter, with 20 units per layer). These sizes showed
+the best generalization to ConvNets and other complex test
+problems. Experimentally, we found that we could make
+the Parameter RNN as small as 5, and the Tensor RNN
+as small as 10 and still see good performance on most
+problems. We also found that the performance decreased
+slightly even on simple test problems if we removed the
+Global RNN entirely. We used a GRU architecture (Cho
+et al., 2014) for all three of the RNN levels.
+
+to new problems, as is illustrated by the ablation study in
+Section 5.5 and Figure 6.
+Let L (✓) be the loss of the target problem, where ✓ =
+{✓1 , ..., ✓NT } is the set of all parameter tensors ✓t (e.g. all
+weight matrices and bias vectors in a neural network). At
+each training iteration n, each parameter tensor t is updated
+as ✓tn+1 = ✓tn + ✓tn , where the update step ✓tn is set by
+the learned optimizer (Equation 5 below).
+3.2.1. ATTENTION AND N ESTEROV M OMENTUM
+Nesterov momentum (Nesterov, 1983a) is a powerful optimization approach, where parameter updates are based not
+on the gradient evaluated at the current iterate ✓n , but rather
+at a location n which is extrapolated ahead of the current iterate. Similarly, attention mechanisms have proven
+extremely powerful in recurrent translation models (Bahdanau et al., 2015), decoupling the iteration n of RNN dynamics from the observed portion of the input sequence.
+Motivated by these successes, we incorporate an attention
+mechanism that allows the optimizer to explore new regions of the loss surface by computing gradients away (or
+ahead) from the current parameter position. At each trainn
+ing step n the attended location is set as n+1
+= ✓tn +
+t
+t,
+n
+where the offset
+t is further described by Equation 6
+below. Note that the attended location is an offset from
+the previous parameter location ✓n rather than the previous
+attended location n .
+The gradient gn of the loss L (✓) with respect to the attended parameter values n will provide the only input to
+the learned optimizer, though it will be further transformed
+before being passed to the hierarchical RNN. For every parameter tensor t, gtn = @@Ln .
+t
+
+3.2.2. M OMENTUM ON MULTIPLE TIMESCALES
+
+The best performing neural networks often have knowledge about task structure baked into their design. Examples
+of this include convolutional models for image processing
+(Krizhevsky et al., 2012; He et al., 2016), causal models
+(RNNs) for modeling causal time series data, and the merging of neural value functions with Monte Carlo tree search
+in AlphaGo (Silver et al., 2016).
+
+Momentum with an exponential moving average is typically motivated in terms of averaging away minibatch noise
+or high frequency oscillations, and is often a very effective
+feature (Nesterov, 1983b; Tseng, 1998). We provide the
+learned optimizer with exponential moving averages ḡts of
+the gradients on several timescales, where s indexes the
+timescale of the average. The update equation for the moving average is
+⇣
+s
+s⌘
+n+1
+n
+n 2
+n 2
+ḡts
+= ḡts
++ gtn 1
+, (1)
+gt
+gt
+
+We similarly incorporate knowledge of effective strategies
+for optimization into our network architecture. We emphasize that these are not arbitrary design choices. The features below are motivated by results in optimization and
+recurrent network literature. They are also individually important to the ability of the learned optimizer to generalize
+
+By comparing the moving averages at multiple timescales,
+the learned optimizer has access to information about how
+rapidly the gradient is changing with training time (a mea-
+
+3.2. Features inspired by optimization literature
+
+where the indicates the sigmoid function, and where the
+n
+momentum logit gt
+for the shortest s = 0 timescale is
+output by the RNN, and the remaining timescales each increase by a factor of two from that baseline.
+
+Learned Optimizers that Scale and Generalize
+
+sure of loss surface curvature), and about the degree of
+noise in the gradient.
+3.2.3. DYNAMIC INPUT SCALING
+We would like our optimizer to be invariant to parameter
+scale. Additionally, RNNs are most easily trained when
+their inputs are well conditioned, and have a similar scale
+as their latent state. In order to aid each of these goals, we
+rescale the average gradients in a fashion similar to what
+is done in RMSProp (Tieleman & Hinton, 2012), ADAM
+(Kingma & Ba, 2015), and SMORMS3 (Funk, 2015),
+⇣
+⌘
+s
+s
+n+1
+n
+n 2
+n 2
+n 2
+=
+(
+)
++
+(ḡ
+)
 1
-10
-
-1
-ũ1
-ũ4
-ũ20
-ũ100
-
-hũ4 , u4 i
-
-0.6
-0.4
-0.2
-
-10
-
--1
-
-10
-
-λj
-
-(a) m = 10
-
--3
-
-10
-
--5
-
-0
-1
-10
-
-1
-ũ1
-ũ4
-ũ20
-ũ100
-
-0.8
-0.6
-0.4
-
-hũ20 , u20 i
-
-0.2
-10
-
--1
-
-10
-
--3
-
-10
-
--5
-
-0
-1
-10
-
-λj
-
-10
-
--1
-
-10
-
--3
-
-0.4
-
-ũ1
-ũ4
-ũ20
-ũ100
-
-0.2
-
-hũ100 , u100 i
-
-0.8
-
-|hũi , uj i|
-
-1
-hũ1 , u1 i
-
-|hũi , uj i|
-
-1
-0.8
-
-10
-
-0.6
-
-0
-1
-10
-
--5
-
-10
-
--1
-
-10
-
-λj
-
-(b) m = 100
-
--3
-
-10
-
--5
-
-λj
-
-(c) m = 500
-
-(d) m = 1000
-
-Figure 1: Inner products he
-ui , uj i are localized w.r.t. the eigenvalue axis. The phenomenon is shown for MNIST. Much fewer than
-n = 784 samples are needed to approximate u1 and u4 .
-
-ple covariance of non-Normal distributions. Previous studies have intensively investigated the limiting distribution
-of the eigenvalues of a sample covariance matrix (Silverstein & Bai, 1995; Bai, 1999), such as the smallest and largest eigenvalues (Bai & Yin, 1993) and the
-eigenvalue support (Bai & Silverstein, 1998). Eigenvectors and eigenprojections have attracted less attention; the
-main research thrust entails using tools from the theory of
-large-dimensional matrices to characterize limiting distributions (Anderson, 1963; Girko, 1996; Schott, 1997; Bai
-et al., 2007) and it has limited applicability in the nonasymptotic setting where the sample size m is small and
-n cannot be arbitrary large.
-Differently, we use techniques from perturbation analysis
-and non-asymptotic concentration of measure. However,
-in contrast to arguments commonly used to reason about
-eigenspaces (Davis & Kahan, 1970; Yu et al., 2015; Huang
-et al., 2009; Hunter & Strohmer, 2010), our bounds can
-characterize weighted linear combinations of he
-ui , uj i2 over
-i and j, and do not depend on the minimal eigenvalue
-gap separating two eigenspaces but rather on all eigenvalue
-differences. The latter renders them useful to many real
-datasets, where the eigenvalue gap is not significant but the
-eigenvalue magnitudes decrease sufficiently fast.
-We also note two recent works targeting the nonassymptotic regime of Normal distributions. Shaghaghi
-and Vorobyov recently characterized the first two moments
-of the subspace projection error, a result which implies
-sample estimates (Shaghaghi & Vorobyov, 2015), but is
-restricted to specific projectors. A refined concentration
-analysis for spectral projectors of Normal distributions was
-also presented in (Koltchinskii & Lounici, 2015). Finally,
-we remark that there exist alternative estimators for the
-spectrum of the covariance with better asymptotic properties (Ahmed, 1998; Mestre, 2008). Instead, we here focus
-on the standard estimates, i.e., the eigenvalues and eigenvectors of the sample covariance.
-
-2
-
-Problem Statement and Main Results
-
-Let x ∈ Cn be a sample of a multivariate distribution and
-denote by x1 , x2 , . . . , xm the m independent samples used
-
-to form the sample covariance, defined as
-e=
-C
-
-m
-X
-(xp − x̄)(xp − x̄)∗
-
-m
-
-p=1
-
-,
-
+(
+)
 (2)
+ts
+ts
+t
+ts
+t
+ḡn
+mnts = p tsn ,
 
-where x̄ is the sample mean. Denote by ui the eigenvector
-of C associated with eigenvalue λi , and correspondingly
-ei of C,
-e such that
-for the eigenvectors u
-ei and eigenvalues λ
-λ1 ≥ λ2 ≥ . . . ≥ λn . We ask:
-Problem 1. How many samples are sufficient to guarantee
-that the inner product |he
-ui , uj i| = |e
-u∗i uj | and the eigene
-value gap |δλi | = |λi − λi | is smaller than some constant
-t with probability larger than ?
-Clearly, when asking that all eigenvectors and eigenvalues
-of the sample and actual covariance matrices are close, we
-will require at least as many samples as needed to ensure
-e − Ck2 ≤ t. However, we might do better when
-that kC
-only a subset of the spectrum is of interest. The reason
-is that inner products |he
-ui , uj i| are strongly concentrated
-along the eigenvalue axis. To illustrate this phenomenon,
-let us consider the distribution constructed by the n = 784
-pixel values of digit ‘1’ in the MNIST database. Figure 1,
-compares the eigenvectors uj of the covariance computed
-from all 6742 images, to the eigenvectors u
-ei of the same computed from a random subple covariance matrices C
-set of m = 10, 100, 500, and 1000 samples. For each
-i = 1, 4, 20, 100, we depict at λj the average of |he
-ui , uj i|
-over 100 sampling draws. We observe that: (i) The magnitude of he
-ui , uj i is inversely proportional to their eigenvalue
-gap |λi − λj |. (ii) Eigenvector u
-ej mostly lies in the span of
-eigenvectors uj over which the distribution is concentrated.
-We formalize these statements in two steps.
-2.1
-
-Perturbation arguments
-
-First, we work in the setting of Hermitian matrices and notice the following inequality:
-e = δC+C,
-Theorem 3.2. For Hermitian matrices C and C
-with eigenvectors uj and u
-ei respectively, the inequality
-|he
-ui , uj i| ≤
-
-2 kδCuj k2
-,
-|λi − λj |
-
-How Close Are the Eigenvectors of the Sample and Actual Covariance Matrices?
-
-ei > sgn(λi − λj )(λi + λj ) and
-holds for sgn(λi − λj ) 2λ
-λi 6= λj .
-The above stands out from standard eigenspace perturbation results, such as the sin(Θ) Theorem (Davis & Kahan, 1970) and its variants (Huang et al., 2009; Hunter &
-Strohmer, 2010; Yu et al., 2015) for three main reasons:
-First, Theorem 3.2 characterizes the angle between any
-pair of eigenvectors allowing us to jointly bound any linear
-combination of inner-products. Though this often proves
-handy (c.f. Section 5), it is infeasible using sin(Θ)-type arguments. Second, classical bounds are not appropriate for
-a probabilistic analysis as they feature ratios of dependent
-random variables (corresponding to perturbation terms). In
-the analysis of spectral clustering, this complication was
-ei − λj | (Hunter
-dealt with by assuming that |λi − λj | ≤ |λ
-& Strohmer, 2010). We weaken this condition at a cost of
-a multiplicative factor. In contrast to previous work, we
-also prove that the condition is met a.a.s. Third, previous
-bounds are expressed in terms of the minimal eigenvalue
-gap between eigenvectors lying in the interior and exterior of the subspace of interest. This is a limiting factor
-in practice as it renders the results only amenable to situations where there is a very large eigenvalue gap separating
-the subspaces. The proposed result improves upon this by
-considering every eigenvalue difference.
-2.2
-
-Concentration of measure
-
-The second part of our analysis focuses on the covariance
-and has a statistical flavor. In particular, we give an answer
-to Problem 1 for various families of distributions.
-In the context of distributions with finite second moment,
-we prove in Section 4.1 that:
-Theorem 4.1. For any two eigenvectors u
-ei and uj of the
-sample and actual covariance respectively, and for any real
-number t > 0:
-2
-2kj
-1 
-,
 (3)
-P(|he
-ui , uj i| ≥ t) ≤
-m t |λi − λj |
-subject to the same conditions as Theorem 3.2.
-For eigenvalues, we have the following corollary:
-ei of C and C,
-e
-Corollary 2.1. For any eigenvalues λi and λ
-respectively, and for any t > 0, we have
-!
-
-2
-e i − λi |
-|λ
-1
-ki
-P
-≥t ≤
-.
-λi
-m λi t
-
-
-Term kj = (E kxx∗ uj k22 − λ2j )1/2 captures the tendency
-of the distribution to fall in the span of uj : the smaller the
-tail in the direction of uj the less likely we are going to
-confuse u
-ei with uj .
 
-For normal distributions, we have that kj2 = λ2j + λj tr(C)
-and the number of samples needed for |he
-ui , uj i| to be small
-is m = O(tr(C)/λ2i ) when λj = O(1) and m = O(λ−2
-i )
-when λj = O(tr(C)−1 ). Thus for normal distributions,
-principal components ui and uj with min{λi /λj , λi } =
-Ω(tr(C)1/2 ) can be distinguished given a constant number
-of samples. On the other hand, estimating λi with small
-relative error requires m = O(tr(C)/λi ) samples and can
-thus be achieved from very few samples when λi is large1 .
-In Section 4.2, we also give a sharp bound for the family of
-distributions supported within a ball (i.e., kxk ≤ r a.s.).
-Theorem 4.2. For sub-gaussian distributions supported
-within a centered Euclidean ball of radius r, there exists
-an absolute constant c s.t. for any real number t > 0,
-!
-c m Φij (t)2
-, (4)
-P(|he
-ui , uj i| ≥ t) ≤ exp 1 −
-2
-λj kxkΨ2
-|λ −λ | t−2λ
+ts
 
-where Φij (t) = 2 (ri 2 /λjj −1)1/2j −2 kxkΨ2 and subject to the
-same conditions as Theorem 3.2.
-Above, kxkΨ2 is the sub-gaussian norm, for which we usually have kxkΨ2 = O(1) (Vershynin, 2010). As such, the
-theorem implies that, whenever λi  λj = O(1), the sample requirement is with high probability m = O(r2 /λ2i ).
-These theorems solidify our experimental findings shown
-in Figure 1 and provide a concrete characterization of the
-relation between the spectrum of the sample and actual covariance matrix as a function of the number of samples,
-the eigenvalue gap, and the distribution properties. As exemplified in Section 5 for linear dimensionality reduction,
-we believe that our results carry strong implications for the
-non-asymptotic analysis of PCA-based methods.
+where nts is a running average of the square average gradient, mnts is the scaled averaged gradient, and the momentum logit nt for the shortest s = 0 timescale will be output
+by the RNN, similar to how the timescales for momentum
+are computed in the previous section.
+It may be useful for the learned optimizer to have access to
+how gradient magnitudes are changing with training time.
+We therefore provide as further input a measure of relative
+gradient magnitudes at each averaging scale s. Specifically,
+we provide the relative log gradient magnitudes,
+n
+ts
 
-3
-
-Perturbation Arguments
-
-Before focusing on the sample covariance matrix, it helps
-to study he
-ui , uj i in the setting of Hermitian matrices. The
-presentation of the results is split in three parts. Section 3.1
-starts by studying some basic properties of inner products
-of the form he
-ui , uj i, for any i and j. The results are used in
-Section 3.2 to provide a first bound on the angle between
-two eigenvectors, and refined in Section 3.3.
-3.1
-
-Basic observations
-
-We start by noticing an exact relation between the angle of
-a perturbed eigenvector and the actual eigenvectors of C.
-Lemma 3.1. For every
-Pni and∗ j in 1,∗2, . . . , n, the relation
-ei − λj ) (e
-(λ
-u∗i uj ) = `=1 (e
-ui u` ) (uj δCu` ) holds .
-1
-Though the same cannot be stated about the absolute error
-|δλi |, that is smaller for small λi .
-
-How Close Are the Eigenvectors of the Sample and Actual Covariance Matrices?
-
-Proof. The proof follows from a modification of a standard
-argument in perturbation theory. We start from the definiei u
-eu
-tion C
-ei = λ
-ei and write
-(C + δC) (ui + δui ) = (λi + δλi ) (ui + δui ).
-
-(5)
-
-Expanded, the above expression becomes
-
-+
-
-`=1
-
-+
+= log
 
 n
-X
+ts
 
-= λi
-
-βij u∗j u` + δλi u∗j ui + δλi
-
-`=1
+Es [log
 
 n
-X
+ts ] .
 
-βij u∗j u` (7)
+(4)
 
-Cancelling the unnecessary terms and rearranging, we have
+3.2.4. D ECOMPOSITION OF OUTPUT INTO DIRECTION
+AND STEP LENGTH
 
-+
-
-n
-X
-
-βij u∗j δCu` .
-
-n
-X
-
-(e
-u∗i u` )2
+We enforce a similar decomposition of the parameter updates into update directions dn✓ and dn for parameters
+and attended parameters,
+⇣ ⌘ with corresponding step lengths
+exp (⌘✓n ) and exp ⌘ n ,
 
 n
-X
+t
 
-n
-X
+= exp ⌘ n
 
-(u∗j δCu` )2
+⌘✓n+1 =
 
-`=1
+⌘✓n + ⌘¯✓n+1 ,
 
-(u∗j δCu` )2 = kδC uj k22 , (11)
+⌘¯✓n+1
 
-`=1
+⌘¯✓n
 
-where in the last step we exploited Lemma 3.2. The proof
-concludes by taking a square root at both sides of the inequality.
-n
-P
+=
 
-(u∗j δCu` )2 = kδC uj k22 .
++ (1
 
-Proof. We first notice that u∗j δCu` is a scalar and equal to
-its transpose. Moreover, δC is Hermitian as the difference
-of two Hermitian matrices. We therefore have that
-n
-n
-X
-X
-(u∗j δCu` )2 =
-u∗j δCu` u∗` δCuj
+(7)
+) ⌘✓n+1 ,
 
 (8)
 
-n
-X
-
-(u` u∗` )δCuj = u∗j δCδCuj = kδCuj k22 ,
-
-`=1
-
-matching our claim.
-
-ei − λj and
-At this point, we note that (λi + δλi − λj ) = λ
-furthermore that βij = u
-e∗i uj − u∗i uj . With this in place,
-equation (8) becomes
-ei − λj ) (e
-δλi u∗j ui + (λ
-u∗i uj − u∗i uj )
-n
-X
-= u∗j δCui +
-(e
-u∗i u` ) u∗j δCu` − u∗j δCui .
-
-`=1
-
-= u∗j δC
-
-`=1
+where for stability reasons, the log step length ⌘✓n is specified relative to an exponential running average ⌘¯✓n with
+meta-learned momentum . The attended parameter log
+step length ⌘✓n is related to ⌘✓n by a meta-learned constant
+offset c,
+⌘ n = ⌘✓n + c.
 
 (9)
 
-`=1
-
-The proof completes by noticing that, in the left hand side,
-e i − λj ) u
-all terms other than (λ
-e∗i uj fall-off, either due to
-∗
-ei − λj , o.w.
-ui uj = 0, when i 6= j, or because δλi = λ
-As the expression reveals, he
-ui , uj i depends on the orientation of u
-ei with respect to all other u` . Moreover, the angles
-between eigenvectors depend not only on the minimal gap
-between the subspace of interest and its complement space
-e i − λj .
-(as in the sin(Θ) theorem), but on every difference λ
-This is a crucial ingredient to a tight bound, that will be
-retained throughout our analysis.
-3.2
-
-=
-
-`=1
-
-δλi u∗j ui + (λi + δλi − λj )βij
-u∗j δCui
-
-. (10)
-
-`=1
-
-`=1
-
-=
-
-(e
-u∗i u` ) (u∗j δCu` )
-
-We now use the Cauchy-Schwartz inequality
-
-Lemma 3.2.
-
-βij u∗j δCu`
-
-`=1
+To further force the optimizer to dynamically adapt the
+learning rate rather than memorizing a learning rate trajectory, the learning rate is initialized from a log uniform distribution from 10 6 to 10 2 . We emphasize that the RNN
+has no direct access to the learning rate, so it must adjust
+it based purely on its observations of the statistics of the
+gradients.
+In order to aid in coordination across parameters, we do
+provide the RNN as an input the relative log learning rate
+of each parameter, compared to the remaining parameters,
 n
-X
+n
+⌘rel
+= ⌘✓n Eti [⌘✓ti
+].
+3.3. Optimizer inputs and outputs
 
-!2
+Another aspect of RMSProp and ADAM is that the learning
+rate corresponds directly to the characteristic step length.
+This is true because the gradient is scaled by a running
+estimate of its standard deviation, and after scaling has a
+characteristic magnitude of 1. The length of update steps
+therefore scales linearly with the learning rate, but is invariant to any scaling of the gradients.
 
-`=1
+n
+✓tn = exp (⌘✓t
+)
 
+Relative learning rate We want the performance of the
+optimizer to be invariant to parameter scale. This requires
+that the optimizer judge the correct step length from the history of gradients, rather than memorizing the range of step
+lengths that were useful in its meta-training ensemble. The
+RNN therefore controls step length by outputing a multiplicative (additive after taking a logarithm) change, rather
+than by outputing the step length directly,
+
+dn✓t
+,
+||dn✓t || /Nt
+dnt
+,
+dnt /Nt
+
+(5)
 (6)
 
-where we used the fact that Cui = λi ui P
-to eliminate
+where Nt is the number of elements in the parameter tensor
+✓t . The directions dn✓t and dnt are read directly out of the
+RNN (though see A.1 for subtleties).
+
+As described in the preceding sections, the full set of
+Parameter RNN inputs for each tensor t are xnt =
 n
-two terms. To proceed, we substitute δui = j=1 βij uj ,
-where βij = δu∗i uj , into (6) and multiply from the left by
-u∗j , resulting to:
-u∗j δCui
-
+{mnt , tn , ⌘rel
+}, corresponding to the scaled averaged gradients, the relative log gradient magnitudes, and the relative
+log learning rate.
+The full
+for each tensor t are
+n set of Parameter RNN outputs
+o
 n
-X
-
-`=1
-
-= λi δui + δλi ui + δλi δui ,
-
-βij u∗j Cu`
-
-ei − λj )2 (e
-(λ
-u∗i uj )2 =
-
-ei − λj )2 (e
-(λ
-u∗i uj )2 ≤
-
-Cδui + δCui + δCδui
-
 n
-X
+n
+n
+n
+n
+yt = d✓t , d t , ⌘✓t , gt , t , corresponding to the parameter and attention update directions, the change in step
+length, and the momentum logits. Each of the outputs in
+ytn is read out via a learned affine transformation of the Parameter RNN hidden state. The readout biases are clamped
+to 0 for dn✓ and dn . The RNN update equations are then:
+n
+n
+n
+n
+hn+1
+Param = ParamRNN(x , hParam , hTensor , hGlobal )
 
-Proof. We rewrite Lemma 3.1 as
+(10)
 
-Bounding arbitrary angles
+hn+1
+Tensor
+hn+1
+Global
+n
 
-We proceed to decouple the inner products.
-e =
-Theorem 3.1. For any Hermitian matrices C and C
-δC + C, with eigenvectors uj and u
-ei respectively, we have
-ei − λj | |he
-that |λ
-ui , uj i| ≤ kδC uj k2 .
+(11)
 
-3.3
+=
+=
 
-Refinement
-
-As a last step, we move all perturbation terms to the numerator, at the expense of a multiplicative constant factor.
-e = δC+C,
-Theorem 3.2. For Hermitian matrices C and C
-with eigenvectors uj and u
-ei respectively, the inequality
-|he
-ui , uj i| ≤
-
-2 kδCuj k2
-,
-|λi − λj |
-
-ei > sgn(λi − λj )(λi + λj ) and
-holds for sgn(λi − λj ) 2λ
-λi 6= λj .
-Proof. Adding and subtracting λi from the left side of the
-expression in Lemma 3.1 and from definition we have
-(δλi + λi − λj ) (e
-u∗i uj ) =
+y =
 
 n
-X
-
-(e
-u∗i u` ) (u∗j δCu` ).
+n
+TensorRNN(x , hn+1
+Param , hTensor , hGlobal )
+n+1
+n
+GlobalRNN(xn , hn+1
+Param , hTensor , hGlobal )
+WhnParam + b,
+n
 
 (12)
+(13)
 
-`=1
-
-For λi 6= λj , the above expression can be re-written as
-
-
+where h is the hidden state for each level of the RNN, as
+described in Section 3.1, and W and b are learned weights
 n
-P
-
-∗
-∗
-∗
- (e
-ui u` ) (uj δCu` ) − δλi (e
-ui uj )
-
-|e
-u∗i uj | = `=1
-|λi − λj |
-
-  n
-
-
-P ∗
-∗
-
-
-
-
-
-
-(e
-u
-u
-)
-(u
-δCu
-)
-` 
-
-i `
-j
-|δλi | |e
-u∗i uj | 
-`=1
-≤ 2 max
+
+Learned Optimizers that Scale and Generalize
+
+of the affine transformation from the lowest level hidden
+state to output.
+3.4. Compute and memory cost
+The computational cost of the learned optimizer is
+2
+O NP B + NP KP2 + NT KT2 + KG
+, where B is the
+minibatch size, NP is the total number of parameters, NT
+is the number of parameter tensors, and KP , KT , and
+KG are the latent sizes for Parameter, Tensor, and Global
+RNNs respectively. Typically, we are in the regime where
+2
+NP KP2
+NT KT2 > KG
+, in which case the computational cost simplifies to O NP B + NP KP2 . Note that as
+the minibatch size B is increased, the computational cost
+of the learned optimizer approaches that of vanilla SGD,
+as the cost of computing the gradient dominates the cost of
+computing the parameter update.
+The memory cost of the learned optimizer is
+O (NP + NP KP + NT KT + KG ), which similarly to
+computational cost typically reduces to O (NP + NP KP ).
+So long as the latent size KP of the Parameter RNN can be
+kept small, the memory overhead will also remain small.
+We show experimental results for computation time in Section 5.6.
+
+4. Meta-training
+The RNN optimizer is meta-trained by a standard optimizer
+on an ensemble of target optimization tasks. We call this
+process meta-training, and the parameters of the RNN optimizer the meta-parameters.
+4.1. Meta-training set
+Previous learned optimizers have failed to generalize beyond the problem on which they were meta-trained. In order to address this, we meta-train the optimizer on an ensemble of small problems, which have been chosen to capture many commonly encountered properties of loss landscapes and stochastic gradients. By meta-training on small
+toy problems, we also avoid memory issues we would encounter by meta-training on very large, real-world problems.
+Except where otherwise indicated, all target problems were
+designed to have a global minimum of zero (in some cases a
+constant offset was added to make the minimum zero). The
+code defining each of these problems will be open sourced
+shortly.
+4.1.1. E XEMPLAR PROBLEMS FROM LITERATURE
+We included a set of 2-dimensional problems which
+have appeared in optimization literature (Surjanovic &
+
+Bingham, 2013) as toy examples of various loss landscape pathologies.
+These consisted of Rosenbrock,
+Ackley, Beale, Booth, Styblinski-Tang, Matyas, Branin,
+Michalewicz, and log-sum-exp functions.
+4.1.2. W ELL BEHAVED PROBLEMS
+We included a number of well-behaved convex loss functions, consisting of quadratic bowls of varying dimension
+with randomly generated coupling matrices, and logistic
+regression on randomly generated, generally linearly separable data. For the logistic regression problem, when the
+data is not fully linearly separable, the global minimum is
+greater than 0.
+4.1.3. N OISY GRADIENTS AND MINIBATCH PROBLEMS
+For problems with randomly generated data, such as logistic regression, we fed in minibatches of various sizes, from
+10 to 200. We also used a minibatch quadratic task, where
+the minibatch loss consisted of the square inner product of
+the parameters with random input vectors.
+For full-batch problems, we sometimes added normally
+distributed noise with standard deviations from 0.1 to 2.0
+in order to simulate noisy minibatch loss.
+4.1.4. S LOW CONVERGENCE PROBLEMS
+We included several tasks where optimization could proceed only very slowly, despite the small problem size.
+This included a many-dimensional oscillating valley whose
+global minimum lies at infinity, and a problem with a loss
+consisting of a very strong coupling terms between parameters in a sequence. We additionally included a task where
+the loss only depends on the minimum and maximum valued parameter, so that gradients are extremely sparse and
+the loss has discontinuous gradients.
+4.1.5. T RANSFORMED PROBLEMS
+We also included a set of problems which transform the
+previously defined target problems in ways which map to
+common situations in optimization.
+To simulate problems with sparse gradients, one transformation sets a large fraction of the gradient entries to 0
+at each training step. To simulate problems with different scaling across parameters, we added a transformation
+which performs a linear change of variables so as to change
+the relative scale of parameters. To simulate problems with
+different steepness-profiles over the course of learning, we
+added a transformation which applied monotonic transformations (such as raising to a power) to the final loss. Finally, to simulate complex tasks with diverse parts, we
+added a multi-task transformation, which summed the loss
+and concatenated the parameters from a diverse set of prob-
+
+Learned Optimizers that Scale and Generalize
+
+lems.
+4.2. Meta-objective
+For the meta-training loss, used to train the metaparameters of the optimizer, we used the average log loss
+across all training problems,
+L( ) =
+
+N
+1 X
+log (`(✓n ( )) + ✏)
+N n=1
+
+log `(✓0 ) + ✏
+
 ,
-. (13)
-
-|λi − λj |
-|λi − λj | 
-
-
-
-
 
-How Close Are the Eigenvectors of the Sample and Actual Covariance Matrices?
-
-Let us examine the right-hand side inequality carefully.
-Obviously, when the condition |λi − λj | ≤ 2 |δλi | is not
-met, the right clause of (13) is irrelevant. Therefore, for
-|δλi | < |λi − λj | /2 the bound simplifies to
-
- n
-
-P ∗
-ui u` ) (u∗j δCu` )
-2  (e
-.
 (14)
-|e
-u∗i uj | ≤ `=1
-|λi − λj |
-Similar to the proof of Theorem 3.1, applying the CauchySchwartz inequality we have that
-s
-n
-n
-P
-P
-(u∗j δCu` )2
-(e
-u∗i u` )2
-2
-`=1
-`=1
-2 kδCuj k2
-|e
-u∗i uj | ≤
-=
-,
-|λi − λj |
-|λi − λj |
-(15)
-where in the last step we used Lemma 3.2. To finish the
-proof we notice that, due to Theorem 3.2, whenever |λi −
-ei − λj |, one has
-λj | ≤ | λ
-|e
-u∗i uj | ≤
 
-kδC uj k2
-2 kδCuj k2
-kδC uj k2
-≤
-<
-.
-e
-|λi − λj |
-|λi − λj |
-|λi − λj |
-
-(16)
-
-Our bound therefore holds for the union of intervals |δλi | <
-ei − λj |, i.e., for λ
-ei > (λi +
-|λi − λj | /2 and |λi − λj | ≤ |λ
-e
-λj )/2 when λi > λj and for λi < (λi + λj )/2 when
-λi < λj .
-
-4
-
-Concentration of Measure
-
-This section builds on the perturbation results of Section 3
-to characterize how far any inner product he
-ui , uj i and
-ei are from the ideal estimates.
-eigenvalue λ
-Before proceeding, we remark on some simplifications employed in the following. W.l.o.g., we will assume that the
-mean E[x] is zero. In addition, we will assume the perspective of Theorem 3.2, for which the inequality sgn(λi −
-ei > sgn(λi −λj )(λi +λj ) holds. This event is shown
-λj ) 2λ
-to occur a.a.s. when the gap and the sample size are sufficiently large, but it is convenient to assume that it happens
-almost surely. In fact, removing this assumption is possible
-(see Section 4.1.2), but it is largely not pursued here as it
-leads to less elegant and sharp estimates.
-4.1
-
-Distributions with finite second moment
-
-Our first flavor of results is based on a variant of the
-Tchebichef inequality and holds for any distribution with
-finite second moment, though only with moderate probability estimates.
-4.1.1
-
-C ONCENTRATION OF EIGENVECTOR ANGLES
-
-We start with the concentration of inner-products |he
-ui , uj i|.
-
-Theorem 4.1. For any two eigenvectors u
-ei and uj of the
-sample and actual covariance respectively, with λi 6= λj ,
-and for any real number t > 0, we have
-P(|he
-ui , uj i| ≥ t) ≤
-
-2
-1  2 kj
-m t |λi − λj |
-
-ei > sgn(λi − λj )(λi + λj ) and kj =
-for sgn(λi − λj ) 2λ
-
-
-1/2
-∗
-2
-E kxx uj k2 − λ2j
-.
-Proof. According to a variant of Tchebichef’s inequality (Sarwate, 2013), for any random variable X and for any
-real numbers t > 0 and α:
-P(|X − α| ≥ t) ≤
-
-Var[X] + (E[X] − α)2
-.
-t2
-
-(17)
-
-Setting X = he
-ui , uj i and α = 0, we have
-2
-
-Var[he
-ui , uj i] + E[he
-ui , uj i]
-P(|he
-ui , uj i| ≥ t) ≤
-2
-t
-
-
-
-
-E he
-ui , uj i2
-4 E kδCuj k22
-=
-≤ 2
-, (18)
-t2
-t (λi − λj )2
-where the last inequality follows from Theorem 3.2. We
-continue by expanding δC using the definition of the eigenvalue decomposition and substituting the expectation.
-h
-i
-
-
-e j − λj uj k2
-E kδCuj k22 = E kCu
-2
-h
-i
-e − λj )(C
-e − λj )uj
-= E u∗j (C
-h
-i
-h i
-e 2 uj + λ2 − 2λj u∗ E C
-e uj
-= E u∗j C
-j
-j
-h
-i
-e 2 uj − λ2 .
-= E u∗j C
-(19)
-j
-In addition,
-m
-X
-
-
-
-E (xp x∗p )(xq x∗q )
-E
-uj
-=
-m2
-p,q=1
-
- 
-
-
-
-m
-X E xp x∗p E xq x∗q
-X
-E xp x∗p xp x∗p
-∗
-∗
-=
-uj
-uj +
-uj
-uj
-m2
-m2
-p=1
-h
-
-e 2 uj
-u∗j C
-
-i
-
-u∗j
-
-p6=q
-
-m(m − 1) 2
-1
-λj + u∗j E[xx∗ xx∗ ] uj
-2
-m
-m
-1 2
-1 ∗
-= (1 − ) λj + uj E[xx∗ xx∗ ] uj
-m
-m
-=
-
-(20)
-
-and therefore
-
-
-1
-1
-E kδCuj k22 = (1 − ) λ2j + u∗j E[xx∗ xx∗ ] uj − λ2j
-m
-m
-
-E kxx∗ uj k22 − λ2j
-u∗j E[xx∗ xx∗ ] uj − λ2j
-=
-=
-.
-m
-m
-Putting everything together, the claim follows.
-
-How Close Are the Eigenvectors of the Sample and Actual Covariance Matrices?
-
-The following corollary will be very useful when applying
-our results.
-Corollary 4.1. For any weights wij and real t > 0:
-
-
-X
-X
-4 wij kj2
-,
-P
-wij he
-ui , uj i2 > t ≤
-m t (λi − λj )2
-i6=j
-
-i6=j
-
-
-
-1/2
-and wij 6= 0 when
-where kj = E kxx∗ uj k22 − λ2j
-ei > sgn(λi − λj )(λi + λj ).
-λi 6= λj and sgn(λi − λj ) 2λ
-Proof. We proceed as in the proof of Theorem 4.1:
-hP
-i
-
-
-2
-X
- 21
-E
-w
-he
-u
-,
-u
-i
-ij
-i
-j
-i6=j
-P
-wij he
-ui , uj i2 > t ≤
-t2
-i6=j
-
-
-E kδCuj k22
-4 X
-≤ 2
-(21)
-wij
-t
-(λi − λj )2
-i6=j
-
-
-
-The claim follows by computing E kδCuj k22 (as before)
-and squaring both terms within the probability.
-4.1.2
-
-E IGENVALUE CONCENTRATION
-
-Though perhaps less sharp than what is currently known
-(e.g., see (Silverstein & Bai, 1995; Bai & Silverstein, 1998)
-for the asymptotic setting), it might be interesting to observe that a slight modification of the same argument can
-be used to characterize the eigenvalue relative difference,
-and as a consequence the main condition of Theorem 4.1.
-ei of C and C,
-e
-Corollary 4.2. For any eigenvalues λi and λ
-respectively, and for any t > 0, we have
-!
-
-2
-e i − λi |
-|λ
-ki
-1
-P
-,
-≥t ≤
-λi
-m λi t
-
-
-where ki = (E kxx∗ ui k22 − λi )1/2 .
-Proof. Directly from the Bauer-Fike theorem (Bauer &
-Fike, 1960) one sees that
-e i − λi ui k2 = kδCui k2 .
-|δλi | ≤ kCu
-
-4.1.3
-
-T HE INFLUENCE OF THE DISTRIBUTION
-
-
-As seen by the straightforward inequality E kxx∗ uj k22 ≤
-E kxk42 , kj connects to the kurtosis of the distribution.
-However, it also captures the tendency of the distribution
-to fall in the span of uj .
-To see this, we will work with the whitened random vectors ε = C +1/2 x, where C + denotes the Moore–Penrose
-pseudoinverse of C. In particular,
-h
-i
-kj2 = E u∗j C 1/2 εε∗ Cεε∗ C 1/2 uj − λ2j
-i
-h
-= λj (E kΛ1/2 U ∗ εε∗ uj k22 − λj )
-= λj
-
-ei >
-Using this, we find that the event E = {sgn(λi −λj ) 2λ
-sgn(λi − λj )(λi + λj )} occurs with probability at least
-
-
-2ki2
-ei − λi | < |λi − λj | > 1 −
-P(E) ≥ P |λ
-.
-2
-m|λi − λj |
-Therefore, one eliminates the condition from Theorem 4.1’s statement by relaxing the bound to
-P(|he
-ui , uj i| ≥ t) ≤ P(|he
-ui , uj i| ≥ t | E) + (1 − P(E))
-
-
-2kj2
-2
-2
-+
-k
-<
-i . (23)
-m|λi − λj | t2 |λi − λj |
-
-
-
-
-λ` E ε̂(`)2 ε̂(j)2 − λj ,
-
-(24)
-
-`=1
-
-where ε̂ = U ∗ ε. It is therefore easier to untangle the spaces
-spanned by u
-ei and uj when the variance of the distribution
-along the latter space is small (the expression is trivially
-minimized when λj → 0) or when the variance is entirely
-contained along that space (the expression is also small
-when λi = 0 for all i 6= j). In addition, it can be seen
-that distributions with fast decaying tails
- allow
- for better
-principal component identification (E ε̂(j)4 is a measure
-of kurtosis over the direction of uj ).
-For the particular case of a Normal distribution, we provide
-a closed-form expression.
-Corollary 4.3. For a Normal distribution, we have kj2 =
-λj (λj + tr(C)).
-Proof. For a centered and normal distribution with identity covariance, the choice of basis is arbitrary and the vector ε̂ = U ∗ ε is also zero mean with identity
- covariance.
-
-Moreover,
-for
-every
-`
-=
-6
-j
-we
-can
-write
-E
-ε̂(`)2 ε̂(j)2 =
-
-
-
-
-E ε̂(`)2 E ε̂(j)2 = 1. This implies that
-n
-X
-
-
-
-
-E kxx∗ uj k22 = λ2j E ε̂(j)4 + λj
-λ`
-`6=j
-
-=
-
-(22)
-
-The proof is then identical to that of Theorem 4.1.
-
-n
-X
-
-λ2j (3
-
-− 1) + λj tr(C) = 2λ2j + λj tr(C) (25)
-
-and, accordingly, kj2 = λj (λj + tr(C)).
-4.2
-
-Distributions supported in a Euclidean ball
-
-Our last result provides a sharper probability estimate for
-the family of sub-gaussian distributions supported in a centered Euclidean ball of radius r, with their Ψ2 -norm
-kxkΨ2 = sup khx, yikψ2 ,
-
-(26)
-
-y∈S n−1
-
-where S n−1 is the unit sphere and with the ψ2 -norm of a
-random variable X defined as
-p 1/p
-
-kXkψ2 = sup p−1/2 E[|X| ]
-p≥1
-
-.
-
-(27)
-
-How Close Are the Eigenvectors of the Sample and Actual Covariance Matrices?
-
-Our setting is therefore similar to the one used to study covariance estimation (Vershynin, 2012). Due to space constraints, we refer the reader to the excellent review article (Vershynin, 2010) for an introduction to sub-gaussian
-distributions as a tool for non-asymptotic analysis of random matrices.
-Theorem 4.2. For sub-gaussian distributions supported
-within a centered Euclidean ball of radius r, there exists an
-absolute constant c, independent of the sample size, such
-that for any real number t > 0,
-!
-c m Φij (t)2
-,
-(28)
-P(|he
-ui , uj i| ≥ t) ≤ exp 1 −
-2
-λj kxkΨ2
-|λ −λ | t−2λ
-
-where Φij (t) = 2 (ri 2 /λjj −1)1/2j − 2 kxkΨ2 , λi 6= λj and
-ei > sgn(λi − λj )(λi + λj ).
-sgn(λi − λj ) 2λ
-Proof. We start from the simple observation that,
-for every upper bound B of |he
-ui , uj i| the relation
-P(|he
-ui , uj i| > t) ≤ P(B > t) holds. To proceed therefore we will construct a bound with a known tail. As we
-saw in Sections 3.3 and 4.1,
-2 kδCuj k2
-|he
-ui , uj i| ≤
-|λi − λj |
-
-
-Pm
-
-
-2 (1/m) p=1 (xp x∗p uj − λj uj )
-2
-=
-|λi − λj |
-
-Pm 
-2 p=1 xp x∗p uj − λj uj 2
-≤
-m |λi − λj |
-Pm q ∗ 2 ∗
-2 p=1 (uj xp ) (xp xp ) − 2λj (u∗j xp )2 + λ2j
-=
-m |λi − λj |
-Pm q ∗ 2
-2 p=1 (uj xp ) (kxp k22 − λj ) + λ2j
-=
-(29)
-m |λi − λj |
-Assuming further that kxk2 ≤ r, and since the numerator
-is minimized when kxp k22 approaches λj , we can write for
-every sample x = C 1/2 ε:
-q
-q
-(u∗j x)2 (kxk22 − λj ) + λ2j ≤ (u∗j x)2 (r2 − λj ) + λ2j
-q
-= λj (u∗j ε)2 (r2 − λj ) + λ2j
-q
-(30)
-≤ |u∗j ε| λj r2 − λ2j + λj ,
-which is a shifted and scaled version of the random variable
-|ε̂(j)| = |u∗j ε|. Setting a = (λj r2 − λ2j )1/2 , we have
-P(|he
-ui , uj i| ≥ t) ≤ P
-
-2
-
-Pm
-
-p=1 (|ε̂p (j)| a
-
-m |λi − λj |
-
-+ λj )
-
-!
-≥t
-
-=P
-
-m
-X
-
-!
-(|ε̂p (j)| a + λj ) ≥ 0.5 mt |λi − λj |
-
-p=1
-
-!
-m (0.5 t |λi − λj | − λj )
-=P
-|ε̂p (j)| ≥
-.
-a
-p=1
-m
-X
-
-(31)
-
-By Lemma 4.1 however, the left hand side is a sum of independent sub-gaussian variables. Since the summands are
-not centered, we expand each |ε̂p (j)| = zp + E[|ε̂p (j)|]
-in terms of a centered sub-gaussian zp with the same ψ2 norm. Furthermore, by Jensen’s inequality and Lemma 4.1
-1/2
-
-2
-kxkΨ2 .
-≤
-E[|ε̂p (j)|] ≤ E ε̂p (j)2
-λj
-Therefore, if we set Φij (t) =
-
-(0.5 |λi −λj | t−λj )
-(r 2 /λj −1)1/2
-
-(32)
-
-− 2 kxkΨ2
-
-!
-mΦij (t)
-zp ≥
-P(|he
-ui , uj i| ≥ t) ≤ P
-.
-λj
-p=1
-m
-X
-
-(33)
-
-Moreover, by the rotation invariance principle, the left hand
-side of the last inequality
-is a sub-gaussian with ψ2 -norm
-Pm
-2
-smaller than (c1 p=1 kzp kψ2 )1/2 = (c1 m)1/2 kzkψ2 ≤
-(c1 m/λj )1/2 kxkΨ2 , for some absolute constant c1 . As a
-consequence, there exists an absolute constant c2 , such that
-for each θ > 0:
-m 
-!
-!
-X 
-c2 θ2 λj
-
-
-zp  ≥ θ ≤ exp 1 −
-P 
-.
-(34)
-2
-
-
-m kxkΨ2
-p=1
-Substituting θ = m Φij (t)/λj , we have
-P(|he
-ui , uj i| ≥ t) ≤ exp 1 −
-= exp 1 −
-
-c2 m2 Φij (t)2 λj
-
-!
-
-2
-
-mλ2j kxkΨ2
-!
-c2 m Φij (t)2
-2
-
-λj kxkΨ2
-
-,
-
-(35)
-
-which is the desired bound.
-Lemma 4.1. If x is a sub-gaussian random vector and ε =
-C +1/2 x, then for every i, the random variable √
-ε̂(i) = u∗i ε
-is also sub-gaussian, with kε̂(i)kψ2 ≤ kxkΨ2 / λi .
-Proof. Notice that
-
-
-X
-
- n 1/2 ∗
-
-∗ 
-
-kxkΨ2 = sup khx, yikψ2 = sup 
-λj (uj y)(uj ε)
-y∈S n−1
-y∈S n−1 j=1
-
-ψ2
-
-
-X
-
-n
-
-
-1/2
-1/2
-≥
-λj (u∗j ui )ε̂(j)
-
- = λi kε̂(i)kψ2 , (36)
-
- j=1
-ψ2
-
-where, for the last inequality, we set y = ui .
-
-5
-
-sample requirement (% of n)
-
-How Close Are the Eigenvectors of the Sample and Actual Covariance Matrices?
-
-Application to Dimensionality Reduction
-
-To emphasize the utility of our results, in the following we
-consider the practical example of linear dimensionality reduction. We show that a direct application of our bounds
-leads to upper estimates on the sample requirement.
-In terms of mean squared error, the optimal way to reduce
-the dimension of a sample x of a distribution is by projecting it over the subspace of the covariance with maximum
-variance. Denote by Ik the diagonal matrix with the first
-k diagonal entries equal to one and the rest zero. When
-the actual covariance is known, the expected energy loss
-induced by the Pk x = Ik U ∗ x projection is
-
-
-P
-λi
-E kxk22 − kPk xk22
-= i>k .
-(37)
-loss(Pk ) =
-2
-E[kxk2 ]
-tr(C)
-e ∗ is constructed
-However, when the projector Pek = Ik U
-from the sample covariance, we have
-h
-i
-E kxk22 − kPek xk22
-loss(Pek ) =
-E[kxk22 ]
-Pn
-e)
-e ∗ U ΛU ∗ U
-λi − tr(Ik U
-= i=1
-tr(C)
-Pn
-P
-λ
-−
-u∗i uj )2 λj
-i=1 i
-i≤k,j (e
-=
-(38)
-tr(C)
-with the expectation taken over the to-be-projected vectors
-x, but not the samples used to estimate the covariance. After slight manipulation, one finds that
-P
-(e
-u∗i uj )2 (λi − λj )
-i≤k,j6=i
-loss(Pek ) = loss(Pk ) +
-. (39)
-tr(C)
-The loss difference has an intuitive interpretation: when reducing the dimension with Pek one looses either by discarding useful energy (terms j > k), or by displacing kept components within the permissible eigenspace (terms j ≤ k).
-Note also that all terms with j < i are negative and can
-be excluded from the sum if we are satisfied we an upper
-estimate2 .
-It is an implication of (39) and Corollary 4.1 that, when its
-conditions hold, for any distribution and t > 0
-
- X
-4 kj2
-t
-P loss(Pek ) > loss(Pk ) +
-≤
-.
-tr(C)
-mt |λi − λj |
-i≤k
-j>i
-
-Observe that the loss difference becomes particularly small
-whenever k is small: (i) the terms in the sum are fewer and
-(ii) the magnitude of each term decreases (due to |λi −λj |).
-2
-
-A similar approach could also be utilized to derive a lower
-bound of the quantity loss(Pek ) − loss(Pk ).
-
-100
-tolerance = 0.02
-tolerance = 0.05
-tolerance = 0.1
-
-80
-60
-40
-20
-
-2
-
-4
+where the second term is a constant, and where is the full
+set of meta-parameters for the learned optimizer, consisting of = { P-RNN , T-RNN , G-RNN , , c}, where •-RNN
+indicates the GRU weights and biases for the Parameter,
+Tensor, or Global RNN, is the learning rate momentum
+and c is the attended step offset (Section 3.2.4).
+Minimizing the average log function value, rather than the
+average function value, better encourages exact convergence to minima and precise dynamic adjustment of learning rate based on gradient history (Figure 6). The average
+logarithm also more closely resembles minimizing the final
+function value, while still providing a meta-learning signal at every training step, since very small values of `(✓n )
+make an outsized contribution to the average after taking
+the logarithm.
+
+Figure 2. Training loss versus number of optimization steps on
+MNIST for the Learned optimizer in this paper compared to the
+L2L optimizer from Andrychowicz et al. (2016), ADAM (learning rate 2e-3), and RMSProp (learning rate 1e-2). The L2L optimizer from previous work was meta-trained on a 2-layer, fullyconnected network with sigmoidal nonlinearities. The test problems were a 2-layer fully-connected network and a 2-layer convolutional network. In both cases, ReLU activations and minibatches of size 64 was used.
+
+4.3. Partial unrolling
+Meta-learning gradients were computed via backpropagation through partial unrolling of optimization of the target
+problem, similarly to Andrychowicz et al. (2016). Note
+that Andrychowicz et al. (2016) dropped second derivative terms from their backpropagation, due to limitations
+of Torch. We compute the full gradient in TensorFlow, including second derivatives.
+4.4. Heavy-tailed distribution over training steps
+In order to encourage the learned optimizer to generalize
+to long training runs, both the number of partial unrollings,
+and the number of optimization steps within each partial
+unroll, was drawn from a heavy tailed exponential distribution. The resulting distribution is shown in Appendix B.1
+4.5. Meta-optimization
+The optimizers were meta-trained for at least 40M metaiterations (each meta-iteration consists of loading a random
+problem from the meta-training set, running the learned
+optimizer on that target problem, computing the metagradient, and then updating the meta-parameters). The
+meta-objective was minimized with asynchronous RMSProp across 1000 workers, with a learning rate of 10 6 .
+
+Figure 3. Three sample problems from the meta-training corpus on which the learned optimizer outperforms RMSProp and
+ADAM. The learning rates for RMSProp (1e-2) and ADAM (2e3) were chosen for good average performance across all problem
+types in the training and test set. The learned optimizer generally
+beats the other optimizers on problems in the training set.
+
+5. Experiments
+5.1. Failures of existing learned optimizers
+Previous learned optimizer architectures like Andrychowicz et al. (2016) perform well on the problems on which
+they are meta-trained. However, they do not generalize
+well to new architectures or scale well to longer timescales.
+Figure 2 shows the performance of an optimizer metatrained on a 2-layer perceptron with sigmoid activations on
+
+Learned Optimizers that Scale and Generalize
+
+LeDrneG
+8e-2
+2e-2
+2e-3
+
+10 0
+
+2e-3
+7e-4
+5e-2
+
+1e-2
+1e-3
+2e-3
+
+1e-3
+2e-3
+7e-4
+
+TrDLnLng LRVV
+
+12
+
+10
 
 8
 
-16
-
-32
-
-64
-
-k
-
-Figure 2: The figure depicts for each k, the sample size needed
-such that the loss difference loss(Pek )−loss(Pk ) becomes smaller
-than some tolerance. We can observe that, in MNIST, linear dimensionality reduction works with fewer than n = 725 samples
-when the size k of the reduced dimension is small.
-
-This phenomenon is also numerically verified in Figure 2
-for the distribution of the images featuring digit ‘3’ in
-MNIST (total 6131 images with n = 784 pixels each).
-The figure depicts for different k how many samples are
-required such that the loss difference is smaller than a tolerance threshold, here 0.02, 0.05, and 0.1. Each point in the
-figure corresponds to an average over 10 sampling draws.
-The trends featured in these numerical results agree with
-our theoretical intuition. Moreover they illustrate that for
-modest k the sample requirement is far smaller than n.
-It is also interesting to observe that for covariance matrices that are (approximately) low-rank, we obtain estimates
-reminiscent of compressed sensing (Candès et al., 2011),
-in the sense that the sample requirement becomes a function of the non-zero eigenvalues. Though intuitive, with the
-exception of (Koltchinskii et al., 2016), this dependency of
-the estimation accuracy on the rank was not transparent in
-known results for covariance estimation (Rudelson, 1999;
-Adamczak et al., 2010; Vershynin, 2012).
+8
 
 6
 
-Conclusions
+6
+40
+80
+120
+TrDLnLng ExDPSleV
 
-The main contribution of this paper was the derivation
-of non-asymptotic bounds for the concentration of innerproducts |he
-ui , uj i| involving eigenvectors of the sample
-and actual covariance matrices. We also showed how these
-results can be extended to reason about eigenvalues and we
-applied them to the non-asymptotic analysis of linear dimensionality reduction.
-We have identified two interesting directions for further research. The first has to do with obtaining tighter estimates.
-Especially with regards to our perturbation arguments, we
-believe that our current bounds on inner products could be
-sharpened by at least a constant multiplicative factor. The
-second direction involves using our results for the analysis of methods that utilize the eigenvectors of the covariance, such that principal component projection and regression (Jolliffe, 1982; Frostig et al., 2016).
+LeDrneG
 
-How Close Are the Eigenvectors of the Sample and Actual Covariance Matrices?
+10 -1
+0
+
+1K
+
+2K
+
+3K
+
+4K
+
+CRnv1et 5elu
+
+0L3 5elu
+
+LeDrneG
+
+50S3rRS
+
+CRnv1et SLgPRLG
+
+0L3 SLgPRLG
+
+ADA0
+
+SGD + 0RPentuP
+
+(a) Learned optimizer matches performance of ADAM, RMSProp, and SGD with momentum on four problems never seen
+in the meta-training set. For the non-learned optimizer, the optimal learning rate for each problem was chosen from a sweep over
+learning rates from 10 9 to 0.1. Actual learning rates used are
+shown in the inset legend.
+
+ReVnet V2
+
+12
+
+10
+
+4
+0
+
+7rDLnLng LRss
+
+InceStLRn V3
+
+R063rRS
+
+160
+
+4
+0
+
+10
+
+ADA0
+
+20
+30
+40
+TrDLnLng ExDPSleV
+
+6GD + 0RPentuP
+
+(b) Training loss on ImageNet data in early training as a function of number of training examples seen (accounting for varying
+minibatch sizes). While other optimizer performance is highly
+dependent on hyperparameters, learned optimizer performance is
+similar to the best tuned optimizers (though in late training, the
+learned optimizer loss increases again). In both cases the learned
+optimizer was used for distributed, synchronized learning with
+an effective minibatch size of 800. The Inception V3 plot was
+generated from a newer version of the codebase, with small improvements described in Appendix C. On Inception V3, other
+optimizers used a learning rate of 0.045 and an effective minibatch size of 1600 (the optimal hyperparameters for the RMSProp
+optimizer from the original paper). On Resnet, other optimizers used a learning rate of 0.1 and an effective minibatch size of
+256 (the optimal hyperparameters for the SGD + momentum optimizer from the original paper).
+
+Figure 4. The learned optimizer generalizes to new problem types unlike any in the meta-training set, and with many more parameters.
+
+the same problem type with ReLU activations and a new
+problem type (a 2-layer convolutional network). In both
+cases, the same dataset (MNIST) and minibatch size (64)
+was used. In contrast, our optimizer, which has not been
+meta-trained on this dataset or any neural network problems, shows performance comparable with ADAM and
+RMSProp, even for numbers of iterations not seen during
+meta-training (Section 4.4).
+
+cific problem. Unfortunately, we find that later in training
+the learned optimizer stops making effective progress, and
+the loss approaches a constant (approximately 6.5 for Inception V3). Addressing this issue would be a goal of future work.
+5.4. Performance is robust to choice of learning rate
+
+5.2. Performance on training set problems
+The learned optimizer matches or outperforms ADAM and
+RMSProp on problem types from the meta-training set
+(Figure 3). The exact setup for each problem type can be
+seen in the python code in the supplementary materials.
+5.3. Generalization to new problem types
+The meta-training problem set did not include any convolutional or fully-connected layers. Despite this, we see comparable performance to ADAM, RMSProp, and SGD with
+momentum on simple convolutional multi-layer networks
+and multi-layer fully connected networks both in terms of
+final loss and number of iterations to convergence (Figure
+4a and Figure 2).
+We also tested the learned optimizer on Inception V3
+(Szegedy et al., 2016) and on ResNet V2 (He et al., 2016).
+Figure 4b shows the learned optimizer is able to stably train
+these networks for the first 10K to 20K steps, with performance similar to traditional optimizers tuned for the spe-
+
+Figure 5. Learned optimizer performance is robust to learning
+rate hyperparameter. Training curves on a randomly generated
+quadratic loss problem with different learning rate initializations.
+
+One time-consuming aspect of training neural networks
+with current optimizers is choosing the right learning rate
+for the problem. While the learned optimizer is also sensitive to initial learning rate, it is much more robust. Figure
+5 shows the learned optimizer’s training loss curve on a
+quadratic problem with different initial learning rates com-
+
+pared to those same learning rates on other optimizers.
+5.5. Ablation experiments
+
+TLPe (s) (lRg scDle)
+
+Learned Optimizers that Scale and Generalize
+−0.5
+−1.5
+
+LeDrned
+ADA0
+
+−2.5
+0
+
+506PrRS
+2.
+
+4.
+BDtcK sLze
+
+6.
+
+8.
+
+Figure 7. Wall clock time in seconds to run a single gradient and
+update step for a 6-layer ConvNet architecture on an HPz440
+workstation with an NVIDIA Titan X GPU. As batch size increases, the total computation time for the Learned optimizer approaches ADAM.
+
+Figure 6. Ablation study demonstrating importance of design
+choices on a small ConvNet on MNIST data. DEFAULT is the
+optimizer with all features included.
+
+The design choices described in Section 3 matter for the
+performance of the optimizer. We ran experiments in which
+we removed different features and re-meta-trained the optimizer from scratch. We kept the features which, on average, made performance better on a variety of test problems. Specifically, we kept all of the features described
+in 3.2 such as attention (3.2.1), momentum on multiple
+timescales (gradient scl) (3.2.2), dynamic input scaling
+(variable scl decay) (3.2.3), and a relative learning rate (relative lr) (3.2.4). We found it was important to take the logarithm of the meta-objective (log obj) as described in 4.2. In
+addition, we found it helpful to let the RNN learn its own
+initial weights (trainable weight init) and an accumulation
+decay for multiple gradient timescales (inp decay). Though
+all features had an effect, some features were more crucial
+than others in terms of consistently improved performance.
+Figure 6 shows one test problem (a 2-layer convolutional
+network) on which all final features of the learned optimizer matter.
+5.6. Wall clock comparison
+In experiments, for small minibatches, we significantly underperform ADAM and RMSProp in terms of wall clock
+time. However, consistent with the prediction in 3.4, since
+our overhead is constant in terms of minibatch we see that
+the overhead can be made small by increasing the minibatch size.
+
+6. Conclusion
+We have shown that RNN-based optimizers meta-trained
+on small problems can scale and generalize to early train-
+
+ing on large problems like ResNet and Inception on the ImageNet dataset. To achieve these results, we introduced a
+novel hierarchical architecture that reduces memory overhead and allows communication across parameters, and
+augmented it with additional features shown to be useful in
+previous optimization and recurrent neural network literature. We also developed an ensemble of small optimization
+problems that capture common and diverse properties of
+loss landscapes. Although the wall clock time for optimizing new problems lags behind simpler optimizers, we see
+the difference decrease with increasing batch size. Having
+shown the ability of RNN-based optimizers to generalize to
+new problems, we look forward to future work on optimizing the optimizers.
+
+Learned Optimizers that Scale and Generalize
 
 References
-Adamczak, Radosław, Litvak, Alexander, Pajor, Alain, and
-Tomczak-Jaegermann, Nicole. Quantitative estimates of
-the convergence of the empirical covariance matrix in
-log-concave ensembles. Journal of the American Mathematical Society, 23(2):535–561, 2010.
-Ahmed, SE. Large-sample estimation strategies for eigenvalues of a wishart matrix. Metrika, 47(1):35–45, 1998.
-Anderson, Theodore Wilbur. Asymptotic theory for principal component analysis. The Annals of Mathematical
-Statistics, 34(1):122–148, 1963.
-Bai, ZD. Methodologies in spectral analysis of large dimensional random matrices, a review. Statistica Sinica,
-pp. 611–662, 1999.
-Bai, ZD and Yin, YQ. Limit of the smallest eigenvalue of a
-large dimensional sample covariance matrix. The annals
-of Probability, pp. 1275–1294, 1993.
-Bai, ZD, Miao, BQ, Pan, GM, et al. On asymptotics of
-eigenvectors of large sample covariance matrix. The Annals of Probability, 35(4):1532–1572, 2007.
-Bai, Zhi-Dong and Silverstein, Jack W. No eigenvalues
-outside the support of the limiting spectral distribution of
-large-dimensional sample covariance matrices. Annals
-of probability, pp. 316–345, 1998.
-Bauer, Friedrich L and Fike, Charles T. Norms and exclusion theorems. Numerische Mathematik, 2(1):137–141,
-1960.
-Berkmann, Jens and Caelli, Terry. Computation of surface
-geometry and segmentation using covariance techniques.
-IEEE Transactions on Pattern Analysis and Machine Intelligence, 16(11):1114–1116, 1994.
+Andrychowicz, Marcin, Denil, Misha, Gomez, Sergio,
+Hoffman, Matthew W, Pfau, David, Schaul, Tom,
+Shillingford, Brendan, and de Freitas, Nando. Learning
+to learn by gradient descent by gradient descent. In Advances in Neural Information Processing Systems, 2016.
+Bahdanau, Dzmitry, Cho, Kyunghyun, and Bengio,
+Yoshua. Neural machine translation by jointly learning
+to align and translate. iclr, 2015.
+Bengio, S., Bengio, Y., and Cloutier, J. On the search for
+new learning rules for ANNs. Neural Processing Letters,
+2(4):26–30, 1995.
+Bengio, Yoshua, Bengio, Samy, and Cloutier, Jocelyn.
+Learning a synaptic learning rule.
+Université de
+Montréal, Département d’informatique et de recherche
+opérationnelle, 1990.
+Bengio, Yoshua, Bengio, Samy, Cloutier, Jocelyn, and
+Gecsei, Jan. On the optimization of a synaptic learning rule. In in Conference on Optimality in Biological
+and Artificial Networks, 1992.
+Chen, Yutian, Hoffman, Matthew W., Colmenarejo, Sergio Gomez, Denil, Misha, Lillicrap, Timothy P., and
+de Freitas, Nando. Learning to learn for global optimization of black box functions. arXiv Report 1611.03824,
+2016.
+Cho, Kyunghyun, Van Merriënboer, Bart, Bahdanau,
+Dzmitry, and Bengio, Yoshua. On the properties of neural machine translation: Encoder-decoder approaches.
+arXiv preprint arXiv:1409.1259, 2014.
+Duan, Yan, Schulman, John, Chen, Xi, Bartlett, Peter,
+Sutskever, Ilya, and Abbeel, Pieter. Rl2 : Fast reinforcement learning via slow reinforcement learning. Technical report, UC Berkeley and OpenAI, 2016.
 
-Huang, Ling, Yan, Donghui, Taft, Nina, and Jordan,
-Michael I. Spectral clustering with perturbed data. In
-Advances in Neural Information Processing Systems, pp.
-705–712, 2009.
-Hunter, Blake and Strohmer, Thomas.
-Performance
-analysis of spectral clustering on compressed, incomplete and inaccurate measurements. arXiv preprint
-arXiv:1011.0997, 2010.
-Jolliffe, Ian. Principal component analysis. Wiley Online
-Library, 2002.
-Jolliffe, Ian T. A note on the use of principal components
-in regression. Applied Statistics, pp. 300–303, 1982.
-Kambhatla, Nandakishore and Leen, Todd K. Dimension
-reduction by local principal component analysis. Neural
-computation, 9(7):1493–1516, 1997.
-Koltchinskii, Vladimir and Lounici, Karim. Normal approximation and concentration of spectral projectors of
-sample covariance. arXiv preprint arXiv:1504.07333,
+Kehoe, E James. A layered network model of associative
+learning: learning to learn and configuration. Psychological review, 95(4):411, 1988.
+Kingma, Diederik and Ba, Jimmy. Adam: A method for
+stochastic optimization. iclr, 2015.
+Krizhevsky, Alex, Sutskever, Ilya, and Hinton, Geoffrey E.
+Imagenet classification with deep convolutional neural
+networks. In Advances in neural information processing
+systems, pp. 1097–1105, 2012.
+Lake, Brenden M, Ullman, Tomer D, Tenenbaum,
+Joshua B, and Gershman, Samuel J. Building machines that learn and think like people. arXiv Report
+1604.00289, 2016.
+Li, SKe and Malik, Jitendra. Learning to optimize. In International Conference on Learning Representations, 2017.
+Naik, Devang K and Mammone, RJ. Meta-neural networks
+that learn by learning. In International Joint Conference on Neural Networks, volume 1, pp. 437–442. IEEE,
+1992.
+Nesterov, Yurii. A method of solving a convex programming problem with convergence rate o (1/k2). In Soviet
+Mathematics Doklady, volume 27, pp. 372–376, 1983a.
+Nesterov, Yurii. A method of solving a convex programming problem with convergence rate o (1/k2). In Soviet
+Mathematics Doklady, volume 27, pp. 372–376, 1983b.
+Ravi, Sachin and Larochelle, Hugo. Optimization as a
+model for few-shot learning. In International Conference on Learning Representations, 2017.
+Runarsson, Thomas Philip and Jonsson, Magnus Thor.
+Evolution and design of distributed learning rules. In
+IEEE Symposium on Combinations of Evolutionary
+Computation and Neural Networks, pp. 59–63. IEEE,
+2000.
+
+Santoro, ADAM, Bartunov, Sergey, Botvinick, Matthew,
+Funk, Simon.
+RMSprop loses to SMORMS3
+Wierstra, Daan, and Lillicrap, Timothy. Meta-learning
+- beware the epsilon!,
 2015.
-Koltchinskii, Vladimir, Lounici, Karim, et al. Asymptotics
-and concentration bounds for bilinear forms of spectral
-projectors of sample covariance. In Annales de l’Institut
-Henri Poincaré, Probabilités et Statistiques, volume 52,
-pp. 1976–2013. Institut Henri Poincaré, 2016.
-Mestre, Xavier. Improved estimation of eigenvalues and
-eigenvectors of covariance matrices using their sample
-estimates. IEEE Transactions on Information Theory,
-54(11), 2008.
-Rudelson, Mark. Random vectors in the isotropic position.
-Journal of Functional Analysis, 164(1):60–72, 1999.
+URL
+sifter.org/⇠simon/journal/20150420.html. with memory-augmented neural networks. In International Conference on Machine Learning, 2016.
+Harlow, Harry F. The formation of learning sets. PsychoSchmidhuber, Jurgen. Evolutionary Principles in Selflogical review, 56(1):51, 1949.
+Referential Learning. On Learning how to Learn: The
+He, Kaiming, Zhang, Xiangyu, Ren, Shaoqing, and Sun,
+Meta-Meta-Meta...-Hook. PhD thesis, Institut f. InforJian. Identity mappings in deep residual networks. In
+matik, Tech. Univ. Munich, 1987.
+European Conference on Computer Vision, pp. 630–645.
+Silver, David, Huang, Aja, Maddison, Chris J, Guez,
+Springer, 2016.
+Arthur, Sifre, Laurent, Van Den Driessche, George,
+Hochreiter, Sepp, Younger, A Steven, and Conwell, PeSchrittwieser, Julian, Antonoglou, Ioannis, Panneershelter R. Learning to learn using gradient descent. In Intervam, Veda, Lanctot, Marc, et al. Mastering the game of
+national Conference on Artificial Neural Networks, pp.
+go with deep neural networks and tree search. Nature,
+87–94. Springer, 2001.
+529(7587):484–489, 2016.
 
-Candès, Emmanuel J., Li, Xiaodong, Ma, Yi, and Wright,
-John. Robust principal component analysis? Journal of
-the ACM, 58(3):11:1–11:37, June 2011.
+Learned Optimizers that Scale and Generalize
 
-Sarwate,
-Dilip.
-Two-sided chebyshev inequality for event not symmetric around the
-mean?
-Mathematics Stack Exchange, 2013.
-URL:http://math.stackexchange.com/q/144675 (version:
-2012-05-13).
-
-Davis, Chandler and Kahan, William Morton. The rotation
-of eigenvectors by a perturbation. III. SIAM Journal on
-Numerical Analysis, 7(1):1–46, 1970.
-
-Schott, James R. Asymptotics of eigenprojections of correlation matrices with some applications in principal components analysis. Biometrika, pp. 327–337, 1997.
-
-Frostig, Roy, Musco, Cameron, Musco, Christopher, and
-Sidford, Aaron. Principal component projection without principal component analysis. In Proceedings of
-The 33rd International Conference on Machine Learning, pp. 2349–2357, 2016.
-
-Shaghaghi, Mahdi and Vorobyov, Sergiy A. Subspace
-leakage analysis of sample data covariance matrix. In
-ICASSP, pp. 3447–3451. IEEE, 2015.
-
-Girko, V. Strong law for the eigenvalues and eigenvectors
-of empirical covariance matrices. 1996.
-
-Silverstein, Jack W and Bai, ZD. On the empirical distribution of eigenvalues of a class of large dimensional
-random matrices. Journal of Multivariate analysis, 54
-(2):175–192, 1995.
-
-How Close Are the Eigenvectors of the Sample and Actual Covariance Matrices?
-
-Vershynin, Roman. Introduction to the non-asymptotic
-analysis of random matrices. arXiv:1011.3027, 2010.
-Vershynin, Roman. How close is the sample covariance
-matrix to the actual covariance matrix? Journal of Theoretical Probability, 25(3):655–686, 2012.
-Yu, Yi, Wang, Tengyao, Samworth, Richard J, et al. A useful variant of the davis–kahan theorem for statisticians.
-Biometrika, 102(2):315–323, 2015.
+Surjanovic, Sonja and Bingham, Derek.
+Optimization test functions and datasets, 2013.
+URL
+http://www.sfu.ca/ ssurjano/optimization.html.
+Sutton, Richard S. Adapting bias by gradient descent: An
+incremental version of delta-bar-delta. In Association for
+the Advancement of Artificial Intelligence, pp. 171–176,
+1992.
+Szegedy, Christian, Vanhoucke, Vincent, Ioffe, Sergey,
+Shlens, Jon, and Wojna, Zbigniew. Rethinking the inception architecture for computer vision. In Proceedings
+of the IEEE Conference on Computer Vision and Pattern
+Recognition, pp. 2818–2826, 2016.
+Thrun, Sebastian and Pratt, Lorien. Learning to learn.
+Springer Science and Business Media, 1998.
+Tieleman, Tijmen and Hinton, Geoffrey. Lecture 6.5rmsprop: Divide the gradient by a running average of
+its recent magnitude. COURSERA: Neural Networks for
+Machine Learning, 4:2, 2012.
+Tseng, Paul. An incremental gradient (-projection) method
+with momentum term and adaptive stepsize rule. Journal
+on Optimization, 8(2):506–531, 1998.
+Wang, Jane X., Kurth-Nelson, Zeb, Tirumala, Dhruva,
+Soyer, Hubert, Leibo, Joel Z., Munos, Rémi, Blundell, Charles, Kumaran, Dharshan, and Botvinick,
+Matt. Learning to reinforcement learn. arXiv Report
+1611.05763, 2016.
+Ward, Lewis B. Reminiscence and rote learning. Psychological Monographs, 49(4):i, 1937.
+Zoph, Barret and Le, Quoc V. Neural architecture search
+with reinforcement learning. In International Conference on Learning Representations, 2017.
 
 

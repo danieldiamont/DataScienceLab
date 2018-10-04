@@ -1,1478 +1,798 @@
-Multiple Clustering Views from Multiple Uncertain Experts
+Learning to Detect Sepsis with a Multitask Gaussian Process RNN Classifier
 
-Yale Chang 1 Junxiang Chen 1 Michael H. Cho 2 Peter J. Castaldi 2 Edwin K. Silverman 2 Jennifer G. Dy 1
+Joseph Futoma 1 Sanjay Hariharan 1 Katherine Heller 1
 
 Abstract
-Expert input can improve clustering performance. In today’s collaborative environment, the
-availability of crowdsourced multiple expert input is becoming common. Given multiple experts’ inputs, most existing approaches can only
-discover one clustering structure. However, data
-is multi-faceted by nature and can be clustered
-in different ways (also known as views). In an
-exploratory analysis problem where ground truth
-is not known, different experts may have diverse
-views on how to cluster data. In this paper, we
-address the problem on how to automatically discover multiple ways to cluster data given potentially diverse inputs from multiple uncertain experts. We propose a novel Bayesian probabilistic model that automatically learns the multiple
-expert views and the clustering structure associated with each view. The benefits of learning the experts’ views include 1) enabling the
-discovery of multiple diverse clustering structures, and 2) improving the quality of clustering solution in each view by assigning higher
-weights to experts with higher confidence. In
-our approach, the expert views, multiple clustering structures and expert confidences are jointly
-learned via variational inference. Experimental
-results on synthetic datasets, benchmark datasets
-and a real-world disease subtyping problem show
-that our proposed approach outperforms competing baselines, including meta clustering, semisupervised clustering, semi-crowdsourced clustering and consensus clustering.
+We present a scalable end-to-end classifier that
+uses streaming physiological and medication
+data to accurately predict the onset of sepsis,
+a life-threatening complication from infections
+that has high mortality and morbidity. Our proposed framework models the multivariate trajectories of continuous-valued physiological time
+series using multitask Gaussian processes, seamlessly accounting for the high uncertainty, frequent missingness, and irregular sampling rates
+typically associated with real clinical data. The
+Gaussian process is directly connected to a
+black-box classifier that predicts whether a patient will become septic, chosen in our case to be
+a recurrent neural network to account for the extreme variability in the length of patient encounters. We show how to scale the computations associated with the Gaussian process in a manner
+so that the entire system can be discriminatively
+trained end-to-end using backpropagation. In a
+large cohort of heterogeneous inpatient encounters at our university health system we find that it
+outperforms several baselines at predicting sepsis, and yields 19.4% and 55.5% improved areas under the Receiver Operating Characteristic
+and Precision Recall curves as compared to the
+NEWS score currently used by our hospital.
 
 1. Introduction
-As a cornerstone of unsupervised learning, clustering has
-been widely used in knowledge discovery problems (Jain
+Sepsis is a clinical condition involving a destructive host
+response to the invasion of a microorganism and/or its
+toxin, and is associated with high morbidity and mortality. Without early intervention, this inflammatory response
+can progress to septic shock, organ failure and death (Bone
+et al., 1989). Identifying sepsis early improves patient outcomes, as mortality from septic shock increases by 7.6%
 1
+Dept. of Statistical Science, Duke University, Durham NC,
+USA. Correspondence to: Joseph Futoma <jdf38@duke.edu>.
 
-Northeastern University, Boston, MA 2 Brigham and
-Women’s Hospital, Harvard Medical School, Boston, MA. Correspondence to: Yale Chang <ychang@coe.neu.edu>.
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-et al., 1999). Given data matrix and a notion of similarity between samples, clustering aims to categorize data
-into different clusters so that samples in the same cluster
-are similar and samples in different clusters are dissimilar.
-Thus, depending on users’ notions of similarity, the same
-dataset can be clustered in different ways, also known as
-views (Niu et al., 2010). For example, face images can be
-clustered based on pose or identity; marbles can be clustered based on shape or color. However, how to properly
-define similarity between samples in a knowledge discovery problem is nontrivial. To help solve this challenge,
-semi-supervised clustering utilizes expert supervision to
-guide the clustering towards the right solution (Wagstaff &
-Cardie, 2000; Basu et al., 2008). Supervision is usually in
-the form of pairwise constraints between samples, including must-link (ML) and cannot-link (CL) constraints.
-Instead of supervision from one expert, it is becoming more
-common for supervision to be available from multiple experts as data can be shared and processed by increasingly
-larger audiences (e.g., crowdsourcing (Howe, 2008) mechanisms such as Amazon Mechanical Turk and large collaborative consortiums (Zhang et al., 2011)). In an exploratory data analysis setting, where ground truths are not
-known, different experts might provide supervision (pairwise contraints) with varying views in mind. For example, one expert might be thinking of similarity/clustering
-based on pose and another expert might be providing inputs based on identity on the face image problem. Moreover, because experts are not oracles, their inputs are prone
-to errors as well. In this paper, we address a new clustering paradigm: how to discover multiple clustering structures in the data given potentially diverse constraints
-from multiple uncertain experts.
-Our objective of finding multiple clustering structures
-given inputs from multiple experts is motivated by discovering subtypes (clusters) of a complex lung disease called
-Chronic Obstructive Pulmonary Disease (COPD). COPD is
-currently the third leading cause of death in the US (Murphy et al., 2013). Although traditionally being called one
-disease, doctors believe there exist multiple disease subtypes and providing personalized clinical care to patients
-according to their disease subtypes can lead to more effective treatments. We have collected constraints provided by
-multiple experts in the consortium. The experts had var-
+for every hour that treatment is delayed after the onset of
+hypotension (Kumar et al., 2006). It was also recently
+shown that timely administration of a 3-hour bundle of
+care for patients with sepsis (i.e. blood culture, broadspectrum antibiotics, and a lactate measurement) was associated with lower in-hospital mortality (Seymour et al.,
+2017), further emphasizing the need for fast and aggressive
+treatment. Unfortunately, early and accurate identification
+of sepsis remains elusive even for experienced clinicians,
+as the symptoms associated with sepsis may be caused by
+many other clinical conditions (Jones et al., 2010).
+Despite the difficulties associated with identifying sepsis,
+data that could be used to inform such a prediction is
+already being routinely captured in the electronic health
+record (EHR). To this end, data-driven early warning scores
+have great potential to identify early clinical deterioration using live data from the EHR. As one example, the
+Royal College of Physicians developed, validated, and implemented the National Early Warning Score (NEWS) to
+identify patients who are acutely decompensating (Smith
+et al., 2013). Such early warning scores compare a small
+number of physiological variables (NEWS uses six) to normal ranges of values to generate a single composite score.
+NEWS is already implemented in our university health system’s EHR so that when the score reaches a defined trigger,
+a patient’s care nurse is alerted to potential clinical deterioration. However, a major problem with NEWS and other
+related early warning scores is that they are typically broad
+in scope and were not developed to target a specific condition such as sepsis, since many unrelated disease states
+(e.g. trauma, pancreatitis, alcohol withdrawal) can result
+in high scores. Previous measurements revealed 63.4% of
+the alerts triggered by the NEWS score at our hospital were
+cancelled by the care nurse, suggesting breakdowns in the
+training and education process, low specificity, and high
+alarm fatigue. Despite the obvious limitation of using only
+a small fraction of available information, these scores are
+also overly simplistic in assigning independent scores to
+each variable, ignoring both the complex relationships between different physiological variables and their evolution
+in time.
+The goal in this work is to develop a more flexible statistical model that leverages as much available data as possible from patient admissions in order to provide earlier
 
-Multiple Clustering Views from Multiple Uncertain Experts
+Learning to Detect Sepsis
 
-ied backgrounds: 1) clinicians tend to provide constraints
-by comparing patients’ clinical measurements; and 2) radiologists tend to provide constraints based on examining
-patients’ computed tomography (CT) images. On the one
-hand, experts have disagreements on whether to put a pair
-of patients in the same group because they are focusing on
-different aspects of patients. On the other hand, experts of
-similar backgrounds (clinicians, radiologists) tend to provide shared views of clustering data albeit with noisy constraints. Because the various experts might have different
-views of clustering data, it does not make sense to learn
-a single consensus clustering solution; rather, we need to
-discover the multiple consensus clustering solutions in the
-different views.
-One naive way to generate multiple clustering solutions
-from multiple uncertain experts is to separately apply semisupervised clustering (Bilenko et al., 2004; Davis et al.,
-2007; Basu et al., 2008) using constraints from each expert.
-The potential drawbacks of this strategy are 1) the clustering performance often drastically degrades in the presence
-of noisy constraints due to uncertainty of one expert; and
-2) the resulting clustering solutions can be highly redundant due to the existence of similar expert views.
-There are a few existing approaches that can combine constraints from multiple experts but they are mostly designed
-to generate one clustering solution. Semi-crowdsourced
-clustering (SemiCrowd) combines constraints provided by
-multiple experts through filtering out uncertain pairs in the
-average sample similarity matrix (Yi et al., 2012). However, this approach can only generate one clustering solution. Similar to SemiCrowd, most consensus clustering
-methods are designed to generate one clustering solution
-(Strehl & Ghosh, 2002; Fern & Brodley, 2004; Topchy
-et al., 2005; Ghosh & Acharya, 2011). Another disadvantage is that consensus clustering methods do not work when
-only a small number of pairwise constraints are available.
-There are a few multiple alternative clustering approaches
-that can output multiple clustering solutions (Caruana et al.,
-2006; Cui et al., 2007; Jain et al., 2008; Niu et al., 2010;
-2012). However, all these methods are unsupervised; none
-of these methods are able to utilize expert inputs.
-There are a few existing crowdsourcing approaches that
-learns an underlying grouping of experts (Tian & Zhu,
-2012; Kajino et al., 2013; Moreno et al., 2015). However,
-they are all designed for classification problems, where experts provide labels on samples queried. In our clustering
-task, experts can not provide labels because how to define
-different clusters is still unknown and yet to be discovered.
-Instead, they can provide pairwise constraints by comparing sample pairs using their domain knowledge. Therefore,
-these classification-based approaches above cannot be used
-in our clustering task.
+and more accurate detection of sepsis. However, this task
+is complicated by a number of problems that arise working with real EHR data, some of them particular to sepsis. Unlike other clinical adverse events such as cardiac
+arrests or transfers to the Intensive Care Unit (ICU) with
+known event times, sepsis presents a challenge as the exact
+time at which it starts is generally unknown. Instead, sepsis is typically observed indirectly through abnormal labs
+or vitals, the administration of antibiotics, or the drawing
+of blood cultures to test for suspected infection. Another
+challenging aspect of our data source is the large degree of
+heterogeneity present across patient encounters, as we did
+not exclude certain classes of admissions. More generally,
+clinical time series data presents its own set of problems, as
+they are measured at irregularly spaced intervals and there
+are many (often informatively) missing values. Alignment
+of patient time series also presents an issue, as patients admitted to the hospital may have very different unknown
+clinical states, with some having sepsis already upon admission. A crucial clinical consideration to be taken into
+account is the timeliness of alarms raised by the model, as
+a clinician needs ample time to act on the prediction and
+quickly intervene on patients flagged as high-risk of being
+septic. Thus in building a system to predict sepsis we must
+consider timeliness of the prediction in addition to other
+metrics that quantify discrimination and accuracy.
+Our proposed methodology for detecting sepsis in multivariate clinical time series overcomes many of these limitations. Our approach hinges on constructing an end-toend classifier that takes in raw physiology time series data,
+transforms it through a Multitask Gaussian Process (MGP)
+to a more uniform representation on an evenly spaced grid,
+and feeds the latent function values through a deep recurrent neural network (RNN) to predict the binary outcome of
+whether or not the patient will become (or is already) septic. Setting up the problem in this way allows us to leverage
+the powerful representational abilities of RNNs, which typically requires standardized inputs at uniformly-spaced intervals, for our irregularly spaced multivariate clinical time
+series. As more information is made available during an
+encounter, the model can dynamically update its prediction
+about how likely it is that the patient will become septic.
+When the predicted probability of sepsis exceeds a predefined threshold (chosen to maximize predefined metrics
+such as sensitivity, positive predictive value, and timeliness), the model can be used to trigger an alarm.
+We train our model with real patient data extracted from the
+Duke University Health System EHR, using a large cohort
+of heterogeneous inpatient encounters spanning 18 months.
+Our experiments show that using our method we can reliably predict the onset of sepsis roughly 4 hours in advance
+of the true occurrence, at a sensitivity of 0.85 and a precision of 0.64. The benefits of our MGP classification frame-
 
-Contributions. To address this new clustering paradigm,
-we build a Bayesian probabilistic model for learning multiple alternative consensus clustering views from experts’
-constraints, we call Multiple Clustering Views from the
-Crowd (MCVC). Multiple experts are automatically assigned to different latent views and constraints provided
-by each expert is assumed to be noisy perturbations of the
-clustering associated with that expert’s view. Thus, multiple clustering structures can be discovered. Furthermore,
-by explicitly modeling the uncertainty of each expert, experts with higher accuracies are assigned higher weights,
-leading to improved quality of the learned clustering structure in each view. The clustering structure for each expert view is modeled by a discriminative clustering model
-(Gomes et al., 2010), which has the advantages of 1) naturally introducing uncertainties in cluster assignments; 2)
-avoiding making assumptions on the generative process of
-clusters; and 3) being able to cluster samples that do not
-appear in the training set. We demonstrate that our MCVC
-outperforms competing alternatives on synthetic, benchmark data, and a real-world disease subtyping problem.
+work are also apparent as there is a performance gain of
+4.3% in area under the ROC curve and 11.1% in area under the Precision Recall curve, compared to the results of
+training an RNN to raw clinical data without a Gaussian
+Process to smoothly interpolate and impute missing values.
+Our overall performance is also substantially better than the
+most common early warnings scores from the medical literature, and in particular we perform significantly better than
+the NEWS score currently in use at our hospital. These
+large gains in performance will translate to better patient
+outcomes and a lower burden on the overall health system
+when our model is deployed on the wards in the near future
+as part of a randomized trial.
 
-2. Proposed Approach
-We collect data matrix X ∈ Rn×d , where n is the number of samples and d is the number of features, and pairwise constraints provided by M experts S (1:M ) , where
-S (m) ∈ {0, 1, NULL}n×n represents the constraints pro(m)
-vided by the m-th expert. For sample pair (xi , xj ), Sij =
-1 means the m-th expert provides must-link (ML) con(m)
-straint; Sij
-= 0 means cannot-link (CL) constraint;
-(m)
+2. Related Works
+There is a large body of works on the development and
+validation of early warning scores to predict clinical deterioration and other related outcomes. For instance, the
+MEWS score (Gardner-Thorpe et al., 2006) and NEWS
+score (Smith et al., 2013) are two of the more common
+scores used to assess overall clinical deterioration. In addition, the SIRS score for systemic inflammatory response
+syndrome was part of the original clinical definition of sepsis (Bone et al., 1992), although other scores designed for
+sepsis such as SOFA (Vincent et al., 1996) and qSOFA
+(Singer et al., 2016) have been more popular in recent
+years. A more sophisticated regression-based approach
+called the Rothman Index (Rothman et al., 2013) is also in
+widespread use for detecting overall deterioration. Finally,
+(Henry et al., 2015) used a Cox regression to predict sepsis
+using clinical time series data, although they do not account
+for temporal structure since they simply create feature and
+event-time pairs from raw data.
+There has been much recent interest within machine learning in developing models to predict future disease progression using EHRs. For instance, (Schulam & Saria,
+2015) developed a longitudinal model for predicting progression of scleroderma, (Futoma et al., 2016) presented
+a joint model for predicting progression of chronic kidney
+disease and cardiac events, and (Liu et al., 2015) proposed
+a continuous-time hidden Markov model for progression
+of glaucoma. However, these models operate on a longer
+time scale, on the order of months to years, which is different for our setting that demands real-time predictions at
+an hourly level of granularity. The recent works of (Yoon
+et al., 2016) and (Hoiles & van der Schaar, 2016) are more
+relevant to our application, as they both developed models
+using clinical time series to predict a more general condition of clinical deterioration, as observed by admission to
+the Intensive Care Unit.
+Although there has been some past methodological work
+on classification of multivariate time series, most of these
 
-Sij = NULL means no constraint is provided. Our objective is to utilize constraints collected from these M experts to guide the clustering algorithm to discover multiple
-clustering structures in the data.
-2.1. Multiple Alternative Clustering Views
-We assume there exist multiple alternative expert views and
-the constraints provided by experts in each view are perturbations of the clustering solution associated with that
-view 1 . Let cm represent the latent view to which the mth expert is assigned to. Furthermore, Z (cm ) are the latent
-clusters for each cm view. Since we do not know the underlying number of possible expert views, we automatically
-learn the number of expert views by assuming a Dirichlet
-1
-Note that “view” in multi-view clustering (Bickel & Scheffer, 2004) means coming from different sources or feature sets;
-whereas, “view” in our case follows the terminology in multiple alternative clusterings which means different interpretation or
-point of view of the data. Multi-view clustering only finds ONE
-clustering solution from multiple feature sets which are given. In
-contrast, our goal is to find MULTIPLE clustering solutions/views
-which are latent.
+Learning to Detect Sepsis
 
-Multiple Clustering Views from Multiple Uncertain Experts
+approaches rely on clustering using some form of ad-hoc
+distance metric between series, e.g. (Xing et al., 2012), and
+comparing a new series to observed clusters. More similar
+to our work are several recent papers on using recurrent
+neural networks to classify clinical time series. In particular, (Lipton et al., 2016) used Long-Short Term Memory
+(LSTM) RNNs to predict diagnosis codes given physiological time series from the ICU, and (Choi et al., 2016) used
+Gated Recurrent Unit RNNs to predict onset of heart failure using categorical time series of diagnosis and procedural codes. Lastly, on a different note (Zhengping et al.,
+2016) also used a variant of Gated Recurrent Unit networks
+to investigate patterns of informative missingness in physiological ICU time series.
+There are several related works that also utilized multitask Gaussian processes in modeling multivariate physiological time series. For instance (Ghassemi et al., 2015)
+and (Durichen et al., 2015) used a similar model to ours,
+but instead focused more on forecasting of vitals to predict
+clinical instability, whereas our task is a binary classification to identify sepsis early. Finally, our end-to-end technique to discriminatively learn both the MGP and classifier
+parameters builds off of (Cheng-Xian Li & Marlin, 2016).
+However, our focus is more applied and the setting is more
+involved, as our time series are multivariate, of highly variable length, and may contain large amounts of missingness.
 
-process (Ferguson, 1973) prior on cm .
+Figure 2. An example patient encounter that shows when different lab and vital time series variables were measured, to highlight
+their irregular sampling rates. Not pictured are the 8 other physiological variables in our dataset that were never measured during
+this encounter (Ammonia, Bandemia, CK-MB, CRP, D-Dimer,
+ESR, LDH, PO2).
 
-parameters to make most of their probability densities be
-far away from 0.5 and close to 1.
+some notation, before presenting the details of the modeling framework, the learning algorithm, and the approximations to speed up learning and inference.
 
-2.2. Model Uncertainties of Experts’ Constraints
+3. Proposed Model
+Multitask
+Gaussian
+Process
+Raw
+Labs/Vitals
 
-(m)
+MGP Posterior
 
-Since clustering is widely used for knowledge discovery,
-experts might not be certain on the constraints they provided. To incorporate the assumption that different experts
-may have different levels of expertises when providing constraints, we assume the uncerntainty of the m-th expert can
-be characterized by accuracy parameters (αm , βm ), where
-αm represents the m-th expert’s sensitivity and βm represents specificity. Sensitivity is defined as the probability of
-providing ML constraints for sample pairs from the same
-cluster in the ground truth. Specificity is defined as the
-probability of providing CL constraints for sample pairs
-from different clusters in the ground truth. We model the
-conditional likelihood of S (m) given cm (the latent view)
-and Z (cm ) (the latent cluster in each view) by a Bernoulli
-distribution as follows:
-(m)
-p(Sij
-(m)
+Z ⇠ p(Z|Y, t; ✓)
 
-p(Sij
+Y, t
+Sepsis Label
 
-=
+RNN inputs
 
-(c )
-1|Zi m
-(cm )
+o
 
-= 0|Zi
+{dj = [zj , b, pj ]}X
+j=1
 
-=
+Loss
 
-(c )
-Zj m , αm )
-(cm )
+l(f (D; w), o)
+RNN
+Figure 1. Model framework. Raw labs and vitals Y at times t are
+fed through a Multitask Gaussian Process to get imputed and interpolated values Z at regularly spaced grid times x. These are fed
+into an RNN along with baseline covariates b and medications P
+to predict the binary outcome o (presence of sepsis).
 
-6= Zj
+We frame the problem of early detection of sepsis as a multivariate time series classification problem. Given a new patient encounter, the goal is to continuously update the predicted probability that the encounter will result in sepsis,
+using all available information up until that time. Figure
+1 shows an overview of our approach. We first introduce
 
-= αm
+We suppose that our dataset D consists of N independent patient encounters, {Di }N
+i=1 . For each patient encounter i, we have a vector of baseline covariates available
+upon admission to the hospital, denoted bi ∈ RB , such
+as gender, age, and documented comorbidities. At times
+ti = [ti1 , ti2 , . . . , tiTi ] during the encounter we obtain information about M different types of vitals and laboratory tests that characterize the patient’s physiological state,
+where ti1 = 0 is the time of admission. These longitudinal values are denoted Yi = [yi1 , yi2 , . . . , yiM ] ∈ RTi ×M ,
+with yim ∈ RTi the vector of recorded values for variable
+m at each time. In practice, only a small fraction of this
+complete matrix is observed, since only a subset of the
+M variables are recorded at each observation time. We
+make no assumption about how long each encounter may
+last, so the length of the time series for each encounter is
+highly variable (Ti 6= Ti0 ) and these times are irregularly
+spaced, with each encounter having a unique set of observation times. Additionally, during the encounter, medications of P different classes are administered at Ui different
+times (and it is possible for Ui = 0). We denote this information as Pi = {(ui1 , pi1 ), (ui2 , pi2 ), . . . , (uiUi , piUi },
+with pij ∈ {0, 1}P a binary vector denoting which of the
+P medications were administered at time uij . This infor-
+
+Learning to Detect Sepsis
+
+mation is particularly valuable, because administration of
+medications provides some insight into a physician’s subjective impression of a patient’s health state by the type and
+quantity of medications ordered. Finally, each encounter in
+the training set is associated with a binary label oi ∈ {0, 1}
+denoting whether or not the patient acquired sepsis; we go
+into detail about how this is defined from the raw data in
+Section 4.1. Thus, the data for a single encounter can be
+summarized as Di = {bi , ti , Yi , Pi , oi }.
+
+corresponding stochastic process are only first-order continuous (Rasmussen & Williams, 2005). Finally, D is a
+2 M
+diagonal matrix of noise variances {σm
+}m=1 . In practice,
+only a subset of the M series are observed at each time,
+so the M Ti × M Ti covariance matrix Σi only needs to be
+computed at the observed values. This model is known in
+geostatistics as the intrinsic correlation model, since the covariance between different variables and between different
+points in time is explicitly separated, and is a special case of
+the linear model of coregionalization (Wackernagel, 1998).
+
+3.1. Multitask Gaussian Processes
+
+The MGP can be used as a mechanism to handle the irregular spacing and missing values in the raw data, and
+output a uniform representation to feed into a black box
+classifier. To accomplish this, we define X to be a set of
+evenly spaced points in time (e.g. every hour) that will be
+shared across all encounters. For each encounter, we denote a subset of these points by xi = (xi1 , xi2 , . . . , xiXi ),
+so that xij = xi0 j if both series are at least xij hours long.
+The MGP provides a posterior distribution for the M × Xi
+matrix Zi of latent time series values at the grid times xi
+within this encounter, while also maintaining uncertainty
+over the values. If we let zi = vec(Zi ), this posterior is
+also normally distributed with mean and covariance given
+by:
+
+Gaussian processes (GPs) are a common choice for modeling irregularly spaced time series as they are naturally
+able to handle the variable spacing and differing number of
+observations per series. Additionally, they maintain uncertainty about the variance of the series at each point, which
+is important in our setting since the irregularity and missingness of clinical time series can lead to high uncertainty
+for variables that are infrequently (or perhaps never) observed, as is often the case. In order to account for the
+multivariate nature of our time series, we use a Multitask
+Gaussian Process (MGP) (Bonilla et al., 2008), an extension to GPs for handling multiple outputs at each time. Let
+fim (t) be a latent function representing the true values of
+physiological variable m for patient encounter i at time t.
+The MGP model places independent GP priors over the latent functions, with a shared correlation function k t over
+time. We assume each function has a prior mean of zero,
+so that the data has been centered. Then, we have:
+M
+t
+0
+cov(fim (t), fim0 (t0 )) = Kmm
+0 k (t, t )
+
+yim (t) ∼
+
+2
+N (fim (t), σm
+)
 
 (1)
-
-, βm ) = βm
-
 (2)
 
-To automatically learn the number of expert views, we assume a Dirichlet process prior on cm and utilize the stickbreaking construction as follows (Blei et al., 2006):
-νg ∼ Beta(1, γ); πg ∼ νg
+where yim (t) is the actual observed value. Equivalently,
+the likelihood for a fully observed multivariate time series
+of M measurements at T unique times is:
+vec(Yi ) ≡ yi ∼ N (0, Σi )
 
-= k|W
-
-(cm )
-
-,b
-
-g−1
-Y
-j=1
-
-ew k
-
-; X) = P
-K
-
-j=1
-
-e
-
-(cm )
-
-(1 − νj ); cm ∼ Cat(π1:∞ )
-
-Therefore, p(cm |ν1:∞ ) can be written as
-p(cm |ν1:∞ ) =
-
-∞
-Y
-
-πgcmg =
-
-g=1
-
-∞
-Y
-g=1
-
-νg
-
-g−1
-Y
-j=1
-
-cmg
-(1 − νj )
-(6)
-
-where cmg = 1 if cm = g and cmg = 0 otherwise.
-We assume the prior distributions of both weight W (g) and
-offset b(g) are factorized Gaussian distributions.
-d Y
-K
-Y
-i=1 j=1
-
-(cm )T
-
-(cm )
-
-(5)
-
-p(βm ) =
-
-2.3. Discriminative Clustering
-
-(c )
-p(Zi m
-
-(4)
-
-(m) (m)
-Beta(τβ 1 0 , τβ 2 0 )
-
-p(W (g) ) =
-
-We consider the following when choosing the clustering
-model: 1) Since we need to model uncertainties of experts,
-instead of generating hard clustering results, the assignments to clusters should be associated with probabilities;
-2) We should avoid making strong assumptions on the generative process of clusters, which can be easily violated
-in practice; 3) We should be able to cluster samples outside the training set. The discriminative clustering model
-(Gomes et al., 2010) satisfies all these requirements. Instead of assuming the generative process of data X, discriminative clustering directly models the conditional distribution of cluster label given data. We model the conditional distribution of the latent cluster label, Z (cm ) , given
-weight W (cm ) and offset b(cm ) with a multiple logistic regression model:
-
-(m)
-
-p(αm ) = Beta(τα1 0 , τα2 0 )
-
-p(b(g) ) =
-
-K
-Y
-i=1
-
-(g)
-
-(g)2
-
-N (µWij 0 , σWij 0 )
-(g)
-
-(g)2
-
-N (µbi 0 , σbi 0 )
-
-(7)
-
-(8)
-
-2.5. Joint Distribution
-The overall joint distribution of observations and latent
-variables for our model is:
-p(S (1:M ) , α1:M , β1:M , c1:M , ν1:∞ , Z (1:∞) , W (1:∞) , b(1:∞) )
-=
+Σi = K
 
 M
-Y
-m=1
 
-p(S (m) |αm , βm , cm , Z (1:∞) )p(αm )p(βm )
+⊗K
 
-p(cm |ν1:∞ )
+Ti
 
-∞
-Y
-g=1
++ D ⊗ I,
+
+(3)
+(4)
+
+where yi is a stacked vector of all M longitudinal variables
+at the Ti observation times, and ⊗ denotes the Kronecker
+product. K M is a full-rank M × M covariance matrix
+specifying the relationships among the variables, crucially
+allowing information from more frequently sampled variables to help improve learning about the variables infrequently (or perhaps never) measured. K Ti is a Ti × Ti
+correlation matrix (the variance can be fully explained by
+K M ) for the observation times ti as specified by the correlation function k t with parameters η shared across all
+encounters. In this work we use the Ornstein-Uhlenbeck
+0
+(OU) kernel function, k t (t, t0 ) = e−|t−t |/l , with a single
+length-scale parameter η = l. The OU kernel is useful
+for modeling noisy physiological data, as draws from the
+
+µzi = (K M ⊗ K Xi Ti )Σ−1
+i yi
+
+Σzi = (K
+
+M
+
+⊗K
+
+Xi
+
+) − (K
+
+M
+
+(5)
+⊗K
+
+Xi Ti
+
+M
+)Σ−1
+i (K
+
+⊗ K Ti Xi )
+(6)
+
+where K Xi Ti and K Xi are correlation matrices between
+the grid times xi and observation times ti and between
+xi with itself, as specified by the correlation function k t .
+The set of MGP parameters to be learned are thus θ =
+2 M
+}m=1 , η), and in this work we assume that they
+(K M , {σm
+are shared across all encounters. The structured input Zi
+can then serve as a standardized input to the RNN, where
+the raw time series data has been interpolated and missing
+values imputed.
+3.2. Classification Method
+We build off the ideas in (Cheng-Xian Li & Marlin, 2016)
+to learn a classifier that directly takes the latent function
+i
+values zi at shared reference time points xi = {xij }X
+j=1
+as inputs. The time series for each encounter i in our data
+can be represented as an MGP posterior distribution zi ∼
+N (µzi , Σzi ; θ) at times xi . This information will be fed
+into a downstream black box classifier to learn the label of
+the time series.
+Since the lengths of each times series are variable, the classifier used must be able to account for variable length inputs, as the size of zi and xi will differ across encounters. To this end, we turn to deep recurrent neural networks, a natural choice for learning flexible functions that
+
+Learning to Detect Sepsis
+
+map variable-length input sequences to a single output. In
+particular, we used a Long-Short Term Memory (LSTM)
+architecture (Hochreiter & Schmidhuber, 1997), as these
+classes of RNNs have been shown to be very flexible and
+have obtained excellent performance on a wide variety of
+problems. At each time xij , a new set of inputs dij =
+>
+> >
+[z>
+ij , bi , pij ] will be fed into the network, consisting of
+the M latent function values zij , the baseline covariates
+bi , and pij , a vector of counts of the S medications administered between xij and xi,j−1 . Thus, the RNN is able
+to learn complicated time-varying interactions among the
+static admission variables, the physiological labs and vitals, and administration of medications.
+If the function values zij were actually observed at each
+time xij , they could be directly fed into the RNN classifier along with the rest of the observed portion of the
+vector dij , and learning would be straightforward. Let
+f (Di ; w) denote the RNN classifier function, parameterized by w, that maps the (M + B + P ) × Xi matrix of
+inputs Di to an output probability. Learning the classifier given zi would involve learning the parameters w of
+the RNN by optimizing a loss function l(f (Di ; w), oi ) that
+compares the model’s prediction to the true label oi . However, since zi is a random variable, this loss function to
+be optimized is itself a random variable. Thus, the loss
+function that we will actually optimize is the expected loss
+Ezi ∼N (µzi ,Σzi ;θ) [l(f (Di ; w), oi )], with respect to the MGP
+posterior distribution of zi . Then the overall learning problem is to minimize this loss function over the full dataset:
+∗
+
+∗
+
+w , θ = argminw,θ
+
+N
+X
+
+Ezi ∼N (µzi ,Σzi ;θ) [l(f (Di ; w), oi )].
+
+i=1
+
+(7)
+Given fitted model parameters w∗ , θ ∗ , when we are given
+a new patient encounter Di0 for which we wish to predict whether or not it will become septic, we simply take
+Ezi0 ∼N (µz 0 ,Σz 0 ;θ∗ ) [f (Di0 ; w∗ )] as a risk score that can
+i
+i
+be updated continuously as more information is available.
+This approach is “uncertainty-aware”, as the uncertainty in
+the MGP posterior for zi is propagated all the way through
+to the loss function. Variations on this setup exist by moving the expectation. For instance, moving the expectation
+inside the classifier function f swaps the MGP mean vector
+µzi in place of zi in the RNN input Di . This approach will
+be more computationally efficient but discards the uncertainty information in the time series, which may be undesirable in our setting of noisy clinical time series with high
+rates of missingness.
+3.3. End to End Learning Framework
+The learning problem is to learn optimal parameters
+that minimize the loss in (7). Since the expected loss
+
+Ez∼N (µz ,Σz ;θ) [l(f (D; w), o)] is intractable for our problem
+setup, we approximate the loss with Monte Carlo samples:
+Ez∼N (µz ,Σz ;θ) [l(f (D; w), o)] ≈
+
+S
+1X
+l(f (Ds ; w), o),
+S s=1
+
+(8)
+Ds =
+
+>
+> >
+[Z>
+s ,B ,P ] ,
+
+vec(Zs ) ≡ zs ∼ N (µz , Σz ; θ)
 
 (9)
 
-p(Z (g) |W (g) , b(g) ; X)p(W (g) )p(b(g) )p(νg )
-
-The respective graphical model is shown in Figure 1.
-
-xi +bk
-
-(c )T
-(c )
-wj m xi +bj m
-
-(3)
-(c )
-
-where wk m is the k-th column of W (cm ) ∈ Rd×K and
-(c )
-bk m is the k-th row of b(cm ) ∈ RK×1 .
-2.4. Prior Distributions
-We describe the prior distributions of parameters used in
-our model. To incorporate the assumptions that experts’
-accuracies should be far away from random guess (αm =
-βm = 0.5), we put Beta priors on αm , βm and set their
-
-3. Variational Inference
-Our learning objective is to maximize the marginal likelihood of observed constraints, which is intractable. Thus,
-we apply variational inference. Given variational distribution q(h; θ), where h is the collection of latent variables
-and θ is their parameters. the log of the marginal likelihood log p(S (1:M ) ) can be decomposed as
-h
-i
-log p(S (1:M ) ) = Lq(h;θ) + KL q(h; θ) | p(h|S (1:M ) )
-≥ Lq(h;θ)
-
-(10)
-
-Multiple Clustering Views from Multiple Uncertain Experts
-
-βm
-
-αm
-
-X
-
-S (m)
-
-Z (g)
-
-W (g)
-
-cm
-
-νg
-
-(g)
-
-We derive the closed-form formula of Lq(h;θ) as a function
-of θ and put the detailed steps in the supplementary materials due to space constraints. Since ELBO Lq(h;θ) can be
-written as a function of variational parameters θ, we can directly maximize Lq(h;θ) using gradient-based optimization
-∂L
-
-b
-
-∞
-
-M
-
-Figure 1. Overall Graphical Model
-
-where the inequality holds due to the nonnegativity of the
-the Kullback-Liebler (KL) divergence. Lq(h;θ) is called the
-evidence lower bound (ELBO) of log p(S (1:M ) ):
-h
-i
-Lq(h;θ) = Eq(h;θ) log p(h, S (1:M ) ) − log q(h; θ) (11)
-In variational inference, the learning objective becomes
-maximizing Lq(h;θ) w.r.t. variational parameters θ.
-(1:G)
-
-(1:G)
-
-(1:G)
-
-Let h = {α1:M , β1:M , c1:M , ν1:G , Z
-,W
-,b
-},
-where G is the number of components of the truncated
-Dirichlet Process (Blei et al., 2006). We apply mean-field
-and assume q(h; θ) can be factorized as follows:
-q(α1:M , β1:M , c1:M , ν1:G , Z (1:G) , W (1:G) , b(1:G) )
-=
-
-M
-Y
-m=1
-
-i=1 j=1
-
-i=1
-
-i=1
-
-where the marginal distribution of each random variable is
-(m)
-
-(m)
-
-(13)
-
-q(βm ) = Beta(τβ 1 , τβ 2 )
-
-(m)
-
-(m)
-
-(14)
-
-q(cm ) = Cat(φm,: )
-
-(15)
-
-q(αm ) = Beta(τα1 , τα2 )
-
-(g)
-
-(g)
-
-q(νg ) = Beta(τν 1 , τν 2 )
-(g)
-q(Zi )
-
-=
-
-(g)
-
-(g)
-Cat(ηi,: )
-(g)
-
-=
-
-(16)
-(17)
-
-(g)2
-
-(18)
-
-(g)
-(g)2
-N (µbi , σbi )
-
-(19)
-
-q(Wij ) = N (µWij , σWij )
-(g)
-q(bi )
-
-We use θ to denote all the variational parameters, which
-(m) (m) (m) (m)
-consist of {τα1 , τα2 , τβ 1 , τβ 2 , φm,: } (m = 1 · · · M )
-(g)
-
-(g)
-
-(g)
-
-(g)
-
-(g)
-
-4. Experimental Results
-In this section, we aim to demonstrate our MCVC can automatically 1) assign multiple experts to different views; and
-2) improve the quality of clustering solution in each view
-by assigning higher weights to uncertain experts of higher
-accuracies. We also analyze how 3) the settings of the number of clusters; and 4) the constraints provided by irrelevant
-experts affect the performance of MCVC.
-4.1. Competing Alternatives
-
-[q(αm ) · q(βm ) · q(cm )] ·
-
-K
-K
-G
-n
-d Y
-Y
-Y
-Y
-Y
-
-(g)
-(g) 
-(g)
-q(Wij )
-q(bi ) (12)
-q(νg )
-q(Zi )
-g=1
-
-q(h;θ)
-can be automatically
-approaches. The gradient
-∂θ
-computed using reverse-mode differentiation (Maclaurin
-et al., 2015). We choose to use a limited-memory projected
-quasi-Newton algorithm (PQN) to optimize our objective
-because it has both superlinear convergence rate and linear
-memory requirement (Schmidt et al., 2009). Because our
-objective Lq(h;θ) is not concave, we provide multiple initializations θ(0) to the optimization algorithm and choose
-the one resulting in the maximal objective value. We set
-the number of random initializations to be 50 in all experiments and the results are stable across different runs.
-
-(g)
-
-(g)
-
-and {τν 1 , τν 2 , ηi,: , µWij , σWij , µbi , σbi } (g = 1 · · · G).
-Besides the simplex constraints on the parameters of the
-categorical distribution, both the parameters of the Beta
-distribution and the standard deviation of Gaussian distribution should have positive constraints.
-
-For aim 1), we construct two views of experts based on two
-different ways to cluster the data. These two expert views
-are treated as the ground truth of assigning multiple experts
-to different views. Then we compare our MCVC against an
-adapted version of meta clustering (Caruana et al., 2006).
-Meta Spectral Clustering (MetaClust): The original
-meta clustering approach cannot handle multiple experts’
-constraints. Instead of using the data matrix to generate
-multiple clustering solutions as input, we directly use the
-constraint sets provided by multiple experts as input. Meta
-clustering first computes the similarity between experts by
-computing the rand index (Rand, 1971) between the constraint sets they provide. Given the resulting similarity matrix between experts, instead of hierarchical clustering as in
-the original paper, we apply spectral clustering (Ng et al.,
-2001) to assign multiple experts to different views. We determine the number of expert views by maximizing the gap
-between the consecutive eigenvalues of the graph Laplacian (Von Luxburg, 2007).
-For aim 2), we first construct one view of experts based
-on one way to cluster the data. The underlying clustering
-structure is treated as the ground truth of clustering samples. Then we compare our MCVC against the following
-alternatives in generating clusters of high quality.
-
-Multiple Clustering Views from Multiple Uncertain Experts
-
-SemiCrowd: SemiCrowd (Yi et al., 2012) combines multiple expert constraints by filtering out uncertain pairs in the
-average similarity matrix, applying matrix completion, and
-then learning a distance metric for clustering.
-Semi-supervised Clustering: Given a set of pairwise constraints, semi-supervised clustering either learns a better
-distance metric for clustering or guides the clustering algorithm to satisfy those constraints. We use Informationtheoretic Metric Learning (ITML) (Davis et al., 2007)
-and Metric Pairwise Constrained KMeans (MPCKMeans)
-(Bilenko et al., 2004) as the representatives of those two
-strategies due to their superior performances compared to
-alternatives. Since semi-supervised clustering can only
-take one set of constraints as input, we combine constraints
-from multiple experts through majority voting (a sample
-pair is given ML constraint if the majority of experts provide ML constraints for them and CL constraint otherwise).
-
-tains webpages collected from four universities. After removing stop words and extracting the top 200 words with
-most frequent occurrences, we obtain a data matrix with
-1041 samples and 200 features. The data can be clustered
-according to either owner types (course, faculty, project,
-student), which we treat as Y1 , or universities (Cornell,
-Austin, Washington, Wisconsin), which we use as Y2 .
-Face Dataset: The Face dataset (Lichman, 2013) consists of 640 face images of people taken with varying poses
-(straight, left, right, up). Each image has 960 raw pixels.
-We apply principal component analysis (PCA) and keep 20
-principal components (explaining 80% variance). Thus, we
-obtain a data matrix with 640 samples and 20 features. The
-data can be clustered based on pose (Y1 ) or identity (Y2 ).
-
-We provide the parameter setting details for all methods in
-the supplementary materials due to space constraint.
-
-Simulating Constraints from Multiple Experts: For
-synthetic and benchmark datasets, we do not have access
-to real-world constraints provided by experts. Therefore,
-we simulate these constraints. Given a ground-truth clustering solution Y , the number of ML constraints nM L , the
-number of CL constraints nCL , and accuracy parameters
-of M experts α1:M , β1:M , we can generate the constraints
-provided by the m-th expert as follows: 1) randomly sample nM L ML constraints and nCL CL constraints from Y ;
-2) randomly flip nM L (1 − αm ) ML pairs to CL pairs and
-flip nCL (1 − βm ) CL pairs to ML pairs.
-
-4.2. Synthetic and Benchmark Experiments
-
-4.2.1. TASK 1: L EARNING THE VARIOUS L ATENT
-V IEWS FROM M ULTIPLE E XPERTS
-
-Consensus Clustering: Most consensus clustering algorithms only work with cluster labels instead of pairwise
-constraints. However, Cluster-based Similarity Partitioning Algorithm (CSPA) (Strehl & Ghosh, 2002), a consensus clustering approach that only need average similarity
-matrix between samples as input, can be used in our setup.
-
-Synthetic Dataset: To help understand the algorithms, we
-generate a synthetic data that has multiple alternative clustering views. We generate a synthetic dataset containing
-600 samples and six features. The scatterplots between
-pairwise features in this dataset are shown in Figure 2.
-First, there exist three clusters in the subspace spanned by
-the first two features, which we denote as Y1 . In all these
-three figures, the red, blue and green colors represent the
-true cluster indicator of Y1 . Second, there exist an alternative clustering structure in the subspace spanned by the
-third and fourth features, which we denote as Y2 . Note that
-Y2 and Y1 are very distinct. Third, the subspace spanned by
-the fifth and sixth feature does not contain well-separated
-clusters and we consider these as noisy features.
-
-Feature 4
-
-Feature 2
-
-3
-
-2
-
+where B and P are appropriately sized matrices of the baseline covariates and medication counts over time.
+We need to compute gradients of this expression with respect to the RNN parameters w and the MGP parameters
+θ. This can be achieved with the reparameterization trick,
+using the fact that z = µz + Rξ, where ξ ∼ N (0, I) and
+R is a matrix such that Σz = RR> (Kingma & Welling,
+2014). This allows us to bring the gradients of (8) inside
+the expectation, where they can be computed efficiently.
+Rather than choose R to be lower triangular so that it can
+only be computed in O(M 3 X 3 ) time with a Cholesky decomposition, we follow (Cheng-Xian Li & Marlin, 2016)
+and let R be the symmetric matrix square root, as this leads
+to a scalable approximation to be discussed in Section 3.4.
+Finally, we train our model discriminatively and end-to-end
+by jointly learning θ with w, as opposed to a two-stage approach that would first learn and fix θ before learning w.
+3.4. Scaling Computation with the Lanczos Method
+The computation to both learn the model parameters and
+make predictions for a new patient encounter is dominated
+primarily by computing the parameters of the MGP in (5)
+and (6) and then drawing samples for z from it, as these are
+of dimension M X (where X is the number of reference
+time points). To make this computation more amenable to
+large-scale datasets such as our large cohort of inpatient
+admissions, we use the Lanczos method to obtain approximate draws from large multivariate Gaussians.
+Recall that to draw from a multivariate Gaussian requires
+1/2
+1/2
+taking the product Σz ξ, where Σz is the symmetric
+matrix square root and ξ ∼ N (0, I). We can approximate this product using the Lanczos method, a Krylov
+subspace approximation that bypasses the need to explic1/2
+itly compute Σz and only requires matrix-vector products with Σz . The main idea is to find an optimal ap1/2
+proximation of Σz in the Krylov subspace Kk (Σz , ξ) =
+span{ξ, Σz ξ, . . . , Σk−1
+ξ}; this approximation is simply
+z
+the orthogonal projection of Σz ξ into the subspace. See
+(Chow & Saad, 2014) for more details on the use of Krylov
+methods for sampling multivariate Gaussians. In practice,
+k is chosen to be a small constant, k << M X, so that
+the O(k 3 ) operation of computing the matrix square root
+of a k × k tridiagonal matrix can effectively be treated as
+
+Learning to Detect Sepsis
+
+Algorithm 1 Lanczos Method to approximate Σ1/2 ξ
+Input: covariance matrix Σ, random vector ξ, k
+β1 = 0 and d0 = 0
+d1 = ξ/||ξ||
+for j = 1 to k do
+d = Σdj − βj dj−1
+αj = d>
+j d
+d = d − αj dj
+βj+1 = ||d||
+dj+1 = d/βj+1
+end for
+D = [d1 , . . . , dk ]
+H = tridiagonal(β2:k , α1:k , β2:k )
+Return: ||ξ||DH 1/2 e1 // e1 = [1, 0, . . . , 0]>
+O(1). The most expensive step in the Lanczos method then
+becomes computation of matrix-vector products Σz d. To
+compute these we use the conjugate gradient algorithm, another Krylov method, and it usually converges in only a few
+iterations. We also use conjugate gradient when computing
+µz in (5) to approximate Σ−1 y. Importantly, every operation in both the Lanczos method (Algorithm 1) and the
+conjugate gradient algorithm are differentiable, so that it
+is possible to backpropagate through the entire procedure
+during training with automatic differentiation.
+
+4. Experiments
+4.1. Data Description
+Our dataset consists of 49,312 inpatient admissions from
+our university health system spanning 18 months, extracted
+directly from our EHR. After extensive data cleaning, there
+are M = 34 physiological variables, of which 5 are vitals, and 29 are laboratory values (see Figure 2), and they
+vary considerably in the number of encounters with at least
+one recorded measurement. At least one value for each
+of the vital variables is measured in over 99% of encounters, while some labs (e.g. Ammonia, ESR, D-Dimer) are
+very rarely taken, being measured in only 2-4% of encounters, with most of the rest falling somewhere in the middle.
+There were b = 35 baseline covariates reliably measured
+upon admission (e.g. age, race, gender, whether the admission was a transfer or urgent, comorbidities upon admission). Finally, we have information on P = 8 medication classes, where these classes were determined from a
+thorough review of the raw medication names in the EHR.
+The patient encounters range from very short admissions of
+only a few hours to extended stays lasting multiple months,
+with the mean length of stay at 121.7 hours, with a standard
+deviation of 108.1 hours. As there was no specific inclusion
+or exclusion criteria in the creation of this patient cohort,
+the resulting population is very heterogeneous and can vary
+
+tremendously in clinical status. This makes the dataset representative of the real clinical setting in which our method
+will be used, across the entire inpatient wards. Before modeling we log transform all M physiological time series variables to reduce the effect of outliers, and then center and
+scale all continuous-valued inputs into the model.
+For encounters that ultimately resulted in sepsis, we used
+a well-defined clinical definition to assess the first time at
+which sepsis is suspected to have been present. This criteria consisted of at least two consistently abnormal vitals
+signs, along with a blood culture drawn for a suspected
+infection, and at least one abnormal laboratory value indicating early signs of organ failure. This definition was
+carefully reviewed and found to be sufficient by clinicians.
+Thus each encounter is associated with a binary label indicating whether or not that patient ever acquired sepsis; the
+prevalence of sepsis in our full dataset was 21.4%.
+4.2. Experimental Setup
+We train our method to 80% of the full dataset, setting aside
+10% as a validation set to select hyperparameters and a final
+10% for testing. For the encounters that result in sepsis,
+we throw away data from after sepsis was acquired, as our
+clinical goal is to be able to predict sepsis before it happens
+for a new patient. For non-septic encounters we train on
+the full length of the encounter until discharge. We choose
+the shared reference times X to be evenly spaced at every
+hour starting at admission, as clinically the desire is for a
+risk score that will refresh only once an hour.
+We compared our method (denoted “MGP-RNN”) against
+several baselines, including several common clinical scoring systems, as well as more complex methods. In particular, we compared our model with the NEWS score currently in use at our hospital, along with the MEWS score
+and the SIRS score. Each of these scores are based off of
+a small subset of the total variables available to our methods. In particular, MEWS uses five, NEWS uses seven, and
+SIRS uses four. These clinical benchmarks all assign independent scores to each variable under consideration, with
+higher scores given for more abnormal values, although
+they each use different thresholds and different values.
+As a strong comparison to our end-to-end MGP-RNN classifier, we also trained an LSTM recurrent neural network
+from the raw data alone (denoted “Raw RNN” in Figure
+3), with the same number of layers and hidden units as the
+network in our classifier (2 layers with 64 hidden units per
+layer). The mean value for each vital and lab was taken
+in hourly windows, and windows with missing values carried the most recent value forward. If there was no previously observed variable yet in that encounter, we imputed
+the mean. In addition, we trained an L2 penalized logistic
+regression baseline (“PLR”) using this imputation mecha-
+
+Learning to Detect Sepsis
+
+Figure 3. Left: Area under the Receiver Operating Characteristic curve for each method, as a function of the number of hours in advance
+of sepsis/discharge the prediction is issued (0-12 hours). Middle: Area under the Precision Recall curve as a function of time. Right:
+Precision as a function of time, for a fixed sensitivity of 0.85. Methods are all color coded according to middle legend; all GP/MGP-RNN
+methods are solid lines.
+
+nism.
+We also compare against a simplified version of the end-toend MGP-RNN framework, (denoted “MGP-RNN-mean”)
+where we replace the latent MGP function values z with
+their expectation µz during both training and testing, to test
+the effect of discarding the extra uncertainty information.
+Finally, to demonstrate the added value of using an MGP
+instead of independent GPs for each physiological variable,
+we trained two end-to-end GP-RNN baselines using (7),
+the same loss function as the MGP-RNN. The first, “GPRNN-shared”, is equivalent to an MGP with K M = I,
+i.e. no covariances across variables, and all variables share
+the same length-scale in the OU kernel. The second, “GPRNN-indep”, is considerably stronger as it also has no covariances across variables, but allows each GP prior on the
+latent functions fm to have its own length scale in its OU
+kernel, i.e. lm 6= lm0 .
+To guard against overfitting we apply early stopping on the
+validation set, and use mild L2 regularization for all RNNbased methods. We train all models using stochastic gradient descent with the ADAM optimizer (Kingma & Ba,
+2015) using minibatches of 100 encounters at a time and a
+learning rate of 0.001. To approximate the expectation in
+(8) we draw ten Monte Carlo samples. We implemented
+our methods in Tensorflow1 . On a server with 63GB RAM
+and 12 Intel Xeon E5-2680 2.50GHz CPUs, the MGP-RNN
+method takes roughly 10 hours per epoch on the training
+set, and takes on average 0.3 seconds to evaluate a test case
 1
 
-4.0
-
-5
-
-3.5
-
-4
-
-3.0
-
-3
-
-Feature 6
-
-4
-
-2.5
-2.0
-1.5
-1.0
-
-−1
-
-0
-
-1
-
-2
-
-3
-
-Feature 1
-
-4
-
-5
-
-−0.5
-
-0
-
-−3
-
-0.0
-−1
-
-1
-
-−1
-−2
-
-0.5
-
-0
-
-2
-
-−1
-
-0
-
-1
-
-2
-
-3
-
-Feature 3
-
-4
-
-5
-
-−4
-
-−4
-
-−3
-
-−2
-
-−1
-
-0
-
-1
-
-2
-
-3
-
-4
-
-Feature 5
-
-Figure 2. Scatterplots of pairwise features in the synthetic dataset.
-
-WebKB Dataset: The WebKB dataset (web, 1998) con-
-
-In this subsection, we test the performance of our MCVC
-on automatically learning the latent views from multiple
-experts. We simulate noisy constraints provided by multiple expert from two latent views, Y1 and Y2 as follows:
-1) the first view consists of experts 1-5, who provide constraints based on clustering solution Y1 and have accuracy
-parameters α1:5 = β1:5 = (0.95, 0.9, 0.85, 0.8, 0.75);
-2) the second view consists of experts 6-10, who
-provide constraints based on clustering solution Y2
-and have accuracy parameters α6:10 = β6:10 =
-(0.75, 0.8, 0.85, 0.9, 0.95).
-We compare the performance of our MCVC and meta spectral clustering (MetaClust) in recovering the ground-truth
-expert views as the number of constraints, ncon , is varied from 200 to a large number that makes the performances of both approaches become stable. We repeat the
-constraints generation process ten times to avoid the randomness of a single run. As a result, we obtain ten constraint sets for a fixed number of constraints. Given one
-constraint set, we run MCVC and MetaClust to generate
-two possibly different ways to group experts, which are denoted as LMCVC and LMetaClust respectively. We measure
-performance based on the normalized mutual information
-(NMI) (Strehl & Ghosh, 2002) between LMCVC , LMetaClust
-
-Multiple Clustering Views from Multiple Uncertain Experts
-
-0.6
-0.4
-0.2
-0.0
-200
-
-400
-
-600
-
-800
-
-1000 1200 1400 1600 1800 2000
-
-Number of Constraints
-
-(a) Synthetic
-
-MetaClust
-
-0.8
-0.6
-0.4
-0.2
-0.0
-200
-
-400
-
-600
-
-800
-
-1000 1200 1400 1600 1800 2000
-
-Number of Constraints
-
-(b) WebKB
-
-MCVC
-
-MetaClust
-
-1.0
-0.8
-0.6
-0.4
-0.2
-0.0
-200
-
-400
-
-600
-
-800
-
-1000 1200 1400 1600 1800 2000
-
-Number of Constraints
-
-(c) Face
-
-Figure 3. Compare our MCVC against meta clustering (MetaClust) in assigning multiple experts to different views on (a) synthetic, (b) WebKB and (c) Face datasets.
-
-MCVC
-SemiCrowd
-
-ITML
-MPCKMeans
-
-CSPA
-
-1.0
-0.8
-0.6
-0.4
-0.2
-0.0
-200 400 600 800 1000 1200 1400 1600 1800 2000
-
-Number of Constraints
-
-Normalized Mutual Information
-
-0.8
-
-MCVC
-1.0
-
-tions. We measure performance based on NMI between the
-resulting clustering solutions and the ground-truth solution
-Y1 . For a fixed number of constraints, one constraint set,
-and one approach, we obtain 10 NMI values. We plot the
-mean and standard deviation for every set of 10 NMI values
-for each approach as we vary the number of constraints as
-shown in Figure 4. To compare the performance of different approaches, we apply the Kruskal-Wallis test (Kruskal
-& Wallis, 1952), which can be used to test whether two
-groups of samples are drawn from the same distribution,
-on their corresponding groups of NMI values.
-Normalized Mutual Information
-
-MetaClust
-
-Normalized Mutual Information
-
-MCVC
-1.0
-
-Normalized Mutual Information
-
-Normalized Mutual Information
-
-and LTrue , the ground-truth expert views. NMI measures
-the similarity between two partitions. In our case, higher
-NMI values indicate better performance. For a fixed number of constraints, one constraint set, and one approach, we
-obtain ten NMI values. We plot the mean and standard deviation for every set of ten NMI values of each approach as
-we vary the number of constraints as shown in Figure 3.
-
-MCVC
-SemiCrowd
-
-0.6
-0.4
-0.2
-0.0
-200 400 600 800 1000 1200 1400 1600 1800 2000
-
-Number of Constraints
-
-In this subsection, we test the performance of our MCVC
-against competing methods in learning the clustering structure given constraints provided by multiple experts from
-one view. We simulate noisy constraints provided by multiple expert based on one ground-truth view, Y1 . We
-consider two different settings for their accuracy parameters: 1) experts have unequal accuracies α1:5 = β1:5 =
-(0.95, 0.9, 0.85, 0.8, 0.75); 2) experts have equal and high
-accuracies α1:5 = β1:5 = (0.95, 0.95, 0.95, 0.95, 0.95).
-Our objective is to show that through learning different accuracies of multiple uncertain experts, our MCVC can generate better clustering results compared to competing alternatives (SemiCrowd, ITML, MPCKMeans and CSPA).
-We vary the total number of ML/CL constraints provided
-by each expert from 200 to 2000 (as described in the previous subsection). For each fixed number of constraints, we
-randomly generate 10 constraint sets. For each constraint
-set, we run all approaches and obtain their clustering solu-
-
-0.8
-0.6
-0.4
-0.2
-0.0
-200 400 600 800 1000 1200 1400 1600 1800 2000
-
-Number of Constraints
-
-Normalized Mutual Information
-
-Normalized Mutual Information
-
-1.0
-
-(b) Synthetic: equal
-
-MCVC
-SemiCrowd
-
-ITML
-MPCKMeans
-
-CSPA
-
-MCVC
-SemiCrowd
-
-1.0
-0.8
-0.6
-0.4
-0.2
-0.0
-200 400 600 800 1000 1200 1400 1600 1800 2000
-
-Number of Constraints
-
-(e) Face: unequal
-
-ITML
-MPCKMeans
-
-CSPA
-
-1.0
-0.8
-0.6
-0.4
-0.2
-0.0
-200 400 600 800 1000 1200 1400 1600 1800 2000
-
-Number of Constraints
-
-(d) WebKB: equal
-Normalized Mutual Information
-
-4.2.2. TASK 2: D ISCOVER C LUSTERING S OLUTION IN
-AN E XPERT V IEW
-
-CSPA
-
-(c) WebKB: unequal
-Normalized Mutual Information
-
-We have the following observations: 1) On the synthetic
-dataset, our MCVC can consistently recover the groundtruth expert views; 2) On WebKB and Face, the performance of MCVC improves as the number of constraints
-increases and can recover the ground-truth expert views
-when the number of constraints becomes large enough; 3)
-On WebKB and Face, when the number of constraints is too
-small, as is shown in the left part of each figure, MCVC will
-be dominated by the priors and therefore cannot perfectly
-recover the expert views. 4) On all three datasets, meta
-clustering fails to recover the ground-truth expert views.
-
-ITML
-MPCKMeans
-
-CSPA
-
-0.8
-
-(a) Synthetic: unequal
-MCVC
-SemiCrowd
-
-ITML
-MPCKMeans
-
-1.0
-
-MCVC
-SemiCrowd
-
-ITML
-MPCKMeans
-
-CSPA
-
-1.0
-0.8
-0.6
-0.4
-0.2
-0.0
-200 400 600 800 1000 1200 1400 1600 1800 2000
-
-Number of Constraints
-
-(f) Face: equal
-
-Figure 4. Compare our MCVC against SemiCrowd, ITML,
-MPCKMeans, CSPA in generating better clustering solutions on
-(a,b) synthetic, (c,d) WebKB and (e,f) Face datasets: in the left
-figures (a,c,e), the accuracy parameters are set to be unequal:
-α1:5 = β1:5 = (0.95, 0.9, 0.85, 0.8, 0.75); in the right figures
-(b,d,f), the accuracy parameters are set to be equal and have high
-values: α1:5 = β1:5 = (0.95, 0.95, 0.95, 0.95, 0.95).
-
-From the left figures, where the accuracy parameters are
-set to be unequal, we have the following observations: I)
-Our MCVC consistently outperforms all competing alternatives. II) The performances of semi-supervised clustering approaches, including ITML and MPCKMeans, do
-not consistently improve as the number of constraints increases. III) The performance of SemiCrowd increases as
-the number of constraints increases. This means it can ef-
-
-Multiple Clustering Views from Multiple Uncertain Experts
-
-8
-
-q(α1)
-
-q(α3)
-
-q(α2)
-
-q(α4)
-
-q(α5)
-
-7
-6
-5
-4
-3
-2
-1
-0
-0.3
-
-0.4
-
-0.5
-
-0.6
-
-(a)
-
-0.7
-
-0.8
-
-0.9
-
-Probability Density Function
-
-Probability Density Function
-
-Explanation: Our MCVC has good performance in the unequal accuracies case because it can learn the accuracy parameters of different experts and assign higher weights to
-more accurate experts and lower weights to uncertain experts respectively. On the synthetic dataset, the posterior
-distributions of accuracy parameters α1:5 , β1:5 computed
-from MCVC are shown in Figure 5.
-7
-
-q(β1)
-
-q(β3)
-
-q(β2)
-
-q(β4)
-
-q(β5)
-
-6
-
-The errorbar plot is shown in Figure 6 (a). As we can
-see, our MCVC is very robust to the setting of K as long
-as K ≥ K ∗ , where K ∗ is the maximal number of clusters among all clustering views and K ∗ = 3 for our synthetic data. In problems where K ∗ is unknown, we can set
-K to be some large value to increase the possibility that
-K ≥ K ∗ . However, in practice, we also observe that more
-constraints are needed to effectively train the model when
-K becomes large because there will be a larger number of
-parameters.
-NMI with Y1
-0.85
-0.80
-0.75
-0.70
-0.65
-0.60
-0.55
-0.50
-
-2
-
-3
-
-4
-
-5
-
-6
-
-Number of Clusters (K)
-
-(a)
-
-5
-
-NMI with Y2
-
-0.90
-
-7
-
-8
-
-7
-6
-5
-4
-3
-2
-1
-0
-0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9
-
-(b)
-
-Probability Density Function
-
-By comparing the right against the left figures, we have
-the following observations: VI) MPCKMeans works well
-only when all the experts have high accuracies; it fails when
-not all experts have high accuaracies (as shown on the left
-figures). VII) Both ITML and SemiCrowd do not benefit
-much from higher percentage of correct constraints; VIII)
-Our MCVC perfoms well in both settings.
-
-Probability Density Function
-
-From the right figures, where the accuracy parameters are
-set to be equal and have high values, we have the following observations: V) Our MCVC consistently outperforms
-SemiCrowd, ITML and CSPA but does not consistently
-outperform MPCKMeans.
-
-MCVC, we vary K from 2 to 8 and run MCVC on the synthetic dataset using two expert views constructed from the
-procedures described in subsection 4.2.1. The number of
-constraints is fixed to be 2000 and the constraints generation process is repeated 10 times. First, for any value of K,
-MCVC can correctly assign experts to two views and also
-generate two clustering solutions. Second, to evaluate how
-the clustering performances are affected by K, we compute the NMI between the two output clustering solutions
-and Y1 , Y2 respectively.
-
-Normalized Mutual Information
-
-fectively reduce the noise in the constraints. However, it
-does not work well when the number of constraints is too
-small. IV) consensus clustering (CSPA) fails because the
-number of constraints is too small to be used to construct
-accurate sample similarity matrix.
-
-7
-6
-5
-4
-3
-2
-1
-0
-0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9
-
-(c)
-
-4
-3
-2
-1
-0
-0.3
-
-0.4
-
-0.5
-
-0.6
-
-0.7
-
-0.8
-
-0.9
-
-(b)
-
-Figure 5. On the synthetic dataset, the posterior distributions of
-sensitivities α1:5 (a) and those of specificities β1:5 (b) when
-experts have unequal accuracy parameters α1:5 = β1:5 =
-(0.95, 0.9, 0.85, 0.8, 0.75).
-
-Figure 6. (a) shows the NMI between output clustering solutions
-and Y1 , Y2 as K increases in the experiment studying the setting
-of the number of clusters; (b) and (c) show the posterior distributions of sensitivities α1:15 and specificities β1:15 in the experiment studying the existence of irrelevant experts: green means
-experts 1-5, blue means experts 6-10, red means experts 11-15.
-
-4.2.3. S ENSITIVITY A NALYSIS : TO THE N UMBER OF
-C LUSTERS AND TO I RRELEVANT E XPERTS
-
-Irrelevant Experts: We define irrelevant experts as those
-who provide constraints based on a notion of similarity that is not supported by any feature in the data. To
-demonstrate how the existence of irrelevant experts affect the performance of our MCVC, we simulate three expert views using the synthetic data: 1) the first two views
-are the same as those described in subsection 4.2.1; and
-2) the third view consists of five irrelevant experts who
-provide constraints based on a random clustering solution Y3 and have accuracy parameters α11:15 = β11:15 =
-(0.95, 0.9, 0.85, 0.8, 0.75). We generate 2000 constraints
-from each expert. First, the first two expert views can still
-be perfectly recovered by our MCVC. Second, the irrelevant experts (experts 11-15) are either assigned to the first
-two expert views or new expert views.
-
-Number of Clusters: To investigate how the setting of
-K, the number of clusters, affects the performance of our
-
-We plot the posterior distributions of accuracy parameters
-for all 15 experts in Figure 6 (b,c). As we can see, the
-
-As we can see, the modes of their distributions are very
-close to their true values. In our MCVC, the constraints from the m-th expert are assigned weight ωm =
-βm
-log (1−ααmm)(1−β
-when combining the constraints from M
-m)
-experts (we put the derivation details in the supplementary
-materials). Therefore, higher accuracies (αm , βm ) naturally lead to higher weights. Thus, our MCVC becomes
-robust to noisy constraints in the unequal accuracies case.
-
-Multiple Clustering Views from Multiple Uncertain Experts
-
-densities of irrelevant experts’ accuracy parameters (red
-curves) concentrate around 0.5, which indicates the constraints from those experts are treated as random guesses
-and assigned near zero weights by MCVC. In practice,
-we can identify irrelevant experts by checking whether the
-modes of their accuracy parameters’ posteriors are close to
-0.5. Therefore, our MCVC is robust to irrelevant experts.
-4.3. COPD Subtyping Experiment
-Chronic Obstructive Pulmonary Disease (COPD) is a complex lung disease characterized by increasing breathlessness. Although being called one disease, doctors believe
-there exist different disease subtypes. The identification
-of different disease subtypes (clusters) can lead to tailored
-medical care for each patient.
-Dataset: We collected 39 features from 987 COPD patients, including clinical measurements, demographics,
-lung function and measures from CT chest imaging.
-Experts’ Constraints: We also collected constraints provided by 29 experts, including clinicians and radiologists.
-We need to utilize experts’ constraints to guide the clustering algorithm. However, the key challenge is that different
-experts disagree on whether to put a pair of patients in the
-same cluster. We suspect there exist different expert views
-and experts in each view provide constraints based on a
-shared way to cluster the data. The discovery of these expert views and their corresponding clustering solutions can
-provide more options for further investigation.
-Evaluation: Since ground truth is not known, we can no
-longer use NMI to compare the performances of competing
-approaches. However, there are some key genetic variables
-that are known to be related to COPD, including copdScore
-(Busch et al., 2017), HHIP (Pillai et al., 2009), MMP12
-(Cho et al., 2014). A clustering solution is considered as
-useful/relevant if patients in different clusters show significant differences on these genetic variables.
-We randomly split the dataset into half training set and half
-testing set. All approaches are learned using the training
-set and the constraints from multiple experts. The learned
-models can be used to cluster test samples and generate
-clustering solutions. To evaluate each solution, we compute
-its associated p-values on these genetic variables by applying Kruskal-Wallis test on copdScore (continuous) and χ2
-test on HHIP and MMP12 (discrete). We use P < 0.05 to
-identify significant differences in these genetic variables.
-Methods and Results: We first apply our MCVC and
-obtain 12 expert views. After removing irrelevant experts
-and views containing only one expert, there are 5 expert
-views left. Our physician collaborators identify 2 interesting expert views by analyzing the cluster characteristics of their associated clustering solutions, which are de-
-
-noted as MCVC-A and MCVC-B respectively: 1) Solution MCVC-A contains emphysema-dominant and airwaydominant clusters, where emphysema cluster means the destruction of lung tissue and airway cluster means the increase of airway wall thickness. 2) Solution MCVC-B contains clusters of different levels of disease severity.
-For competing approaches, we first run meta clustering and
-all 29 experts were lumped into one view. Then we apply
-SemiCrowd, ITML and MPCKMeans to combine the data
-matrix and constraints from all experts.
-Table 1. p-values on three key COPD-related genetic variables.
-Solutions
-MCVC-A
-MCVC-B
-SemiCrowd
-ITML
-MPCKMeans
-
-copdScore
-3.47e-2
-3.49e-5
-1.30e-1
-4.67e-5
-5.13e-4
-
-HHIP
-3.29e-3
-6.47e-3
-2.80e-1
-6.68e-3
-1.46e-2
-
-MMP12
-4.41e-2
-3.72e-3
-1.47e-1
-6.42e-2
-2.66e-2
-
-The p-values of solutions provided by our MCVC and competing approaches are shown in Table 1. As we can see,
-solutions provided by MCVC and MPCKMeans contain
-different clusters that show significant differences on all
-three COPD-related genetic variables. In contrast, both
-ITML and SemiCrowd are not significantly correlated with
-all three genetic variables. There’s some overlap between
-solution MPCKMeans and solution MCVC-B (with NMI
-value 0.39). However, solution MCVC-A can only be discovered by our approach. This way of clustering COPD
-patients is consistent with some COPD investigators’ latest
-discovery of COPD subtypes (Castaldi et al., 2014).
-
-5. Conclusions
-In this paper, we build a probabilistic model to discover
-multiple ways to cluster the data given potentially diverse
-inputs from multiple uncertain experts. This is achieved by
-automatically assigning multiple experts to different views
-and learning the clustering structure associated with each
-expert view. The quality of clustering solution in each expert view are improved by assigning higher weights to experts of higher accuracies. Experimental results on synthetic data, benchmark datasets and a real-world disease
-subtyping problem demonstrate that our MCVC outperforms its competing alternatives, including meta clustering,
-semi-supervised clustering, semi-crowdsourced clustering
-and consensus clustering.
-
-6. Acknowledgements
-We would like to acknowledge support for this project
-from the NIH grant NIH/NHLBI RO1HL089856,
-RO1HL089857 and NSF/IIS-1546428.
-
-Multiple Clustering Views from Multiple Uncertain Experts
+https://github.com/jfutoma/MGP-RNN
+
+and generate a risk score. All methods converged in a small
+number of epochs.
+4.3. Evaluation Metrics
+We use several different metrics to evaluate performance.
+The area under the Receiver Operating Characteristic
+(ROC) curve (AU-ROC) is an overall measure of discrimination, and can be interpreted as the probability that the
+classifier correctly ranks a random sepsis encounter as
+higher risk than a random non-sepsis encounter. We also
+report the area under the Precision Recall (PR) curve (AUPR). Importantly, we examine how these metrics vary as
+we change the window in which we make the prediction
+to see how far in advance we can reliably predict onset of
+sepsis.
+4.4. Results
+Our results show that the MGP-RNN classification framework yields clear performance gains when compared to
+the various baselines considered. It substantially outperforms the overly simplistic clinical scores, and demonstrates modest gains over the RNN trained to raw data, the
+MGP-RNN-mean method that discards uncertainty information, and the univariate GP baselines.
+Figure 3 summarizes the results. The four MGP/GP-RNN
+methods are in solid lines, and the other baselines are
+dashed. It is clear that these four methods perform considerably better than the other methods, especially in the
+last four hours prior to sepsis/discharge.
+
+Learning to Detect Sepsis
+
+The left and middle panes of Figure 3 display the AU-ROC
+and AU-PR for each method as a function of the number of hours in advance the prediction is made. Generally
+the MGP-RNN performs best, followed by the three other
+MGP/GP-RNN baselines. This is likely because it retains
+uncertainty information about the noisy time series (unlike MGP-RNN-mean), and can learn correlations among
+the different physiological variables to improve the quality of the imputation (unlike the GP-RNN methods). As
+expected, the GP-RNN-indep baseline consistently outperforms the simpler GP-RNN-shared.
+The right pane of Figure 3 shows the tradeoff between precision and timeliness for a fixed sensitivity of 0.85 across
+the methods. It is most useful to evaluate with such a high
+sensitivity as this is the setting clinicians typically want to
+use a risk score, in order not to miss many cases. The MGPRNN performs comparably to the MGP-RNN-mean within
+a few hours of sepsis, and demonstrates the biggest performance gains from about 3 to 7 hours beforehand. Throughout, it has much higher precision than NEWS, MEWS, and
+SIRS, especially so in the few hours immediately preceding
+sepsis. This is a very important clinical point, since clinicians want a method with very high precision and a low
+false alarm rate to reduce the alarm fatigue experienced
+with current solutions. Furthermore, being able to detect
+sepsis even a few hours early might substantially increase
+treatment effectiveness and improve patient outcomes.
+
+5. Conclusions and Clinical Significance
+We have presented a novel approach for early detection of
+sepsis that classifies multivariate clinical time series in a
+manner that is both flexible and takes into account the uncertainty in the series. On a large dataset of inpatient encounters from our university health system, we find that our
+proposed method substantially outperforms strong baselines and a number of widespread clinical benchmarks. In
+particular, our methods tend to have much higher precision,
+and thus they have much lower rates of false alarm. For instance, at a very high sensitivity of 0.85 and when making
+predictions 4 hours in advance, there will be only roughly
+0.5 false alarms for every true alarm generated by our approach, whereas for the NEWS score currently being used
+at our institution, there will be about 2.5 false alarms for every true alarm. Thus, adoption of our method would result
+in a drastic reduction in the total number of false alarms.
+In addition to the initial promise of our approach, there
+are a number of interesting directions to extend the proposed method to better account for various aspects of our
+data source. In particular, we could incorporate a clustering component with different sets of MGPs for different
+latent subpopulations of encounters, to address high heterogeneity across patients. The medication data might be
+
+better utilized to also learn the effect of medications on
+the physiological time series. For instance, certain medications might have a sharp effect on certain vitals signs to
+help stabilize them; such treatment response curves could
+be learned observationally and applied to help improve predictions. More sophisticated covariance structure in the
+multitask Gaussian process would allow for a more flexible model, since our assumption of a correlation function
+shared across all physiological streams may be overly restrictive. Finally, use of additional approximations from
+the GP literature may further decrease the computational
+overhead and improve training times.
+This work has the potential to have a high impact in improving clinical practice in the identification of sepsis, both
+at our institution and elsewhere. The underlying biological
+mechanism is poorly understood, and the problem has historically been very difficult for clinicians. Use of a model
+such as ours to predict onset of sepsis would significantly
+reduce the alarm fatigue associated with current clinical
+scores, and could both significantly improve patient outcomes and reduce burden on the health system. Although
+in this work our emphasis was on early detection of sepsis,
+the methods could be modified with minimal effort to apply to detection of other clinical events of interest, such as
+cardiac arrests, code blue events, admission to the ICU, and
+cardiogenic shock. We are currently working to implement
+our methods directly into an application that can pull live
+data from our health system’s EHR and present our model’s
+predictions to a rapid response team. This will allow us to
+apply our methods in a real-time clinical setting and their
+utility can be proven empirically, as data is collected on
+how accurate the alarms it raises are and how it is used on
+the actual wards.
+
+Acknowledgements
+Joseph Futoma is supported by an NDSEG fellowship.
+Katherine Heller is supported by an NSF CAREER award.
+This project was partially funded by the Duke Institute
+for Health Innovation. Thanks to the other members of
+our team for their invaluable work on this project: Cara
+O’Brien MD, Meredith Clement MD, Armando Bedoya
+MD, Mark Sendak MD, Nathan Brajer, and Bryce Wolery.
 
 References
-Webkb dataset, 1998. URL http://www.cs.cmu.
-edu/afs/cs/project/theo-20/www/data/.
-Basu, Sugato, Davidson, Ian, and Wagstaff, Kiri. Constrained clustering: Advances in algorithms, theory, and
-applications. CRC Press, 2008.
-Bickel, Steffen and Scheffer, Tobias. Multi-view clustering. In IEEE International Conference on Data Mining,
-volume 4, pp. 19–26, 2004.
-Bilenko, Mikhail, Basu, Sugato, and Mooney, Raymond J.
-Integrating constraints and metric learning in semisupervised clustering. In Proceedings of the Twenty-first
-International Conference on Machine Learning, pp. 11,
-2004.
-Blei, David M, Jordan, Michael I, et al. Variational inference for dirichlet process mixtures. Bayesian Analysis,
-1:121–143, 2006.
-Busch, Robert, Hobbs, Brian D, Zhou, Jin, Castaldi,
-Peter J, McGeachie, Michael J, Hardin, Megan E,
-Hawrylkiewicz, Iwona, Sliwinski, Pawel, Yim, Jae-Joon,
-Kim, Woo Jin, et al. Genetic association and risk scores
-in a copd meta-analysis of 16,707 subjects. American Journal of Respiratory Cell and Molecular Biology,
-2017.
-Caruana, Rich, Elhawary, Mohamed, Nguyen, Nam, and
-Smith, Casey. Meta clustering. In IEEE International
-Conference on Data Mining, pp. 107–118, 2006.
-Castaldi, Peter J, Dy, Jennifer, Ross, James, Chang, Yale,
-Washko, George R, Curran-Everett, Douglas, Williams,
-Andre, Lynch, David A, Make, Barry J, Crapo, James D,
-et al. Cluster analysis in the copdgene study identifies
-subtypes of smokers with distinct patterns of airway disease and emphysema. Thorax, 2014.
-Cho, Michael H, McDonald, Merry-Lynn N, Zhou, Xiaobo,
-Mattheisen, Manuel, Castaldi, Peter J, Hersh, Craig P,
-DeMeo, Dawn L, Sylvia, Jody S, Ziniti, John, Laird,
-Nan M, et al. Risk loci for chronic obstructive pulmonary disease: a genome-wide association study and
-meta-analysis. The Lancet Respiratory Medicine, 2(3):
-214–225, 2014.
+Bone, R. C., Fisher, C. J., and Clemmer, T. P. et al. Sepsis syndrome: a valid clinical entity. methylprednisolone severe sepsis
+study group. Crit Care Med., 17(5):389–93, 1989.
+Bone, R. C., Balk, R. A., and Cerra, F. B. et al. Definitions for
+sepsis and organ failure and guidelines for the use of innovative
+therapies in sepsis. Chest, 101(6):1644–55, 1992.
+Bonilla, E. V., Chai, K. M. A., and Williams, C. K. I. Multi-task
+gaussian process prediction. NIPS, 2008.
 
-Ferguson, Thomas S. A bayesian analysis of some nonparametric problems. The Annals of Statistics, pp. 209–
-230, 1973.
-Fern, Xiaoli Zhang and Brodley, Carla E. Solving cluster
-ensemble problems by bipartite graph partitioning. In
-Proceedings of the Twenty-first International Conference
-on Machine learning, pp. 36, 2004.
-Ghosh, Joydeep and Acharya, Ayan. Cluster ensembles. Wiley Interdisciplinary Reviews: Data Mining and
-Knowledge Discovery, 1(4):305–315, 2011.
-Gomes, Ryan G, Krause, Andreas, and Perona, Pietro. Discriminative clustering by regularized information maximization. In Advances in Neural Information Processing
-Systems, pp. 775–783, 2010.
-Howe, Jeff. Crowdsourcing: How the power of the crowd
-is driving the future of business. Random House, 2008.
-Jain, Anil K, Murty, M Narasimha, and Flynn, Patrick J.
-Data clustering: a review. ACM Computing Surveys, 31
-(3):264–323, 1999.
-Jain, Prateek, Meka, Raghu, and Dhillon, Inderjit S. Simultaneous unsupervised learning of disparate clusterings. Statistical Analysis and Data Mining, 1(3):195–
-210, 2008.
-Kajino, Hiroshi, Tsuboi, Yuta, and Kashima, Hisashi. Clustering crowds. In AAAI Conference on Artificial Intelligence, 2013.
-Kruskal, William H and Wallis, W Allen. Use of ranks in
-one-criterion variance analysis. Journal of the American
-Statistical Association, 47(260):583–621, 1952.
-Lichman, M. UCI machine learning repository, 2013. URL
-http://archive.ics.uci.edu/ml.
-Maclaurin, D, Duvenaud, D, Johnson, M, and Adams,
-RP. Autograd: Reverse-mode differentiation of native
-python. http://github. com/HIPS/autograd, 2015.
-Moreno, Pablo G, Artés-Rodrı́guez, Antonio, Teh,
-Yee Whye, and Perez-Cruz, Fernando. Bayesian nonparametric crowdsourcing. Journal of Machine Learning
-Research, 16:1607–1627, 2015.
+Learning to Detect Sepsis
+Cheng-Xian Li, S. and Marlin, B. A scalable end-to-end gaussian
+process adapter for irregularly sampled time series classification. NIPS, 2016.
+Choi, E., Schuetz, A., Stewart, W. F., and Sun, J. Using recurrent neural network models for early detection of heart failure
+onset. J Am Med Inform Assoc., 0(1-9), 2016.
+Chow, E. and Saad, Y. Preconditioned krylov subspace methods
+for sampling multivariate gaussian distributions. SIAM Journal
+on Scientific Computing, 36(2):A588–A608, 2014.
 
-Cui, Ying, Fern, Xiaoli Z, and Dy, Jennifer G. Nonredundant multi-view clustering via orthogonalization.
-In IEEE International Conference on Data Mining, pp.
-133–142, 2007.
+Rothman, M. J., Rothman, S. I., and Beals IV, J. Development and
+validation of a continuous measure of patient condition using
+the electronic medical record. Journal of Biomedical Informatics, 46(5):837–48, 2013.
+Schulam, P. and Saria, S. A framework for individualizing predictions of disease trajectories by exploiting multi-resolution
+structure. NIPS, 2015.
+Seymour, C. W., Gesten, F., and Prescott, H. C. et al. Time to
+treatment and mortality during mandated emergency care for
+sepsis. New England Journal of Medicine, 2017.
 
-Murphy, Sherry L, Xu, Jiaquan, and Kochanek, Kenneth D.
-Deaths: final data for 2010. National vital statistics reports: from the Centers for Disease Control and Prevention, National Center for Health Statistics, National
-Vital Statistics System, 61(4):1–117, 2013.
+Durichen, R., Pimentel, M. A. F., and Clifton, L. et al. Multitask
+gaussian processes for multivariate physiological time-series
+analysis. IEEE Transactions on Biomedical Engineering, 61
+(1), 2015.
 
-Davis, Jason V, Kulis, Brian, Jain, Prateek, Sra, Suvrit, and
-Dhillon, Inderjit S. Information-theoretic metric learning. In Proceedings of the Twenty-Fourth International
-Conference on Machine Learning, pp. 209–216, 2007.
+Singer, M., Deutschman, C. S., and Seymour, C. W. et al. The
+third international consensus definitions for sepsis and septic
+shock (sepsis-3). JAMA, 315:801–10, 2016.
 
-Ng, Andrew Y, Jordan, Michael I, Weiss, Yair, et al. On
-spectral clustering: Analysis and an algorithm. In Advances in Neural Information Processing Systems, volume 14, pp. 849–856, 2001.
+Futoma, J., Sendak, M., Cameron, C. B., and Heller, K. Scalable joint modeling of longitudinal and point process data for
+disease trajectory prediction and improving management of
+chronic kidney disease. UAI, 2016.
 
-Multiple Clustering Views from Multiple Uncertain Experts
+Smith, G. B., Prytherch, D. R., and Meredith, P. et al. The ability of the national early warning score (news) to discriminate
+patients at risk of early cardiac arrest, unanticipated intensive
+care unit admission, and death. Resuscitation, 84(4), 2013.
 
-Niu, Donglin, Dy, Jennifer G, and Jordan, Michael I. Multiple non-redundant spectral clustering views. In Proceedings of the Twenty-seventh International Conference on
-Machine Learning, pp. 831–838, 2010.
-Niu, Donglin, Dy, Jennifer G, and Ghahramani, Zoubin.
-A nonparametric bayesian model for multiple clustering
-with overlapping feature views. In Proceedings of the
-Fifteenth International Conference on Artificial Intelligence and Statistics, pp. 814–822, 2012.
-Pillai, Sreekumar G, Ge, Dongliang, Zhu, Guohua, Kong,
-Xiangyang, Shianna, Kevin V, Need, Anna C, Feng,
-Sheng, Hersh, Craig P, Bakke, Per, Gulsvik, Amund,
-et al. A genome-wide association study in chronic obstructive pulmonary disease (copd): identification of two
-major susceptibility loci. PLoS Genetics, 5(3), 2009.
-Rand, William M. Objective criteria for the evaluation of
-clustering methods. Journal of the American Statistical
-Association, 66(336):846–850, 1971.
-Schmidt, Mark, Berg, Ewout, Friedlander, Michael, and
-Murphy, Kevin. Optimizing costly functions with simple
-constraints: A limited-memory projected quasi-newton
-algorithm. In Proceedings of the Twelfth International
-Conference on Artificial Intelligence and Statistics, pp.
-456–463, 2009.
-Strehl, Alexander and Ghosh, Joydeep.
-Cluster
-ensembles—a knowledge reuse framework for combining multiple partitions. Journal of Machine Learning
-Research, 3(12):583–617, 2002.
-Tian, Yuandong and Zhu, Jun. Learning from crowds in
-the presence of schools of thought. In Proceedings of the
-Eighteenth ACM SIGKDD International Conference on
-Knowledge Discovery and Data Mining, pp. 226–234,
-2012.
-Topchy, Alexander, Jain, Anil K, and Punch, William.
-Clustering ensembles: Models of consensus and weak
-partitions. IEEE Transactions on Pattern Analysis and
-Machine Intelligence, 27(12):1866–1881, 2005.
-Von Luxburg, Ulrike. A tutorial on spectral clustering.
-Statistics and Computing, 17(4):395–416, 2007.
-Wagstaff, Kiri and Cardie, Claire. Clustering with instancelevel constraints. AAAI Conference on Artificial Intelligence, 1097, 2000.
-Yi, Jinfeng, Jin, Rong, Jain, Shaili, Yang, Tianbao, and
-Jain, Anil K. Semi-crowdsourced clustering: Generalizing crowd labeling by robust distance metric learning.
-In Advances in Neural Information Processing Systems,
-pp. 1772–1780, 2012.
+Gardner-Thorpe, J., Love, N., and Wrightson, J. et al. The value
+of modified early warning score (mews) in surgical in-patients:
+A prospective observational study. Ann R Coll Surg Engl, 88
+(6):571–75, 2006.
 
-Zhang, Junjun, Baran, Joachim, Cros, Anthony, Guberman, Jonathan M, Haider, Syed, Hsu, Jack, Liang, Yong,
-Rivkin, Elena, Wang, Jianxin, Whitty, Brett, et al. International cancer genome consortium data portala onestop shop for cancer genomics data. Database, 2011,
-2011.
+Vincent, J. L., Moreno, R., and Takala, J. et al. The sofa (sepsisrelated organ failure assessment) score to describe organ dysfunction/failure. Intensive Care Med., 22(7):707–10, 1996.
+Wackernagel, H. Multivariate Geostatistics: An Introduction with
+Applications. Springer-Verlag, 2nd edition edition, 1998.
+
+Ghassemi, M., Pimentel, M. A. F., and Naumann, T. et al. A
+multivariate timeseries modeling approach to severity of illness
+assessment and forecasting in icu with sparse, heterogeneous
+clinical data. AAAI, 2015.
+
+Xing, Z., Jian, P., and Philip, S. Y. Early classification on time
+series. Knowledge and information systems, 31(1), 2012.
+
+Henry, K. E., Hager, D. N., Pronovost, P. J., and Saria, S. A
+targeted real-time early warning score (trewscore) for septic
+shock. Science Translational Medicine, 7(299), 2015.
+
+Yoon, J., Alaa, A. M., Hu, Scott, and van der Schaar, M. Forecasticu: A prognostic decision support system for timely prediction of intensive care unit admission. ICML, 2016.
+
+Hochreiter, S. and Schmidhuber, J. Long short-term memory.
+Neural Computation, 9(8):1735–80, 1997.
+
+Zhengping, C., Purushotham, S., and Cho, K. et al. Recurrent
+neural networks for multivariate time series with missing values. arXiv preprint: 1606.01865, 2016.
+
+Hoiles, W. and van der Schaar, M. A non-parametric learning
+method for confidently estimating patient’s clinical state and
+dynamics. NIPS, 2016.
+Jones, A. E., Shapiro, N. I., and Trzeciak, S. et al. Lactate clearance vs central venous oxygen saturation as goals of early sepsis therapy: a randomized clinical trial. JAMA, 303(8):739–46,
+2010.
+Kingma, D. P. and Ba, J. Adam: A method for stochastic optimization. ICLR, 2015.
+Kingma, D. P. and Welling, M. Auto-encoding variational bayes.
+ICLR, 2014.
+Kumar, A., Roberts, D., and Wood, K. E. et al. Duration of hypotension before initiation of effective antimicrobial therapy is
+the critical determinant of survival in human septic shock. Crit
+Care Med., 34(6):1589–96, 2006.
+Lipton, Z. C., Kale, D. C., Elkan, C., and Wetzel, R. Learning to
+diagnose with lstm recurrent neural networks. ICLR, 2016.
+Liu, Y. Y., Li, S., and Li, F. et al. Efficient learning of continuoustime hidden markov models for disease progression. NIPS,
+2015.
+Rasmussen, C. E. and Williams, C. K. I. Gaussian Processes for
+Machine Learning. The MIT Press, 2005.
 
 

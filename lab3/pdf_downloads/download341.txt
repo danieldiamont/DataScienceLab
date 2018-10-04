@@ -1,4343 +1,1025 @@
-Grammar Variational Autoencoder
-Matt J. Kusner * 1 2 Brooks Paige * 1 3 José Miguel Hernández-Lobato 3
+Deeply AggreVaTeD:
+Differentiable Imitation Learning for Sequential Prediction
+Wen Sun 1 Arun Venkatraman 1 Geoffrey J. Gordon 2 Byron Boots 3 J. Andrew Bagnell 1
 
 Abstract
-Deep generative models have been wildly successful at learning coherent latent representations
-for continuous data such as natural images, artwork, and audio. However, generative modeling of discrete data such as arithmetic expressions and molecular structures still poses significant challenges. Crucially, state-of-the-art methods often produce outputs that are not valid. We
-make the key observation that frequently, discrete data can be represented as a parse tree from
-a context-free grammar. We propose a variational autoencoder which directly encodes from
-and decodes to these parse trees, ensuring the
-generated outputs are always syntactically valid.
-Surprisingly, we show that not only does our
-model more often generate valid outputs, it also
-learns a more coherent latent space in which
-nearby points decode to similar discrete outputs.
-We demonstrate the effectiveness of our learned
-models by showing their improved performance
-in Bayesian optimization for symbolic regression
-and molecule generation.
+Recently, researchers have demonstrated stateof-the-art performance on sequential prediction
+problems using deep neural networks and Reinforcement Learning (RL). For some of these
+problems, oracles that can demonstrate good performance may be available during training, but
+are not used by plain RL methods. To take advantage of this extra information, we propose AggreVaTeD, an extension of the Imitation Learning (IL) approach of Ross & Bagnell (2014).
+AggreVaTeD allows us to use expressive differentiable policy representations such as deep
+networks, while leveraging training-time oracles to achieve faster and more accurate solutions with less training data. Specifically, we
+present two gradient procedures that can learn
+neural network policies for several problems, including a sequential prediction task and several
+high-dimensional robotics control problems. We
+also provide a comprehensive theoretical study
+of IL that demonstrates that we can expect up
+to exponentially-lower sample complexity for
+learning with AggreVaTeD than with plain RL
+algorithms. Our results and theory indicate that
+IL (and AggreVaTeD in particular) can be a more
+effective strategy for sequential prediction than
+plain RL.
 
 1. Introduction
-Generative machine learning models have been used recently to produce extraordinary results, from realistic musical improvisation (Jaques et al., 2016), to changing facial expressions in images (Radford et al., 2015; Upchurch
-et al., 2016), to creating realistic looking artwork (Gatys
-et al., 2015). In large part, these generative models have
-been successful at representing data in continuous domains.
-Recently there is increased interest in training generative
-models to construct more complex, discrete data types such
-as arithmetic expressions (Kusner & Hernández-Lobato,
-2016), source code (Gaunt et al., 2016; Riedel et al., 2016)
-*
-
+A fundamental challenge in artificial intelligence, robotics,
+and language processing is sequential prediction: to reason,
+plan, and make a sequence of predictions or decisions to
+minimize accumulated cost, achieve a long-term goal, or
 1
-Equal contribution
-Alan Turing Institute 2 University
-of Warwick 3 University of Cambridge.
-Correspondence
-to:
-<mkusner@turing.ac.uk>,
-<bpaige@turing.ac.uk>,
-<jmh233@cam.ac.uk>.
+Robotics Institute, Carnegie Mellon University, USA
+Machine Learning Department, Carnegie Mellon University,
+USA 3 College of Computing, Georgia Institute of Technology,
+USA. Correspondence to: Wen Sun <wensun@cs.cmu.edu>.
+2
 
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-and molecules (Gómez-Bombarelli et al., 2016b).
-To train generative models for these tasks, these objects
-are often first represented as strings. This is in large part
-due to the fact that there exist powerful models for text sequence modeling such as Long Short Term Memory networks (LSTMs) (Hochreiter & Schmidhuber, 1997), Gated
-Recurrent Units (GRUs) (Cho et al., 2014), and Dynamic
-Convolutional Neural Networks (DCNNs) (Kalchbrenner
-et al., 2014). For instance, molecules can be represented by
-so-called SMILES strings (Weininger, 1988) and GómezBombarelli et al. (2016b) has recently developed a generative model for molecules based on SMILES strings that
-uses GRUs and DCNNs. This model is able to encode and
-decode molecules to and from a continuous latent space,
-allowing one to search this space for new molecules with
-desirable properties (Gómez-Bombarelli et al., 2016b).
-However, one immediate difficulty in using strings to represent discrete objects is that the representation is very brittle: small changes in the string can lead to completely different objects, or often do not correspond to valid objects
-at all. Specifically, Gómez-Bombarelli et al. (2016b) described that while searching for new molecules, the probabilistic decoder — the distribution which maps from the
-continuous latent space into the space of molecular structures — would sometimes accidentally put high probability
-on strings which are not valid SMILES strings or do not encode plausible molecules.
-To address this issue, we propose to directly incorporate knowledge about the structure of discrete data using
-a grammar. Grammars exist for a wide variety of discrete domains such as symbolic expressions (Allamanis
-et al., 2016), standard programming languages such as C
-(Kernighan et al., 1988), and chemical structures (James
-et al., 2015). For instance the set of syntactically valid
-SMILES strings is described using a context free grammar,
-which can be used for parsing and validation1 .
-Given a grammar, every valid discrete object can be described as a parse tree from the grammar. Thus, we propose the grammar variational autoencoder (GVAE) which
-encodes and decodes directly from and to these parse trees.
-Generating parse trees as opposed to strings ensures that
+optimize for a loss acquired only after many predictions.
+Although conventional supervised learning of deep models has been pivotal in advancing performance in sequential prediction problems, researchers are beginning to utilize Reinforcement Learning (RL) methods to achieve even
+higher performance (Ranzato et al., 2015; Bahdanau et al.,
+2016; Li et al., 2016). In sequential prediction tasks, future predictions often depend on the history of previous
+predictions; thus, a poor prediction early in the sequence
+can lead to high loss (cost) for future predictions. Viewing
+the predictor as a policy ⇡, deep RL algorithms are able to
+reason about the future accumulated cost in sequential prediction problems. These approaches have dramatically advanced the state-of-the-art on a number of problems including high-dimensional robotics control tasks and video and
+board games (Schulman et al., 2015; Silver et al., 2016).
+In contrast with general reinforcement learning methods,
+imitation learning and related sequential prediction algorithms such as SEARN (Daumé III et al., 2009), DaD
+(Venkatraman et al., 2015), AggreVaTe (Ross & Bagnell,
+2014), and LOLS (Chang et al., 2015b) reduce the sequential prediction problems to supervised learning by leveraging a (near) optimal cost-to-go oracle that can be queried
+for the next (near)-best prediction at any point during training. Specifically, these methods assume access to an oracle that provides an optimal or near-optimal action and the
+future accumulated loss Q⇤ , the so-called cost-to-go. For
+robotics control problems, this oracle may be a human expert guiding the robot during the training phase (Abbeel &
+Ng, 2004) or the policy from an optimal MDP solver (Ross
+et al., 2011; Kahn et al., 2016; Choudhury et al., 2017)
+that is either too slow to use at test time or leverages information unavailable at test time. For sequential prediction problems, an oracle can be constructed by optimization (e.g., beam search) or by a clairvoyant greedy algorithm (Daumé III et al., 2009; Ross et al., 2013; Rhinehart
+et al., 2015; Chang et al., 2015a) that, given the training
+data’s ground truth, is near-optimal on the task-specific performance metric (e.g., cumulative reward, IoU, Unlabeled
+Attachment Score, BLEU).
+Expert, demonstrator, and oracle are used interchangeably.
+
+Differential Imitation Learning for Sequential Prediction
+
+We stress that the oracle is only required to be available
+during training. Therefore, the goal of IL is to learn a policy
+⇡
+ˆ with the help of the oracle (⇡ ⇤ , Q⇤ ) during the training
+session, such that ⇡
+ˆ achieves similar or better performance
+at test time when the oracle is unavailable. In contrast to
+IL, reinforcement learning methods often initialize with a
+random policy ⇡0 or cost-to-go estimate Q0 that may be far
+from optimal. The optimal policy (or cost-to-go) must be
+found by exploring, often with random actions.
+A classic family of IL methods is to collect data from running the demonstrator or oracle and train a regressor or
+classifier via supervised learning. These methods (Abbeel
+& Ng, 2004; Syed et al., 2008; Ratliff et al., 2006; Ziebart
+et al., 2008; Finn et al., 2016; Ho & Ermon, 2016) learn
+either a policy ⇡
+ˆ ⇤ or Q̂⇤ from a fixed-size dataset precollected from the oracle. Unfortunately, these methods
+exhibit a pernicious problem: they require the training and
+test data to be sampled from the same distribution, despite
+the fact they explicitly change the sample policy during
+training. As a result, policies learned by these methods can
+fail spectacularly (Ross & Bagnell, 2010). Interactive approaches to IL such as SEARN (Daumé III et al., 2009),
+DAgger (Ross et al., 2011), and AggreVaTe (Ross & Bagnell, 2014) interleave learning and testing to overcome the
+data mismatch issue and, as a result, work well in practical applications. Furthermore, these interactive approaches
+can provide strong theoretical guarantees between training
+time loss and test time performance through a reduction to
+no-regret online learning.
+In this work, we introduce AggreVaTeD, a differentiable
+version of AggreVaTe (Aggregate Values to Imitate (Ross
+& Bagnell, 2014)) which allows us to train policies with
+efficient gradient update procedures. AggreVaTeD extends
+and scales interactive IL for use in sequential prediction
+and challenging continuous robot control tasks. We provide two gradient update procedures: a regular gradient
+update developed from Online Gradient Descent (OGD)
+(Zinkevich, 2003) and a natural gradient update (Kakade,
+2002; Bagnell & Schneider, 2003), which is closely related to Weighted Majority (WM) (Littlestone & Warmuth,
+1994), a popular no-regret algorithm that enjoys an almost
+dimension-free property (Bubeck et al., 2015).
+AggreVaTeD leverages the oracle to learn rich polices that
+can be represented by complicated non-linear function approximators. Our experiments with deep neural networks
+on various robotics control simulators and on a dependency parsing sequential prediction task show that AggreVaTeD can achieve expert-level performance and even
+super-expert performance when the oracle is sub-optimal,
+a result rarely achieved by non-interactive IL approaches.
+i.e., the regret bound depends on poly-log of the dimension
+of parameter space.
+
+The differentiable nature of AggreVaTeD additionally allows us to employ Recurrent Neural Network policies, e.g.,
+Long Short-Term Memory (LSTM) (Hochreiter & Schmidhuber, 1997), to handle partially observable settings (e.g.,
+observe only partial robot state). Empirical results demonstrate that by leveraging an oracle, IL can learn much faster
+than RL.
+In addition to providing a set of practical algorithms, we
+develop a comprehensive theoretical study of IL on discrete MDPs. We construct an MDP that demonstrates exponentially better sample efficiency for IL than any RL algorithm. For general discrete MDPs, we provide a regret
+upper bound for AggreVaTeD with WM, which shows IL
+can learn dramatically faster than RL. We provide a regret
+lower bound for any IL algorithm, which demonstrates that
+AggreVaTeD with WM is near-optimal.
+To summarize the contributions of this work: (1) AggreVaTeD allows us to handle continuous action spaces and
+employ recurrent neural network policies for Partially Observable Markov Decision Processes (POMDPs); (2) understanding IL from a perspective that is related to policy gradient allows us to leverage advances from the wellstudied RL policy gradient literature (e.g., gradient variance reduction techniques, efficient natural gradient computation); (3) we provide a new sample complexity study
+of IL and compare to RL, showing that we can expect up to
+exponentially lower sample complexity. Our experimental
+and theoretical results support the proposition:
+Imitation Learning is a more effective strategy
+than Reinforcement Learning for sequential prediction with near-optimal cost-to-go oracles.
+
+2. Preliminaries
+A Markov Decision Process consists of a set of states, actions (that come from a policy), cost (loss), and a model
+that transitions states given actions. Interestingly, most
+sequential prediction problems can be framed in terms
+of MDPs (Daumé III et al., 2009). The actions are the
+learner’s (e.g., RNN’s) predictions. The state is then the result of all the predictions made so far (e.g., the dependency
+tree constructed so far or the words translated so far). The
+cumulative cost is the performance metric such as (negative) UAS, received at the end (horizon) or after the final
+prediction. For robotics control problems, the robot’s configuration is the state, the controls (e.g., joint torques) are
+the actions, and the cost is related to achieving a task (e.g.,
+distance walked).
+Formally, a finite-horizon Markov Decision Process (MDP)
+is defined as (S, A, P, C, ⇢0 , H). Here, S is a set of S states
+and A is a set of A actions; at time step t, Pt is the transition
+dynamics such that for any st 2 S, st+1 2 S, at 2 A,
+
+Differential Imitation Learning for Sequential Prediction
+
+Pt (st+1 |st , at ) is the probability of transitioning to state
+st+1 from state st by taking action at at step t; C is the
+cost distribution such that a cost ct at step t is sampled from
+Ct (·|st , at ). Finally, we denote c̄t (st , at ) as the expected
+cost, ⇢0 as the initial distribution of states, and H 2 N+ as
+the finite horizon (max length) of the MDP.
+We define a stochastic policy ⇡ such that for any state
+s 2 S, ⇡(·|s) 2 (A), where (A) is a A-dimensional
+simplex, conditioned on state s. ⇡(a|s) 2 [0, 1] outputs the
+probability of taking action a at state s. The distribution of
+trajectories ⌧ = (s1 , a1 , . . . , aH 1 , sH ) is determined by
+⇡ and the MDP, and is defined as
+⇢⇡ (⌧ ) = ⇢0 (s1 )
+
+H
+Y
+
+⇡(at
+
+t=2
+
+1 |st 1 )Pt 1 (st |st 1 , at 1 ).
+
+The distribution of the states at time step t, induced by running the policy ⇡ until t, is defined 8st :
+d⇡t (st )
+
+X
+
+=
+
+{si ,ai }it
+
+⇢0 (s1 )
+
+tY
 1
-
-http://opensmiles.org/spec/open-smiles-2-grammar.html
-
-Grammar Variational Autoencoder
-
-all outputs are valid based on the grammar. This frees the
-GVAE from learning syntactic rules and allows it to wholly
-focus on learning other ‘semantic’ properties.
-We demonstrate the GVAE on two tasks for generating discrete data: 1) generating simple arithmetic expressions and
-2) generating valid molecules. We show not only does our
-model produce a higher proportion of valid outputs than a
-character based autoencoder, it also produces smoother latent representations. We also show that this learned latent
-space is effective for searching for arithmetic expressions
-that fit data, for finding better drug-like molecules, and for
-making accurate predictions about target properties.
-
-2. Background
-2.1. Variational autoencoder
-We wish to learn both an encoder and a decoder for mapping data x to and from values z in a continuous space.
-The variational autoencoder (Kingma & Welling, 2014;
-Rezende et al., 2014) provides a formulation in which the
-encoding z is interpreted as a latent variable in a probabilistic generative model; a probabilistic decoder is defined
-by a likelihood function p✓ (x|z) and parameterized by ✓.
-Alongside a prior distribution p(z) over the latent variables,
-the posterior distribution p✓ (z|x) / p(z)p✓ (x|z) can then
-be interpreted as a probabilistic encoder.
-To admit efficient inference, the variational Bayes approach
-simultaneously learns both the parameters of p✓ (x|z) as
-well as those of a posterior approximation q (z|x). This is
-achieved by maximizing the evidence lower bound (ELBO)
-L( , ✓; x) = Eq
-
-(z|x)
-
-[log p✓ (x, z)
-
-log q (z|x)] , (1)
-
-with L( , ✓; x)  log p✓ (x). So long as p✓ (x|z) and
-q (z|x) can be computed pointwise, and are differentiable
-with respect to their parameters, the ELBO can be maximized via gradient descent; this allows wide flexibility in
-choice of encoder and decoder models. Typically these will
-take the form of exponential family distributions whose parameters are the weights of a multi-layer neural network.
-2.2. Context-free grammars
-A context-free grammar (CFG) is traditionally defined as a
-4-tuple G = (V, ⌃, R, S): V is a finite set of non-terminal
-symbols; the alphabet ⌃ is a finite set of terminal symbols, disjoint from V ; R is a finite set of production rules;
-and S is a distinct non-terminal known as the start symbol.
-The rules R are formally described as ↵ ! for ↵ 2 V
-and 2 (V [ ⌃)⇤ , with ⇤ denoting the Kleene closure. In
-practice, these rules are defined as a set of mappings from a
-single left-hand side non-terminal in V to a sequence of terminal and/or non-terminal symbols, and can be interpreted
-as ‘replacement’ instructions.
-
-Repeatedly applying production rules beginning with a
-non-terminal symbol defines a tree, with symbols on the
-right-hand side of the production rule becoming child
-nodes for the left-hand side parent. The grammar G thus
-defines a set of possible trees extending from each nonterminal symbol in V , produced by recursively applying
-rules in R to leaf nodes until all leaf nodes are terminal
-symbols in ⌃. The language of G is the set of all terminal symbol sequences that can be generated as leaf nodes
-in a tree. Given a string in the language (i.e., a sequence
-of terminals), a parse tree is a tree rooted at S which has
-this sequence of terminal symbols as its leaf nodes. The
-ubiquity of context-free languages in computer science is
-due in part to the presence of efficient parsing algorithms
-to generate parse trees. For more background on CFGs and
-automata theory, see e.g. Hopcroft et al. (2006).
-Our work builds off the work of probabilistic context-free
-grammars (PCFGs). A PCFG assigns probabilities to each
-production rule in the grammar, and thus defines a probability distribution over parse trees (Baker, 1979; Booth &
-Thompson, 1973). A string can be generated by repeatedly sampling and applying production rules, beginning at
-the start symbol, until no non-terminals remain. Modern
-approaches allow the probabilities used at each stage to depend on the state of the parse tree (Johnson et al., 2007).
-
-3. Methods
-In this section we describe how a grammar can improve
-variational autoencoders (VAE) for discrete data. It will
-do so by drastically reducing the number of invalid outputs generated from the VAE. We illustrate our approach
-on molecular data, however it will extend to any descrete
-data that can be described by a grammar.
-One glaring issue with a character-based VAE is that it may
-frequently map latent points to sequences that are not valid,
-hoping the VAE will infer from training data what constitutes a valid sequence. Instead of implicitly encouraging
-the VAE to produce valid sequences, we propose to give
-the VAE explicit knowledge about how to produce valid sequences. We do this by using a grammar for the sequences:
-given a grammar we can take any valid sequence and parse
-it into a parse tree. A pre-order traversal on this parse tree
-yields a sequence of production rules. Applying these rules
-in order will yield the original sequence. Our approach then
-will be to learn a VAE that produces sequences of grammar
-production rules. The benefit is that it is trivial to generate
-valid sequences of production rules, as the grammar describes the valid set of rules that can be selected at any
-point during the generation process. Thus, our model is
-able to focus on learning semantic properties of sequence
-data without also having to learn syntactic constraints.
-
-Grammar Variational Autoencoder
-SMILES grammar
-smiles
-chain
-
-chain, branched atom
-
-chain
-
-branched atom
-
-branched atom
-
-atom, ringbond
-
-branched atom
-
-atom
-
-atom
-
-aromatic organic
-
-atom
-
-aliphatic organic
-
-ringbond
-aromatic organic
-
-form parse tree
-
-2
-
-smiles
-
-chain
-
-digit
-'c'
-
-aliphatic organic
-
-'C'
-
-aliphatic organic
-
-'N'
-
-digit
-
-'1'
-
-digit
-
-'2'
-
-input SMILES
-
-branched
-atom
-
-3
-atom
-
-digit
-
-'c'
-
-'1'
-
-'c1ccccc1'
-
-convert to 1- hot vectors
-
-6
-
-map to latent space
-
-branched
-atom
-
-...
-branched
-atom
-atom, ringbond
-aromatic
-organic
-
-atom
-
-ringbond
-
-aromatic
-organic
-
-chain,
-
-...
-chain
-
-5
-
-chain
-
-chain
-branched
-atom
-
-chain
-branched
-atom
-
-extract rules
-smiles
-
-chain
-...
-
-4
-
-aromatic
-organic
-
-'c'
-
-ringbond
-
-digit
-
-OH
-
-O
+i=1
 
 1
 
-'1'
+⇡(ai |si )Pi (si+1 |si , ai ).
 
-digit
+Note that the summation above can be replaced by an integral if the state or action space
+PH is continuous. The average
+state distribution d¯⇡ (s) = t=1 d⇡t (s)/H.
 
-...
+The expected average cost of a policy ⇡ can be defined with
+respect to ⇢⇡ or {d⇡t }:
+µ(⇡) = E
 
-...
+⌧ ⇠⇢⇡
 
-Figure 1. The encoder of the GVAE. We denote the start rule in blue and all rules that decode to terminal in green. See text for details.
+"
 
-3.1. An illustrative example
-We propose a grammar variational autoencoder (GVAE)
-that encodes/decodes in the space of grammar production
-rules. We describe how it works with a simple example.
-Encoding. Consider a subset of the SMILES grammar as
-shown in Figure 1, box 1 . These are the possible production rules that can be used for constructing a molecule.
-Imagine we are given as input the SMILES string for benzene: ‘c1ccccc1’. Figure 1, box 3 shows this molecule.
-To encode this molecule into a continuous latent representation we begin by using the SMILES grammar to parse this
-string into a parse tree (partially shown in box 2 ). This
-tree describes how ‘c1ccccc1’ is generated by the grammar.
-We decompose this tree into a sequence of production rules
-by performing a pre-order traversal on the branches of the
-parse tree from left-to-right, shown in box 4 . We convert
-these rules into 1-hot indicator vectors, where each dimension corresponds to a rule in the SMILES grammar, box
-5 . These 1-hot vectors are concatenated into the rows of
-a matrix X of dimension T (X) ⇥ K, where K is the number of production rules in the SMILES grammar, and T (X)
-is the number of production rules used to generate X.
-We use a deep convolutional neural network to map the
-collection of 1-hot vectors X to a continuous latent vector
-z. The architecture of the encoding network is described in
-the supplementary material.
-Decoding. We now describe how we map continuous
-vectors back to a sequence of production rules (and thus
-SMILES strings). Crucially we construct the decoder so
-that, at any time while we are decoding a sequence, the decoder will only be allowed to select a subset of production
-rules that are ‘valid’. This will cause the decoder to only
-produce valid parse sequences from the grammar.
-We begin by passing the continuous vector z through a recurrent neural network which produces a set of unnormalized log probability vectors (or ‘logits’), shown in Figure 2,
-box 1 and 2 . Exactly like the 1-hot vectors produced
-by the encoder, each dimension of the logit vectors cor-
+H
+X
+t=1
 
-responds to a production rule in the grammar. We can
-again write these collection of logit vectors as a matrix
-F 2 RTmax ⇥K , where Tmax is the maximum number of
-timesteps (production rules) allowed by the decoder. During the rest of the decoding operations, we will use the rows
-of F to select a sequence of valid production rules.
-To ensure that any sequence of production rules generated
-from the decoder is valid, we keep track of the state of the
-parsing using a last-in first-out (LIFO) stack. This is shown
-in Figure 2, box 3 . At the beginning, every valid parse
-from the grammar must start with the start symbol: smiles,
-which is placed on the stack. Next we pop off whatever
-non-terminal symbol that was placed last on the stack (in
-this case smiles), and we use it to mask out the invalid
-dimensions of the current logit vector. Formally, for every non-terminal ↵ we define a fixed binary mask vector
-m↵ 2 [0, 1]K . This takes the value ‘1’ for all indices in
-1, . . . , K corresponding to production rules that have ↵ on
-their left-hand-side.
-In the previous example, the only production rule in the
-grammar beginning with smiles is the first so we maskout every dimension except the first, shown in Figure 2,
-box 4 . We then sample from the remaining unmasked
-rules, using their values in the logit vector. To sample from
-this masked logit at any timestep t we form the following
-masked distribution:
-m↵,k exp(ftk )
-p(xt = k|↵, z) = PK
-,
-j=1 m↵,k exp(ftj )
+#
+
+c̄t (st , at ) =
+
+H
+X
+t=1
+
+E
+
+s⇠d⇡
+t (s),a⇠⇡(a|s)
+
+[c̄t (s, a)] .
+
+We define the state-action value Q⇡t (s, a) (i.e., cost-to-go)
+for policy ⇡ at time step t as:
+Q⇡t (st , at )
+
+= c̄t (st , at ) +
+
+E
+
+s⇠Pt (·|st ,at ),a⇠⇡(·|s)
+
+Q⇡t+1 (s, a),
+
+where the expectation is taken over the randomness of the
+policy ⇡ and the MDP.
+We define ⇡ ⇤ as the expert policy (e.g., human demonstrators, search algorithms equipped with ground-truth) and
+Q⇤t (s, a) as the expert’s cost-to-go oracle. We emphasize
+that ⇡ ⇤ may not be optimal, i.e., ⇡ ⇤ 62 arg min⇡ µ(⇡).
+Throughout the paper, we assume Q⇤t (s, a) is known or can
+be estimated without bias (e.g., by rolling out ⇡ ⇤ : starting
+from state s, applying action a, and then following ⇡ ⇤ for
+H t steps).
+When ⇡ is represented by a function approximator, we use
+the notation ⇡✓ to represent the policy parametrized by
+✓ 2 Rd : ⇡(·|s; ✓). In this work we specifically consider optimizing policies in which the parameter dimension d may
+be large. We also consider the partially observable setting
+in our experiments, where the policy ⇡(·|o1 , a1 , ..., ot ; ✓)
+
+is defined over the whole history of observations and actions (ot is generated from the hidden state st ). We use
+both LSTM and Gated Recurrent Unit (GRU) (Chung et al.,
+2014) based policies where the RNN’s hidden states provide a compressed feature of the history. To our best knowledge, this is the first time RNNs are employed in an IL
+framework to handle partially observable environments.
+
+3. Differentiable Imitation Learning
+Policy based imitation learning aims to learn a policy ⇡
+ˆ
+that approaches the performance of the expert ⇡ ⇤ at test
+time when ⇡ ⇤ is no longer available. In order to learn rich
+policies such as LSTMs or deep networks (Schulman et al.,
+2015), we derive a method related to policy gradients for
+imitation learning and sequential prediction. To do this, we
+leverage the reduction of IL and sequential prediction to
+online learning as shown in (Ross & Bagnell, 2014) to learn
+policies represented by expressive differentiable function
+approximators.
+The fundamental idea in Ross & Bagnell (2014) is to use
+a no-regret online learner to update policies using the following loss function at each episode n:
+`n (⇡) =
+
+H
+h
+i
+1 X
+⇤
+E ⇡n
+E [Qt (st , a)] .
+H t=1 st ⇠dt a⇠⇡(·|st )
+
+(1)
+
+The loss function intuitively encourages the learner to
+find a policy that minimize the expert’s cost-to-go under
+the state distribution resulting from the current learned
+policy ⇡n . Specifically, Ross & Bagnell (2014) suggest an algorithm named AggreVaTe (Aggregate Values
+to Imitate) that uses Follow-the-Leader (FTL) (ShalevShwartz et P
+al., 2012) to update policies: ⇡n+1 =
+n
+arg min⇡2⇧ i=1 `n (⇡), where ⇧ is a pre-defined convex
+policy set. When `n (⇡) is strongly convex with respect to
+⇡ and ⇡ ⇤ 2 ⇧, after N iterations AggreVaTe with FTL can
+find a policy ⇡
+ˆ with:
+µ(ˆ
+⇡ )  µ(⇡ ⇤ )
+
+✏N + O(ln(N )/N ),
 
 (2)
 
-where ftk is the (t, k)-element of the logit matrix F. As
-only the first rule is unmasked we will select this rule
-smiles ! chain as the first rule in our sequence, box 5 .
-Now the next rule must begin with chain, so we push it
-onto the stack (Figure 2, box 3 ). We sample this nonterminal and, as before, use it to mask out all of the rules
-that cannot be applied in the current logit vector. We then
-sample a valid rule from this logit vector: chain ! chain,
-branched atom. Just as before we push the non-terminals
-on the right-hand side of this rule onto the stack, adding
-the individual non-terminals in from right to left, such that
-the leftmost non-terminal is on the top of the stack. For the
+PN
+PN
+where ✏N = [ n=1 `n (⇡ ⇤ ) min⇡ n=1 `n (⇡)]/N . Note
+that ✏N
+0 and the above inequality indicates that ⇡
+ˆ can
+outperform ⇡ ⇤ when ⇡ ⇤ is not (locally) optimal (i.e., ✏n >
+0). Our experimental results support this observation.
+A simple implementation of AggreVaTe that aggregates the
+values (as the name suggests) will require an exact solution
+to a batch optimization procedure in each episode. When
+⇡ is represented by large, non-linear function approximators, the arg min procedure generally takes more and more
+computation time as n increases. Hence an efficient incremental update procedure is necessary for the method to
+scale.
 
-Grammar Variational Autoencoder
-1
+Differential Imitation Learning for Sequential Prediction
 
-map from latent space
+To derive an incremental update procedure, we can take
+one of two routes. The first route, suggested already by
+(Ross & Bagnell, 2014), is to update our policy with an
+incremental no-regret algorithm such as weighted majority
+(Littlestone & Warmuth, 1994), instead of with a batch algorithm like FTRL. Unfortunately, for rich policy classes
+such as deep networks, no-regret learning algorithms may
+not be available (e.g., a deep network policy is non-convex
+with respect to its parameters). So instead we propose a
+novel second route: we directly differentiate Eq. 1, yielding an update related to policy gradient methods. We work
+out the details below, including a novel update rule for IL
+based on natural gradients.
+Interestingly, the two routes described above yield almost
+identical algorithms if our policy class is simple enough:
+e.g., for a tabular policy, AggreVaTe with weighted majority yields the natural gradient version of AggreVaTeD described below. And, the two routes yield complementary
+theoretical guarantees: the first route yields a regret bound
+for simple-enough policy classes, while the second route
+yields convergence to a local optimum for extremely flexible policy classes.
+3.1. Online Gradient Descent
+For discrete actions, the gradient of `n (⇡✓ ) (Eq. 1) with
+respect to the parameters ✓ of the policy is
+r✓ `n (✓) =
 
-2
-
-convert to logits
-
-stack
-
-3
-
-pop first
-non-terminal
-
-mask out invalid rules
-4
-
-smiles
-
-smiles
-
-smiles
-
-chain
-
-chain
-branched
-atom
-
-max length
-
-ringbond,
-
-branched
-atom
-branched
-atom
-
-branched
-atom
-atom
-
-atom
-
-chain
-
-aromatic
-organic
-'c'
-
-branched
-atom
-
-ringbond
-
-ringbond
-
-digit
-
-branched
-atom
-
-digit
-
-digit
-
-'c1ccccc1'
-
-atom, ringbond
-
-aromatic
-organic
-
-...
-
-6
-
-branched
-atom
-
-aromatic
-organic
-
-digit,
-
-concatenate
-terminals
-
-branched
-chain,
-atom
-
-branched
-aromatic
-ringbond,
-atom
-organic,
-ringbond,
-
-...
-
-chain
-
-chain
-
-branched branched
-atom,
-atom
-atom,
-
-chain
-
-...
-
-...
-chain,
-
-sample rule &
-push non-terminals
-5
-onto stack
-
-7
-
-translate
-molecule
-
-'1'
-
-Figure 2. The decoder of the GVAE. See text for details.
-
-Algorithm 1 Sampling from the decoder
-Input: Deterministic decoder output F 2 RTmax ⇥K ,
-masks m↵ for each production rule ↵
-Output: Sampled productions X from p(X|z)
-1: Initialize empty stack S, and push the start symbol S
-onto the top; set t = 0
-2: while S is nonempty do
-3:
-Pop the last-pushed non-terminal ↵ from the stack S
-4:
-Use Eq. (2) to sample a production rule R
-5:
-Let xt be the 1-hot vector corresponding to R
-6:
-Let RHS(R) denote all non-terminals on the righthand side of rule R, ordered from right to left
-7:
-for non-terminal in RHS(R) do
-8:
-Push on to the stack S
-9:
-end for
-10:
-Set X
-[X> , xt ]>
-11:
-Set t
-t+1
-12: end while
-next state we again pop the last rule placed on the stack and
-mask the current logit, etc. This process continues until the
-stack is empty or we reach the maximum number of logit
-vectors Tmax . We describe this decoding procedure formally in Algorithm 1. In practice, because sampling from
-the decoder often finishes before t reaches Tmax , we introduce an additional ‘no-op’ rule to the grammar that we use
-to pad X until the number of rows equals Tmax .
-
-character-based VAE decoder is that at every point in the
-generated sequence, the character VAE can sample any
-possible character. There is no stack or masking operation. The grammar VAE however is constrained to select
-syntactically-valid sequences.
-Syntactic vs. semantic validity. It is important to note
-that the grammar encodes syntactically valid molecules
-but not necessarily semantically valid molecules. This is
-mainly because of three reasons. First, certain molecules
-produced by the grammar may be very unstable molecules
-or not chemically-valid (for instance an oxygen atom cannot bond to 3 other atoms as it only has 2 free electrons for
-bonding, although it would be possible to generate this in
-a molecule from the grammar). Second, the SMILES language has non-context free aspects, e.g. a ringbond must be
-opened and closed by the same digit, starting with ‘1’ (as is
-the case for benzene ‘c1ccccc1’). The particular challenge
-for matching digits, in contrast to matching grouping symbols such as parentheses, is that they do not compose in a
-nested manner; for example, ‘C12(CCCCC1)CCCCC2’ is
-a valid molecule. Keeping track of which digit to use for
-each ringbond is not context-free. Third, we note that the
-GVAE can output an undetermined sequence if there are
-still non-terminal symbols on the stack after processing all
-Tmax logit vectors. While this could be fixed by a procedure that converts these non-terminals to terminals, for
-simplicity we mark these sequences as invalid.
-
-We note the explicit connection between the process in Algorithm 1 and parsing algorithms for pushdown automata.
-A pushdown automaton is a finite state machine which
-has access to a single stack for long-term storage, and are
-equivalent to context-free grammars in the sense that every CFG can be converted into a pushdown automaton, and
-vice-versa (Hopcroft et al., 2006). The decoding algorithm
-performs the sequence of actions taken by a nondeterministic pushdown automaton at each stage of a parsing algorithm; the nondeterminism is resolved by sampling according to the probabilities in the emitted logit vector.
-
-3.2. Training
-
-Contrasting the character VAE. Notice that the key
-difference between this grammar VAE decoder and a
-
-with the individual probabilities at each timestep defined as
-in Eq. (2). We pad any remaining timesteps after T (X) up
-
-During training, each input SMILES encoded as a sequence
-of 1-hot vectors X 2 {0, 1}Tmax ⇥K , also defines a sequence of Tmax mask vectors. Each mask at timestep
-t = 1, . . . , Tmax is selected by the left-hand side of the production rule indicated in the 1-hot vector xt . Given these
-masks we can compute the decoder’s mapping
-T (X)
-
-p(X|z) =
-
-Y
-
-t=1
-
-p(xt |z, x1:(t
-
-1) ),
+H
+X
+1 X
+r✓ ⇡(a|st ; ✓)Q⇤t (st , a).
+E⇡
+H t=1 st ⇠d ✓n a
+t
 
 (3)
 
-Grammar Variational Autoencoder
+For continuous action spaces, we cannot simply replace the
+summation by integration since in practice it is hard to evaluate Q⇤t (s, a) for infinitely many a, so, instead, we use importance weighting to re-formulate `n (Eq. 1) as
+`n (⇡✓ ) =
 
-Character VAE
+H
+1 X
+⇡(a|s; ✓) ⇤
+Q (s, a)
+E
+H t=1 s⇠d⇡✓n ,a⇠⇡(·|s;✓n ) ⇡(a|s; ✓n ) t
+t
 
-Algorithm 2 Training the Grammar VAE
-Input: Dataset {X(i) }N
-i=1
-Output: Trained VAE model p✓ (X|z), q (z|X)
-1: while VAE not converged do
-2:
-Select element: X 2 {X(i) }N
-i=1 (or minibatch)
-3:
-Encode: z ⇠ q (z|X)
-4:
-Decode: given z, compute logits F 2 RTmax ⇥K
-5:
-for t in [1, . . . , Tmax ] do
-6:
-Compute p✓ (xt |z) via Eq. (2), with mask mxt
-and logits ft
-7:
-end for
-8:
-Update ✓, using estimates p✓ (X|z), q (z|X), via
-gradient descent on the ELBO in Eq. (4)
-9: end while
-to Tmax with a ‘no-op’ rule, a one-hot vector indicating the
-parse tree is complete and no actions are to be taken.
-In all our experiments, q(z|X) is a Gaussian distribution
-whose mean and variance parameters are the output of the
-encoder network, with an isotropic Gaussian prior p(z) =
-N (0, I). At training time, we sample a value of z from
-q(z|X) to compute the ELBO
-L( , ✓; X) = Eq
+=
 
-(z|X)
+1
+H
 
-[log p✓ (X, z)
+E
 
-log q (z|X)] .
+⌧ ⇠⇢⇡✓
+
+n
+
+H
+X
+t=1
+
+⇡(at |st ; ✓) ⇤
+Q (st , at ).
+⇡(at |st ; ✓n ) t
+
 (4)
 
-Following Kingma & Welling (2014), we apply a noncentered parameterization on the encoding Gaussian distribution and optimize Eq. (4) using gradient descent, learning encoder and decoder neural network parameters and
-✓. Algorithm 2 summarizes the training procedure.
-
-4. Experiments
-We show the usefulness of our proposed grammar variational autoencoder (GVAE)2 on two sequence optimization problems: 1) searching for an arithmetic expression
-that best fits a dataset and 2) finding new drug molecules.
-We begin by showing the latent space of the GVAE and
-a character variational autoencoder (CVAE), similar to
-that of Gómez-Bombarelli et al. (2016b)3 , on each of
-the problems. We demonstrate that the GVAE learns a
-smooth, meaningful latent space for arithmetic equations
-and molecules. Given this we perform optimization in this
-latent space using Bayesian optimization, inspired by the
-technique of Gómez-Bombarelli et al. (2016b). We demonstrate that the GVAE improves upon a previous character
-variational autoencoder, by selecting an arithmetic expression that matches the data nearly perfectly, and by finding
-novel molecules with better drug properties.
-2
-3
-
-Code available at: https://github.com/mkusner/grammarVAE
-https://github.com/maxhodak/keras-molecules
-
-3*x+exp(3)+exp(1)
-2*2+exp(3)+exp(1)
-3*1+exp(3)+exp(2)
-2*1+exp3)+exp(2)
-2*3+(x)+exp(x*3)
-2*x+(2)+exp(x*3)
-2*x+(1)+exp(x*x)
-3*x+exp(1)+(x+3)
-3*x+exp(3)+(x*3)
-3*1+exp(3)+(2*1)
-3*x+exp(3)+(2*1)
-2*1+exp(3)+(x*2)
-2*x+exp3)+xx(3)
-2*2+3+exp(x*3)
-x+1+exp(1)+sin(1*2)
-x+1+exp(1)+sin(1*2)
-1+3+exp(x)+(i*1)
-3+1+exp(2)+(1*1)
-x+2+exp(x)+(2*3)
-x*3+exp(3)+(3*2)
-3*3+sin(3)+(3*3)
-3*x+sin(2)+(x*x)
-x*1+exp(x)+ex*3)
-x*2+exp(x)+ex*x)
-x*2+exp(x)+(x*1)
-x*3+exp(x)+(x*3)
-x*1+exp(x)+(2*2)
-3*x+exp(2)+(2*2)
-
-Grammar VAE
-
-3*x+exp(3)+exp(1)
-3*x+exp(3)+exp(1)
-3*x+exp(x)+exp(1/2)
-2*x+exp(x)+exp(1/2)
-2*x+(x)+exp(1*x)
-2*x+(x)+exp(x*x)
-2*x+(1)+exp(x*x)
-3*x+exp(1)+(x+3)
-3*x+exp(1)+(x+3)
-2*3+exp(x)+(x)
-2*3+x+(x+3)
-2*3+x+(x/3)
-2*2+3+(x*3)
-2*2+3+exp(x*3)
-x+1+exp(1)+sin(1*2)
-x+1+exp(1)+sin(1*2)
-x/1+exp(x)+sin(x*2)
-x/x+sin(x)+exp(x*2)
-3*x+sin(x)+(x*3)
-3*x+sin(3)+(3*3)
-3*3+sin(3)+(3*3)
-3*x+sin(2)+(x*x)
-3*x+sin(2)+(x*x)
-3*x+sin(2)+(3*x)
-3*x+exp(2)+(3*3)
-3*x+exp(2)+(3*3)
-3*x+exp(2)+(2*2)
-3*x+exp(2)+(2*2)
-
-Table 1. Linear interpolation between two equations (in bold, at
-top and bottom of each cell). The character VAE often passes
-through intermediate strings which do not decode to a valid equation (shown in red). The grammar VAE makes more fine-grained
-perturbations at each stage.
-
-4.1. Problems
-We describe in detail the two sequence optimization problems we seek to solve. The first consists in optimizing
-the fit of an arithmetic expression. We are given a set of
-100,000 randomly generated univariate arithmetic expressions from the following grammar:
-S ! S ‘+ ’ T | S ‘ ⇤ ’ T | S ‘ / ’ T | T
-T ! ‘ ( ’ S ‘ ) ’ | ‘ s i n ( ’ S ‘ ) ’ | ‘ exp ( ’ S ‘ ) ’
-T ! ‘x ’ | ‘1 ’ | ‘2 ’ | ‘3 ’
-
-where S and T are non-terminals and the symbol | separates the possible production rules generated from each
-non-terminal. By parsing this grammar we can randomly
-generate strings of univariate arithmetic equations (functions of x) such as the following: sin(2), x/(3 + 1),
-2 + x + sin(1/2), and x/2 ⇤ exp(x)/exp(2 ⇤ x). We
-limit the length of every selected string to have at most
-15 production rules. Given this dataset we train both the
-CVAE and GVAE to learn a latent space of arithmetic expressions. We propose to perform optimization in this latent space of expressions to find an expression that best fits
-a fixed dataset. A common measure of best fit is the test
-MSE between the predictions made by a selected expression and the true data. In the generated expressions, the
-presence of exponential functions can result in very large
-MSE values. For this reason, we use as target variable
-log(1 + MSE) instead of MSE.
-
-Grammar Variational Autoencoder
-
-For the second optimization problem, we follow (GómezBombarelli et al., 2016b) and optimize the drug properties
-of molecules. Our goal is to maximize the water-octanol
-partition coefficient (logP), an important metric in drug
-design that characterizes the drug-likeness of a molecule.
-As in Gómez-Bombarelli et al. (2016b) we consider a penalized logP score that takes into account other molecular properties such as ring size and synthetic accessibility (Ertl & Schuffenhauer, 2009). The training data for
-the CVAE and GVAE models are 250,000 SMILES strings
-(Weininger, 1988) extracted at random from the ZINC
-database by Gómez-Bombarelli et al. (2016b). We describe
-the context-free grammar for SMILES strings that we use
-to train our GVAE in the supplementary material.
-4.2. Visualizing the latent space
-Arithmetic expressions. To qualitatively evaluate the
-smoothness of the VAE embeddings for arithmetic expressions, we attempt interpolating between two arithmetic expressions, as in Bowman et al. (2016). This is done by
-encoding two equations and then performing linear interpolation in the latent space. Results comparing the character and grammar VAEs are shown in Table 1. Although
-the character VAE smoothly interpolates between the text
-representation of equations, it passes through intermediate
-points which do not decode to valid equations. In contrast, the grammar VAE also provides smooth interpolation and produces valid equations for any location in the
-latent space. A further exploration of a 2-dimensional latent space is shown in the appendix.
-
-train an additional model to predict properties of sequences
-from their latent representation. To propose promising new
-sequences, we can start from the latent vector of an encoded
-sequence and then use the output of this predictor (including its gradient) to move in the latent space direction most
-likely to improve the property. The resulting new latent
-points can then be decoded into corresponding sequences.
-In practice, measuring the property of each new sequence
-could be an expensive process. For example, the sequence
-could represent an organic photovoltaic molecule and the
-property could be the result of an expensive quantum mechanical simulation used to estimate the molecule’s powerconversion efficiency (Hachmann et al., 2011). The sequence could also represent a program or expression which
-may be computationally expensive to evaluate. Therefore,
-ideally, we would like the optimization process to perform
-only a reduced number of property evaluations. For this,
-we use Bayesian optimization methods, which choose the
-next point to evaluate by maximizing an acquisition function that quantifies the benefit of evaluating the property at
-a particular location (Shahriari et al., 2016).
-
-4.3. Bayesian optimization
-
-After training the GVAE, we obtain a latent feature vector
-for each sequence in the training data, given by the mean
-of the variational encoding distributions. We use these vectors and their corresponding property estimates to train a
-sparse Gaussian process (SGP) model with 500 inducing
-points (Snelson & Ghahramani, 2005), which is used to
-make predictions for the properties of new points in latent space. After training the SGP, we then perform 5 iterations of batch Bayesian optimization using the expected
-improvement (EI) heuristic (Jones et al., 1998). On each
-iteration, we select a batch of 50 latent vectors by sequentially maximizing the EI acquisition function. We use the
-Kriging Believer Algorithm to account for pending evaluations in the batch selection process (Cressie, 1990). That is,
-after selecting each new data point in the batch, we add that
-data point as a new inducing point in the sparse GP model
-with associated target variable equal to the mean of the GP
-predictive distribution at that point. Once a new batch of 50
-latent vectors is selected, each point in the batch is transformed into its corresponding sequence using the decoder
-network in the GVAE. The properties of the newly generated sequences are then computed and the resulting data
-is added to the training set before retraining the SGP and
-starting the next BO iteration. Note that some of the new
-sequences will be invalid and consequently, it will not be
-possible to obtain their corresponding property estimate. In
-this case we fix the property to be equal to the worst value
-observed in the original training data.
-
-We now perform a series of experiments using the autoencoders to produce novel sequences with improved properties. For this, we follow the approach proposed by GómezBombarelli et al. (2016b) and after training the GVAE, we
-
-Arithmetic expressions. Our goal is to see if we can
-find an arithmetic expression that best fits a fixed dataset.
-Specifically, we generate this dataset by selecting 1000
-
-Molecules. We are interested if the GVAE produces a coherent latent space of molecules. To assess this we begin by
-encoding a molecule. We then generate 2 random orthogonal unit vectors in latent space (scaled down to only search
-the neighborhood of the molecules). Moving in combinations of these directions defines a grid and at each point in
-the grid we decode the latent vector 1000 times. We select the molecule that appears most often as the representative molecule. Figure 3 shows this latent space search surrounding two different molecules. Compare this to Figures
-13-15 in Gómez-Bombarelli et al. (2016b). We note that
-in each plot of the GVAE the latent space is very smooth,
-in many cases moving from one grid point to another will
-only change a single atom in a molecule. In the CVAE
-(Gómez-Bombarelli et al., 2016b) we do not observe such
-fine-grained smoothness.
-
-Grammar Variational Autoencoder
-H
-
-H
-NH2
-
-F
-
-NH2 NH2
-
-NH2 NH2
-
-NH
-
-NH2
-
-NH
-
-F
-
-OH
-
-O
-
-OH
-
-O
-
-H
-
-O
-
-NH
-
-H
-
-NH NH
-OH
-
-O
-
-NHO
-
-O
-O
-
-NH
-
-NH
-
-NH2
-
-OH OH
-
-NH2 NH2
-
-OH
-
-NH2 NH2
-
-NH2
-
-NH
-
-N
-
-NH NH
-
-NH2
-
-NH
-
-NH
-
-NH
-
-O
-H
-
-OH
-
-SH
-
-NH
-
-NNH2
-
-NH
-
-NH2NH2
-
-NH NH
-
-NH
-
-N
-
-O
-N
-
-N
-
-N
-
-NN
-
-N
-
-N
-
-N
-
-NH
-
-NH
-
-N
-
-H
-
-N
-O
-
-N
-
-N
-
-N
-N
-
-NH NH
-O
-
-N
-
-NH
-NH
-N
-
-O
-
-N
-
-OH
-
-N
-
-N
-N
-
-N
-
-N
-N
-
-N
-
-O
-
-O
-
-NN
-O
-
-HS
-
-O
-
-SH N
-
-N
-
-N
-
-NH
-
-OH
-H
-
-H
-HO
-
-N
-
-NH
-
-NH
-
-HO
-
-N
-
-N
-
-H
-
-NH
-HO
-
-HO
-NH
-
-N
-
-OH
-
-NHNH
-N
-
-NH
-
-OH
-
-NH
-
-OH OH
-
-NH
-
-N N
-
-NH NH
-
-N
-NH
-
-N
-OH
-
-NH
-
-N
-
-NH
-
-O
-H
-
-NH
-O
-
-NH NH
-
-N
-
-NH
-
-O O
-
-S
-
-N
-
-N
-
-N
-
-S NH
-
-N
-
-NH
-
-S
-
-S
-
-N
-N
-
-O
-
-NH
-
-N
-
-NH
-
-N
-O
-
-O
-
-S
-
-OH
-
-HO
-N
-
-N
-
-HO
-
-N
-
-N
-
-NH
-
-HO
-
-O
-
-NH
-
-O
-
-NH
-
-NH
-
-S
-
-O
-
-O O
-
-OH
-
-O
-
-OH
-
-N
-
-NH
-
-NH NH
-
-N
-NH
-
-NH NH
-
-NH NH
-
-S
-
-O
-
-NH NH
-
-O
-
-NH
-N
-
-O
-
-OH
-
-N
-
-OH
-
-N
-
-N
-
-N
-
-N
-
-O
-OH
-
-O O
-
-N
-
-N
-
-N
-
-O
-
-N
-
-NN
-
-NH
-
-N
-
-NH
-
-N
-
-N
-
-S
-
-NH
-NH
-
-NH
-
-N
-O
-
-SH
-
-OH
-
-N
-
-OH
-
-N
-
-N
-
-SH
-
-N
-S
-
-N
-
-N
-
-O
-
-N
-
-S
-
-O
-
-N
-
-O
-
-C+
-
-NH
-
-HO
-
-C+
-
-NH
-
-HO
-NH
-
-N
-
-N
-
-N
-
-NH
-
-N
-
-N
-
-NH
-
-HO
-NH
-
-HO HO
-NH
-
-N
-
-HO HO
-
-NH NH
-
-HO
-
-O
-
-O
-
-NH
-
-O
-
-O
-
-S NH
-
-N
-
-N
-
-N
-
-N
-
-N
-
-N
-
-O
-
-N
-
-N
-
-N
-
-O O
-
-O O
-
-N
-
-O
-
-N
-
-N
-
-N
-O
-
-N
-
-N
-
-N
-
-NH
-
-N
-
-N
-
-N
-
-N
-
-N
-
-N
-
-O O
-N
-
-N
-
-HO
-NH
-N
-
-HO
-NH
-N
-
-HO
-NH
-N
-
-N
-
-NH
-NH
-
-NH NH
-
-O
-
-O
-
-NH
-
-N
-
-OH
-
-N
-
-NH NH
-S
-
-S
-
-Cl
-
-Cl
-
-N
-NH
-
-N
-
-N
-
-Cl OH
-
-OHOH
-
-O
-
-NH
-O
-
-O NH
-
-O
-
-O
-
-O
-
-O O
-
-NH NH
-
-NH NH
-
-O O
-
-NH
-
-S
-
-O O
-
-O O
-
-N
-
-N
-
-S
-
-O O
-
-N
-
-N
-
-NH
-
-NH
-
-O
-
-NH NH
-
-N
-
-N
-
-HO HO
-
-N
-
-NH
-
-O
-
-Cl
-
-Cl Cl
-
-Cl
-
-Cl
-
-Cl
-
-N
-
-O O
-
-N
-
-N N
-
-N
-
-NH NH
-
-O
-
-O O
-
-O O
-
-C-
-
-Cl
-
-OH
-
-O
-
-O
-
-NH
-
-O
-
-O O
-
-O
-
-O
-
-OH
-
-O
-
-O
-
-O
-
-OH Br
-
-O
-
-C-
-
-O
-
-N
-
-Cl
-
-O
-
-O
-
-Br NH2
-
-O
-
-O
-
-Br
-
-O
-
-O O
-
-N N
-
-O
-
-N N
-
-HO
-
-Cl
-
-N
-
-Cl
-
-OH
-
-N
-
-Cl
-
-N
-
-NH
-Br
-
-O
-
-N
-
-Cl Cl
-
-NH
-
-O
-
-N
-
-O
-
-NH
-
-C-
-
-C-
-
-C-
-
-Cl
-
-O
-
-O O
-
-O
-
-O
-
-O
-
-OH
-
-O
-
-O
-
-O
-
-O
-
-OH OH
-
-O
-
-C-
-
-O
-
-O
-
-O
-
-OH OH
-
-O
-
-O
-
-O
-
-O
-
-OH OH
-
-O
-
-O
-
-O
-
-O
-
-Br
-
-O
-
-Cl
-
-S
-
-O O
-
-N
-
-O O
-
-N N
-
-O O
-
-N
-
-N
-
-O
-
-O
-
-N
-
-SH
-
-NH
-
-O
-
-Cl Cl
-
-N
-
-OH
-
-O
-SH
-
-NH
-
-O O
-
-O
-
-NH
-
-O O
-
-O O
-
-S
-
-O
-
-O O
-
-O
-
-O
-
-OH
-
-O
-
-O
-
-O
-
-OH OH
-
-O
-
-NH
-
-C-
-
-Cl
-
-O
-
-O O
-
-O O
-
-O O
-
-O O
-
-O O
-
-NH NH
-
-F
-
-OO
-
-O
-
-N
-
-NH
-
-O
-
-IH2
-S
-
-NH
-
-S
-
-C-
-
-F O
-C-
-
-NH
-
-O
-
-NH
-
-F
-
-S
-
-C-
-
-S
-
-O
-
-NH
-O
-
-S S
-
-S S
-
-O O
-
-O O
-
-O O
-
-O HO
-
-Cl
-
-HOHO
-
-NH
-
-S
-
-HO
-
-O
-
-O
-
-O
-
-OH OH
-
-O
-
-O
-
-O
-
-O
-
-OH OH
-
-O
-
-O
-
-O
-
-O
-
-OH OH
-
-O
-
-O
-
-O S
-
-S
-
-O
-
-NH NH
-
-O
-
-S
-
-Br
-
-S
-
-S
-
-S
-
-S
-
-N
-
-O O
-C-
-
-O O
-
-O
-
-O O
-
-S S
-
-O HO
-
-O O
-
-S S
-
-HOHO
-
-S S
-
-O
-
-O
-
-O
-
-OH
-
-O
-
-O
-
-O
-
-O
-
-NH
-
-O
-
-O
-
-O
-
-O
-
-S
-
-O
-
-S O
-
-HOHO
-
-HOHO
-
-HO
-
-O
-
-O
-
-O
-
-F
-
-O
-
-O
-
-O
-
-O
-
-O
-
-S
-
-O O
-
-O S
-
-O
-
-Cl
-
-O O
-
-NH NH
-
-O
-
-O
-
-NH
-
-O
-NH
-
-O
-
-O
-
-NH OH
-
-O
-
-O
-
-OH OH
-O
-
-O
-
-OH OH
-O
-
-O
-
-CBr
-
-N
-
-N
-
-O
-
-O
-
-O
-
-O
-
-O
-
-O
-
-O
-
-Cl
-
-O
-
-Cl
-
-O
-
-O
-
-O
-
-O
-
-F
-
-C-
-
-C-
-
-F
-
-F
-
-O
-
-O
-
-C-
-
-NH
-
-O
-
-O O
-
-O
-
-N
-
-N
-
-N
-
-N
-
-N
-
-N
-
-N
-
-N
-
-N
-
-N
-
-N
-
-N
-
-O
-
-N
-
-N
-
-N
-
-O
-
-O
-
-O
-
-O
-
-O
-
-O
-
-O
-
-O
-
-HO
-
-O
-
-O
-
-O
-N
-
-O
-
-NH
-
-O
-
-O
-
-HO
-
-OH
-
-O
-
-O
-
-NH
-
-F
-
-N
-
-O
-
-N
-
-N
-
-N
-
-O
-
-NH NH
-
-NH
-
-O
-
-C-
-
-Cl Cl
-
-NH NH
-
-NH NH
-
-NH NH
-
-NH
-
-C-
-
-C-
-
-O
-
-O
-
-C-
-
-N
-
-O
-
-O
-
-N
-
-N
-
-O
-
-O
-
-N
-
-N
-
-Br
-
-Br OH
-
-OH OH
-
-N
-
-O
-
-N
-
-O
-
-N
-
-OH
-
-OH OH
-
-Cl
-
-O
-
-O
-
-N
-
-N
-
-O
-
-O
-
-OH
-
-O
-
-O
-
-O
-
-O
-
-O
-
-NH
-OH
-
-O
-
-OH
-
-N
-
-N
-
-O
-
-OH
-
-OH
-
-O
-
-N
-
-O
-
-N
-Cl
-
-F
-
-N
-
-NH
-
-O
-
-ONH
-
-Cl
-
-O
-
-O
-
-N
-
-N
-
-N
-
-N
-NH
-
-OH
-
-OH
-N
-
-N
-
-N
-
-N
-
-N
-
-N NH
-
-OH
-N
-
-N
-
-N
-
-N
-
-NH
-OH
-
-N
-
-N
-
-OH
-
-O
-
-O
-
-O
-
-O
-
-HO
-
-S
-
-O
-
-O
-
-O O
-
-O
-
-O
-
-O
-S
-
-S NH
-
-O
-
-NH NH
-
-O
-
-OH
-O
-
-O
-
-O
-
-O
-
-HO
-
-O O
-
-O
-O
-
-O
-
-O
-
-O
-
-OHOH
-
-OH
-
-O
-
-OH
-
-O
-
-O
-
-Cl
-
-O O
-
-Cl Cl
-
-O O
-
-Cl Cl
-
-O O
-
-Cl Cl
-
-O
-
-Cl
-
-OH OH
-
-OH OH
-
-N
-
-N
-
-O
-
-O
-
-O
-
-O
-
-NH NH
-
-N
-
-N
-
-Br
-
-Br
-
-O
-
-O
-
-NH NH
-N
-
-NH
-ONH
-
-NH NH
-
-N
-
-N
-
-Br
-
-Br
-
-O
-
-O
-
-O
-
-O
-
-NH
-
-N
-
-N
-
-NH
-
-O
-
-O
-
-NH
-
-O
-
-O
-
-NH
-
-O
-
-N
-
-Br OH
-
-OH
-
-O
-
-Cl
-
-O
-
-O
-
-O
-
-OH
-
-Br
-
-O O
-Br Br
-
-O O
-Br OH
-
-NH
-
-O
-OH OH
-
-NH NH
-
-NH
-
-NH
-
-N
-
-N NH
-
-N
-
-OH
-
-NH
-
-NH
-N
-
-N
-
-O
-
-O
-
-NH
-
-NH
-N
-
-N
-
-OH
-
-OH
-
-Br
-
-OH
-
-NH
-
-NH
-N
-
-O
-
-O
-
-N
-
-O
-
-O
-
-NH
-
-OH
-
-N
-
-O
-
-O
-
-OH
-
-N
-
-OH
-
-NH
-
-O
-
-O
-
-OH
-
-OH
-
-O
-
-OH
-
-O
-NH
-
-OH
-
-N
-
-OH
-
-O
-
-NH
-
-O
-
-O
-
-N
-
-IH2 IH2
-
-O
-
-O
-
-IH2 IH2
-
-NH
-
-Br
-
-Br
-
-Br
-
-Br
-
-O
-
-O
-
-NH
-
-NH
-IH2
-
-NH
-
-Cl
-
-O
-
-NH
-
-N
-
-NH
-
-OH
-O
-
-O
-
-O
-
-Br
-
-NH
-
-NH
-N
-
-N
-OH
-
-Br
-
-O
-
-O O
-
-OH
-
-S
-
-O
-
-N
-
-Br
-
-OH
-
-OH
-
-F
-C-
-
-S
-
-N
-
-N
-
-O
-
-N
-
-N
-
-OH
-
-O
-
-OH OH
-
-O
-
-ONH
-
-NH
-
-S S
-
-OH
-
-OH
-
-N
-
-NH
-
-OH
-
-OH
-F
-
-O
-
-O
-
-Cl
-O
-
-OH
-SO
-
-C-
-
-N
-
-N
-
-O
-
-N
-
-O
-
-O
-
-C-
-
-OH
-S
-
-NH NH
-
-NH
-
-F
-
-O
-
-O
-OH OH
-O
-
-N
-
-O
-
-Cl
-
-O
-S
-
-O
-S
-
-O
-
-O
-
-NH
-
-NH
-
-O
-
-S
-
-F
-
-O
-OH OH
-
-O
-
-NH
-
-O
-OH
-
-OS
-
-Cl
-
-O
-
-O
-
-NH
-
-O
-
-OH
-S
-
-C-
-
-O
-
-OH OH
-O
-
-NH NH
-
-Cl
-
-OH
-S
-
-N
-
-S
-
-O
-OH
-S
-
-NH NH
-
-F
-
-Br
-
-S S
-
-S
-
-O
-
-O
-
-O
-
-NH
-Cl
-
-N
-
-NH
-
-O
-
-Cl
-
-S
-S
-
-Br
-
-N
-NH
-
-NH
-N
-
-OH
-
-O
-
-C-
-
-NH
-
-O
-
-S
-
-C-
-
-S
-S
-
-N
-
-O
-
-N
-
-S
-
-O
-S
-
-N
-NH
-
-NH
-
-N
-
-N
-
-O
-
-NH
-
-F
-
-O
-
-Cl
-F
-
-S
-O
-
-O
-
-N
-
-Cl
-
-N
-
-O
-
-Cl
-
-NH
-
-NH
-SO
-
-S
-
-S
-
-O
-Cl
-
-N
-
-O
-
-N
-
-NH
-
-Br
-
-O
-
-Cl
-
-O
-N
-
-NH
-
-NH
-
-N
-
-Cl
-
-O
-S
-
-F
-Cl
-
-O
-
-Br
-
-O
-
-N
-
-IH2
-
-Cl
-
-Br
-
-O
-
-OH OH
-
-O
-
-NH
-
-NH
-
-S
-
-F
-
-NH
-
-Cl
-
-O O
-
-HO
-
-S
-
-O
-
-O
-
-N
-
-O
-Cl
-
-NH
-
-N
-
-N
-
-NH
-
-NH
-
-Br
-
-NH
-
-C- C-
-
-NH
-
-NH
-
-C-
-
-O
-
-O
-
-NH
-
-S
-
-N
-
-Cl
-
-Cl
-S
-
-NH NH
-S
-
-N
-N
-
-N
-
-NH
-
-Br
-
-Cl
-
-O
-
-HO
-
-N
-
-O
-
-O
-
-NH
-
-O
-
-N
-
-S
-
-Cl
-
-Cl
-HO
-
-S
-
-NH
-
-N
-
-N
-
-NH NH
-
-N
-
-O
-
-O
-
-N
-
-O O
-N
-
-NH
-
-NH2
-
-O
-
-Cl
-
-OH
-
-NH
-
-Cl
-
-N
-
-NNH
-S S
-
-NH
-
-Cl
-
-O
-
-O
-
-N
-N
-
-N
-
-NH
-
-NH
-
-Cl
-
-N
-
-Cl
-
-OH
-
-Cl
-
-N
-
-Cl
-
-Cl
-
-O
-N
-
-OHOH
-
-O
-
-NH
-
-NH
-
-Cl
-
-NH
-
-N
-
-S
-
-O
-
-O
-O
-
-NH
-NH
-
-OH
-Cl
-
-F
-
-NH
-
-O
-
-N
-
-N
-
-N S
-O
-
-O
-
-OH
-
-HO
-
-HO
-
-NH NH
-
-NH
-
-O
-
-OH
-
-O
-
-NH
-N NH
-
-O
-
-N
-
-S
-
-O
-
-NH
-
-OH
-
-OH
-
-O NH
-
-O
-
-O
-
-N
-
-HO
-N N
-
-N
-
-NH
-
-F
-
-N
-
-NH
-
-NH NH
-
-N
-
-OH
-
-Cl
-
-HO
-
-N
-
-N
-
-S
-
-N
-
-N
-
-N
-
-Cl
-Cl
-
-N
-
-N
-
-O
-
-O
-
-N
-
-Cl
-
-HO
-NH
-
-H
-
-O
-
-N
-O
-
-N
-
-NNH
-S S
-
-N
-
-N
-
-NH
-
-N
-
-O
-
-N
-
-S
-
-NH
-
-N
-
-O
-
-N
-
-O
-NH+
-SH
-
-N
-
-N
-
-O
-
-N
-
-NH N
-
-O
-NH
-
-NH
-
-N
-
-O
-
-O
-
-NH+ NH+
-
-O
-
-N
-
-O
-
-N
-
-O
-
-Cl
-
-Cl
-NH
-
-N
-
-H
-
-N
-
-OH
-
-Cl
-
-N
-
-N
-
-O
-
-N
-
-N
-
-O
-
-NH NH
-
-N
-OH
-
-N
-
-O
-NH+
-
-N
-
-O O
-
-N
-
-O
-
-NH
-
-NH
-
-O
-
-SH
-
-O
-
-N
-
-NH+
-
-O
-
-N
-
-N
-
-O O
-
-N
-
-O
-
-NH NH
-
-N
-
-O
-
-O
-
-N
-
-NH
-O
-
-N
-N
-
-NH
-
-N
-N
-
-S
-
-N
-
-N
-O
-
-NH NH
-
-O
-
-O
-
-N
-
-NH
-
-NH
-
-NH
-O
-
-O
-
-N
-
-O
-
-N
-NH
-
-NH
-
-N
-
-NH+ NH+
-SH SH
-
-SH
-
-N
-
-N
-
-S
-S
-
-O
-
-O
-
-O
-
-NH
-
-N
-
-O
-
-O
-
-O
-
-OH
-
-NH
-
-O
-
-O
-
-O
-
-NN
-
-N
-
-N
-
-N
-
-O O
-
-SH
-O
-
-NN
-
-N
-
-N
-
-O
-
-NH+ NH+
-
-N
-N
-
-NH
-N
-
-O
-
-O
-
-N
-O
-
-O
-
-N
-
-S
-O
-
-NH
-
-N
-O
-
-NH
-
-O
-
-O
-O
-
-SH
-
-N
-
-NHN
-
-N
-
-N
-
-NH+
-
-O
-
-N
-
-N
-
-O
-N
-
-NH N
-
-N
-
-N
-
-N
-
-O
-
-N
-O
-
-SH
-N
-
-SH
-N
-
-O
-
-N
-N
-
-NH
-N
-
-O
-
-SH SH
-
-S
-
-N
-
-O
-
-SH
-N
-
-N
-
-N
-
-N
-
-NH
-
-O O
-
-NH
-NH NH
-
-N
-
-NH
-N
-
-S
-O
-NH
-N
-
-NH
-O
-
-N
-
-N
-
-NH
-
-O
-
-NH NH
-NH
-
-N
-
-NHN
-
-N
-
-N
-
-O
-
-NH
-
-N
-
-OH
-
-N
-N
-
-O
-
-S
-
-NH
-
-N
-
-O
-
-OH
-NH
-
-HO
-
-NH
-
-NH NH
-
-NH
-
-O
-H
-
-H
-
-NH NH
-
-NH
-
-N
-
-N
-
-O
-N
-
-N
-
-N
-
-N
-
-O
-
-OH
-
-N
-
-O
-
-N N
-
-N
-
-N
-
-O
-
-NH
-NNH
-
-NH
-
-O O
-
-N
-
-HS
-
-O
-
-NH NH
-
-NH NH
-NH NH
-
-N
-
-N
-N
-
-O
-
-NH NH
-
-O
-NH
-
-NH
-
-SH
-
-O
-
-O
-
-O
-
-O
-
-O
-
-O
-
-O
-
-O
-
-O
-
-O
-
-O
-
-O
-
-O
-
-O
-
-O
-
-O
-
-N
-N
-
-O
-
-O
-
-Br
-
-IH2
-
-O
-
-Br
-
-NH
-Br
-
-Br
-
-SH
-
-NH
-
-NH
-N
-
-N
-
-OH
-
-OH
-
-NH
-
-NH
-N
-
-N
-
-OH
-
-NH
-N
-
-OH
-
-N
-NH
-
-NH
-NH
-
-OH
-N
-
-NH
-
-N
-
-N
-
-Br
-
-OH
-
-Figure 3. Searching the 56-dimensional latent space of the GVAE, starting at the molecule in the center.
-
-Table 3. Best expressions found by each method
-
-Method
-GVAE
-CVAE
-
-Figure 4. Plot of best expressions found by each method
-
-Table 2. Results finding best expression and molecule
-
-Problem
-
-Expressions
-Molecules
-
-Method
-GVAE
-CVAE
-GVAE
-CVAE
-
-Frac. valid
-0.99±0.01
-0.86±0.06
-0.31±0.07
-0.17±0.05
-
-Avg. score
-3.47 ±0.24
-4.75±0.25
--9.57 ±1.77
--27.42±8.12
-
-input values, x, that are linearly-spaced between 10
-and 10. We then pass these through our true function
-1/3 + x + sin(x ⇤ x) to generate the true target observations. We use Bayesian optimization (BO) as described
-above search for this equation. We run BO for 5 iterations and average across 10 repetitions of the process. Table 2 (rows 1 & 2) shows the results obtained. The third
-column in the table reports the fraction of arithmetic sequences found by BO that are valid. The GVAE nearly
-always finds valid sequences. The only cases in which it
-does not is when there are still non-terminals on the stack of
-
-#
+See Appendix B for the derivation of the above equation.
+With this reformulation, the gradient with respect to ✓ is
 1
-2
-3
+r✓ `n (✓) =
+H
+=
+
 1
-2
-3
+E⌧ ⇠⇢⇡✓
+n
+H
 
-Expression
+E
 
-x/1 + sin(3) + sin(x ⇤ x)
-1/2 + (x) + sin(x ⇤ x)
-x/x + (x) + sin(x ⇤ x)
-x ⇤ 1 + sin(3) + sin(3/1)
-x ⇤ 1 + sin(1) + sin(2 ⇤ 3)
-x + 1 + sin(3) + sin(3 + 1)
+⌧ ⇠⇢⇡✓
+H
+X
+t=1
 
-Score
-0.04
-0.10
-0.37
-0.39
-0.40
-0.40
+n
 
-the decoder upon reaching the maximum number of timesteps Tmax , however this is rare. Additionally, the GVAE
-finds squences with better scores on average when compared with the CVAE.
-Table 3 shows the top 3 expressions found by GVAE and
-CVAE during the BO search, together with their associated score values. Figure 4 shows how the best expression
-found by GVAE and CVAE compare to the true function.
-We note that the CVAE has failed to find the sinusoidal portion of the true expression, while the difference between the
-GVAE expression and the true function is negligible.
-Molecules. We now consider the problem of finding new
-drug-like molecules. We perform 5 iterations of BO, and
-average results across 10 trials. Table 2 (rows 3 & 4) shows
-the overall BO results. In this problem, the GVAE produces about twice more valid sequences than the CVAE.
-The valid sequences produced by the GVAE also result in
-higher scores on average. The best found SMILES strings
-by each method and their scores are shown in Table 4; the
-molecules themselves are plotted in Figure 5.
+H
+X
+r✓ ⇡(at |st ; ✓)
+t=1
 
-Grammar Variational Autoencoder
+⇡(at |st ; ✓n )
 
-1st
+Q⇤t (st , at )
 
-2nd
+r✓ ln(⇡(at |st ; ✓n ))Q⇤t (st , at ).
 
-3rd
+(5)
 
-I
+The above gradient computation enables a very efficient
+update procedure with online gradient descent: ✓n+1 =
+✓n ⌘n r✓ `n (✓)|✓=✓n , where ⌘n is the learning rate.
 
-Table 5. Test Log-likelihood (LL) and RMSE for the sparse GP
-predictions of penalized LogP score from the latent space
+3.2. Policy Updates with Natural Gradient Descent
+We derive a natural gradient update procedure for imitation
+learning inspired by the success of natural gradient descent
+in RL (Kakade, 2002; Bagnell & Schneider, 2003; Schulman et al., 2015). Following (Bagnell & Schneider, 2003),
+we define the Fisher information matrix I(✓n ) using trajectory likelihood:
+I(✓n ) =
 
-Cl
-
-GVAE
-
-Objective
-
-Cl
-
-O
-
-N
-
-LL
-N
-
-N
-N
-
-S
-
-N
-
-RMSE
-
-N
-S
-
-CVAE
-
-S
-S
-
-Method
-GVAE
-CVAE
-GVAE
-CVAE
-
-Expressions
--1.320±0.001
--1.397±0.003
-0.884 ±0.002
-0.975±0.004
-
-Molecules
--1.739 ±0.004
--1.812±0.004
-1.404 ±0.006
-1.504±0.006
-
-O
-NH
-
-O
-
-Figure 5. Plot of best molecules found by each method.
-Table 4.
-Method #
 1
-GVAE
-2
-3
-1
-CVAE
-2
-3
+H2
 
-Best molecules found by each method
-SMILE
-Score
-CCCc1ccc(I)cc1C1CCC-c1
-2.94
-CC(C)CCCCCc1ccc(Cl)nc1
-2.89
-CCCc1ccc(Cl)cc1CCCCOC
-2.80
-Cc1ccccc1CCCC1CCC1CCc1nncs1
-1.98
-Cc1ccccc1CCCC1(COC1)CCc1nnn1
-1.42
-CCCCCCCCC(CCCC212CCCnC1COC)c122csss1
-1.19
+E
 
-4.4. Predictive performance of latent representation
-We now perform a series of experiments to evaluate the predictive performance of the latent representations found by
-each autoencoder. For this, we use the sparse GP model
-used in the previous Bayesian optimization experiments
-and look at its predictive performance on a left-out test set
-with 10% of the data, where the data is formed by the latent
-representation of the available sequences (these are the inputs to the sparse GP model) and the associated properties
-of those sequences (these are the outputs in the sparse GP
-model). Table 5 show the average test RMSE and test loglikelihood for the GVAE and the CVAE across 10 different
-splits of the data for the expressions and for the molecules.
-This table shows that the GVAE produces latent features
-that yield much better predictive performance than those
-produced by the CVAE.
+⌧ ⇠⇢⇡✓
 
-5. Related Work
-Parse trees have been used to learn continuous representations of text in recursive neural network models (Socher
-et al., 2013; Irsoy & Cardie, 2014; Paulus et al., 2014).
-These models learn a vector at every non-terminal in the
-parse tree by recursively combining the vectors of child
-nodes. Recursive autoencoders learn these representations
-by minimizing the reconstruction error between true child
-vectors and those predicted by the parent (Socher et al.,
-2011a;b). Recently, Allamanis et al. (2016) learn representations for symbolic expressions from their parse trees.
-Importantly, all of these methods are discriminative and do
-not learn a generative latent space. Like our decoder, re-
+n
 
-current neural network grammars (Dyer et al., 2016) produce sequences through a linear traversal of the parse tree,
-but focus on the case where the underlying grammar is unknown and not context-free. Maddison & Tarlow (2014)
-describe generative models of natural source code based on
-probabilistic context free grammars and neuro-probabilistic
-language models. However, these works are not geared towards learning a latent representation of the data.
-Learning arithmetic expressions to fit data, often called
-symbolic regression, are generally based on genetic programming (Willis et al., 1997) or other computationally demanding evolutionary algorithms to propose candidate expressions (Schmidt & Lipson, 2009). Alternatives include
-running particle MCMC inference to estimate a Bayesian
-posterior over parse trees (Perov & Wood, 2016).
-In molecular design, searching for new molecules is traditionally done by sifting through large databases of potential molecules and then subjecting them to a virtual screening process (Pyzer-Knapp et al., 2015; Gómez-Bombarelli
-et al., 2016a). These databases are too large to search
-via exhaustive enumeration, and require novel stochastic
-search algorithms tailored to the domain (Virshup et al.,
-2013; Rupakheti et al., 2015). Segler et al. (2017) fit
-a recurrent neural network to chemicals represented by
-SMILES strings, however their goal is more akin to density estimation; they learn a simulator which can sample proposals for novel molecules, but it is not otherwise
-used as part of an optimization or inference process itself.
-Our work most closely resembles Gómez-Bombarelli et al.
-(2016b) for novel molecule synthesis, in that we also learn
-a latent variable model which admits a continuous representation of the domain. However, both Segler et al. (2017)
-and Gómez-Bombarelli et al. (2016b) use character-level
-models for molecules.
+r✓n log(⇢⇡✓n (⌧ ))r✓n log(⇢⇡✓n (⌧ ))T ,
+(6)
 
-6. Discussion
-Empirically, it is clear that representing molecules and
-equations by way of their parse tree generated from a
-grammar outperforms text-based representations. We believe this approach will be broadly useful for representation
-learning, inference, and optimization in any domain which
-can be represented as text in a context-free language.
+where r✓ log(⇢⇡⌧ (⌧ )) is the gradient of the log likelihood
+PH of the trajectory ⌧ which can be computed as
+t=1 r✓ log(⇡✓ (at |st )). Note that this representation is
+equivalent to the original Fisher information matrix proposed by (Kakade, 2002). Now, we can use Fisher information matrix together with the IL gradient derived in the
+previous section (Eq. 53) to compute the natural gradient
+as I(✓n ) 1 r✓ `n (✓)|✓=✓n , which yields a natural gradient
+update: ✓n+1 = ✓n µn I(✓n ) 1 r✓ `n (✓)|✓=✓n .
+Interesting, as we mentioned before, when the given MDP
+is discrete and the policy class is in a tabular representation,
+AggreVaTe with Weighted Majority (Littlestone & Warmuth, 1994) yields an extremely similar update procedure
+as AggreVaTeD with natural gradient. Due to space limitation, we defer the detailed similarity between AggreVaTe
+with Weighted Majority and AggreVaTeD with natural gradient to Appendix A. As Weighted Majority can speed
+up online learning (i.e., almost dimension free (Bubeck
+et al., 2015)) and AggreVaTe with Weighted Majority enjoys strong theoretical guarantees on the performance of
+the learned policy (Ross & Bagnell, 2014), this similarity
+provides an intuitive explanation why we can expect AggreVaTeD with natural gradient to speed up IL and learn a
+high quality policy.
 
-Grammar Variational Autoencoder
+4. Sample-Based Practical Algorithms
+In the previous section, we derived a regular gradient update procedure and a natural gradient update procedure for
+IL. Note that all of the computations of gradients and Fisher
+information matrices assumed it was possible to exactly
+compute expectations including Es⇠d⇡ and Ea⇠⇡(a|s) . In
+this section, we provide practical algorithms where we approximate the gradients and Fisher information matrices
+using finite samples collected during policy execution.
+4.1. Gradient Estimation and Variance Reduction
+We consider an episodic framework where given a policy
+⇡n at episode n, we roll out ⇡n K times to collect K trai,n
+jectories {⌧in }, for i 2 [K], ⌧in = {si,n
+1 , a1 , ...}. For gradient r✓ `n (✓)|✓=✓n we can compute an unbiased estimate
 
-Acknowledgements
-This work was supported by The Alan Turing Institute under the EPSRC grant EP/N510129/1.
+Differential Imitation Learning for Sequential Prediction
+
+Algorithm 1 AggreVaTeD (Differentiable AggreVaTe)
+
+using {⌧in }i2[K] :
+r̃✓n
+
+K H
+1 XXX
+⇤ i,n
+=
+r✓n ⇡✓n (a|si,n
+t )Qt (st , a),
+HK i=1 t=1 a
+
+r̃✓n =
+
+1: Input: The given MDP and expert ⇡ ⇤ . Learning rate
+
+{⌘n }. Schedule rate {↵i }, ↵n ! 0, n ! 1.
+
+2: Initialize policy ⇡✓1 (either random or supervised
+
+(7)
+
+K H
+1 XX
+i,n
+⇤ i,n i,n
+r✓ ln(⇡✓n (ai,n
+t |st ))Qt (st , at ).
+HK i=1 t=1 n
+
+(8)
+
+for discrete and continuous setting respectively.
+When we can compute Vt⇤ (s), we can replace Q⇤t (si,n
+t , a)
+by the state-action advantage function A⇤t (si,n
+t , a) =
+Q⇤t (si,n
+Vt⇤ (si,n
+t , a)
+t ), which leads to the following unbiased and variance-reduced gradient estimation for continuous action setting (Greensmith et al., 2004):
+r̃✓n =
+
+learning).
+
+3: for n = 1 to N do
+4:
+Mixing policies: ⇡
+ˆn = ↵n ⇡ ⇤ + (1 ↵n )⇡✓n .
+5:
+Starting from ⇢0 , roll out by executing ⇡
+ˆn on the
+
+given MDP to generate K trajectories {⌧in }.
+Using Q⇤ and {⌧in }i , compute the descent direction
+✓n (Eq. 7, Eq. 8, Eq. 9, or CG).
+7:
+Update: ✓n+1 = ✓n ⌘n ✓n .
+8: end for
+9: Return: the best hypothesis ⇡
+ˆ 2 {⇡n }n on validation.
+6:
+
+K H
+1 XX
+i,n
+⇤ i,n i,n
+r✓ ln(⇡✓n (ai,n
+t |st ))At (st , at ),
+HK i=1 t=1 n
+
+(9)
+
+In fact, we can use any baselines to reduce the variance by
+replacing Q⇤t (st , at ) by Q⇤t (st , at ) b(st ), where b( st ) :
+S ! R is a action-independent function. Ideally b(st )
+should be some function approximator that approximates
+V ⇤ (st ). In our experiments, we test linear function approximator b(s) = wT s, which is online learned using ⇡ ⇤ ’s
+roll-out data.
+The Fisher information matrix (Eq. 19) is approximated as:
+˜ n) =
+I(✓
+
+K
+1 X
+r✓ log(⇢⇡✓n (⌧i ))r✓n log(⇢⇡✓n (⌧i ))T
+H 2 K i=1 n
+
+= Sn SnT ,
+
+(10)
+
+where, for notation simplicity, we denote Sn as a d⇥K
+pmatrix where the i’s th column is r✓n log(⇢⇡✓n (⌧i ))/(H K).
+Namely the Fisher information matrix is represented by a
+sum of K rank-one matrices. For large policies represented
+˜ n ) a low rank
+by neural networks, K ⌧ d, and hence I(✓
+matrix. One can find the descent direction ✓n by solving
+the linear system Sn SnT ✓n = r̃✓n for ✓n using Conjugate
+Gradient (CG) with a fixed number of iterations, which is
+equivalent to solving the above linear systems using Partial
+Least Squares (Phatak & de Hoog, 2002). This approach
+is used in TRPO (Schulman et al., 2015). The difference is
+that our representation of the Fisher matrix is in the form
+of Sn SnT and in CG we never need to explicitly compute or
+store Sn SnT which requires d2 space and time. Instead, we
+only compute and store Sn (O(Kd)) and the total computational time is still O(K 2 d). The learning-rate
+for natural
+q
+T
+gradient descent can be chosen as ⌘n =
+KL /(r̃✓n
++
+such that KL(⇢⇡✓n+1 (⌧ ) k⇢⇡✓n (⌧ ) ) ⇡ KL 2 R
+
+✓n ),
+
+Figure 1. The binary tree structure MDP M̃.
+
+4.2. Differentiable Imitation Learning: AggreVaTeD
+Summarizing the above discussion, we present the differentiable imitation learning framework AggreVaTeD, in Alg. 1.
+At every iteration n, the roll out policy ⇡
+ˆn is a mix of the
+expert policy ⇡ ⇤ and the current policy ⇡✓n , with mixing
+rate ↵ (↵n ! 0, n ! 1): at every step, with probability
+↵⇡
+ˆn picks ⇡ ⇤ and picks ⇡✓n otherwise. This mixing strategy with the decay rate was first introduced in (Ross et al.,
+2011) for IL, and later on was used in sequence prediction
+(Bengio et al., 2015). In Line 6, one can either choose Eq. 8
+or the corresponding variance reduced estimation Eq. 9 to
+perform regular gradient descent, and choose CG to perform natural gradient descent. AggreVaTeD is extremely
+simple: we do not need to perform any data aggregation
+(i.e., we do not need to store all {⌧i }i from all previous iterations); the computational complexity of each policy update scales in O(d).
+When we use non-linear function approximators to represent the polices, the analysis of AggreVaTe from (Ross &
+Bagnell, 2014) will not hold, since the loss function `n (✓)
+is not convex with respect to parameters ✓. Nevertheless,
+as we will show in experiments, in practice AggreVaTeD
+is still able to learn a policy that is competitive with, and
+sometimes superior to, the oracle’s performance.
+
+Differential Imitation Learning for Sequential Prediction
+
+5. Quantify the Gap: An Analysis of IL vs RL
+How much faster can IL learn a good policy than RL? In
+this section we quantify the gap on discrete MDPs when IL
+can (1) query for an optimal Q⇤ or (2) query for a noisy but
+unbiased estimate of Q⇤ . To measure the speed of learning,
+we look at the cumulative
+PNregret of the entire learning process, defined as RN = n=1 (µ(⇡n ) µ(⇡ ⇤ )). A smaller
+regret rate indicates faster learning. Throughout this section, we assume the expert ⇡ ⇤ is optimal. We consider
+finite-horizon, episodic IL and RL algorithms.
+5.1. Exponential Gap
+We consider an MDP M shown in Fig. 1 which is a depthK binary tree-structure with S = 2K 1 states and two
+actions al , ar : go-left and go-right. The transition is deterministic and the initial state s0 (root) is fixed. The cost
+for each non-leaf state is zero; the cost for each leaf is i.i.d
+sampled from a given distribution (possibly different distributions per leaf). Below we show that for M, IL can be
+exponentially more sample efficient than RL.
+Theorem 5.1. For M, the regret RN of any finite-horizon,
+episodic RL algorithm is at least:
+p
+E[RN ] ⌦( SN ).
+(11)
+The expectation is with respect to random generation of
+cost and internal randomness of the algorithm. However,
+for the same MDP M, with the access to Q⇤ , we show IL
+can learn exponentially faster:
+Theorem 5.2. For the MDP M, AggreVaTe with FTL can
+achieve the following regret bound:
+RN  O(ln (S)).
+
+(12)
+
+Fig. 1 illustrates the intuition behind the theorem. Assume
+during the first episode, the initial policy ⇡1 picks the rightmost trajectory (bold black) to explore. We query from
+the cost-to-go oracle Q⇤ at s0 for al and ar , and learn that
+Q⇤ (s0 , al ) < Q⇤ (s0 , ar ). This immediately tells us that
+the optimal policy will go left (black arrow) at s0 . Hence
+the algorithm does not have to explore the right sub-tree
+(dotted circle).
+
+following regret with probability at least 1
+:
+⇣
+⌘
+p
+p
+RN  O ln(S)( ln(S)N + ln(2/ )N ) .
+
+(13)
+
+The detailed proofs of the above three theorems can be
+found in Appendix E,F,G respectively. In summary, for
+MDP M, IL is is exponentially faster than RL.
+5.2. Polynomial Gap and Near-Optimality
+We next quantify the gap in general discrete MDPs and also
+show that AggreVaTeD is near-optimal. We consider the
+harder case where we can only access an unbiased estimate
+of Q⇤t , for any t and state-action pair. The policy ⇡ is represented as a set of probability vectors ⇡ s,t 2 (A), for all
+s 2 S and t 2 [H]: ⇡ = {⇡ s,t }s2S,t2[H] .
+Theorem 5.4. With access to unbiased estimates of Q⇤t ,
+AggreVaTeD with WM achieves the regret upper bound:
+p
+RN  O HQemax S ln(A)N .
+(14)
+
+Here Qemax is the maximum cost-to-go of the expert. The
+total regret shown in Eq. 14 allows us to compare IL algorithms to RL algorithms. For example, the Upper Confidence Bound (UCB) based, near-optimal optimistic RL algorithms from (Jaksch et al., 2010), specificallypdesigned
+for efficient exploration, admit p
+regret Õ(HS HAN ),
+leading to a gap of approximately HAS compared to the
+regret bound of imitation learning shown in Eq. 14.
+We also provide a lower bound on RN for the H = 1 case
+which shows the dependencies on N, A, S are tight:
+Theorem 5.5. There exists an MDP (H=1) such that, with
+only access to unbiased estimates of Q⇤ , any finite-horizon
+episodic imitation learning algorithm must have:
+p
+E[RN ] ⌦( S ln(A)N ).
+(15)
+The proofs of the above two theorems regarding general
+MDPs can be found in Appendix H,I. In summary for discrete MDPs, one can expect at least a polynomial gap and
+a possible exponential gap between IL and RL.
+
+6. Experiments
+
+Next we consider a more difficult setting where one can
+only query for a noisy but unbiased estimate of Q⇤ (e.g., by
+rolling out ⇡ ⇤ finite number of times). The above halving
+argument will not apply since deterministically eliminating
+nodes based on noisy estimates might permanently remove
+good trajectories. However, IL can still achieve a poly-log
+regret with respect to S, even in the noisy setting:
+
+We evaluate our algorithms on robotics simulations from
+OpenAI Gym (Brockman et al., 2016) and on Handwritten Algebra Dependency Parsing (Duyck & Gordon, 2015).
+We report reward instead of cost, since OpenAI Gym by
+default uses reward and dependency parsing aims to maximize UAS score. As our approach only promises there
+
+Theorem 5.3. With only access to unbiased estimate of Q⇤ ,
+for the MDP M, AggreVaTeD with WM can achieve the
+
+Qemax
+
+Here we assume Qemax is a constant compared to H. If
+= ⇥(H), then the expert is no better than a random policy
+of which the cost-to-go is around ⇥(H).
+
+Differential Imitation Learning for Sequential Prediction
+
+(a) Cartpole
+
+(b) Acrobot
+
+(c) Acrobot (POMDP)
+
+(d) Hopper
+
+(e) Walker
+
+Figure 2. Performance (cumulative reward R on y-axis) versus number of episodes (n on x-axis) of AggreVaTeD (blue and green),
+experts (red), and RL algorithms (dotted) on different robotics simulators.
+
+exists a policy among all of the learned polices that can
+perform as well as the expert, we report the performance
+of the best policy so far: max{µ(⇡1 ), ..., µ(⇡i )}. For regular gradient descent, we use ADAM (Kingma & Ba, 2014)
+which is a first-order no-regret algorithm, and for natural
+gradient, we use CG to compute the descent direction. For
+RL we use REINFORCE (Williams, 1992) and Truncated
+Natural Policy Gradient (TNPG) (Duan et al., 2016).
+6.1. Robotics Simulations
+We consider CartPole Balancing, Acrobot Swing-up, Hopper and Walker. For generating an expert, similar to previous work (Ho & Ermon, 2016), we used a Deep Q-Network
+(DQN) to generate Q⇤ for CartPole and Acrobot (e.g., to
+simulate the settings where Q⇤ is available), while using
+the publicly available TRPO implementation to generate
+⇡ ⇤ for Hopper and Walker to simulate the settings where
+one has to estimate Q⇤ by Monte-Carlo roll outs ⇡ ⇤ .
+Discrete Action Setting We use a one-layer (16 hidden units) neural network with ReLu activation functions
+to represent the policy ⇡ for the Cart-pole and Acrobot
+benchmarks. The value function Q⇤ is obtained from the
+DQN (Mnih et al., 2015) and represented by a multi-layer
+fully connected neural network. The policy ⇡✓1 is initialized with common ReLu neural network initialization techniques. For the scheduling rate {↵i }, we set all ↵i = 0:
+namely we did not roll-in using the expert’s actions during training. We set the number of roll outs K = 50 and
+horizon H = 500 for CartPole and H = 200 for Acrobot.
+Fig. 2a and 2b shows the performance averaged over 10
+random trials of AggreVaTeD with regular gradient descent and natural gradient descent. Note that AggreVaTeD
+outperforms the experts’ performance significantly: Natural gradient surpasses the expert by 5.8% in Acrobot and
+25% in Cart-pole. Also, for Acrobot swing-up, at horizon H = 200, with high probability a randomly initialized
+neural network policy won’t be able to collect any reward
+signals. Hence the improvement rates of REINFORCE and
+TNPG are slow. In fact, we observed that for a short horizon such as H = 200, REINFORCE and Truncated Natural
+Gradient often even fail to improve the policy at all (failed
+
+6 times among 10 trials). On the contrary, AggreVaTeD
+does not suffer from the delayed reward signal issue, since
+the expert will collect reward signals much faster than a
+randomly initialized policy.
+Fig. 2c shows the performance of AggreVaTeD with an
+LSTM policy (32 hidden states) in a partially observed
+setting where the expert has access to full states but the
+learner has access to partial observations (link positions).
+RL algorithms did not achieve any improvement while AggreVaTeD still achieved 92% of the expert’s performance.
+In Appendix K, we provide extra experiments on partial
+observable CartPole with GRU-based policies, where we
+demonstrate that even in partial observable setting, AggreVaTeD can learn RNN polices that outperform experts.
+Continuous Action Setting We test our approaches on
+two robotics simulators with continuous actions: (1) the
+2-d Walker and (2) the Hopper from the MuJoCo physics
+simulator. Following the neural network settings described
+in Schulman et al. (2015), the expert policy ⇡ ⇤ is obtained
+from TRPO with one hidden layer (64 hidden states), which
+is the same structure that we use to represent our policies
+⇡✓ . We set K = 50 and H = 100. We initialize ⇡✓1 by
+collecting K expert demonstrations and then maximize the
+likelihood of these demonstrations (i.e., supervised learning). We use a linear baseline b(s) = wT s for RL and IL.
+Fig. 2e and 2d show the performance averaged over 5 random trials. Note that AggreVaTeD outperforms the expert
+in the Walker by 13.7% while achieving 97% of the expert’s
+performance in the Hopper problem. After 100 iterations,
+we see that by leveraging the help from experts, AggreVaTeD can achieve much faster improvement rate than the
+corresponding RL algorithms (though eventually we can
+expect RL to catch up). In Walker, we also tested AggreVaTeD without linear baseline, which still outperforms the
+expert but performed slightly worse than AggreVaTeD with
+baseline as expected.
+6.2. Dependency Parsing on Handwritten Algebra
+We consider a sequential prediction problem: transitionbased dependency parsing for handwritten algebra with raw
+image data (Duyck & Gordon, 2015). The parsing task
+
+Differential Imitation Learning for Sequential Prediction
+Arc-Eager
+
+AggreVaTeD (LSTMs)
+
+AggreVaTeD (NN)
+
+SL-RL (LSTMs)
+
+SL-RL(NN)
+
+RL (LSTMs)
+
+RL (NN)
+
+DAgger
+
+SL (LSTMs)
+
+SL (NN)
+
+Regular
+Natural
+
+0.924±0.10
+0.915±0.10
+
+0.851±0.10
+0.800±0.10
+
+0.826± 0.09
+0.824±0.10
+
+0.386±0.1
+0.345±0.1
+
+0.256±0.07
+0.237±0.07
+
+0.227±0.06
+0.241±0.07
+
+0.832±0.02
+
+0.813±0.1
+
+0.325±0.2
+
+Random
+⇠0.150
+
+Table 1. Performance (UAS) of different approaches on handwritten algebra dependency parsing. SL stands for supervised learning using
+expert’s samples: maximizing the likelihood of expert’s actions under the sequences generated by expert itself. SL-RL means RL with
+initialization using SL. Random stands for the initial performances of random policies (LSTMs and NN). The performance of DAgger
+with Kernel SVM is from (Duyck & Gordon, 2015).
+
+for algebra is similar to the classic dependency parsing
+for natural language (Chang et al., 2015a) where the problem is modelled in the IL setting and the state-of-the-art is
+achieved by AggreVaTe with FTRL (using Data Aggregation). The additional challenge here is that the inputs are
+handwritten algebra symbols in raw images. We directly
+learn to predict parse trees from low level image features
+(Histogram of Gradient features (HoG)). During training,
+the expert is constructed using the ground-truth dependencies in training data. The full state s during parsing consists of three data structures: Stack, Buffer and Arcs, which
+store raw images of the algebraic symbols. Since the sizes
+of stack, buffer and arcs change during parsing, a common approach is to featurize the state s by taking the features of the latest three symbols from stack, buffer and arcs
+(e.g., (Chang et al., 2015a)). Hence the problem falls into
+the partially observable setting, where the feature o is extracted from state s and only contains partial information
+about s. The dataset consists of 400 sets of handwritten
+algebra equations. We use 80% for training, 10% for validation, and 10% for testing. We include an example of
+handwritten algebra equations and its dependency tree in
+Appendix J. Note that different from robotics simulators
+where at every episode one can get fresh data from the simulators, the dataset is fixed and sample efficiency is critical.
+The RNN policy follows the design from (Sutskever et al.,
+2014). It consists of two LSTMs. Given a sequence of algebra symbols ⌧ , the first LSTM processes one symbol at
+a time and at the end outputs its hidden states and memory (i.e., a summary of ⌧ ). The second LSTM initializes its
+own hidden states and memory using the outputs of the first
+LSTM. At every parsing step t, the second LSTM takes the
+current partial observation ot (ot consists of features of the
+most recent item from stack, buffer and arcs) as input, and
+uses its internal hidden state and memory to compute the
+action distribution ⇡(·|o1 , ..., ot , ⌧ ) conditioned on history.
+We also tested reactive policies constructed as fully connected ReLu neural networks (NN) (one-layer with 1000
+hidden states) that directly maps from observation ot to action a, where ot uses the most three recent items. We use
+variance reduced gradient estimations, which give better
+performance in practice. The performance is summarised
+in Table 1. Due to the partial observability of the problem, AggreVaTeD with a LSTM policy achieves significantly better UAS scores compared to the NN reactive pol-
+
+(a) Validation
+
+(b) Test
+
+Figure 3. UAS (y-axis) versus number of iterations (n on x-axis)
+of AggreVaTeD with LSTM policy (blue and green), experts (red)
+on validation set and test set for Arc-Eager Parsing.
+
+icy and DAgger with a Kernelized SVM (Duyck & Gordon,
+2015). Also AggreVaTeD with a LSTM policy achieves
+97% of optimal expert’s performance. Fig. 3 shows the improvement rate of regular gradient and natural gradient on
+both validation set and test set. Overall we observe that
+both methods have similar performance. Natural gradient
+achieves a better UAS score in validation and converges
+slightly faster on the test set but also achieves a lower UAS
+score on test set.
+
+7. Conclusion
+We introduced AggreVaTeD, a differentiable imitation
+learning algorithm which trains neural network policies for
+sequential prediction tasks such as continuous robot control
+and dependency parsing on raw image data. We showed
+that in theory and in practice IL can learn much faster
+than RL with access to optimal cost-to-go oracles. The IL
+learned policies were able to achieve expert and sometimes
+super-expert levels of performance in both fully observable
+and partially observable settings. The theoretical and experimental results suggest that IL is significantly more effective than RL for sequential prediction with near optimal
+cost-to-go oracles.
+
+Acknowledgement
+This research was supported in part by ONR 36060-1b1141268.
 
 References
-Allamanis, Miltiadis, Chanthirasegaran, Pankajan, Kohli,
-Pushmeet, and Sutton, Charles. Learning continuous semantic representations of symbolic expressions. arXiv
-preprint arXiv:1611.01423, 2016.
-Baker, James K. Trainable grammars for speech recognition. The Journal of the Acoustical Society of America,
-65(S1):S132–S132, 1979.
-Booth, Taylor L and Thompson, Richard A. Applying
-probability measures to abstract languages. IEEE transactions on Computers, 100(5):442–450, 1973.
-Bowman, Samuel R, Vilnis, Luke, Vinyals, Oriol, Dai, Andrew M, Jozefowicz, Rafal, and Bengio, Samy. Generating sentences from a continuous space. CoNLL 2016,
-pp. 10, 2016.
-Cho, Kyunghyun, Van Merriënboer, Bart, Gulcehre,
-Caglar, Bahdanau, Dzmitry, Bougares, Fethi, Schwenk,
-Holger, and Bengio, Yoshua. Learning phrase representations using rnn encoder-decoder for statistical machine
-translation. arXiv preprint arXiv:1406.1078, 2014.
+Abbeel, Pieter and Ng, Andrew Y. Apprenticeship learning via
+inverse reinforcement learning. In ICML, pp. 1. ACM, 2004.
+Bagnell, J Andrew and Schneider, Jeff. Covariant policy search.
 
-diodes by a high-throughput virtual screening and experimental approach. Nature Materials, 15(10):1120–1127,
-2016a.
-Gómez-Bombarelli, Rafael, Duvenaud, David, HernándezLobato, José Miguel, Aguilera-Iparraguirre, Jorge,
-Hirzel, Timothy D, Adams, Ryan P, and Aspuru-Guzik,
-Alán. Automatic chemical design using a data-driven
-continuous representation of molecules. arXiv preprint
-arXiv:1610.02415, 2016b.
-Hachmann, J., Olivares-Amaya, R., Atahan-Evrenk, S.,
-Amador-Bedolla, C., Sanchez-Carrera, R. S., GoldParker, A., Vogt, L., Brockway, A. M., and AspuruGuzik, A. The Harvard Clean Energy Project: LargeScale Computational Screening and Design of Organic
-Photovoltaics on the World Community Grid. J. Phys.
-Chem. Lett., 2(17):2241–2251, sep 2011.
-Hochreiter, Sepp and Schmidhuber, Jürgen. Long shortterm memory. Neural computation, 9(8):1735–1780,
-1997.
-Hopcroft, John E, Motwani, Rajeev, and Ullman, Jeffrey D.
-Introduction to Automata theory, languages, and computation. 2006.
-Irsoy, Ozan and Cardie, Claire. Deep recursive neural networks for compositionality in language. In NIPS, pp.
-2096–2104, 2014.
-
-Cressie, Noel. The origins of kriging. Math. Geol., 22(3):
-239–252, 1990.
-
-James, Craig A, Vandermeersch, T, and Dalke, A. Opensmiles specification, 2015.
-
-Dyer, Chris, Kuncoro, Adhiguna, Ballesteros, Miguel, and
-Smith, Noah A. Recurrent neural network grammars. In
-Proceedings of NAACL-HLT, pp. 199–209, 2016.
-
-Jaques, Natasha, Gu, Shixiang, Turner, Richard E, and Eck,
-Douglas. Tuning recurrent neural networks with reinforcement learning. arXiv preprint arXiv:1611.02796,
-2016.
-
-Ertl, Peter and Schuffenhauer, Ansgar. Estimation of synthetic accessibility score of drug-like molecules based on
-molecular complexity and fragment contributions. Journal of cheminformatics, 1(1):8, 2009.
-Gatys, Leon A, Ecker, Alexander S, and Bethge, Matthias.
-A neural algorithm of artistic style. arXiv preprint
-arXiv:1508.06576, 2015.
-Gaunt, Alexander L, Brockschmidt, Marc, Singh, Rishabh,
-Kushman, Nate, Kohli, Pushmeet, Taylor, Jonathan,
-and Tarlow, Daniel. Terpret: A probabilistic programming language for program induction. arXiv preprint
-arXiv:1608.04428, 2016.
-Gómez-Bombarelli, Rafael, Aguilera-Iparraguirre, Jorge,
-Hirzel, Timothy D, Duvenaud, David, Maclaurin, Dougal, Blood-Forsythe, Martin A, Chae, Hyun Sik, et al.
-Design of efficient molecular organic light-emitting
-
-Johnson, Mark, Griffiths, Thomas L, Goldwater, Sharon,
-et al. Adaptor grammars: A framework for specifying compositional nonparametric bayesian models. Advances in neural information processing systems, 19:
-641, 2007.
-Jones, Donald R, Schonlau, Matthias, and Welch,
-William J. Efficient global optimization of expensive
-black-box functions. Journal of Global optimization, 13
-(4):455–492, 1998.
-Kalchbrenner, Nal, Grefenstette, Edward, and Blunsom,
-Phil. A convolutional neural network for modelling sentences. 2014.
-Kernighan, Brian W, Ritchie, Dennis M, and Ejeklint, Per.
-The C programming language, volume 2. Prentice-Hall
-Englewood Cliffs, 1988.
-
-Grammar Variational Autoencoder
-
-Kingma, Diederik P and Welling, Max. Auto-encoding
-variational Bayes. In Proceedings of the International
-Conference on Learning Representations (ICLR), 2014.
-Kusner, Matt J and Hernández-Lobato, José Miguel. Gans
-for sequences of discrete elements with the gumbelsoftmax distribution. arXiv:1611.04051, 2016.
-Maddison, Chris and Tarlow, Daniel. Structured generative
-models of natural source code. In Proceedings of the 31st
-International Conference on Machine Learning (ICML),
-pp. 649–657, 2014.
-Paulus, Romain, Socher, Richard, and Manning, Christopher D. Global belief recursive neural networks. In Advances in Neural Information Processing Systems, pp.
-2888–2896, 2014.
-Perov, Yura and Wood, Frank. Automatic sampler discovery via probabilistic programming and approximate
-bayesian computation. In International Conference on
-Artificial General Intelligence, pp. 262–273, 2016.
-
-Shahriari, Bobak, Swersky, Kevin, Wang, Ziyu, Adams,
-Ryan P, and de Freitas, Nando. Taking the human out
-of the loop: A review of bayesian optimization. Proceedings of the IEEE, 104(1):148–175, 2016.
-Snelson, Edward and Ghahramani, Zoubin. Sparse Gaussian processes using pseudo-inputs. In NIPS, pp. 1257–
-1264, 2005.
-Socher, Richard, Huang, Eric H, Pennington, Jeffrey, Ng,
-Andrew Y, and Manning, Christopher D. Dynamic pooling and unfolding recursive autoencoders for paraphrase
-detection. In NIPS, volume 24, pp. 801–809, 2011a.
-Socher, Richard, Pennington, Jeffrey, Huang, Eric H,
-Ng, Andrew Y, and Manning, Christopher D. Semisupervised recursive autoencoders for predicting sentiment distributions. In Proceedings of the conference
-on empirical methods in natural language processing,
-pp. 151–161. Association for Computational Linguistics,
-2011b.
-
-Pyzer-Knapp, Edward O, Suh, Changwon, GómezBombarelli, Rafael, Aguilera-Iparraguirre, Jorge, and
-Aspuru-Guzik, Alán. What is high-throughput virtual
-screening? a perspective from organic materials discovery. Annual Review of Materials Research, 45:195–216,
+Differential Imitation Learning for Sequential Prediction
+IJCAI, 2003.
+Bahdanau, Dzmitry, Brakel, Philemon, Xu, Kelvin, Goyal,
+Anirudh, Lowe, Ryan, Pineau, Joelle, Courville, Aaron, and
+Bengio, Yoshua. An actor-critic algorithm for sequence prediction. arXiv preprint arXiv:1607.07086, 2016.
+Bengio, Samy, Vinyals, Oriol, Jaitly, Navdeep, and Shazeer,
+Noam. Scheduled sampling for sequence prediction with recurrent neural networks. In NIPS, 2015.
+Brockman, Greg, Cheung, Vicki, Pettersson, Ludwig, Schneider,
+Jonas, Schulman, John, Tang, Jie, and Zaremba, Wojciech.
+Openai gym. arXiv preprint arXiv:1606.01540, 2016.
+Bubeck, Sébastien, Cesa-Bianchi, Nicolo, et al. Regret analysis
+of stochastic and nonstochastic multi-armed bandit problems.
+Foundations and Trends R in Machine Learning, 2012.
+Bubeck, Sébastien et al. Convex optimization: Algorithms and
+complexity. Foundations and Trends R in Machine Learning,
 2015.
+Chang, Kai-Wei, He, He, Daumé III, Hal, and Langford,
+John. Learning to search for dependencies. arXiv preprint
+arXiv:1503.05615, 2015a.
+Chang, Kai-wei, Krishnamurthy, Akshay, Agarwal, Alekh,
+Daume, Hal, and Langford, John. Learning to search better
+than your teacher. In ICML, 2015b.
+Choudhury, Sanjiban, Kapoor, Ashish, Ranade, Gireeja, Scherer,
+Sebastian, and Dey, Debadeepta. Adaptive information gathering via imitation learning. RSS, 2017.
+Chung, Junyoung, Gulcehre, Caglar, Cho, KyungHyun, and
+Bengio, Yoshua. Empirical evaluation of gated recurrent
+neural networks on sequence modeling.
+arXiv preprint
+arXiv:1412.3555, 2014.
+Daumé III, Hal, Langford, John, and Marcu, Daniel. Searchbased structured prediction. Machine learning, 2009.
+Duan, Yan, Chen, Xi, Houthooft, Rein, Schulman, John, and
+Abbeel, Pieter. Benchmarking deep reinforcement learning for
+continuous control. In ICML, 2016.
+Duyck, James A and Gordon, Geoffrey J. Predicting structure in
+handwritten algebra data from low level features. Data Analysis Project Report, MLD, CMU, 2015.
+Finn, Chelsea, Levine, Sergey, and Abbeel, Pieter. Guided cost
+learning: Deep inverse optimal control via policy optimization.
+In ICML, 2016.
+Greensmith, Evan, Bartlett, Peter L, and Baxter, Jonathan. Variance reduction techniques for gradient estimates in reinforcement learning. JMLR, 2004.
 
-Socher, Richard, Perelygin, Alex, Wu, Jean Y, Chuang,
-Jason, Manning, Christopher D, Ng, Andrew Y, Potts,
-Christopher, et al. Recursive deep models for semantic
-compositionality over a sentiment treebank. In Proceedings of the conference on empirical methods in natural
-language processing (EMNLP), volume 1631, pp. 1642.
-Citeseer, 2013.
+Kahn, Gregory, Zhang, Tianhao, Levine, Sergey, and Abbeel,
+Pieter. Plato: Policy learning using adaptive trajectory optimization. arXiv preprint arXiv:1603.00622, 2016.
+Kakade, Sham. A natural policy gradient. NIPS, 2002.
+Kakade, Sham and Langford, John. Approximately optimal approximate reinforcement learning. In ICML, 2002.
+Kingma, Diederik and Ba, Jimmy. Adam: A method for stochastic optimization. arXiv preprint arXiv:1412.6980, 2014.
+Li, Jiwei, Monroe, Will, Ritter, Alan, Galley, Michel, Gao, Jianfeng, and Jurafsky, Dan. Deep reinforcement learning for dialogue generation. arXiv preprint arXiv:1606.01541, 2016.
+Littlestone, Nick and Warmuth, Manfred K. The weighted majority algorithm. Information and computation, 108(2):212–261,
+1994.
+Mnih, Volodymyr et al. Human-level control through deep reinforcement learning. Nature, 2015.
+Phatak, Aloke and de Hoog, Frank. Exploiting the connection
+between pls, lanczos methods and conjugate gradients: alternative proofs of some properties of pls. Journal of Chemometrics,
+2002.
+Ranzato, Marc’Aurelio, Chopra, Sumit, Auli, Michael, and
+Zaremba, Wojciech. Sequence level training with recurrent
+neural networks. ICLR 2016, 2015.
+Ratliff, Nathan D, Bagnell, J Andrew, and Zinkevich, Martin A.
+Maximum margin planning. In ICML, 2006.
+Rhinehart, Nicholas, Zhou, Jiaji, Hebert, Martial, and Bagnell,
+J Andrew. Visual chunking: A list prediction framework for
+region-based object detection. In ICRA. IEEE, 2015.
+Ross, Stéphane and Bagnell, J. Andrew. Efficient reductions for
+imitation learning. In AISTATS, pp. 661–668, 2010.
+Ross, Stephane and Bagnell, J Andrew. Reinforcement and imitation learning via interactive no-regret learning. arXiv preprint
+arXiv:1406.5979, 2014.
+Ross, Stéphane, Gordon, Geoffrey J, and Bagnell, J.Andrew. A
+reduction of imitation learning and structured prediction to noregret online learning. In AISTATS, 2011.
+Ross, Stephane, Zhou, Jiaji, Yue, Yisong, Dey, Debadeepta, and
+Bagnell, Drew. Learning policies for contextual submodular
+prediction. In ICML, 2013.
+Schulman, John, Levine, Sergey, Abbeel, Pieter, Jordan,
+Michael I, and Moritz, Philipp. Trust region policy optimization. In ICML, pp. 1889–1897, 2015.
 
-Radford, Alec, Metz, Luke, and Chintala, Soumith. Unsupervised representation learning with deep convolutional generative adversarial networks. arXiv preprint
-arXiv:1511.06434, 2015.
+Ho, Jonathan and Ermon, Stefano. Generative adversarial imitation learning. In NIPS, 2016.
 
-Upchurch, Paul, Gardner, Jacob, Bala, Kavita, Pless,
-Robert, Snavely, Noah, and Weinberger, Kilian. Deep
-feature interpolation for image content changes. arXiv
-preprint arXiv:1611.05507, 2016.
+Shalev-Shwartz, Shai et al. Online learning and online convex
+optimization. Foundations and Trends R in Machine Learning,
+2012.
 
-Rezende, Danilo Jimenez, Mohamed, Shakir, and Wierstra, Daan. Stochastic backpropagation and approximate inference in deep generative models. arXiv preprint
-arXiv:1401.4082, 2014.
+Hochreiter, Sepp and Schmidhuber, Jürgen. Long short-term
+memory. Neural computation, 9(8):1735–1780, 1997.
 
-Virshup, Aaron M, Contreras-García, Julia, Wipf, Peter,
-Yang, Weitao, and Beratan, David N. Stochastic voyages into uncharted chemical space produce a representative library of all possible drug-like compounds. Journal of the American Chemical Society, 135(19):7296–
-7303, 2013.
+Silver, David et al. Mastering the game of go with deep neural
+networks and tree search. Nature, 2016.
 
-Riedel, Sebastian, Bosnjak, Matko, and Rocktäschel, Tim.
-Programming with a differentiable forth interpreter.
-CoRR, abs/1605.06640, 2016.
-Rupakheti, Chetan, Virshup, Aaron, Yang, Weitao, and
-Beratan, David N. Strategy to discover diverse optimal molecules in the small molecule universe. Journal
-of chemical information and modeling, 55(3):529–537,
-2015.
-Schmidt, Michael and Lipson, Hod. Distilling free-form
-natural laws from experimental data. Science, 324
-(5923):81–85, 2009.
-Segler, Marwin HS, Kogej, Thierry, Tyrchan, Christian,
-and Waller, Mark P. Generating focussed molecule libraries for drug discovery with recurrent neural networks. arXiv preprint arXiv:1701.01329, 2017.
+Jaksch, Thomas, Ortner, Ronald, and Auer, Peter. Near-optimal
+regret bounds for reinforcement learning. JMLR, 2010.
 
-Weininger, David. Smiles, a chemical language and information system. 1. introduction to methodology and encoding rules. J. Chem. Inf. Comput. Sci., 28(1):31–36,
-1988.
-Willis, M-J, Hiden, Hugo G, Marenbach, Peter, McKay,
-Ben, and Montague, Gary A. Genetic programming: An
-introduction and survey of applications. In Genetic Algorithms in Engineering Systems, pp. 314–319. IET, 1997.
-Zhao, Shengjia, Song, Jiaming, and Ermon, Stefano. Infovae: Information maximizing variational autoencoders.
-arXiv preprint arXiv:1706.02262, 2017.
+Sutskever, Ilya, Vinyals, Oriol, and Le, Quoc V. Sequence to
+sequence learning with neural networks. In NIPS, 2014.
+
+Differential Imitation Learning for Sequential Prediction
+Syed, Umar, Bowling, Michael, and Schapire, Robert E. Apprenticeship learning using linear programming. In ICML, 2008.
+Venkatraman, Arun, Hebert, Martial, and Bagnell, J Andrew. Improving multi-step prediction of learned time series models.
+AAAI, 2015.
+Williams, Ronald J. Simple statistical gradient-following algorithms for connectionist reinforcement learning. Machine
+learning, 1992.
+Ziebart, Brian D, Maas, Andrew L, Bagnell, J Andrew, and Dey,
+Anind K. Maximum entropy inverse reinforcement learning.
+In AAAI, 2008.
+Zinkevich, Martin. Online Convex Programming and Generalized
+Infinitesimal Gradient Ascent. In ICML, 2003.
 
 

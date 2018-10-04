@@ -1,1130 +1,849 @@
-Nearly Optimal Robust Matrix Completion
+Data-Efficient Policy Evaluation Through Behavior Policy Search
 
-Yeshwanth Cherapanamjeri 1 Kartik Gupta 1 Prateek Jain 1
+Josiah P. Hanna 1 Philip S. Thomas 2 3 Peter Stone 1 Scott Niekum 1
 
 Abstract
-In this paper, we consider the problem of Robust Matrix Completion (RMC) where the goal
-is to recover a low-rank matrix by observing
-a small number of its entries out of which a
-few can be arbitrarily corrupted. We propose a
-simple projected gradient descent-based method
-to estimate the low-rank matrix that alternately
-performs a projected gradient descent step and
-cleans up a few of the corrupted entries using hard-thresholding. Our algorithm solves
-RMC using nearly optimal number of observations while tolerating a nearly optimal number
-of corruptions. Our result also implies significant improvement over the existing time complexity bounds for the low-rank matrix completion problem. Finally, an application of our result to the robust PCA problem (low-rank+sparse
-matrix separation) leads to nearly linear time (in
-matrix dimensions) algorithm for the same; existing state-of-the-art methods require quadratic
-time. Our empirical results corroborate our theoretical results and show that even for moderate
-sized problems, our method for robust PCA is an
-order of magnitude faster than the existing methods.
+We consider the task of evaluating a policy for
+a Markov decision process (MDP). The standard
+unbiased technique for evaluating a policy is to
+deploy the policy and observe its performance.
+We show that the data collected from deploying
+a different policy, commonly called the behavior
+policy, can be used to produce unbiased estimates
+with lower mean squared error than this standard
+technique. We derive an analytic expression for
+the optimal behavior policy—the behavior policy that minimizes the mean squared error of the
+resulting estimates. Because this expression depends on terms that are unknown in practice, we
+propose a novel policy evaluation sub-problem,
+behavior policy search: searching for a behavior policy that reduces mean squared error. We
+present a behavior policy search algorithm and
+empirically demonstrate its effectiveness in lowering the mean squared error of policy performance estimates.
 
 1. Introduction
-In this paper, we study the Robust Matrix Completion
-(RMC) problem where the goal is to recover an underlying
-low-rank matrix by observing a small number of sparsely
-corrupted entries. Formally,
-RMC:
-
-Find rank-r matrix L∗ ∈ Rm×n
-using Ω and PΩ (L∗ ) + S ∗ , (1)
-
-where Ω ⊆ [m] × [n] is the set of observed entries
-(throughout the paper we assume that m ≤ n), S ∗ denotes the sparse corruptions of the observed entries, i.e.,
+Many sequential decision problems, including diabetes
+treatment (Bastani, 2014), digital marketing (Theocharous
+et al., 2015), and robot control (Lillicrap et al., 2015), are
+modeled as Markov decision processes (MDPs) and solved
+using reinforcement learning (RL) algorithms. One important problem when applying RL to real problems is policy
+evaluation. The goal in policy evaluation is to estimate the
+expected return (sum of rewards) produced by a policy. We
+refer to this policy as the evaluation policy, πe . The standard policy evaluation approach is to repeatedly deploy πe
+and average the resulting returns. While this naı̈ve Monte
+Carlo estimator is unbiased, it may have high variance.
 1
-Microsoft Research India. Correspondence to: Prateek Jain
-<prajain@microsoft.com>.
+The University of Texas at Austin, Austin, Texas, USA
+The University of Massachusetts, Amherst, Massachusetts, USA
+3
+Carnegie Mellon University, Pittsburgh, Pennsylvania, USA.
+Correspondence to: Josiah P. Hanna <jphanna@cs.utexas.edu>.
+
+Methods that evaluate πe while selecting actions according
+to πe are termed on-policy. Previous work has addressed
+variance reduction for on-policy returns (Zinkevich et al.,
+2006; White & Bowling, 2009; Veness et al., 2011). An
+alternative approach is to estimate the performance of πe
+while following a different, behavior policy, πb . Methods
+that evaluate πe with data generated from πb are termed offpolicy. Importance sampling (IS) is one standard approach
+for using off-policy data in RL. IS reweights returns observed while executing πb such that they are unbiased estimates of the performance of πe .
+Presently, IS is usually used when off-policy data is already
+available or when executing πe is impractical. If πb is not
+chosen carefully, IS often has high variance (Thomas et al.,
+2015). For this reason, an implicit assumption in the RL
+community has generally been that on-policy evaluation is
+more accurate when it is feasible. However, IS can also be
+used for variance reduction when done with an appropriately selected distribution of returns (Hammersley & Handscomb, 1964). While IS-based variance reduction has been
+explored in RL, this prior work has required knowledge of
+the environment’s transition probabilities and remains onpolicy (Desai & Glynn, 2001; Frank et al., 2008; Ciosek
+& Whiteson, 2017). In contrast to this earlier work, we
+show how careful selection of the behavior policy can lead
+to lower variance policy evaluation than using the evaluation policy and do not require knowledge of the environment’s transition probabilities.
+In this paper, we formalize the selection of πb as the behavior policy search problem. We introduce a method for this
+problem that adapts the policy parameters of πb with gradient descent on the variance of importance-sampling. Empirically we demonstrate behavior policy search with our
+method lowers the mean squared error of estimates compared to on-policy estimates. To the best of our knowledge,
+this work is the first to propose adapting the behavior policy to obtain better policy evaluation in RL. Furthermore
+we present the first method to address this problem.
+
+2
 
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-Supp(S ∗ ) ⊂ Ω and sampling operator PΩ : Rm×n →
-Rm×n is defined as:
-(
-Aij , if (i, j) ∈ Ω
-(PΩ (A))ij =
-(2)
-0,
-otherwise.
-RMC is an important problem with several applications.
-It is used to model recommendation systems with outliers
-and to perform PCA under gross outliers as well as erasures (Jalali et al., 2011). In addition, it is a strict generalization of the following two fundamental problems in
-machine learning:
-Matrix Completion (MC): Matrix completion is the task
-of completing a low rank matrix given a subset of entries of the matrix. It is widely used in recommender systems and also finds applications in system identification
-and global positioning. Note that it is a special case of
-the RMC problem where the matrix S ∗ = 0. State-of-theart result for MC uses nuclear norm minimization and requires |Ω| ≥ µ2 nr2 log2 n under standard µ-incoherence
-assumption (see Section 3). But it requires O(m2 n) time
-in general. The best sample complexity result for a nonconvex iterative method (with at most logarithmic dependence on the condition number of L∗ ) achieve exact recovery when |Ω| ≥ µ6 nr5 log2 n and needs O(|Ω|r) computational steps.
-Robust PCA (RPCA): RPCA aims to decompose a
-sparsely corrupted low rank matrix into its low rank and
-sparse components. It corresponds to another special case
-of RMC where the whole matrix is observed. State-ofthe-art results for RPCA shows exact recovery of a rank-r,
-∗
-µ-incoherent
-L (see Assumption 1, Section 3) if at most
-
-ρ = O µ12 r fraction of the entries in each row/column of
-S ∗ are corrupted (Hsu et al., 2011; Netrapalli et al., 2014).
-Moreover, St-NcRPCA algorithm (Netrapalli et al., 2014)
-solves the problem in time O(mnr2 ).
-Therefore, an efficient solution to the RMC problem implies efficient solutions to both the MC and RPCA problems. In this work, we attempt to answer the following
-open question (assuming m ≤ n):
-Can RMC be solved exactly by using |Ω| = O(rn log n)
-observations out of which O( µ12 r ) fraction of the observed
+2. Preliminaries
+This section details the policy evaluation problem setting,
+the Monte Carlo and Advantage Sum on-policy methods,
+and importance-sampling for off-policy evaluation.
 
-Nearly Optimal Robust Matrix Completion
+Data-Efficient Policy Evaluation Through Behavior Policy Search
 
-entries in each row/column are corrupted?
-Note that both |Ω| (for uniformly random Ω) and ρ values mentioned in the question above denote the information theoretic limits. Hence, the goal is to solve RMC for
-nearly-optimal number of samples and nearly-optimal fraction of corruptions.
-The existing state-of-the-art results for RMC with optimal ρ = µ12 r fraction of corrupted entries, either require
-at least a constant fraction of the entries of L∗ to be observed (Chen et al., 2011; Candès et al., 2011) or require
-restrictive assumptions like the support of corruptions being uniformly random (Li, 2013). (Klopp et al., 2014) also
-considers RMC problem but studies the noisy setting and
-does not provide exact recovery bounds. Moreover, most
-of the existing methods for RMC use convex relaxation for
-both low-rank and sparse components, and in general exhibit large time complexity (O(m2 n)).
-Under standard assumptions on L∗ , S ∗ , Ω and for n =
-O(m), we answer the above question in affirmative albeit
-with |Ω| which is O(r) (ignoring log factors) larger than
-the optimal sample complexity (see Theorem 1). In particular, we propose a simple projected gradient (PGD) style
-method for RMC that alternately cleans up corrupted entries by hard-thresholding and performs a projected gradient descent update onto the space of low rank matrices; our
-method’s computational complexity is also nearly optimal
-(O(|Ω|r + (m + n)r2 + r3 )). Our algorithm is based on
-projected gradient descent for estimating L∗ and alternating projection on the set of sparse matrices for estimating
-S ∗ . Note that projection is onto non-convex sets of lowrank matrices (for L∗ ) and sparse matrices (for S ∗ ), hence
-standard convex analysis techniques cannot be used for our
-algorithm.
-Several recent results (Jain & Netrapalli, 2015; Netrapalli
-et al., 2014; Jain et al., 2014; Hardt & Wootters, 2014; Blumensath, 2011) show that under certain assumptions, projection onto non-convex sets indeed lead to provable algorithms with fast convergence to the global optima. However, as explained in Section 3, RMC presents a unique
-set of challenges as we have to perform error analysis with
-the errors arising due to missing entries as well as sparse
-corruptions, both of which interact among themselves as
-well. In contrast, MC and RPCA only handle noise arising from one of the two sources. To overcome this challenge, we perform error analysis by segregating the effects
-due to random sampling and sparse corruptions and leverage their unique structure to obtain our result (See proof
-of Lemma 14). Another consequence of our careful error analysis is improved results for the MC as well as the
-RPCA problem.
+2.1. Background
 
-Our empirical results on synthetic data demonstrates effectiveness of our method. We also apply our method to the
-foreground background separation problem and find that
-our method is an order of magnitude faster than the stateof-the-art method (St-NcRPCA) while achieving similar
-accuracy.
-In a concurrent and independent work, (Yi et al., 2016)
-also studied the RMC problem and obtained similar results.
-They study an alternating gradient descent style algorithm
-while our algorithm is based on low-rank projected gradient descent. Our sample complexity, corruption tolerance
-as well as time complexity differ along certain critical parameters: a) Sample complexity: Our sample complexity
-bound is dependent only logarithmically on κ, the condition number of the matrix L∗ (see Table 1). On the other
-hand, result of (Yi et al., 2016) depends quadratically on κ,
-which can be significantly large. Another difference is that
-our sample complexity bound depends logarithmically on
-the final error  (defined as  = kL − L∗ k2 ); which for typical finite precision computation only introduces an extra
-constant factor. b) Corruption tolerance: Our result allows
-the fraction of corrupted entries to be information theoretic
-optimal (up to a constant) O( µ12 r ), while the result of (Yi
-
-
-
-et al., 2016) allows only O min µ2 r1√rκ , µ2 1κ2 r
-fraction of corrupted entries. c) Time Complexity: As a consequence of the sample complexity bounds, running time
-of the method by (Yi et al., 2016) depends quintically on κ
-whereas our algorithm only has a polylogarithmic dependence.
-In summary, this paper’s main contributions are:
-(a) RMC: We propose a nearly linear time method that
-solves RMC with |Ω| = O(nr2 log2 n log2 kM k2 /) random entries and with optimal fraction of corruptions upto
-constant factors (ρ = O( µ12 r )).
-(b) Matrix Completion: Our result improves upon the
-existing linear time algorithm’s sample complexity by an
-O(r3 ) factor, and time complexity by O(r4 ) factor, although with an extra O(log kL∗ k/) factor in both time and
-sample complexity.
-(c) RPCA: We present a nearly linear time (O(nr3 )) algorithm for RPCA under optimal fraction of corruptions,
-improving upon O(mnr2 ) time complexity of the existing
-methods.
-Notations: We assume that M = L∗ + Se∗ and PΩ (M ) =
-PΩ (L∗ ) + S ∗ , i.e., S ∗ = PΩ (Se∗ ). kvkp denotes `p norm
-of a vector v; kvk denotes `2 norm of v. kAk2 , kAkF ,
-kAk∗ denotes the operator, Frobenius, and nuclear norm of
-A, respectively; by default kAk = kAk2 . Operator PΩ is
-given by (2), operators Pk (A) and HT ζ (A) are defined in
-Section 2. σi (A) denotes i-th singular value of A and σi∗
-denotes the i-th singular value of L∗ .
+2.3. Advantage Sum Estimates
 
-Nearly Optimal Robust Matrix Completion
+We use notational standard MDPNv1 (Thomas, 2015), and
+for simplicity, we assume that S, A, and R are finite.1 Let
+H := (S0 , A0 , R0 , S1 , . . . , SL , AL , RL ) be a trajectory
+PL
+and g(H) := t=0 γ t Rt be the discounted return of trajectory H. Let ρ(π) := E[g(H)|H ∼ π] be the expected
+discounted return when the stochastic policy π is used from
+S0 sampled from the initial state distribution. In this work,
+we consider parameterized policies, πθ , where the distribution over actions is determined by the vector θ. We assume
+that the transitions and reward function are unknown and
+that L is finite.
 
-Paper Organization: We present our main algorithm in
-Section 2 and our main results in Section 3. We also present
-an overview of the proof in Section 3. Section 4 presents
-our empirical result. Due to lack of space, we present most
-of the proofs and useful lemmas in the appendix.
+Like the Monte-Carlo estimator, the advantage sum (ASE)
+estimator selects θ i = θ e for all i. However, it introduces a control variate to reduce the variance without introducing bias. This control variate requires an approximate
+model of the MDP to be provided. Let the reward function of this model be given as r̂(s, a). Let q̂ πe (st , at ) =
+PL
+0
+E[ t0 =t γ t r̂(st0 , at0 )] and v̂ πe (st ) = E[q̂ πe (st , at )|at ∼
+πe ], i.e., the action-value function and state-value function
+of πe in this approximate model. Then, the advantage sum
+estimator is given by:
 
-2. Algorithm
-In this section we present our algorithm for solving the
-RMC (Robust Matrix Completion) problem: given Ω and
-PΩ (M ) where M = L∗ + Se∗ ∈ Rm×n , rank(L∗ ) ≤ r,
-kSe∗ k0 ≤ s and S ∗ = PΩ (Se∗ ), the goal is to recover L∗ .
-To this end, we focus on solving the following non-convex
-optimization problem:
+We are given an evaluation policy, πe , for which we would
+like to estimate ρ(πe ). We assume there exists a policy
+parameter vector θ e such that πe = πθe and that this vector is known. We consider an incremental setting where,
+at iteration i, we sample a single trajectory Hi with a policy πθi and add {Hi , θ i } to a set D. We use Di to denote
+the set at iteration i. Methods that always (i.e., ∀i) choose
+θ i = θ e are on-policy; otherwise, the method is off-policy.
+A policy evaluation method, PE, uses all trajectories in Di
+to estimate ρ(πe ). Our goal is to design a policy evaluation algorithm that produces estimates of ρ(πe ) that have
+low mean squared error (MSE). Formally, the goal of policy evaluation with PE is to minimize (PE(Di ) − ρ(πe ))2 .
+While other measures of policy evaluation accuracy could
+be considered, we follow earlier work in using MSE (e.g.,
+(Thomas & Brunskill, 2016; Precup et al., 2000)).
 
-(L∗ , S ∗ ) = arg min kPΩ (M ) − PΩ (L) − Sk2F
-L,S
+AS(Di ) :=
 
-s.t., rank(L) ≤ r, PΩ (S) = S, kSk0 ≤ s. (3)
-For the above problem, we propose a simple iterative algorithm that combines projected gradient descent (for L) with
-alternating projections (for S). In particular, we maintain
-iterates L(t) and S (t) , where L(t) is the current low-rank
-approximation of L∗ and S (t) is the current sparse approximation of S ∗ . L(t+1) is computed using gradient descent
-step for objective (3) and then projecting back onto the set
-of rank k matrices. That is,
-
-
-1
-(t)
-(t)
-(t+1)
-(t)
+We focus on unbiased estimators of ρ(πe ). While biased estimators (e.g., bootstrapping methods (Sutton &
+Barto, 1998), approximate models (Kearns & Singh, 2002),
+etc.) can sometimes produce lower MSE estimates they are
+problematic for high risk applications requiring confidence
+intervals. For unbiased estimators, minimizing variance is
+equivalent to minimizing MSE.
+
+2.4. Importance Sampling
+
+i
+
 L
-= Pk L + PΩ (M − L − S ) , (4)
-p
-where Pk (A) denotes projection of A onto the set of rankk matrices and can be computed efficiently using SVD of
-|Ω|
-A, p = mn
-. S (t+1) is computed by projecting the residual
-PΩ (M − L(t+1) ) onto set of sparse matrices using a hardthresholding operator, i.e.,
-S (t+1) = HT ζ (M − L(t+1) ),
 
-(5)
+1 XX t
+γ (Rt − q̂ πe (St , At ) + v̂ πe (St )).
+i + 1 j=0 t=0
 
-where HT ζ : Rm×n → Rm×n is the hard thresholding
-operator defined as: (HT ζ (A))ij = Aij if |Aij | ≥ ζ and
-0 otherwise. Intuitively, a better estimate of the sparse corruptions for each iteration will reduce the noise of the projected gradient descent step and a better estimate of the low
-rank matrix will enable better estimation of the sparse corruptions. Hence, under correct set of assumptions, the algorithm should recover L∗ , S ∗ exactly.
-Unfortunately, just the above two simple iterations cannot
-handle problems where L∗ has poor condition number, as
-the intermediate errors can be significantly larger than the
-smallest singular values of L∗ , making recovery of the corresponding singular vectors challenging. To alleviate this
-issue, we propose an algorithm that proceeds in stages. In
+Intuitively, ASE is replacing part of the randomness of the
+Monte Carlo return with the known expected return under
+the approximate model. Provided q πe (St , At ) − v̂ πe (St ) is
+sufficiently correlated with Rt , the variance of ASE is less
+than that of MC.
+Notice that, like the MC estimator, the ASE estimator is
+on-policy, in that the behavior policy is always the policy
+that we wish to evaluate. Intuitively it may seems like this
+choice should be optimal. However, we will show that it is
+not—selecting behavior policies that are different from the
+evaluation policy can result in estimates of ρ(πe ) that have
+lower variance.
 
-the q-th stage, we project L(t) onto set of rank-kq matrices.
-Rank kq is monotonic w.r.t. q. Under standard assumptions, we show that we
-kq in a manner such
- can increase
+Importance Sampling is a method for reweighting returns
+from a behavior policy, θ, such that they are unbiased returns from the evaluation policy. In RL, the re-weighted IS
+return of a trajectory, H, sampled from πθ is:
+IS(H, θ) := g(H)
 
-that after each stage L(t) − L∗ ∞ decreases by at least a
-constant factor. Hence, the number of stages is only logarithmic in the condition number of L∗ . See Algorithm 1
-(PG-RMC ) for a pseudo-code of the algorithm.
-We require an upper bound of the first singular value for our
-algorithm to work. Specifically, we require σ = O (σ1∗ ).
-Alternatively, we can also obtain an estimate of σ1∗ by using
-the thresholding technique from (Yi et al., 2016) although
-this requires an estimate of the number of corruptions in
-each row and column. We also use a simplified version of
-Algorithm 5 from (Hardt & Wootters, 2014) to form independent sets of samples for each iteration which is required
-for our theoretical analysis. Our algorithm has an “outer
-loop” (see Line 6) which sets rank kq of iterates L(t) appropriately (see Line 7). We then update L(t) and S (t) in
-the “inner loop” using (4), (5). We set threshold for the
-hard-thresholding operator using singular values of current
-gradient descent update (see Line 12). Note that, we divide
-Ω uniformly into Q · T sets, where Q is an upper bound on
-the number of outer iterations and T is the number of inner
-iterations. This division ensures independence across iterates that is critical to application of standard concentration
-bounds; such division is a standard technique in the matrix completion related literature (Jain & Netrapalli, 2015;
-Hardt & Wootters, 2014; Recht, 2011). Also, η is a tunable
-parameter which should be less than one and is smaller for
-“easier” problems.
-Note that updating S (t) requires O(|Ω| · r + (m + n) · r)
-computational steps. Computation of L(t+1) requires computing SVD for projection Pr , which can be computed in
-O(|Ω| · r + (m + n) · r2 + r3 ) time (ignoring log factors);
-see (Jain et al., 2010) for more details. Hence, the computational complexity of each step of the algorithm is linear
-in |Ω| · r (assuming |Ω| ≥ r · (m + n)). As we show in
-the next section, the algorithm exhibits geometric convergence rate under standard assumptions and hence the overall complexity is still nearly linear in |Ω| (assuming r is just
-a constant).
-Rank based Stagewise algorithm: We also provide a
-rank-based stagewise algorithm (R-RMC) where the outer
-loop increments kq by one at each stage, i.e., the rank is q
-in the q-th stage. Our analysis extends for this algorithm as
-well, however, its time and sample complexity trades off a
-factor of O(log(σ1 /)) from the complexity of PG-RMC
-with a factor of r (rank of L∗ ). We provide the detailed
-algorithm in Appendix 5.3 due to lack of space (see Algorithm 3).
+2.2. Monte-Carlo Estimates
+Perhaps the most commonly used policy evaluation method
+is the on-policy Monte-Carlo (MC) estimator. The estimate
+of ρ(πe ) at iteration i is the average return:
 
-Nearly Optimal Robust Matrix Completion
-
-b = PG-RMC (Ω, PΩ (M ), , r, µ, η, σ)
-Algorithm 1 L
-1: Input: Observed entries Ω, Matrix PΩ (M ) ∈ Rm×n ,
-
-2:
-3:
-4:
-5:
-6:
-7:
-8:
-9:
-10:
-11:
-12:
-13:
-14:
-15:
-16:
-17:
-18:
-
-convergence criterion , target rank r, incoherence parameter µ, thresholding parameter η, estimate of first
-singular value σ
-2
-T ← 10 log 20µ nrσ , Q ← T
-Partition Ω into Q · T + 1 subsets {Ω0 } ∪ {Ωq,t : q ∈
-[Q], t ∈ [T ]} with p set to QTΩ+1 using algorithm 2
-L(0) = 0, ζ (0) ← ησ
-mn
-M (0) = |Ω
-PΩ0 (M − HT ζ (M ))
-0|
-k0 ← 0, q ← 0
-
-do
-while σkq +1 (M (0) ) > 2ηn
-q ← q + 1,
-
-(0)
-
-σk
-) 
-+1 (M
-}
-kq ← {i : σi (M (0) ) ≥ q−1 2
-for Iteration t = 0 to t = T do
-S (t) = HT ζ (PΩq,t (M − L(t) ))
-M (t) = L(t) − |Ωmn
-PΩq,t (L(t) + S (t) − M )
-q,t |
-L(t+1) = Pkq (M (t) )
-
-
-t−2
-ζ (t+1) ← η σkq +1 (M (t) ) + 12
-σkq (M (t) )
-end for
-S (0) = S (T ) , L(0) = L(T +1) , M (0) = M (T ) ,
-ζ (0) = ζ (T +1)
-end while
-Return: L(T )
-
-Algorithm 2 {Ω1 , . . . , ΩT } = SplitSamples(Ω, p, T )
-1: Input: Random samples with probability T p Ω, Re-
-
-quired Sampling Probability p, Number of Sets T
-2: Output: T independent sets of entries {Ω1 , . . . , ΩT }
-
-sampled with sampling probability p
-3: p0 ← 1 − (1 − p)T
-4: Ω0 be sampled from Ω with each entry being included
-0
-
-independently with probability p /p
-5: for r = 1 to r = T do
-6:
-7:
-8:
-9:
-10:
-11:
-12:
-13:
-
-T
-r
-
-( )p
-
-r
-
-(1−p)
-p0
-
-T −r
-
-qr ←
-end for
-Initialize Ωt ← {} for t ∈ {1, . . . , T }
-for Sample s ∈ Ω0 do
-Draw r ∈ {1, . . . , T } with probability qr
-Draw a random subset S of size r from {1, . . . , T }
-Add s to Ωi for i ∈ S
-end for
-
-3. Analysis
-We now present our analysis for both of our algorithms PGRMC (Algorithm 1) and R-RMC (Algorithm 3). In general the problem of Robust PCA with Missing Entries (3)
-is harder than the standard Matrix Completion problem and
-hence is NP-hard (Hardt et al., 2014). Hence, we need to
-
-impose certain (by now standard) assumptions on L∗ , Se∗ ,
-and Ω to ensure tractability of the problem:
-∗
-Assumption 1. Rank and incoherence of L∗ : L
- ∈
-m×n
-> ∗
-
-R
-is a rank-r incoherent matrix, i.e., ei U 2 ≤
-p
-p r  > ∗
-, ej V 2 ≤ µ nr , ∀i ∈ [m], ∀j ∈ [n], where
-µ m
-L∗ = U ∗ Σ∗ (V ∗ )> is the SVD of L∗ .
-Assumption 2. Sampling (Ω): Ω is obtained by sampling
-|Ω|
-each entry with probability p = mn
+L
+Y
+πe (St |At )
 .
-∗
-Assumption 3. Sparsity of Se , S ∗ : We assume that at
-most ρ ≤ µc2 r fraction of the elements in each row and
-column of Se∗ are non-zero for a small enough constant c.
-Moreover, we assume that Ω is independent of Se∗ . Hence,
-S ∗ = PΩ (Se∗ ) also has p · ρ fraction of the entries in expectation.
-Assumptions 1, 2 are standard assumptions in the provable matrix completion literature (Candès & Recht, 2009;
-Recht, 2011; Jain & Netrapalli, 2015), while Assumptions
-1, 3 are standard assumptions in the robust PCA (lowrank+sparse matrix recovery) literature (Chandrasekaran
-et al., 2011; Candès et al., 2011; Hsu et al., 2011). Hence,
-our setting is a generalization of both the standard and popular problems and as we show later in the section, our result
-can be used to meaningfully improve the state-of-the-art for
-both of these problems.
-We first present our main result for Algorithm 1 under the
-assumptions given above.
-Theorem 1. Let Assumptions 1, 2 and 3 on L∗ , Se∗ and
-Ω hold respectively. Let m ≤ n, n = O(m), and let the
-number of samples |Ω| satisfy:
-
- 2
-µ rσ1
+π
+(St |At )
+t=0 θ
+
+The IS off-policy estimator is then a Monte Carlo estimate
+of E [IS(H, θ)|H ∼ πθ ]:
+i
+
+i
+
+L
+
+i
+
+IS(Di ) :=
+
+1 X
+1 XX t
+γ Rt =
+g(Hj ).
+MC(Di ) :=
+i + 1 j=0 t=0
+i + 1 j=0
+This estimator is unbiased and strongly consistent given
+mild assumptions.2 However, this method can have high
+variance.
+1
+The methods, and theoretical results discussed in this paper
+are applicable to both finite and infinite S, A and R as well as
+partially-observable Markov decision processes.
 2
-2
-2 4 2
-,
-E[|Ω|] ≥ Cα µ r n log (n) log
-
-where C is a global constant. Then, with probability at
-2
-α
-least 1 − n− log 2 , Algorithm 1 with η = 4µm r , at most
-2
+Being a strongly consistent estimator of ρ(πe ) means that
 
-O(log(kM k2 /))) outer iterations and O(log( µ
-inner iterations, outputs a matrix L̂ such that:
+1 X
+IS(Hj , θ j ).
+i + 1 j=0
 
+In RL, importance sampling allows off-policy data to be
+used as if it were on-policy. In this case the variance of
+the IS estimate is often much worse than the variance of
+on-policy MC estimates because the behavior policy is not
+Pr
 
-
-
-L̂ − L∗  ≤ .
-
-rkM k2
-))
-
-
-F
-
-Note that the number of samples matches information theoretic bound upto O(r log n log2 σ1∗ /) factor. Also, the
-number of allowed corruptions in Se∗ also matches the
-known lower bounds (up to a constant factor) and cannot
-be improved upon information theoretically.
-We now present our result for the rank based stagewise algorithm (Algorithm 3).
-Theorem 2. Under Assumptions 1, 2 and 3 on L∗ , Se∗ and
-Ω respectively and Ω satisfying:
-
- 2
-µ rσ1
-,
-E[|Ω|] ≥ Cα2 µ4 r3 n log2 (n) log
-
-
-Nearly Optimal Robust Matrix Completion
-
-for a large enough constant C, then Algorithm
-
-3 with η set
-2
-
-
-to 4µm r outputs a matrix L̂ such that: L̂ − L∗  ≤ , w.p.
-α
-
-≥ 1 − n− log 2 .
-
-F
-
-Notice that the sample complexity of Algorithm 3 has an
-additional multiplicative factor of O(r) when compared to
-that of Algorithm 1, but shaves off a factor of O(log(κ)).
-Similarly, computational complexity of Algorithm 3 also
-trades off a O(log κ) factor for O(r) factor from the computational complexity of Algorithm 1.
-Result for Matrix Completion: Note that for Se∗ = 0, the
-RMC problem with Assumptions 1,2 is exactly the same as
-the standard matrix completion problem and hence, we get
-the following result as a corollary of Theorem 1:
-Corollary 1 (Matrix Completion). Suppose we observe Ω
-and PΩ (L∗ ) where Assumptions 1,2 hold for L∗ and Ω.
-Also, let E[|Ω|] ≥ Cα2 µ4 r2 n log2 n log2 σ1 / and m ≤
-α
-n. Then, w.p. ≥ 1 − n− log 2 , Algorithm 1 outputs L̂ s.t.
-kL̂ − L∗ k2 ≤ .
-Table 1 compares our sample and time complexity bounds
-for low-rank MC. Note that our sample complexity is
-nearly the same as that of nuclear-norm methods while the
-running time of our algorithm is significantly better than
-the existing results that have at most logarithmic dependence on the condition number of L∗ .
-Result for Robust PCA: Consider the standard Robust
-PCA problem (RPCA), where the goal is to recover L∗
-from M = L∗ + Se∗ . For RPCA as well, we can randomly
-sample |Ω| entries from M , where Ω satisfies the assumption required by Theorem 1. This leads us to the following
-corollary:
-Corollary 2 (Robust PCA). Suppose we observe M =
-L∗ + Se∗ , where Assumptions 1, 3 hold for L∗ and
-Se∗ . Generate Ω ∈ [m] × [n] by sampling each entry independently with probability p, s.t., E[|Ω|] ≥
-Cα2 µ4 r2 n log2 n log2 σ1 /. Let m ≤ n. Then, w.p.
-α
-≥ 1 − n− log 2 , Algorithm 1 outputs L̂ s.t. kL̂ − L∗ k2 ≤ .
-Hence, using Theorem 1, we will still be able to recover L∗
-but using only the sampled entries. Moreover, the running
-time of the algorithm is only O(µ4 nr3 log2 n log2 (σ1 /)),
-i.e., we are able to solve RPCA problem in time almost linear in n. To the best of our knowledge, the existing stateof-the-art methods for RPCA require at least O(n2 r) time
-to perform the same task (Netrapalli et al., 2014; Gu et al.,
-2016). Similarly, we don’t need to load the entire data matrix in memory, but we can just sample the matrix and work
-with the obtained sparse matrix with at most linear number
-of entries. Hence, our method significantly reduces both
-run-time and space complexities, and as demonstrated empirically in Section 4 can help scale our algorithm to very
-large data sets without losing accuracy.
-
-3.1. Proof Outline for Theorem 1
-We now provide an outline of our proof for Theorem 1
-and motivate some of our proof techniques; the proof of
-Theorem 2 follows similarly. Recall that we assume that
-M = L∗ + Se∗ and define S ∗ = PΩ (Se∗ ). Similarly, we define Se(t) = HT ζ (M − L(t) ). Critically, S (t) = PΩ (Se(t) )
-(see Line 9 of Algorithm 1), i.e., Se(t) is the set of iterates
-that we “could” obtain if entire M was observed. Note that
-we cannot compute Se(t) , it is introduced only to simplify
-our analysis.
-We first re-write the projected gradient descent step for
-L(t+1) as described in (4):
 
-L(t+1) = Pkq L∗ + (Se∗ − Se(t) ) +
-| {z }
-E1
 
-
- z E
-}|2
-{
+lim MC(Di ) = ρ(πe )
+
+i→∞
+
 
-PΩq,t
-I−
-((L(t) − L∗ ) +(Se(t) − Se∗ ))
-p
-|
-{z
-}
 
-(6)
-
-E3
-
-That is, L(t+1) is obtained by rank-kq SVD of a perturbed
-version of L∗ : L∗ + E1 + E3 . As we perform entrywise
-thresholding to reduce kSe∗ − Se(t) k∞ , we need to bound
-kL(t+1) −L∗ k∞ . To this end, we use techniques from (Jain
-& Netrapalli, 2015), (Netrapalli et al., 2014) that explicitly
-model singular vectors of L(t+1) and argue about the infinity norm error using a Taylor series expansion. However,
-in our case, such an error analysis requires analyzing the
-following key quantities (H = E1 + E3 ):
->
-Aj := max ke>
-q H H
-
-∀1 ≤ j, s.t., j even :
-
- 2j
-
-V ∗ k2
-
- 2j
-
-U ∗ k2 ,
-
-q∈[n]
-
->
-Bj := max ke>
-q HH
-q∈[m]
-
->
-Cj := max ke>
-HH >
-q H
-
-∀1 ≤ j, s.t., j odd :
-
-b 2j c
-
-q∈[n]
-
->
-Dj := max ke>
-q H H H
-q∈[m]
-
-b 2j c
-
-U ∗ k2
-
-V ∗ k2 .
-(7)
-
-Note that E1 = 0 in the case of standard RPCA which was
-analyzed in (Netrapalli et al., 2014), while E3 = 0 in the
-case of standard MC which was considered in (Jain & Netrapalli, 2015). In contrast, in our case both E1 and E3
-are non-zero. Moreover, E3 is dependent on random variable Ω. Hence, for j ≥ 2, we will get cross terms between
-E3 and E1 that will also have dependent random variables
-which precludes application of standard Bernstein-style tail
-bounds. To overcome this issue, we first carefully segregate
-the errors arising due to the randomness in the sampling
-process and the deterministic sparse corruptions in Se∗ . We
-do this by introducing Se(t) which is the sparse iterate we
-
-Nearly Optimal Robust Matrix Completion
-
-Table 1: Comparison of PG-RMC and R-RMC with Other Matrix Completion Methods
-
-SVP (Jain & Netrapalli, 2015)
-
-Sample Complexity
-
-O µ2 rn log2 n
-
-O µ4 r5 n log3 n
-
-Alt. Min. (Hardt & Wootters, 2014)
-
-O nµ4 r9 log3 (κ) log2 n
-
-Alt. Grad. Desc. (Sun & Luo, 2015)
-
-
-O nrκ2 max{µ2 log n, µ4 r6 κ4 }
-
- ∗ 
-σ
-O µ4 r3 n log2 (n) log 1
-
- ∗ 
-σ
-O µ4 r2 n log2 (n) log2 1
-
-Nuclear norm (Recht, 2011)
-
-R-RMC (This Paper)
-PG-RMC (This Paper)
-
-would have obtained had the whole matrix been observed.
-This allows us to decompose the error term into the sum of
-E1 and E3 where E1 represents the error due to the sparse
-corruptions and E3 represents the error arising from the
-randomness in the sampling procedure. We then incorporate this decomposition into a careful combinatorial-style
-argument similar to that of (Erdos et al., 2013; Jain & Netrapalli, 2015) to bound the above given quantity. That is,
-we can provide the following key lemma:
-Lemma 1. Let L∗ , Ω, and Se∗ satisfy Assumptions 1, 2 and
-3 respectively. Let L∗ = U ∗ Σ∗ (V ∗ )> be the singular value
-decomposition of L∗ . Furthermore, suppose that in the tth
-iteration of the q th stage, Se(t) defined as HTζ (M − L(t) )
-satisfies Supp(Se(t) ) ⊆ Supp(Se∗ ), then we have:
-r 
-r
-max{Aa , Ba , Ca , Da } ≤ µ
-ρn kE1 k∞
-m
-a
-r
-n
-+c
-(kE1 − E2 k∞ ) log n ,
-p
-c
-
-∀c > 0, ∀0 ≤ j ≤ log n w.p. ≥ 1 − n−2 log 4 +4 , where
-E1 , E2 and E3 are defined in (6), Aa , Ba , Ca , Da are defined in (7).
-Remark: We would like to note that even for the standard MC setting, i.e., when E1 = 0, we obtain better bound than that of (Jain & Netrapalli, 2015) as we
-T
-q
-can bound
-√ maxi keTi (E3 )q U k2 directly rather than the
-weaker r maxi kei (E3 ) uj k bound that (Jain & Netrapalli, 2015) uses.
-Now, using Lemmas 1 and 7 and by using a hardthresholding argument we can bound kL(t+1) − L∗ k∞ ≤
-
-2µ2 r
-1 t ∗
-∗
-σkq ) (see Lemma 9) in the q-th stage.
-m (σkq +1 + 2
-Hence, after O(log(σ1∗ /)) “inner” iterations, we can guar-
-
-
-
-Computational Complexity
-
-O n3 log 1
-
-O µ4 r7 n log3 n log( 1 )
-
-O nµ4 r13 log3 (κ) log2 n
-
-O n2 r6 κ4 log 1
-
- ∗ 
-σ
-O µ4 r4 n log2 (n) log 1
-
- ∗ 
-σ
-O µ4 r3 n log2 (n) log2 1
-
-antee in the q-th stage:
-4µ2 r ∗
-σ
-m kq +1
-20µ2 r ∗
-σkq +1 .
-≤
-m
-
-kL(T ) − L∗ k∞ ≤
-kE1 k∞ + kE2 k∞
-
-Moreover, by using sparsity of Se∗ and the special structure
-of E3 (See Lemma 7), we have: kE1 + E3 k2 ≤ c · σk∗q +1 ,
-where c is a small constant.
-Now, the outer iteration sets the next stage’s rank kq+1 as:
-kq+1 = |{i : σi (L∗ + E1 + E3 ) ≥ 0.5 · σkq +1 (L∗ + E1 +
-E3 )}|. Using the bound on kE1 + E3 k2 and Weyl’s eigenvalue perturbation bound (Lemma 2), we have: σk∗q+1+1 ≤
-0.6 σk∗q +1 . Hence, after Q = O(log(σ1∗ /)) “outer” iterations, Algorithm 1 converges to an -approximate solution
-to L∗ .
-
-4. Experiments
-In this section we discuss the performance of Algorithm
-1 on synthetic data and its use in foreground background
-separation. The goal of the section is two-fold: a) to
-demonstrate practicality and effectiveness of Algorithm 1
-for the RMC problem, b) to show that Algorithm 1 indeed solves RPCA problem in significantly smaller time
-than that required by the existing state-of-the-art algorithm
-(St-NcRPCA (Netrapalli et al., 2014)). To this end, we use
-synthetic data as well as video datasets where the goal is to
-perform foreground-background separation (Candès et al.,
-2011).
-We implemented our algorithm in MATLAB and the results for the synthetic data set were obtained by averaging
-over 20 runs. We obtained a matlab implementation of StNcRPCA (Netrapalli et al., 2014) from the authors of (Netrapalli et al., 2014). Note that if the sampling probability
-is p = 1, then our method is similar to St-NcRPCA; the
-key difference being how the rank is selected in each stage.
-
-Nearly Optimal Robust Matrix Completion
-n = 5000, µ = 1, r = 10, ρ = 0.01
-2
-
-n = 2000, µ = 1, r = 5, ρ = 0.01
-12
-
-0
--2
--4
--6
-
-p = 0.05
-p = 0.1
-St-NcRPCA
-
-5
-
-Synthetic data. We generate M = L∗ + Se∗ of two sizes,
-where L∗ = U V > ∈ R2000×2000 (and R5000×5000 ) is a
-random rank-5 (and rank-10 respectively) matrix with incoherence ≈ 1. Se∗ is generated
-  by considering a uni 
-formly random subset of size Se∗  from [m] × [n] where
-0
-every entry is i.i.d. from the uniform distribution in
-r
-[ 2√rmn , √mn
-]. This is the same setup as used in (Candès
-et al., 2011).
-Figure 1 (a) plots recovery error (kL − L∗ kF ) vs computational time for our PG-RMC method (with different
-sampling probabilities) as well as the St-NcRPCA algorithm. Note that even for very small values of sampling
-p, we can achieve the same recovery error as when using
-significantly small values. For example, our method with
-p = 0.1 achieve 0.01 error (kL − L∗ kF ) in ≈ 2.5s while
-St-NcRPCA method requires ≈ 10s to achieve the same
-accuracy. Note that we do not compare against the convex
-relaxation based methods like IALM from (Candès et al.,
-2011), as (Netrapalli et al., 2014) shows that St-NcRPCA
-is significantly faster than IALM and several other convex
-relaxation solvers.
-Figure 1 (b) plots time required to achieve different recovery errors (kL − L∗ kF ) as the sampling probability p increases. As expected, we observe a linear increase in the
-run-time with p. Interestingly, for very small values of p,
-we observe an increase in running time. In this regime,
-
-8
-6
-4
-
-10
-
-15
-
-0.1
-
-Time(s)
-
-0.15
-
-0.2
-
-0.25
-
-0.3
-
-Sampling probability
-
-(a)
-
-(b)
-
-n = 2000, r = 5, ρ = 0.01, p = 0.5
-
-n = 2000, r = 5, ρ = 0.01, p = 0.1
-
-30
-
-10
-
-err = 1e-1
-err = 1e-3
-err = 1e-5
-
-Time(s)
-
-Time(s)
-
-40
-
-20
-10
-0
-5
-
-8
-
-err = 1e-5
-err = 1e-3
-err = 1e-1
-
-6
-4
-
-10
-
-15
-
-2
-0.5
-
-20
-
-1
-
-1.5
-
-Rank
-
-µ
-
-(c)
-
-(d)
-success probability
-
-Parameters. The algorithm has three main parameters: 1)
-threshold ζ, 2) incoherence µ and 3) sampling probability p (E[|Ω|] = p · mn). In the experiments
-on synthetic
-
- √
-data we observed that keeping ζ ∼ µ M − S (t) 2 / n
-speeds up the 
-recovery while
-for background extraction
-
-keeping ζ ∼ µ M − S (t) 2 /n gives a better quality output. The value of µ for real world data sets was figured
-out using cross validation while for the synthetic data the
-same value was used as used in data generation. The sampling probability for the synthetic data could be kept as low
-as (θ =)2r log2 (n)/n while for the real world data set we
-get good results for p = 0.05. We define effective sample size as the ratio between the sampling probability and
-θ. Also, rather than splitting samples, we use the entire
-set of observed entries to perform our updates (see Algorithm 1).
-
-err = 1e-5
-err = 1e-3
-err = 1e-1
-
-10
-
-Time(s)
-
-log ||L∗ − L̂||F
-
-We also implemented the Alternating Minimzation based
-algorithm from (Gu et al., 2016). However, we found it
-to be an order of magnitude slower than Algorithm 1 on
-the foreground-background separation task. For example,
-on the escalator video, the algorithm did not converge in
-less than 150 seconds despite discounting for the expensive sorting operation in the truncation step. On the other
-hand, our algorithm finds the foreground in about 8 seconds.
-
-1
-
-r = 5, µ = 1, ρ = 0.01
-n = 1000
-n = 2000
-n = 3000
-
-0.5
-
-0
-0
-
-2
-
-0.5
-1
-effective sample size
-
-(e)
-
-Figure 1: Performance of PG-RMC on synthetic data. 1a:
-time vs error for various sampling probabilities; time taken
-by St-NcRPCA 1b: sampling probability vs time for constant error; time taken decreases with decreasing sampling
-probability upto an extent and then increases 1c: time vs
-rank for constant error 1d: incoherence vs time for constant error 1e: success probability vs effective sample size
-for various matrix sizes
-
-kPΩ (M )k2
-p
-
-becomes very large (as p doesn’t satisfy the sampling requirements). Hence, the increase in the number of
-)k2
-) dominates the decrease in
-iterations (T ≈ log kPΩ (M
-p
-per iteration time complexity.
-Figure 1 (c), (d) plot computation time required by our
-method (PG-RMC , Algorithm 1) versus rank and incoherence, respectively. As expected, as these two problem
-parameters increase, our method requires more time. Note
-that our run-time dependence on rank seems to be linear,
-while our results require O(r3 ) time. This hints at the possibility of further improving the computational complexity
-analysis of our algorithm.
-Figure 1 (e) plots the effective sample size against success probability. We see that the probability of recovering
-the underlying low rank matrix undergoes a rapid phase
-
-Nearly Optimal Robust Matrix Completion
-
-(a)
-
-(b)
-
-(c)
-
-(d)
-µ = 1, r = 5
-
-10
-0
-p = 0.05
-p = 0.1
-St-NcRPCA
-
--20
-0
-
-100
-
-200
-
-300
-
-log ||M − L̂ − Ŝ||F
-
-log ||M − L̂ − Ŝ||F
-
-µ = 1, r = 5
-20
-
--10
-
-eral videos. Figure 2 (a), (d) show one frame each from two
-such videos (a shopping center video, a restaurant video).
-Figure 2 (b), (d) show the extracted background from the
-two videos by using our method (PG-RMC , Algorithm 1)
-with probability of sampling p = 0.05. Figure 2 (c), (f)
-compare objective function value for different p values.
-Clearly, PG-RMC can recover the true background with
-p as small as 0.05. We also observe an order of magnitude speedup (≈ 5x) over St-NcRPCA (Netrapalli et al.,
-2014). We present results on the video Escalator in Appendix 5.5.
-
-15
-10
-5
-p = 0.01
-p = 0.05
-p = 0.1
-St-NcRPCA
-
-0
--5
--10
-0
-
-10
-
-20
-
-Time(s)
-
-Time(s)
-
-(e)
-
-(f)
-
-30
-
-Figure 2: PG-RMC on Shopping video. 2a: a video frame
-2c: an extracted background frame 2e: time vs error for different sampling probabilities; PG-RMC takes 38.7s while
-St-NcPCA takes 204.4s. PG-RMC on Restaurant video.
-2b: a video frame 2d: an extracted background frame
-2f: time vs error for different sampling probabilities; PGRMC takes 7.9s while St-NcPCA takes 27.8s
-
-transition from 0 to 1 when sampling probability crosses
-∼ r log2 n/n.
-We also study phase transition for different values of sampling probability p. Figure 3 (a) in Appendix 5.5 show a
-phase transition phenomenon where beyond p > .06 the
-probability of recovery is almost 1 while below it, it is almost 0.
-Foreground-background separation. We also applied
-our technique to the problem of foreground-background
-separation. We use the usual method of stacking up the
-vectorized video frames to construct a matrix. The background, being static, will form the low rank component
-while the foreground is considered to be the noise.
-We applied our PG-RMC method (with varying p) to sev-
-
-Conclusion. In this work, we studied the Robust Matrix
-Completion problem. For this problem, we provide exact
-recovery of the low-rank matrix L∗ using nearly optimal
-number of observations as well as nearly optimal fraction
-of corruptions in the observed entries. Our RMC result
-is based on a simple and efficient PGD algorithm that has
-nearly linear time complexity as well. Our result improves
-state-of-the-art sample and run-time complexities for the
-related Matrix Completion as well as Robust PCA problem. For Robust PCA, we provide first nearly linear time
-algorithm under standard assumptions.
-Our sample complexity depends on , the desired accuracy in L∗ . Removing this factor will be an interesting
-future work. Moreover, improving dependence of sample
-complexity on r (from r2 to r) also represents an important direction. Finally, similar to foreground background
-separation, we would like to explore more applications of
-RMC/RPCA.
+= 1.
+
+If ρ(πe ) exists, MC is
+
+strongly consistent by the Khintchine Strong law of large numbers (Sen & Singer, 1993).
+
+Data-Efficient Policy Evaluation Through Behavior Policy Search
+
+chosen to minimize variance, but is a policy that is dictated
+by circumstance.
+
+3. Behavior Policy Search
+Importance sampling was originally intended as a variance
+reduction technique for Monte Carlo evaluation (Hammersley & Handscomb, 1964). When an evaluation policy rarely
+samples trajectories with high magnitude returns a Monte
+Carlo evaluation will have high variance. If a behavior policy can increase the probability of observing such trajectories then the off-policy IS estimate will have lower variance
+than an on-policy Monte Carlo estimate. In this section we
+first describe the theoretical potential for variance reduction
+with an appropriately selected behavior policy. In general
+this policy will be unknown. Thus, we propose a policy
+evaluation subproblem — the behavior policy search problem — solutions to which will adapt the behavior policy to
+provide lower mean squared error policy performance estimates. To the best of our knowledge, we are the first to
+propose behavior policy adaptation for policy evaluation.
+3.1. The Optimal Behavior Policy
+An appropriately selected behavior policy can lower variance to zero. While this fact is generally known for
+importance-sampling, we show here that this policy exists
+for any MDP and evaluation policy under two restrictive
+assumptions: all returns are positive and the domain is deterministic. In the following section we describe how an
+initial policy can be adapted towards the optimal behavior
+policy even when these conditions fail to hold.
+QL
+Let wπ (H) := t=0 π(At |St ). Consider a behavior policy
+πb? such that for any trajectory, H:
+ρ(πe ) = IS(H, πb? ) = g(H)
+
+wπe (H)
+.
+wπb? (H)
+
+Rearranging the terms of this expressions yields:
+wπb? (H) = g(H)
+
+wπe (H)
+.
+ρ(πe )
+
+Thus, if we can select πb? such that the probability of obg(H)
+serving any H ∼ πb? is ρ(π
+times the likelihood of obe)
+serving H ∼ πe then the IS estimate has zero MSE with
+only a single sampled trajectory. Regardless of g(H), the
+importance-sampled return will equal ρ(πe ).
+Furthermore, the policy πb? exists within the space of all
+feasible stochastic policies. Consider that a stochastic policy can be viewed as a mixture policy over time-dependent
+(i.e., action selection depends on the current time-step) deterministic policies. For example, in an MDP with one
+state, two actions and a horizon of L there are 2L possible time-dependent deterministic policies, each of which
+
+defines a unique sequence of actions. We can express any
+evaluation policy as a mixture of these deterministic policies. The optimal behavior policy πb? can be expressed similarly and thus the optimal behavior policy exists.
+Unfortunately, the optimal behavior policy depends on the
+unknown value ρ(πe ) as well as the unknown reward function R (via g(H)). Thus, while there exists an optimal behavior policy for IS – which is not πe – in practice we cannot analytically determine πb? . Additionally, πb? may not be
+representable by any θ in our policy class.
+3.2. The Behavior Policy Search Problem
+Since the optimal behavior policy cannot be analytically
+determined, we instead propose the behavior policy search
+(BPS) problem for finding πb that lowers the MSE of estimates of ρ(πe ). A BPS problem is defined by the inputs:
+1. An evaluation policy πe with policy parameters θ e .
+2. An off-policy policy evaluation algorithm,
+OPE(H, θ), that takes a trajectory, H ∼ πθ , or,
+alternatively, a set of trajectories, and returns an
+estimate of ρ(πe ).
+A BPS solution is a policy, πθb such that off-policy estimates with OPE have lower MSE than on-policy estimates.
+Methods for this problem are BPS algorithms.
+Recall we have formalized policy evaluation within an incremental setting where one trajectory for policy evaluation
+is generated each iteration. At the ith iteration, a BPS algorithm selects a behavior policy that will be used to generate
+a trajectory, Hi . The policy evaluation algorithm, OPE,
+then estimates ρ(πe ) using trajectories in Di . Naturally,
+the selection of the behavior policy depends on how OPE
+estimates ρ(πe ).
+In a BPS problem, the ith iteration proceeds as follows.
+i−1
+First, given all of the past behavior policies, {θ i }i=0
+, and
+i−1
+the resulting trajectories, {Hi }i=0 , the BPS algorithm must
+select θ i . The policy πθi is then run for one episode to
+create the trajectory Hi . Then the BPS algorithm uses
+OPE to estimate ρ(πe ) given the available data, Di :=
+{(θ i , Hi )}ii=0 . In this paper, we consider the one-step
+problem of selecting θ i and estimating ρ(πe ) at iteration
+i in a way that minimizes MSE. That is, we do not consider
+how our selection of θ i will impact our future ability to select an appropriate θ j for j > i and thus to produce more
+accurate estimates in the future.
+One natural question is: if we are given a limit on the
+number of trajectories that can be sampled, is it better to
+“spend” some of our limited trajectories on BPS instead
+of using on-policy estimates? Since each OP E(Hi , θ i )
+is an unbiased estimator of ρ(πe ), we can use all sampled
+trajectories to compute OPE(Di ). Provided for all itera-
+
+Data-Efficient Policy Evaluation Through Behavior Policy Search
+
+tions, Var[OPE(H, θ i )] ≤ V ar[M C] then, in expectation,
+a BPS algorithm will always achieve lower MSE than MC,
+showing that it is, in fact, worthwhile to do so. This claim
+is supported by our empirical study.
+
+4. Behavior Policy Gradient Theorem
+We now introduce our primary contributions: an analytic
+expression for the gradient of the mean squared error of
+the IS estimator and a stochastic gradient descent algorithm
+that adapts θ to minimize the MSE between the IS estimate
+and ρ(πe ). Our algorithm — Behavior Policy Gradient
+(BPG) — begins with on-policy estimates and adapts the
+behavior policy with gradient descent on the MSE with respect to θ. The gradient of the MSE with respect to the
+policy parameters is given by the following theorem:
+Theorem 1.
+"
+
+L
+X
+∂
+∂
+MSE[IS(H, θ)] = E − IS(H, θ)2
+log πθ (At |St )
+∂θ
+∂θ
+t=0
+
+#
+
+where the expectation is taken over H ∼ πθ .
+Proof. Proofs for all theoretical results are included in
+Appendix A of an extended version available at http:
+//arxiv.org/abs/1706.03469.
+BPG uses stochastic gradient descent in place of exact gradient descent: replacing the intractable expectation in Theorem 1 with an unbiased estimate of the true gradient. In
+our experiments, we sample a batch, Bi , of k trajectories
+with πθi to lower the variance of the gradient estimate at
+iteration i. In the BPS setting, sampling a batch of trajectories is equivalent to holding θ fixed for k iterations and
+then updating θ with the k most recent trajectories used to
+compute the gradient estimate.
+Full details of BPG are given in Algorithm 1. At iteration i, BPG samples a batch, Bi , of k trajectories and adds
+{(θ i , Hi )ki=0 } to a data set D (Lines 4-5). Then BPG updates θ with an empirical estimate of Theorem 1 (Line 6).
+After n iterations, the BPG estimate of ρ(πe ) is IS(Dn ) as
+defined in Section 2.4.
+Given that the step-size, αi , is consistent with standard gradient descent convergence conditions, BPG will converge
+to a behavior policy that locally minimizes the variance
+(Bertsekas & Tsitsiklis, 2000). At best, BPG converges to
+the globally optimal behavior policy within the parameterization of πe . Since the parameterization of πe determines
+the class of representable distributions it is possible that
+the theoretically optimal behavior policy is unrepresentable
+under this parameterization. Nevertheless, a suboptimal behavior policy still yields better estimates of ρ(πe ), provided
+it decreases variance compared to on-policy returns.
+
+Algorithm 1 Behavior Policy Gradient
+Input: Evaluation policy parameters, θ e , batch size k, a
+step-size for each iteration, αi , and number of iterations n.
+Output: Final behavior policy parameters θ n and the IS
+estimate of ρ(πe ) using all sampled trajectories.
+1: θ 0 ← θ e
+2: D0 = {}
+3: for all i ∈ 0...n do
+4:
+Bi = Sample k trajectories H ∼ πθi
+5:
+Di+1 = Di ∪ Bi
+L
+X
+X
+∂
+6:
+θ i+1 = θ i + αki
+IS(H, θ)2
+log πθi (At |St )
+∂θ
+t=0
+H∈B
+7: end for
+8: Return θ n , IS(Dn )
+
+4.1. Control Variate Extension
+In cases where an approximate model is available, we can
+further lower variance adapting the behavior policy of the
+doubly robust estimator (Jiang & Li, 2016; Thomas &
+Brunskill, 2016). Based on a similar intuition as the Advantage Sum estimator (Section 2.3), the Doubly Robust (DR)
+estimator uses the value functions of an approximate model
+as a control variate to lower the variance of importancesampling.3 We show here that we can adapt the behavior
+policy to lower the mean squared error of DR estimates.
+We denote this new method DR-BPG for Doubly Robust
+Behavior Policy Gradient.
+Qt
+Let wπ,t (H) = i=0 π(At |St ) and recall that v̂ πe and q̂ πe
+are the state and action value functions of πe in the approximate model. The DR estimator is:
+L
+X
+wπe ,t
+(Rt −q̂ πe (St , At )+v̂ πe (St+1 )).
+DR(H, θ) := v̂(S0 )+
+w
+πθ ,t
+t=0
+
+We can reduce the mean squared error of DR with gradient
+descent using unbiased estimates of the following corollary
+to Theorem 1:
+Corollary 1.
+L
+X
+∂
+∂
+MSE [DR(H, θ)] = E[(DR(H, θ)2
+log πθ (At |St )
+∂θ
+∂θ
+t=0
+L
+t
+X
+wπ ,t X ∂
+− 2 DR(H, θ)(
+γ t δt e
+log πθ (Ai |Si ))]
+wθ,t i=0 ∂θ
+t=0
+
+where δt = Rt − q̂(St , At ) + v̂(St+1 ) and the expectation
+is taken over H ∼ πθ .
+∂
+M SE is analogous to the gradient of
+The first term of ∂θ
+the importance-sampling estimate with IS(H, θ) replaced
+3
+DR lowers the variance of per-decision importance-sampling
+which importance samples the per time-step reward.
+
+Data-Efficient Policy Evaluation Through Behavior Policy Search
+
+by DR(H, θ). The second term accounts for the covariance
+of the DR terms.
+AS and DR both assume access to a model, however, they
+make no assumption about where the model comes from
+except that it must be independent of the trajectories used to
+compute the final estimate. In practice, AS and DR perform
+best when all trajectories are used to estimate the model and
+then used to estimate ρ(πe ) (Thomas & Brunskill, 2016).
+However, for DR-BPG, changes to the model change the
+surface of the MSE objective we seek to minimize and thus
+DR-BPG will only converge once the model stops changing. In our experiments, we consider both a changing and
+a fixed model.
+4.2. Connection to REINFORCE
+BPG is closely related to existing work in policy gradient RL (c.f., (Sutton et al., 2000)) and we draw connections between one such method and BPG to illustrate how
+BPG changes the distribution of trajectories. REINFORCE
+(Williams, 1992) attempts to maximize ρ(πθ ) through gradient ascent on ρ(πθ ) using the following unbiased gradient
+of ρ(πθ ):
+
+#
+"
+L
+
+X
+∂
+∂
+
+ρ(πθ ) = E g(H)
+log πθ (At |St )H ∼ πθ .
+
+∂θ
+∂θ
+t=0
+
+Intuitively, REINFORCE increases the probability of all
+actions taken during H as a function of g(H). This update increases the probability of actions that lead to high
+return trajectories. BPG can be interpreted as REINFORCE where the return of a trajectory is the square of
+its importance-sampled return. Thus BPG increases the
+probability of all actions taken along H as a function of
+IS(H, θ)2 . The magnitude of IS(H, θ)2 depends on two
+qualities of H:
+1. g(H)2 is large (i.e., a high magnitude event).
+2. H is rare relative to its probability under the evaluaQL
+t |St )
+tion policy (i.e., t=0 ππθe (A
+(At |St ) is large).
+These two qualities demonstrate a balance in how BPG
+changes trajectory probabilities. Increasing the probability of a trajectory under πθ will decrease IS(H, θ)2 and so
+BPG increases the probability of a trajectory when g(H)2
+is large enough to offset the decrease in IS(H, θ)2 caused
+by decreasing the importance weight.
+
+5. Empirical Study
+This section presents an empirical study of variance reduction through behavior policy search. We design our experiments to answer the following questions:
+• Can behavior policy search with BPG reduce policy
+evaluation MSE compared to on-policy estimates in
+
+both tabular and continuous domains?
+• Does adapting the behavior policy of the Doubly Robust estimator with DR-BPG lower the MSE of the
+Advantage Sum estimator?
+• Does the rarety of actions that cause high magnitude
+rewards affect the performance gap between BPG and
+Monte Carlo estimates?
+5.1. Experimental Set-up
+We address our first experimental question by evaluating
+BPG in three domains. We briefly describe each domain
+here; full details are available in appendix C.
+The first domain is a 4x4 Gridworld. We obtain two evaluation policies by applying REINFORCE to this task, starting from a policy that selects actions uniformly at random.
+We then select one evaluation policy, π1 , from the early
+stages of learning – an improved policy but still far from
+converged – and one after learning has converged, π2 . We
+run all experiments once with πe := π1 and a second time
+with πe := π2 .
+Our second and third tasks are the continuous control Cartpole Swing Up and Acrobot tasks implemented within RLLAB (Duan et al., 2016). The evaluation policy in each domain is a neural network that maps the state to the mean of a
+Gaussian distribution. Policies are partially optimized with
+trust-region policy optimization (Schulman et al., 2015) applied to a randomly initialized policy.
+5.2. Main Results
+Gridworld Experiments Figure 1 compares BPG to
+Monte Carlo for both Gridworld policies, π1 and π2 . Our
+main point of comparison is the mean squared error (MSE)
+of both estimates at iteration i over 100 trials. For π1 , BPG
+significantly reduces the MSE of on-policy estimates (Figure 1a). For π2 , BPG also reduces MSE, however, it is only
+a marginal improvement.
+At the end of each trial we used the final behavior policy to collect 100 more trajectories and estimate ρ(πe ). In
+comparison to a Monte Carlo estimate with 100 trajectories
+from π1 , MSE is 85.48 % lower with this improved behavior policy. For π2 , the MSE is 31.02 % lower. This result
+demonstrates that BPG can find behavior policies that substantially lower MSE.
+To understand the disparity in performance between these
+two instances of policy evaluation, we plot the distribution
+of g(H) under πe (Figures 1c and 1d). These plots show
+the variance of π1 to be much higher; it sometimes samples
+returns with twice the magnitude of any sampled by π2 . To
+quantify this difference,
+ we also measure the variance of2
+
+IS(H, θ i ) as E IS(H)2 H ∼ πθi − E [IS(H)|H ∼ πθi ]
+where the expectations are estimated with 10,000 trajecto-
+
+Data-Efficient Policy Evaluation Through Behavior Policy Search
+
+(a) Mean Squared Error
+
+(b) Mean Squared Error
+
+(a) Cart-pole Swing Up MSE
+
+(b) Acrobot MSE
+
+Figure 2: Mean squared error reduction on the Cart-pole
+Swing Up and Acrobot domains. We adapt the behavior
+policy for 200 iterations and average results over 100 trials.
+Error bars are for 95% confidence intervals.
+
+(c) Histogram of π1 Returns (d) Histogram of π2 Returns
+
+(e) Variance Reduction
+
+step size parameter α. If α is set too high we risk making too large of an update to θ — potentially stepping to
+a worse behavior policy. If we are too conservative then it
+will take many iterations for a noticeable improvement over
+Monte Carlo estimation. Figure 1f shows variance reduction for a number of different α values in the GridWorld
+domain. We found BPG in this domain was robust to a
+variety of step size values. We do not claim this result is
+representative for all problem domains; stepsize selection
+in the behavior policy search problem is an important area
+for future work.
+
+(f) Learning Rate Sensitivity
+
+Figure 1: Gridworld experiments when πe is a partially optimized policy, π1 , (1a) and a converged policy, π2 , (1b).
+The first and second rows give results for π1 on the left
+and π2 on the right. Results are averaged over 100 trials
+of 1000 iterations with error bars given for 95 % confidence intervals. In both instances, BPG lowers MSE more
+than on-policy Monte Carlo returns (statistically significant, p < 0.05). The second row shows the distribution of
+returns under the two different πe . Figure 1e shows a substantial decrease in variance when evaluating π1 with BPG
+and a lesser decrease when evaluating π2 with BPG. Figure 1f shows the effect of varying the step-size parameter
+for representative α (BPG diverged for high settings of α).
+We ran BPG for 250 iterations per value of α and averaged
+over 5 trials. Axes in 1a, 1b, and 1e are log-scaled.
+
+ries. This evaluation is repeated 5 times per iteration and
+the reported variance is the mean over these evaluations.
+The decrease in variance for each policy is shown in Figure 1e. The high initial variance means there is much more
+room for BPG to improve the behavior policy when θ e is
+the partially optimized policy.
+We also test the sensitivity of BPG to the learning rate parameter. A critical issue in the use of BPG is selecting the
+
+Continuous Control Figure 2 shows reduction of MSE
+on the Cartpole Swing-up and Acrobot domains. Again we
+see that BPG reduces MSE faster than Monte Carlo evaluation. In contrast to the discrete Gridworld experiment,
+this experiment demonstrates the applicability of BPG to
+the continuous control setting. While BPG significantly
+outperforms Monte Carlo evaluation in Cart-pole Swingup, the gap is much smaller in Acrobot. This result also
+demonstrates BPG (and behavior policy search) when the
+policy must generalize across different states.
+5.3. Control Variate Extensions
+In this section, we evaluate the combination of modelbased control variates with behavior policy search. Specifically, we compare the AS estimator with Doubly Robust
+BPG (DR-BPG). In these experiments we use a 10x10
+stochastic gridworld. The added stochasticity increases the
+difficulty of building an accurate model from trajectories.
+Since these methods require a model we construct this
+model in one of two ways. The first method uses all trajectories in D to build the model and then uses the same set to
+estimate ρ(πe ) with ASE or DR. The second method uses
+trajectories from the first 10 iterations to build the model
+and then fixes the model for the remaining iterations. For
+DR-BPG, behavior policy search starts at iteration 10 un-
+
+Data-Efficient Policy Evaluation Through Behavior Policy Search
+
+5.4. Rareness of Event
+
+(a) Control Variate MSE
+
+(b) Rare Event Improvement
+
+Figure 3: 3a: Comparison of DR and ASE on a larger
+stochastic Gridworld. For the fixed model methods, the
+significant drop in MSE at iteration 10 is due to the introduction of the model control variate. For clarity we do
+not show error bars. The difference between the final estimate of DR-BPG and ASE with the fixed model is statistically significant (p < 0.05); the difference between the
+same methods with a constantly improving model is not.
+3b: Varying the probability of a high rewarding terminal
+action in the GridWorld domain. Each point on the horizontal axis is the probability of taking this action. The vertical
+axis gives the relative decrease in variance after adapting θ
+for 500 iterations. Denoting the initial variance as vi and
+the final variance as vf , the relative decrease is computed
+v −v
+as i vi f . Error bars for 95% confidence intervals are given
+but are small.
+der this second condition. We call the first method “update”
+and the second method “fixed.” The update method invalidates the theoretical guarantees of these methods but learns
+a more accurate model. In both instances, we build maximum likelihood tabular models.
+Figure 3 demonstrates that combining BPG with a modelbased control variate (DR-BPG) can lead to further reduction of MSE compared to the control variate alone (ASE).
+Specifically, with the fixed model, DR-BPG outperformed
+all other methods. DR-BPG using the update method for
+building the model performed competitively with ASE although not statistically significantly better. We also evaluate the final learned behavior policy of the fixed model
+variant of DR-BPG. For a batch size of 100 trajectories,
+the DR estimator with this behavior policy improves upon
+the ASE estimator with the same model by 56.9 %.
+For DR-BPG, estimating the model with all data still allowed steady progress towards lower variance. This result
+is interesting since a changing model changes the surface
+of our variance objective and thus gradient descent on the
+variance has no theoretical guarantees of convergence. Empirically, we observe that setting the learning rate for DRBPG was more challenging for either model type. Thus
+while we have shown BPG can be combined with control
+variates, more work is needed to produce a robust method.
+
+Our final experiment aims to understand how the gap between on- and off-policy variance is affected by the probability of rare events. The intuition for why behavior policy search can lower the variance of on-policy estimates is
+that a well selected behavior policy can cause rare and high
+magnitude events to occur. We test this intuition by varying
+the probability of a rare, high magnitude event and observing how this change affects the performance gap between
+on- and off-policy evaluation. For this experiment, we use
+a variant of the deterministic Gridworld where taking the
+UP action in the initial state (the upper left corner) causes
+a transition to the terminal state with a reward of +50. We
+use π1 from our earlier Gridworld experiments but we vary
+the probability of choosing UP when in the initial state. So
+with probability p the agent will receive a large reward and
+end the trajectory. We use a constant learning rate of 10−5
+for all values of p and run BPG for 500 iterations. We plot
+the relative decrease of the variance as a function of p over
+100 trials for each value of p. We use relative variance to
+normalize across problem instances. Note that under this
+measure, even when p is close to 1, the relative variance
+is not equal to zero because as p approaches 1 the initial
+variance also goes to zero.
+This experiment illustrates that as the initial variance increases, the amount of improvement BPG can achieve increases. As p becomes closer to 1, the initial variance becomes closer to zero and BPG barely improves over the
+variance of Monte Carlo (in terms of absolute variance
+there is no improvement). When the πe rarely takes the
+high rewarding UP action (p close to 0), BPG improves policy evaluation by increasing the probability of this action.
+This experiment supports our intuition for why off-policy
+evaluation can outperform on-policy evaluation.
+
+6. Related Work
+Behavior policy search and BPG are closely related to
+existing work on adaptive importance-sampling. While
+adaptive importance-sampling has been studied in the estimation literature, we focus here on adaptive importancesampling for MDPs and Markov Reward Processes (i.e., an
+MDP with a fixed policy). Existing work on adaptive IS
+in RL has considered changing the transition probabilities
+to lower the variance of policy evaluation (Desai & Glynn,
+2001; Frank et al., 2008) or lower the variance of policy
+gradient estimates (Ciosek & Whiteson, 2017). Since the
+transition probabilities are typically unknown in RL, adapting the behavior policy is a more general approach to adaptive IS. Ciosek and Whiteson also adapt the distribution of
+trajectories with gradient descent on the variance (Ciosek
+& Whiteson, 2017) with respect to parameters of the transition probabilities. The main focus of this work is increasing
+
+Data-Efficient Policy Evaluation Through Behavior Policy Search
+
+the probability of simulated rare events so that policy improvement can learn an appropriate response. In contrast,
+we address the problem of policy evaluation and differentiate with respect to the (known) policy parameters.
+The cross-entropy method (CEM) is a general method for
+adaptive importance-sampling. CEM attempts to minimize
+the Kullback-Leibler divergence between the current sampling distribution and the optimal sampling distribution. As
+discussed in Section 3.1, this optimal behavior policy only
+exists under a set of restrictive conditions. In contrast we
+adapt the behavior policy by minimizing variance.
+Other methods exist for lowering the variance of on-policy
+estimates. In addition to the control variate technique used
+by the Advantage Sum estimator (Zinkevich et al., 2006;
+White & Bowling, 2009), Veness et al. consider using common random numbers and antithetic variates to reduce the
+variance of roll-outs in Monte Carlo Tree Search (MCTS)
+(2011). These techniques require a model of the environment (as is typical for MCTS) and do not appear to be applicable to the general RL policy evaluation problem. BPG
+could potentially be applied to find a lower variance rollout policy for MCTS.
+In this work we have focused on unbiased policy evaluation. When the goal is to minimize MSE it is often permissible to use biased methods such as temporal difference
+learning (van Seijen & Sutton, 2014), model-based policy
+evaluation (Kearns & Singh, 2002; Strehl et al., 2009), or
+variants of weighted importance sampling (Precup et al.,
+2000). It may be possible to use similar ideas to BPG to
+reduce bias and variance although this appears to be difficult since the bias contribution to the mean squared error is squared and thus any gradient involving bias requires
+knowledge of the estimator’s bias. We leave behavior policy search with biased off-policy methods to future work.
+
+7. Discussion and Future Work
+Our experiments demonstrate that behavior policy search
+with BPG can lower the variance of policy evaluation. One
+open question is characterizing the settings where adapting
+the behavior policy substantially improves over on-policy
+estimates. Towards answering this question, our Gridworld
+experiment showed that when πe has little variance, BPG
+can only offer marginal improvement. BPG increases the
+probability of observing rare events with a high magnitude.
+If the evaluation policy never sees such events then there
+is little benefit to using BPG. However, in expectation and
+with an appropriately selected step-size, BPG will never
+lower the data-efficiency of policy evaluation.
+It is also necessary that the evaluation policy contributes to
+the variance of the returns. If all variance is due to the environment then it seems unlikely that BPG will offer much
+
+improvement. For example, Ciosek and Whiteson (2017)
+consider a variant of the Mountain Car task where the dynamics can trigger a rare event — independent of the action
+— in which rewards are multiplied by 1000. No behavior
+policy adaptation can lower the variance due to this event.
+One limitation of gradient-based BPS methods is the necessity of good step-size selection. In theory, BPG can never
+lead to worse policy evaluation compared to on-policy estimates. In practice, a poorly selected step-size may cause a
+step to a worse behavior policy at step i which may increase
+the variance of the gradient estimate at step i + 1. Future
+work could consider methods for adaptive step-sizes, second order methods, or natural behavior policy gradients.
+One interesting direction for future work is incorporating
+behavior policy search into policy improvement. A similar
+idea was explored by Ciosek and Whiteson who explored
+off-environment learning to improve the performance of
+policy gradient methods (2017). The method presented in
+that work is limited to simulated environments with differential dynamics. Adapting the behavior policy is a potentially much more general approach.
+
+8. Conclusion
+We have introduced the behavior policy search problem
+in order to improve estimation of ρ(πe ) for an evaluation
+policy πe . We present a solution — Behavior Policy Gradient — for this problem which adapts the behavior policy with stochastic gradient descent on the variance of the
+importance-sampling estimator. Experiments demonstrate
+BPG lowers the mean squared error of estimates of ρ(πe )
+compared to on-policy estimates. We also demonstrate
+BPG can further decrease the MSE of estimates in conjunction with a model-based control variate method.
+
+9. Acknowledgements
+We thank Daniel Brown and the anonymous reviewers for useful comments on the work and its presentation. This work has
+taken place in the Personal Autonomous Robotics Lab (PeARL)
+and Learning Agents Research Group (LARG) at the Artificial Intelligence Laboratory, The University of Texas at Austin. PeARL
+research is supported in part by NSF (IIS-1638107, IIS-1617639).
+LARG research is supported in part by NSF (CNS-1330072,
+CNS-1305287, IIS-1637736, IIS-1651089), ONR (21C184-01),
+AFOSR (FA9550-14-1-0087), Raytheon, Toyota, AT&T, and
+Lockheed Martin. Josiah Hanna is supported by an NSF Graduate Research Fellowship. Peter Stone serves on the Board of Directors of Cogitai, Inc. The terms of this arrangement have been
+reviewed and approved by the University of Texas at Austin in
+accordance with its policy on objectivity in research.
+
+Data-Efficient Policy Evaluation Through Behavior Policy Search
 
 References
-Bhatia, Rajendra. Matrix Analysis. Springer, 1997.
-Blumensath, Thomas. Sampling and reconstructing signals
-from a union of linear subspaces. IEEE Trans. Information Theory, 57(7):4660–4671, 2011. doi: 10.1109/
-TIT.2011.2146550.
-URL http://dx.doi.org/
-10.1109/TIT.2011.2146550.
-Candès, Emmanuel J. and Recht, Benjamin. Exact matrix completion via convex optimization. Foundations
-of Computational Mathematics, 9(6):717–772, December 2009.
-Candès, Emmanuel J., Li, Xiaodong, Ma, Yi, and Wright,
-John. Robust principal component analysis? J. ACM, 58
-(3):11, 2011.
-Chandrasekaran, Venkat, Sanghavi, Sujay, Parrilo,
-Pablo A., and Willsky, Alan S. Rank-sparsity incoherence for matrix decomposition. SIAM Journal on
-Optimization, 21(2):572–596, 2011.
+Bastani, Meysam. Model-free intelligent diabetes management using machine learning. PhD thesis, Masters thesis, Department of Computing Science, University of Alberta, 2014.
+Bertsekas, Dimitri P. and Tsitsiklis, John N. Gradient convergence in gradient methods with erros. 10:627–642,
+2000.
+Ciosek, Kamil and Whiteson, Shimon. OFFER: Offenvironment reinforcement learning. In Proceedings
+of the 31st AAAI Conference on Artificial Intelligence
+(AAAI), 2017.
+Desai, Paritosh Y and Glynn, Peter W. Simulation in optimization and optimization in simulation: A Markov
+chain perspective on adaptive Monte Carlo algorithms.
+In Proceedings of the 33rd conference on Winter simulation, pp. 379–384. IEEE Computer Society, 2001.
+Duan, Yan, Chen, Xi, Houthooft, Rein, Schulman, John,
+and Abbeel, Pieter. Benchmarking deep reinforcement
+learning for continuous control. In In Proceedings of
+the 33rd International Conference on Machine Learning,
+2016.
+Frank, Jordan, Mannor, Shie, and Precup, Doina. Reinforcement learning in the presence of rare events. In Proceedings of the 25th International Conference on Machine learning, pp. 336–343. ACM, 2008.
+Hammersley, JM and Handscomb, DC. Monte Carlo methods, methuen & co. Ltd., London, pp. 40, 1964.
+Jiang, Nan and Li, Lihong. Doubly robust off-policy evaluation for reinforcement learning. In Proceedings of
+the 33rd International Conference on Machine Learning
+(ICML), 2016.
+Kearns, Michael and Singh, Satinder. Near-optimal reinforcement learning in polynomial time. Machine Learning, 49(2-3):209–232, 2002.
+Lillicrap, Timothy P., Hunt, Jonathan J., Pritzel, Alexander,
+Heess, Nicolas, Erez, Tom, Tassa, Yuval, Silver, David,
+and Wierstra, Daan. Continuous control with deep reinforcement learning. CoRR, abs/1509.02971, 2015.
+Precup, D., Sutton, R. S., and Singh, S. Eligibility traces
+for off-policy policy evaluation. In Proceedings of the
+17th International Conference on Machine Learning, pp.
+759–766, 2000.
+Schulman, John, Levine, Sergey, Moritz, Philipp, Jordan,
+Michael, and Abbeel, Pieter. Trust region policy optimization. In Proceedings of the 32nd International Conference on Machine Learning ( ICML), 2015.
 
-Nearly Optimal Robust Matrix Completion
+Sen, P.K. and Singer, J.M. Large Sample Methods in Statistics: An Introduction with Applications. Chapman &
+Hall, 1993.
+Strehl, Alexander L, Li, Lihong, and Littman, Michael L.
+Reinforcement learning in finite mdps: PAC analysis.
+Journal of Machine Learning Research, 10:2413–2444,
+2009.
+Sutton, Richard S. and Barto, Andrew G. Reinforcement
+Learning: An Introduction. MIT Press, 1998.
+Sutton, Richard S., McAllester, David, Singh, Satinder, and
+Mansour, Yishay. Policy gradient methods for reinforcement learning with function approximation. In Proceedings of the 13th Conference on Neural Information Processing Systems (NIPS), 2000.
+Theocharous, Georgios, Thomas, Philip S., and
+Ghavamzadeh, Mohammad.
+Personalized ad recommendation systems for life-time value optimization
+with guarantees. In Proceedings of the 27th International Joint Conference on Artificial Intelligence
+(IJCAI), pp. 1806–1812, 2015.
+Thomas, Philip S. A notation for Markov decision processes. ArXiv, arXiv:1512.09075v1, 2015.
+Thomas, Philip S. and Brunskill, Emma. Data-efficient
+off-policy policy evaluation for reinforcement learning.
+In Proceedings of the 33rd International Conference on
+Machine Learning (ICML), 2016.
+Thomas, Philip S., Theocharous, Georgios, and
+Ghavamzadeh, Mohammad. High confidence off-policy
+evaluation. In Proceedings of the AAAI Conference on
+Artificial Intelligence (AAAI), 2015.
+van Seijen, Harm and Sutton, Richard S. True online TD
+(λ). In Proceedings of the 31st International Conference
+on Machine Learning (ICML), volume 14, pp. 692–700,
+2014.
+Veness, J., Lanctot, M., and Bowling, M. Variance reduction in Monte-Carlo tree search. In Proceedings of the
+24th Conference on Neural Information Processing Systems, pp. 1836–1844, 2011.
+White, M. and Bowling, M. Learning a value analysis tool
+for agent evaluation. In Proceedings of the 21st International Joint Conference on Artificial Intelligence (IJCAI), pp. 1976–1981, 2009.
+Williams, Ronald J. Simple statistical gradient-following
+algorithms for connectionist reinforcement learning.
+Machine learning, 8(3-4):229–256, 1992.
 
-Chen, Yudong, Jalali, Ali, Sanghavi, Sujay, and Caramanis, Constantine. Low-rank matrix recovery from errors
-and erasures. In 2011 IEEE International Symposium on
-Information Theory Proceedings, ISIT 2011, St. Petersburg, Russia, July 31 - August 5, 2011, pp. 2313–2317,
-2011. doi: 10.1109/ISIT.2011.6033975. URL http:
-//dx.doi.org/10.1109/ISIT.2011.6033975.
-Erdos, László, Knowles, Antti, Yau, Horng-Tzer, and Yin,
-Jun. Spectral statistics of Erdos–Rényi graphs I: Local
-semicircle law. The Annals of Probability, 41(3B):2279–
-2375, 2013.
-Gu, Quanquan, Wang, Zhaoran Wang, and Liu, Han. Lowrank and sparse structure pursuit via alternating minimization. In Proceedings of the Nineteenth International Conference on Artificial Intelligence and Statistics, AISTATS 2016, Cádiz, Spain, May 9-11, 2016,
-2016. URL http://jmlr.org/proceedings/
-papers/v51/gu16.html.
-Hardt, Moritz and Wootters, Mary. Fast matrix completion without the condition number. In Proceedings
-of The 27th Conference on Learning Theory, COLT
-2014, Barcelona, Spain, June 13-15, 2014, pp. 638–678,
-2014. URL http://jmlr.org/proceedings/
-papers/v35/hardt14a.html.
-Hardt, Moritz, Meka, Raghu, Raghavendra, Prasad, and
-Weitz, Benjamin. Computational limits for matrix
-completion.
-In Proceedings of The 27th Conference on Learning Theory, COLT 2014, Barcelona,
-Spain, June 13-15, 2014, pp. 703–725, 2014. URL
-http://jmlr.org/proceedings/papers/
-v35/hardt14b.html.
-Hsu, Daniel, Kakade, Sham M, and Zhang, Tong. Robust
-matrix decomposition with sparse corruptions. Information Theory, IEEE Transactions on, 57(11):7221–7234,
-2011.
-Jain, Prateek and Netrapalli, Praneeth. Fast exact matrix completion with finite samples. In Proceedings
-of The 28th Conference on Learning Theory, COLT
-2015, Paris, France, July 3-6, 2015, pp. 1007–1034,
-2015. URL http://jmlr.org/proceedings/
-papers/v40/Jain15.html.
-Jain, Prateek, Meka, Raghu, and Dhillon, Inderjit S. Guaranteed rank minimization via singular value projection.
-In NIPS, pp. 937–945, 2010.
-Jain, Prateek, Tewari, Ambuj, and Kar, Purushottam. On iterative hard thresholding methods for high-dimensional
-m-estimation. In Advances in Neural Information Processing Systems 27: Annual Conference on Neural Information Processing Systems 2014, December 8-13 2014,
+Data-Efficient Policy Evaluation Through Behavior Policy Search
 
-Montreal, Quebec, Canada, pp. 685–693, 2014. URL
-http://papers.nips.cc/paper/5293-oniterative-hard-thresholding-methodsfor-high-dimensional-m-estimation.
-Jalali, Ali, Ravikumar, Pradeep, Vasuki, Vishvas, and
-Sanghavi, Sujay. On learning discrete graphical models
-using group-sparse regularization. In Proceedings of
-the Fourteenth International Conference on Artificial
-Intelligence and Statistics, AISTATS 2011, Fort Lauderdale, USA, April 11-13, 2011, pp. 378–387, 2011.
-URL
-http://www.jmlr.org/proceedings/
-papers/v15/jalali11a/jalali11a.pdf.
-Klopp, Olga, Lounici, Karim, and Tsybakov, Alexandre B. Robust matrix completion. arXiv preprint
-arXiv:1412.8132, 2014.
-Li, Xiaodong. Compressed sensing and matrix completion with constant proportion of corruptions. Constructive Approximation, 37(1):73–99, 2013. ISSN 14320940. doi: 10.1007/s00365-012-9176-9. URL http:
-//dx.doi.org/10.1007/s00365-012-9176-9.
-Netrapalli, Praneeth, U N, Niranjan, Sanghavi, Sujay,
-Anandkumar, Animashree, and Jain, Prateek. Nonconvex robust pca.
-In Ghahramani, Z., Welling,
-M., Cortes, C., Lawrence, N. D., and Weinberger,
-K. Q. (eds.), Advances in Neural Information Processing Systems 27, pp. 1107–1115. Curran Associates, Inc.,
-2014. URL http://papers.nips.cc/paper/
-5430-non-convex-robust-pca.pdf.
-Recht, Benjamin. A simpler approach to matrix completion.
-Journal of Machine Learning Research,
-12:3413–3430, 2011. URL http://dl.acm.org/
-citation.cfm?id=2185803.
-Sun, Ruoyu and Luo, Zhi-Quan. Guaranteed matrix completion via nonconvex factorization. In IEEE 56th Annual Symposium on Foundations of Computer Science,
-FOCS 2015, Berkeley, CA, USA, 17-20 October, 2015,
-pp. 270–289, 2015. doi: 10.1109/FOCS.2015.25. URL
-http://dx.doi.org/10.1109/FOCS.2015.25.
-Yi, Xinyang, Park, Dohyung, Chen, Yudong, and Caramanis, Constantine. Fast algorithms for robust PCA via
-gradient descent. CoRR, abs/1605.07784, 2016. URL
-http://arxiv.org/abs/1605.07784.
+Zinkevich, M., Bowling, M., Bard, N., Kan, M., and
+Billings, D. Optimal unbiased estimators for evaluating
+agent performance. In Proceedings of the 21st National
+Conference on Artificial Intelligence (AAAI), pp. 573–
+578, 2006.
 
 

@@ -1,1071 +1,946 @@
-Compressed Sensing using Generative Models
+Logarithmic Time One-Against-Some
 
-8. Appendix A
-Lemma 8.1. Given S ✓ Rn , y 2 Rm , A 2 Rm⇥n , and
-, , ✏1 , ✏2 > 0, if matrix A satisfies the S-REC(S, , ),
-then for any two x1 , x2 2 S, such that kAx1 yk  ✏1
-and kAx2 yk  ✏2 , we have
-kx1
+Hal Daumé III * 1 Nikos Karampatziakis * 2 John Langford * 2 Paul Mineiro * 2
 
-x2 k 
+Abstract
+We create a new online reduction of multiclass
+classification to binary classification for which
+training and prediction time scale logarithmically
+with the number of classes. We show that several simple techniques give rise to an algorithm
+which is superior to previous logarithmic time
+classification approaches while competing with
+one-against-all in space. The core construction
+is based on using a tree to select a small subset
+of labels with high recall, which are then scored
+using a one-against-some structure with high precision.
 
-✏1 + ✏2 +
+1. Introduction
+Can we efficiently predict which face is in the picture
+amongst multiple billions of people? In a translation,
+can we effectively predict which word should come next
+amongst 105 possibilities? More generally can we predict
+one of K classes in polylogarithmic time in K? This question gives rise to the area of extreme multiclass classification (Bengio et al., 2010; Beygelzimer et al., 2009; Bhatia et al., 2015; Choromanska & Langford, 2015; Morin &
+Bengio, 2005; Prabhu & Varma, 2014; Weston et al., 2013),
+in which K is very large. If efficiency is not a concern,
+the most common and generally effective representation for
+multiclass prediction is a one-against-all (OAA) structure.
+Here, inference consists of computing a score for each class
+and returning the class with the maximum score. If efficiency is a concern, an attractive strategy for picking one
+of K items is to use a tree; unfortunately, this often comes
+at the cost of increased error.
+A general replacement for the one-against-all approach
+must satisfy a difficult set of desiderata.
+• High accuracy: The approach should provide accuracy competitive with OAA, a remarkably strong base*
+Equal contribution 1 University of Maryland 2 Microsoft. Correspondence to: Paul Mineiro <pmineiro@microsoft.com>.
 
-.
+Proceedings of the 34 th International Conference on Machine
+Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
+by the author(s).
 
-is sufficient to ensure that
+L
+{2, 4, 12, . . .}
+R
+L
+f001 (x) L {1, 15, 20, . . .}
+L f00 (x)
+R
+f0 (x)
+R
+{1, 4, 10, . . .}
+R f01 (x)
+x
 
-Proof.
-kx1
+f000 (x)
 
-kAxk2
-Proof. Observe that for any x 2 Rn ,
+Figure 1. An example is routed through the tree to a leaf node
+associated with a set of eligible classes {1, 15, 20, . . . }, which
+will then be subsequently scored to pick a final label. The root
+classifier choses child L and classifier f00 chooses child R, etc.
+
+line (Rifkin & Klautau, 2004) which is the standard
+“output layer” of many learning systems such as winners of the ImageNet contest (He et al., 2015; Simonyan & Zisserman, 2014).
+• High speed at training time and test time: A multiclass
+classifier must spend at least Ω(log K) time (Choromanska & Langford, 2015)) so this is a natural benchmark to optimize against.
+• Online operation: Many learning algorithms use either online updates or mini-batch updates. Approaches satisfying this constraint can be easily composed into an end-to-end learning system for solving
+complex problems like image recognition. For algorithms which operate in batch fashion, online components can be easily used.
+• Linear space: In order to have a drop-in replacement
+for OAA, an approach must not take much more space
+than OAA. Memory is at a premium when K is very
+large, especially for models trained on GPUs, or deployed to small devices.
+We use an OAA-like structure to make a final prediction,
+but instead of scoring every class, we only score a small
+subset of O(log K) classes. We call this “one-againstsome” (OAS). How can you efficiently determine what
+classes should be scored? We use a dynamically built tree
+to efficiently whittle down the set of candidate classes. The
+goal of the tree is to maximize the recall of the candidate
+set so we call this approach “The Recall Tree.” In a traditional tree-based classifier, a traversal of the tree leads to
+a leaf, and a leaf corresponds to a single label, In the Recall Tree, we loosen the latter requirement and allow a leaf
+to corresponds to a set of labels of size O(log K). At test
+time, when a leaf is reached, scores are computed for this
+small subset (see Figure 1).
+
+Logarithmic Time One-Against-Some
+structure RecallTree
+
+scorey
+tree
+
+:X→R
+: BinaryTree
+
+regressors for y ∈ [K]
+tree structure
+
+structure BinaryTree
+
+id
+:N
+leaf
+: bool
+f
+: X → {±1}
+left
+: BinaryTree
+right
+: BinaryTree
+hist
+: NK
+total
+:N
+candidates ⊂ [K]
+
+unique node identifier
+is this a leaf?
+router, as binary classifier
+left child (for non-leaves)
+right child (for non-leaves)
+count of labels at this node
+sum of items in hist
+top F freq items in hist
+
+Figure 2. The Recall Tree data structure.
+
+The Recall Tree achieves good accuracy, improving on previous online approaches (Choromanska & Langford, 2015)
+and sometimes surpassing the OAA baseline. The algorithm requires only poly(log K) time during training and
+testing. In practice, the computational benefits are substantial when K ≥ 1000.1 The Recall Tree constructs a tree
+and learns parameters in a fully online manner as a reduction, allowing composition with systems trained via online
+updates. All of this requires only twice as much space as
+OAA approaches.
+Our contributions are the following:
+• We propose a new online tree construction algorithm
+which jointly optimizes the construction of the tree,
+the routers and the underlying OAS regressors (see
+section 3.1).
+• We analyze elements of the algorithm, including a
+new boosting bound (see section 3.3) on multiclass
+classification performance and a representational trick
+which allows the algorithm to perform well if either
+a tree representation does well or an OAA representation does well as discussed in section 3.2.
+• We experiment with the new algorithm, both to analyze its performance relative to baselines and understand the impact of design decisions via ablation experiments.
+The net effect is a theoretically motivated algorithm which
+empirically performs well providing a plausible replacement for the standard one-against-all approach for large K.
+
+2. The Recall Tree Algorithm
+Here we present a concrete description of the Recall Tree
+and defer all theoretical results that motivate our design de1
+Our implementation of baseline approaches, including OAA,
+involve vectorized computations that increase throughput by a
+factor of 10 to 20, making them much more difficult to outpace
+than naı̈ve implementations.
+
+Algorithm 1 Predict. n.f (x) evaluates the node’s route,
+[
+scorey (x) evaluates a per-class regressor, recall(◦)
+is an
+empirical bound on the recall of a node (◦) (see Eq (1)),
+and x + {(n.id : 1)} indicates the addition of a sparse feature with index n.id and value 1.
+1: Input: Example x, Root Node n
+2: Output: Predicted class ŷ
+3: while n.leaf is false do
+4:
+c ← n.f (x) > 0 ? n.left : n.right
+[
+[
+5:
+if recall(n)
+> recall(c)
+then
+6:
+break
+7:
+end if
+8:
+n←c
+9:
+x ← x + {(n.id : 1)}
+10: end while
+11: ŷ ← argmax scorey (x)
+y∈n.candidates
+
+cisions to section 3.
+2.1. Recall Tree at Test Time
+The Recall Tree data structure (see Figure 2) consists of
+two components: (1) a binary tree, described below; and (2)
+a scoring function scorey (x) that will evaluate the quality
+of a small set of candidates y to make a final prediction.
+Each node n in the binary tree maintains:
+• a router, denoted f , that maps an example to either a
+left or right child; routers are implemented as binary
+classifiers;
+• a histogram of the labels of all training examples that
+have been routed to, or through, n.
+The primary purpose of the histogram is to generate a candidate set of labels to be scored, taken to be the most frequent labels in that histogram. Intuitively, the goal of the
+candidate set is to maintain good recall, while the goal of
+the score function is to achieve good precision. Crucially,
+the leaves of the tree do not partition the set of classes:
+classes can (and do) have support at multiple leaves.
+At test time, an input x is provided and a recursive computation begins at the root of the tree. The tree is descended
+according to the binary classification decision made at each
+internal node. When the recursion ends (for instance, when
+a leaf is reached), the top F most frequent labels according to the node’s label counter are used as a candidate set.
+When F = O(log K) this does not compromise the goal
+of achieving logarithmic time classification. Once this candidate set is chosen, each y in that set is scored using the
+score function, and the largest scoring y is returned.
+It turns out that it is advantageous to allow the recursion to
+end before hitting a leaf, which is a consequence of how
+
+Logarithmic Time One-Against-Some
+
+training happens on tree-structured classifiers. In particular, the number of labeled examples that the root classifier
+“sees” is much larger than the number of labeled examples
+that any leaf sees. This potentially leads to: (1) high variance toward the leaves; and (2) insufficient representation
+complexity toward the root. Instead of halting at a leaf, we
+can halt at an internal node for which the top F most frequent labels contain the true answer with a sufficiently high
+probability.
+Algorithm 1 formalizes the test-time behavior of the Recall Tree. The primary routing occurs in the first line of
+the main loop, where c is the child selected by the current node’s router. On the next line, the recursion considers the possibility of terminating on an internal node if the
+[ of the current node n is greater than
+bounded recall, recall,
+the estimated recall of the chosen child c. If the recursion
+does not end, a new “path feature” is added to x at the end
+of the main loop, which records the path taken in the recall tree: the benefit of adding these features is that it increases the representational capacity of the recall tree to
+ensure competitiveness with OAA (§3.2). Whichever way
+the recursion ends, the final node n has a (small) set of candidate labels n.candidates ⊂ Y . Each is scored according
+to a one-against-some rule and the label with the largest
+score is returned.
+A natural way to estimate recall at a node n is to consider it’s empirical recall r̂n . This is simply the fraction
+of the mass consumed by the F most frequent labels in n’s
+counter. For example, if the counter saw label 1 two times,
+label 4 fifty times and label 3 ten times, and if F = 2, then
+the empirical recall would be 60/62. However, because,
+in general, a parent node will see more data than a child
+node, the quality of this estimate is likely to be much better
+for the parent than the child due to a missing mass problem (Good, 1953). To accomodate this, we instead use an
+empirical Bernstein lower bound (Maurer & Pontil, 2009),
+which is summarized by the following proposition.
+Proposition 1. For all multiclass classification problems
+defined by a distribution D over X × [K], and all nodes n
+in a fixed tree, there exists a constant λ > 0 such that with
+probability 1 − δ:
+s
+λr̂n (1 − r̂n )
+λ
+[
+−
+≤ rn (1)
+recall(n)
+= r̂n −
+mn
+mn
+where r̂n is the empirical recall of node n computed over
+mn = n.total items; and rn is the expected value of this
+recall in the population limit.
+Here, λ is a hyperparameter of the recall tree (in fact, it
+is the only additional hyperparameter), which controls how
+aggressively the tree branches. We show in our experiments
+that these various design decisions (path features, Bernstein
+lower bounds, and early termination) are useful in practice.
+
+Algorithm 2 Train. An input labeled example descends
+the tree as in Algorithm 1. update candidates updates the
+set of candidate labels at each node and update regressors
+[
+updates the one-against-some regressors; and recall(◦)
 is
-kxk2
-✓
-◆
-1 1
-subgamma p ,
-. Thus, for any f > 0,
-m m
-✓r
-◆
-4
-2
-2
-2 2
-2
-✏ 2+
-log
-max
-log , log
-m
-f
-m
-f m
-f
+a an empirical bound on the recall of a node (◦) (see section 3.1).
+Input: Example (x, y), Root node n
+Output: Update tree with root at n
+while n.leaf is false do
+update router(x, y, n)
+c ← n.f (x) > 0 ? n.left : n.right
+update candidates(x, y, c)
+[
+[
+if recall(n)
+> recall(c)
+then
+break
+end if
+n←c
+x ← x + {(n.id : 1)}
+end while
+update regressors(x, y, n.candidates)
 
-P (kAxk
-x2 k 
-=
-
-
+2.2. Recall Tree at Training Time
+The Recall Tree maintains one regressor for each class and
+a tree whose purpose is to eliminate regressor from consideration. We refer to the per-class regressor as one-againstsome (OAS) regressors. The tree creates a high recall set of
+candidate classes and then leverages the OAS regressors to
+achieve precision. Algorithm 2 outlines the learning procedures, which we now describe in more detail.
+Learning the regressors for each class In Algorithm 2,
+update regressors updates the candidate set regressors using the standard OAA strategy restricted to the set of eligible classes. If the true label is not in the F most frequent
+classes at this node then no update occurs.
+Learning the set of candidates in each node In Algorithm 2, update candidates updates the count of the true
+label at this node. At each node, the most frequent F labels
+are the candidate set.
+Learning the routers at each node In Algorithm 2,
+update router updates the router at a node by optimizing
+the reduction in the entropy of the label distribution (the
+label entropy) due to routing, as detailed in Algorithm 3.
+This is in accordance with our theory (Section 3.3). The
+label entropy for a node is estimated using the empirical
+counts of each class label entering the node. These counts
+are reliable as update router is only called for the root or
+nodes whose true recall bound is better than their children.
+The expected label entropy after routing is estimated by
+averaging the estimated label entropy of each child node,
+weighted by the fraction of examples routing left or right.
+Finally, we compute the advantage of routing left vs. right
 
-1
-1
-1
+Logarithmic Time One-Against-Some
 
-(kAx1
-
-Ax2 k + ) ,
-
-(k(Ax1
-
-y)
-
-(k(Ax1
-
-y)k + k(Ax2
-
-✏1 + ✏2 +
-
-(Ax2
-
-y)k + ) ,
-y)k + ) ,
-
-.
-
-8.1. Proof of Lemma 4.1
-Definition 2. A random variable X is said to be
-subgamma( , B) if 8✏ 0, we have
-⇣ 2
-⌘
-2
-P (|X E[X]| ✏)  2 max e ✏ /(2 ) , e ✏/(2B) .
-
-then for any x 2 S, if x0 = arg minxb2G(M ) kx x
-bk, we
-0
-⌦(m)
-have kA(x x )k = O( ) with probability 1 e
-.
-
-Note that for any given point x0 in S, if we try to find its
-nearest neighbor of that point in an -net on S, then the
-difference between the two is at most the . In words, this
-lemma says that even if we consider measurements made
-on these points, i.e. a linear projection using a random matrix A, then as long as there are enough measurements, the
-difference between measurements is of the same order . If
-the point x0 was in the net, then this can be easily achieved
-by Johnson-Lindenstrauss Lemma. But to argue that this
-is true for all x0 in S, which can be an uncountably large
-set, we construct a chain of nets on S. We now present the
-formal proof.
-
-p
-
-1 + ✏kxk  f.
-
-Now, let M = M0 ✓ M1 ✓ M2 , · · · ✓ Ml be a chain
-of epsilon nets of B k (r) such that Mi is a i /L-net and
-i
-i = 0 /2 , with 0 = . We know that there exist nets
-such that
-✓
-◆
-✓
-◆
-4Lr
-4Lr
-log |Mi |  k log
- ik + k log
-.
-i
-
-0
-
-Let Ni = G(Mi ). Then due to Lipschitzness of G, Ni ’s
-form a chain of epsilon nets such that Ni is a i -net of S =
-G(B k (r)), with |Ni | = |Mi |.
-For i 2 {0, 1, 2 · · · , l
-Ti = {xi+1
-
-1}, let
-
-xi | xi+1 2 Ni+1 , xi 2 Ni }.
-
-Thus,
-|Ti |  |Ni+1 ||Ni |.
-
-Lemma 8.2. Let G : Rk ! Rn be an L-Lipschitz function. Let B k (r) be the L2 -ball in Rk with radius r,
-k
-S = G(B k (r)),
-✓ and◆M be a /L-net on B (r) such that
-4Lr
-|M |  k log
-. Let A be a Rm⇥n random matrix
-with IID Gaussian entries with zero mean and variance
-1/m. If
-✓
-◆
-Lr
-m = ⌦ k log
-,
-
-(1 + ✏)kxk)  P kAxk
-
-=) log |Ti |  log |Ni+1 | + | log |Ni |,
-✓
-◆
-4Lr
- (2i + 1)k + 2k log
-,
-0
-✓
-◆
-4Lr
- 3ik + 2k log
+Algorithm 3 update router. entropy computes two values:
+the empirical entropy of labels incident on a node without
+and with (respectively) an extra label y. Ĥ|left is an estimate of the average entropy if the example is routed left.
+Learnn (x, w, y) is an importance-weighted update to the
+binary classifier f (x) for node n with features x, label y,
+and weight w.
+Input: Example (x, y); Node n
+Output: Update node n
 .
 0
-
-Now assume m = 3k log
-
-✓
-
-log(fi ) =
-
-4Lr
+(Ĥleft , Ĥleft
+) = entropy(n.left, y)
+.
 0
-
-◆
-
-,
-
-(m + 4ik),
-
-and
-4
-2
-log ,
-m
-fi
-4
-16ik
-=2+
-log 2 + 4 +
-,
-m
-m
-16ik
-= O(1) +
+(Ĥright , Ĥright
+) = entropy(n.right, y)
+. n.left.total 0
+Ĥright
+Ĥ|left = n.total Ĥleft + n.right.total
+n.total
 .
-m
-
-✏i = 2 +
-
-By choice of fi and ✏i , we have 8i 2 [l
-
-1], 8t 2 Ti ,
-
-P (kAtk > (1 + ✏i )ktk)  fi .
-
-Compressed Sensing using Generative Models
-
-Thus by union bound, we have
-
-to choose x0 = x0 , we get that with probability 1 e
-
-P (kAtk  (1 + ✏i )ktk, 8i, 8t 2 Ti )
-
-l 1
-X
-
-1
-
-i=0
-
-|Ti |fi .
-
-x0 )k = kA(x
-
-kA(x
-
-
-
-i=0
-
-,
-
-x0 )k,
-
-kA(xi+1
-
-xi )k + kAxf k,
-
-= O( 0 ) + kAkkxf k,
-
-Now,
-
-= O( ).
-
-log(|Ti |fi ) = log(|Ti |) + log(fi ),
-✓
-◆
-4Lr
- k log
-ik,
-
-Lemma. Let G : Rk ! Rn be L-Lipschitz. Let
-
-0
-
-=
-
-=)
-
-l 1
-X
-i=0
-
-m/3
-
-|Ti |fi  e
-
-m/3
-
-e
-
-m/3
-
- 2e
-
-ik.
-
-l 1
-X
-
-e
-
-ik
-
-,
-
-i=0
-
-✓
-
-m/3
-
-1
-1 e
-
-.
-
-B k (r) = {z | z 2 Rk , kzk  r}
-
-1
-
-◆
-
-be an L2 -norm ball in Rk . For ↵ < 1, if
-✓
-◆
-k
-Lr
-m=⌦
-log
-,
-↵2
-
-,
-
-then a random matrix A 2 Rm⇥n with IID entries such that
-1
-Aij ⇠ N 0, m
-satisfies the S-REC(G(B k (r)), 1 ↵, )
-2
-with 1 e ⌦(↵ m) probability.
-
-Observe that for any x 2 S, we can write
-x = x0 + (x1
-x
-
-l 1
-X
-
-⌦(m)
-
-x0 =
-
-l 1
-X
-
-(xi+1
-
-x0 ) + (x2
-
-x1 ) . . . (xl
-
-xl
-
-1)
-
-xi ) + xf .
-
-i=0
-
-+ xf . Proof. We construct a -net, N , on B k (r). There exists a
-L
-net such that
-✓
-◆
-4Lr
-log |N |  k log
-.
-
-where xi 2 Ni and xf = x xl . We also get kxi+1 xi k 
-f
-i , and kx k  l due to properties of epsilon-nets.
-Since each xi+1
-2e m/3 , we have
-l 1
-X
-i=0
-
-kA(xi+1
-
-xi 2 Ti , with probability at least 1
-
-xi )k =
-
-l 1
-X
-
-(1 + ✏i )k(xi+1
-
-xi )k,
-
-Since N is a
-
--cover of B k (r), due to the L-Lipschitz
-L
-property of G(·), we get that G(N ) is a -cover of
-G(B k (r)).
-Let T denote the pairwise differences between the elements
-in G(N ), i.e.,
-
-i=0
-
-
-
-l 1
-X
-
-T = {G(z1 )
-
-(1 + ✏i ) i ,
-
-i=0
-
-✓
-◆
-l 1
-X
-1
-16ik
-= 0
-O(1)
+n.right.total 0
+Ĥ|right = n.left.total
+Ĥ
 +
-,
-2i
-m
-i=0
-◆
-l 1✓
-16k X i
-= O( 0 ) + 0
-,
-m i=0 2i
-= O( 0 ).
+Ĥright
+left
+n.total
+n.total
+d
+∆H post ← Ĥ|left − Ĥ|right
+d post |, sign(∆H
+d post ))
+Learnn (x, |∆H
+Algorithm 4 update regressors updates the OAS scoring
+functions for a single example.
+Input: Example (x, y); Candidate set candidates
+Output: Update scoring functions score
+if y ∈ candidates then
+online update to scorey (x) with label +1
+for ŷ ∈ candidates − {y} do
+online update to scoreŷ (x) with label −1
+end for
+end if
 
-p
-We know that kAk  2 + n/m with probability at least
-1 2e m/2 (Corollary 5.35 (Vershynin,✓2010)).
-r By◆setting
-n
-0
-l = log(n), we get that, kAkkxf k  2 +
-=
-m 2l
-O( 0 ) with probability 1 2e m/2 .
-Combining these two results, and noting that it is possible
+by taking the difference of the expected label entropies for
+routing left vs. right. The sign of this difference determines
+the binary label for updating the router.
+[
+Tree depth control We calculate a lower bound recall(n)
+on the true recall of node n (Section 3.1), halting descent as
+in Algorithm 2. As we descend the tree, the bound first increases (empirical recall increases) then declines (variance
+increases). We also limit the maximum depth d of the tree.
+This parameter is typically not operative but adds an additional safety check and sees some use on datasets where
+multipasses are employed.
 
-G(z2 ) | z1 , z2 2 N }.
+all regressors does not nicely decompose into independent
+problems. Solving the above problems requires an implausible break-through in complexity theory which we do not
+achieve here. Instead, we use learning theory to assist the
+design by analyzing various simplifications of the problem.
+3.1. One-Against-Some Recall
+For binary classification, a simple trick can (in theory) collapse the number of leaves while preserving prediction performance. In particular, branching programs (Mansour &
+McAllester, 2002) result in exponentially more succinct
+representations than decision trees (Kearns & Mansour,
+1996) by joining nodes to create directed acyclic graphs.
+The key observation is that nodes in the same level with a
+similar distribution over class labels can be joined into one
+node, implying that the number of nodes at one level is only
+θ(1/γ) where γ is the weak learning parameter rather than
+exponential in the depth. This approach generally fails in
+the multiclass setting because covering the simplex of multiclass label distributions requires (K − 1)θ(1/γ) nodes.
+One easy special case exists. When the distribution over
+class labels is skewed so one label is the majority class,
+learning an entropy minimizing binary classifier predicts
+whether the class is the majority or not. There are only K
+possible OAS regressors of this sort so maintaining one for
+each class label is computationally tractable.
+Using OAS classifiers creates a limited branching program
+structure over predictions. Aside from the space savings
+generated, this also implies that nodes deep in the tree use
+many more labeled examples than are otherwise available.
+In finite sample regimes, which are not covered by these
+boosting analyses, more labeled samples induce a better
+predictor as per standard sample complexity analysis.
+As a result, we use the empirical Bernstein lower bound on
+recall described in §2.1. Reducing the depth of the tree by
+using this lower bound and joining labeled examples from
+many leaves in a one-against-some approach both relieves
+data sparsity problems and allows greater error tolerance
+by the root node.
+3.2. Path Features
 
-Then,
-|T |  |N |2 ,
+3. Theoretical Motivation
+Online construction of an optimal logarithmic time regressors for multiclass classification given an arbitrary fixed
+representation at each node appears deeply intractable. A
+primary difficulty is that decisions have to be hard since we
+cannot afford to maintain a distribution over all class labels.
+Choosing a classifier so as to minimize error rate has been
+considered for cryptographic primitives (Blum et al., 1993)
+so it is plausibly hard on average rather than merely hard
+in the worst case. Furthermore, the joint optimization of
 
-=) log |T |  2 log |N |,
-✓
-◆
-4Lr
- 2k log
-.
-For any z, z 0 2 B k , 9 z1 , z2 2 N , such that G(z1 ), G(z2 )
-are -close to G(z) and G(z 0 ) respectively. Thus, by triangle inequality,
-kG(z)
+Different multiclass classification schemes give rise to different multiclass hypothesis classes. For example, the set
+of multiclass decision boundaries realizable under an OAA
+structure over linear regressors is fundamentally different
+from that realizable under a tree structure over linear regressors. Are OAA types of representations inherently
+more or less powerful than a tree based representation?
+Figure 3 shows two learning problems illustrating two extremes assuming a linear representation.
 
-G(z 0 )k  kG(z)
+Logarithmic Time One-Against-Some
 
-kG(z1 )
-kG(z2 )
+Let wiy = 0 by default and 1 when i corresponds to a leaf
+for which the tree predicts y. Under this representation, the
+prediction of OAA(x, pathT (x)) is identical to T (x), and
+hence achieves the same error rate.
+3.3. Optimization Objective
+Figure 3. Two different distributions over class labels in the plane
+with each color/pattern representing support for a single class label. The left distribution is easily solved with an OAA classifier
+while the right distribution is easily solved with a decision tree.
 
- kG(z1 )
+Linear OAA: If all the class parameter vectors happen to
+have the same `2 norm, then OAA classification is equivalent to finding the nearest neighbor amongst a set of vectors
+(one per class) which partition the space into a Voronoi diagram as in 3 on the left. The general case, with unequal
+vectors corresponds to a weighted Voronoi diagram where
+the magnitude of two vectors sharing a border determines
+the edge of the partition. No weighted Voronoi diagram can
+account for the partition on the right.
+Trees: If the partition of a space can be represented by
+a sequence of conditional splits, then a tree can represent the solution accurately as in 3 on the right. On the
+other hand, extra work is generally required to represent a
+Voronoi diagram as on the left. In general, the number of
+edges in a multidimensional Voronoi diagram may grow at
+least quadratically in the number of points implying that the
+number of nodes required for a tree to faithfully represent
+a Voronoi diagram is at least Θ(n2 ).
+Based on this, neither tree-based nor OAA style prediction
+is inherently more powerful, with the best solution being
+problem dependent.
+Since we are interested in starting with a tree-based approach and ending with a OAS classifier, there is a simple representational trick which provides the best of both
+worlds. We can add features which record the path through
+the tree. To be precise, let T be a tree and pathT (x) be a
+vector with one dimension per node in T which is set to
+1 if x traverses the node and 0 otherwise. The following
+proposition holds for linear representations, which are special because they are tractably analyzed and because they
+are the fundamental building blocks around which many
+more complex representations are built.
+Proposition. For any distribution D over X × [K] for
+which a tree T achieves error rate , a OAA classifier over
+linear regressors, whose input consists of x ∈ X and the
+corresponding routing path of x in T (as indicator features)
+can also achieve error rate .
+Proof. A linear OAA classifier is defined by a matrix wiy
+where i ranges over the input and y ranges over the labels.
 
-G(z1 )k+
-G(z2 )k+
-G(z 0 )k,
-G(z2 )k + 2 .
-
-Compressed Sensing using Generative Models
-
-Again by triangle inequality,
-kAG(z1 )
-
-AG(z2 )k  kAG(z1 )
-
-AG(z)k+
-AG(z 0 )k+
-
-kAG(z)
-0
-
-kAG(z )
-
-AG(z2 )k.
-
-Now, by Lemma 8.2, with probability 1
-e ⌦(m) ,
-0
-kAG(z1 ) AG(z)k = O( ), and kAG(z ) AG(z2 )k =
-O( ). Thus,
-kAG(z1 )
-
-AG(z2 )k  kAG(z)
-
-0
-
-AG(z )k + O( ).
-
-n
-By⇥ the Johnson-Lindenstrauss
-⇤ Lemma,2for a fixed x 2 R ,
-2
-2
-P kAxk < (1 ↵)kxk < exp( ↵ m). Therefore, we
-can union bound over all vectors in T to get
-
-P(kAxk2
-
-(1
-
-↵)kxk2 , 8x 2 T )
-
+The Shannon Entropy of class labels is optimized in the
+router of Algorithm 3. Why?
+Since the Recall Tree jointly optimizes over many base
+learning algorithms, the systemic properties of the joint optimization are important to consider. A theory of decision
+tree learning as boosting (Kearns & Mansour, 1996) provides a way to understand these joint properties in a population limit (or equivalently on a training set iterated until
+convergence). In essence, the analysis shows each level of
+the tree boosts the accuracy of the resulting tree with this
+conclusion holding for several common objectives.
+In boosting for multiclass classification (Choromanska
+et al., 2016; Choromanska & Langford, 2015; Takimoto
+& Maruoka, 2003), it is important to achieve a weak dependence on the number of class labels. Shannon Entropy
+is particularly well-suited to this goal, because it has only
+a logarithmic dependence on the number of class labels.
+Let πi|n be the probability that the correct label is i, conditioned on P
+the corresponding example reaching node n.
+K
 1
+is the Shannon entropy of
+Then Hn = i=1 πi|n log2 πi|n
+class labels reaching node n.
+For this section, we consider a simplified algorithm which
+neglects concerns of finite sample analysis, how optimization is done, and the leaf predictors. What’s left is the value
+of optimizing the router objective. We consider an algorithm which recursively splits the leaf with the largest proportion p of all examples starting at the root and reaching
+the leaf. The leaf is split into two new leaves to the left l
+and right r. If pl and pr are the fraction of examples going
+left and right (so pl + pr = 1), the split criterion minimizes
+the expectation over the leaves of the average class entropy,
+pl Hl + pr Hr . This might be achieved by update router in
+Algorithm 2 or by any other means. With this criterion we
+are in a position to directly optimize information boosting.
+Definition 1. (γ-Weak Learning Assumption) For all distributions D(x, y) a learning algorithm using examples
+(x, y)∗ IID from D finds a binary classifier c : X → {l, r}
+satisfying
+pl Hl + pr Hr ≤ Hn − γ .
+This approach is similar to previous (Takimoto & Maruoka,
+2003) except that we boost in an additive rather than a multiplicative sense. A multiplicative approach suppresses a
+necessary dependence on K. In particular, for any nontrivial γ there exists a K such that with a uniform distribution
+U , HU (1 − γ) > 1). As a consequence, theorems proved
 
-e
+Logarithmic Time One-Against-Some
+Table 1. Datasets used for experimentation.
 
-⌦(↵2 m)
+Dataset
 
-.
+Source
 
-Since ↵ < 1, and z1 , z2 2 N , G(z1 ) G(z2 ) 2 T , we have
-p
-(1 ↵)kG(z1 ) G(z2 )k  1 ↵kG(z1 ) G(z2 )k,
- kAG(z1 )
+ALOI
+Imagenet
+LTCB
+ODP
 
-AG(z2 )k.
+Geusebroek et al. (2005)
+Oquab et al. (2014)
+Mahoney (2009)
+Bennett & Nguyen (2009)
 
-Combining the three results above we get that with proba2
-bility 1 e ⌦(↵ m) ,
+Task
 
-hyperplanes H = {h1 , h2 , . . . , hc 1 } ⇢ Rk , and a new
-hyperplane hc is added. hc intersects H at (c 1) different
-(k 2)-faces given by F = {fj | fj = hj \ hc , 1  j 
-(c 1)}. The (k 2)-faces in F partition hc into f (c
-1, k 1) different (k 1)-faces. Additionally, each (k 1)face in hc divides an existing k-face into two. Hence the
-number of new k-faces introduced by the addition of hc is
-f (c 1, k 1). This gives the recursion
-f (c, k) = f (c
+Classes
 
-1, k) + f (c
+Examples
 
-= f (c
-k
+Visual Object Recognition
+Visual Object Recognition
+Language Modeling
+Document Classification
 
-1, k) + O(c
+1k
+≈ 20k
+≈ 80k
+≈ 100k
 
-1, k
-k 1
+105
+≈ 107
+≈ 108
+≈ 106
 
-1),
+with a multiplicative γ are necessarily vacuous for large K
+while additive approaches do not suffer from this issue.
 
-),
+5. How does the Recall Tree compare to LOMTree statistically and computationally?
 
-= O(c ).
+As long as Weak Learning occurs, we can prove the following theorem.
 
-Lemma. Let G : Rk ! Rn be a d-layer neural network,
-where each layer is a linear transformation followed by a
-pointwise non-linearity. Suppose there are at most c nodes
-per layer, and the non-linearities are piecewise linear with
-at most two pieces, and let
-✓
-◆
-1
-m=⌦
-kd
-log
-c
-↵2
+Throughout this section we conduct experiments using
+learning with a linear representation.
 
-for some ↵ < 1.
-Then a random matrix A 2
-1
-Rm⇥n with IID entries Aij ⇠ N (0, m
-) satisfies the
-2
-0
-(1 ↵)kG(z) G(z )k  (1 ↵)kG(z1 ) G(z2 )k + O( ), S-REC(G(Rk ), 1 ↵, 0) with 1 e ⌦(↵ m) probability.
- kAG(z1 ) AG(z2 )k + O( ),
-Proof. Consider the first layer of G. Each node in this layer
- kAG(z) AG(z 0 )k + O( ).
-can be represented as a hyperplane in Rk , where the points
-on the hyperplane are those where the input to the node
-Thus, A satisfies S-REC(S, 1 ↵, ) with probability 1
-switches from one linear piece to the other. Since there are
-2
-e ⌦(↵ m) .
-at most c nodes in this layer, by Lemma 8.3, the input space
-is partitioned by at most c different hyperplanes, into O(ck )
-k-faces. Applying this over the d layers of G, we get that
-the input space Rk is partitioned into at most ckd sets.
-8.2. Proof of Lemma 4.2
-Lemma 8.3. Consider c different k 1 dimensional hyperplanes in Rk . Consider the k-dimensional faces (hereafter
-called k-faces) generated by the hyperplanes, i.e. the elements in the partition of Rk such that relative to each hyperplane, all points inside a partition are on the same side.
-Then, the number of k-faces is O(ck ).
-Proof. Proof is by induction, and follows (Matoušek,
-2002).
-Let f (c, k) denote the number of k faces generated in Rk
-by c different (k 1)-dimensional hyperplanes. As a base
-case, let k = 1. Then (k 1)-dimensional hyperplanes are
-just points on a line. c points partition R into c + 1 pieces.
-This gives f (c, 1) = O(c).
-Now, assuming that f (c, k 1) = O(ck 1 ) is true, we need
-to show f (c, k) = O(ck ). Assume we have (c 1) different
+Theorem 2. If γ Weak Learning holds for every node in
+the tree and nodes with the largest fraction of examples are
+split first, then after t > 2 splits the multiclass error rate 
+of the tree is bounded by:
+ ≤ H1 − γ ln(t + 1)
+where H1 is the entropy of the marginal distribution of
+class labels.
+The proof in appendix A reuses techniques from (Choromanska & Langford, 2015; Kearns & Mansour, 1996) but
+has a tighter result.
+The most important observation from the theorem is that
+as t (the number of splits) increases, the error rate is increasingly bounded. This rate depends on ln t agreeing
+with the intuition that boosting happens level by level in
+the tree. The dependence on the initial entropy H1 shows
+that skewed marginal class distributions are inherently easier to learn than uniform marginal class distributions, as
+might be expected. These results are similar to previous results (Choromanska et al., 2016; Choromanska &
+Langford, 2015; Kearns & Mansour, 1996; Takimoto &
+Maruoka, 2003) with advantages. We handle multiclass
+rather than binary classification (Kearns & Mansour, 1996),
+we bound error rates instead of entropy (Choromanska
+et al., 2016; Choromanska & Langford, 2015), and we use
+additive rather than multiplicative weak learning (Takimoto
+& Maruoka, 2003).
 
-Recall that the non-linearities are piecewise linear, and the
-partition boundaries were made precisely at those points
-where the non-linearities change from one piece to another.
-This means that within each set of the input partition, the
-output is a linear function of the inputs. Thus G(Rk ) is a
-union of ckd different k-faces in Rn .
-We now use an oblivious subspace embedding to bound
-the number of measurements required to embed the range
-of G(·). For a single k-face S ✓ Rn , a random matrix
-1
-A 2 Rm⇥n with IID entries such that Aij ⇠ N 0, m
-2
-satisfies S-REC(S, 1 ↵, 0) with probability 1 e ⌦(↵ m)
-if m = ⌦(k/↵2 ).
-Since the range of G(·) is a union of ckd different kfaces, we can union bound over all of them, such that
-A satisfies the S-REC(G(Rk ), 1 ↵, 0) with probabil2
-ity 1 ckd e ⌦(↵ m) . Thus, we get that A satisfies the
+4. Empirical Results
+We study several questions empirically.
+1. What is the benefit of using one-against-some on a recall set?
+2. What is the benefit of path features?
+3. Is the online nature of the Recall Tree useful on nonstationary problems?
+4. How does the Recall Tree compare to one-against-all
+statistically and computationally?
 
-Compressed Sensing using Generative Models
+4.1. Datasets
+Table 1 overviews the data sets used for experimentation.
+These include the largest datasets where published results
+are available for LOMTree (Aloi, Imagenet, ODP), plus
+an additional language modeling data set (LTCB). Implementations of the learning algorithms, and scripts to reproduce the data sets and experimental results, are available
+on github (Mineiro, 2017). Additional details about the
+datasets can be found in Appendix B.
+4.2. Comparison with other Algorithms
+In our first set of experiments, we compare Recall Tree
+with a strong computational baseline and a strong statistical baseline. The computational baseline is LOMTree, the
+only other online logarithmic-time multiclass algorithm of
+which we are aware. The statistical baseline is OAA, whose
+statistical performance we want to match (or even exceed),
+and whose linear computational dependence on the number
+of classes we want to avoid. Details regarding the experimental methodology are in Appendix C. Results are summarized in Figure 4.
+Comparison with LOMTree The Recall Tree uses a factor of 32 less state than the LOMTree which makes a dramatic difference in feasibility for large scale applications.
+Given this state reduction, the default expectation is worse
+prediction performance by the Recall Tree. Instead, we observe superior or onpar statistical performance despite the
+state constraint. This typically comes with an additional
+computational cost since the Recall Tree evaluates a number of per-class regressors.
+Comparison with OAA On one dataset (ALOI) prediction performance is superior to OAA while on the others it
+is somewhat worse.
+Computationally OAA has favorable constant factors since
+it is highly amenable to vectorization. Conversely, the
 
-S-REC(G(Rk ), 1
-if
+Logarithmic Time One-Against-Some
+Computational Performance
+Inference Time
+Per Example (seconds)
 
-↵, 0) with probability 1
-✓
-◆
-kd log c
-m=⌦
-.
-↵2
+Delta Test Error (%)
+From OAA
 
-⌦(↵2 m)
+Statistical Performance
+12
 
-e
+LOMTree
+Recall Tree
 
-8.3. Proof of Lemma 4.3
-Lemma. Let A 2 Rm⇥n by drawn from a distribution that
-(1) satisfies the S-REC(S, , ) with probability 1 p and
-(2) has for every fixed x 2 Rn , kAxk  2kxk with probability 1 p. For any x⇤ 2 Rn and noise ⌘, let y = Ax⇤ + ⌘.
-Let x
-b approximately minimize ky Axk over x 2 S, i.e.,
-ky
-
-Ab
-xk  min ky
-x2S
-
-Axk + ✏.
-
-Then
-kb
-x
-
-x⇤ k 
-
-✓
-
+8
 4
+0
+-4
 
-◆
-+ 1 min kx⇤
-x2S
+1
+0.1
+0.01
 
-with probability 1
+OAA
+Recall Tree
+LOMTree
+
+0.001
+0.0001
+1e-05
+P
+
+D
+
+O
+
+I
+O
+
+P
+
+et
+
+en
+
+et
+
+en
+
+ag
+Im
+
+AL
+
+D
+
+O
+
+ag
+Im
+
+I
+O
+
+AL
+
+Figure 4. Empirical comparison of statistical (left) and computational (right) performance of Recall Tree against two strong competitors:
+OAA (statistically good) and LOMTree (computationally good). In both graphs, lower is better. Recall Tree has poly(log) dependence
+upon number of classes (like LOMTree) but can surpass OAA statistically.
+
+conditional execution pattern of the Recall Tree frustrates
+vectorization even with example mini-batching. Thus on
+ALOI although Recall Tree does on average 50 hyperplane
+evaluations per example while OAA does 1000, OAA is
+actually faster: larger numbers of classes are required to
+experience the asymptotic benefits. For ODP with ∼ 105
+classes, with negative gradient subsampling and using 24
+cores in parallel, OAA is about the same wall clock time
+to train as Recall Tree on a single core.2 Negative gradient sampling does not improve inference times, which are
+∼ 300 times slower for OAA than Recall Tree on ODP.
+4.3. Online Operation
+In this experiment we leverage the online nature of the algorithm to exploit nonstationarity in the data to improve
+results. This is not something that is easily done with batch
+oriented algorithms, or with algorithms that post-process a
+trained predictor to accelerate inference.
+We consider two versions of LTCB. In both versions the
+task is to predict the next word given the previous 6 tokens.
+The difference is that in one version, the Wikipedia dump
+is processed in the original order (“in-order”); whereas in
+the other version the training data is permuted prior to input
+to the learning algorithm (“permuted”). We assess progressive validation loss (Blum et al., 1999) on the sequence.
+The result in Figure 5a confirms the Recall Tree is able to
+take advantage of the sequentially revealed data; in particular, the far-right difference in accuracies is significant at a
+factor P < 0.0001 according to an N − 1 Chi-squared test.
+4.4. Path Features and Multiple Regressors
+Two differences between Recall Tree and LOMTree are the
+use of multiple regressors at each tree node and the aug2
+While not yet implemented, Recall Tree can presumably also
+leverage multicore for acceleration.
+
+mentation of the example with path features. In this experiment we explore the impact of these design choices using
+the ALOI dataset.
+Figure 5b shows the effect of these two aspects on statistical performance. As the candidate set size is increased, test
+error decreases, but with diminishing returns. Disabling
+path features degrades performance, and the effect is more
+pronounced as the candidate set size increases. This is expected, as a larger candidate set size decreases the difficulty
+of obtaining good recall (i.e., a good tree) but increases the
+difficulty of obtaining good precision (i.e., good class regressors), and path features are only applicable to the latter. All differences here are significant at a P < 0.0001
+according to an N − 1 Chi-squared test, except for when
+the candidate set size is 2, where there is no significant difference.
+4.5. Is the empirical Bernstein bound useful?
+To test this we trained on the LTCB dataset with a multiplier on the bound of either 0 (i.e. just using empirical
+recall directly) or 1. The results are stark: with a multiplier
+of 1, the test error was 78% while with a multiplier of 0 the
+test error was 91%. Clearly, in the few samples per class
+regime this form of direct regularization is very helpful.
+
+5. Related Work
+The LOMTree (Choromanska et al., 2016; Choromanska
+& Langford, 2015) is the closest prior work. It misses on
+space requirements: up to a factor of 64 more space than
+OAA was used experimentally. Despite working with radically less space we show the Recall Tree typically provides
+better predictive performance. The key differences here are
+algorithmic: a tighter reduction at internal nodes and the
+one-against-some approach yields generally better performance despite much tighter resource constraints.
+
+100
+
+40
+
+in-order
+permuted
+
+95
+
+Test Error (%)
+
+Average Cumulative
+Progressive Accuracy (%)
+
+Logarithmic Time One-Against-Some
+
+90
+85
+80
+75
+70
+10000
+
+100000
+
+1e+06
+
+1e+07
+
+30
+25
+20
+15
+10
+
+1e+08
+
+with path features
+without path features
+
+35
 
 1
 
-xk +
+Examples
 
-(2k⌘k + ✏ + )
-
-2p.
-
-Proof. Let x = arg minx2S kx⇤ xk. Then we have by
-Lemma 8.1 and the hypothesis on x
-b that
-kx
-
-x
-bk 
-
-
-
-kAx
-
-yk + kAb
-x
-
-2kAx
-
-yk + ✏ +
-
-2kA(x
-
-yk +
-
-,
-
-,
-
-x⇤ )k + 2k⌘k + ✏ +
-
-,
-
-as long as A satisfies the S-REC, as happens with probability 1 p. Now, since x and x⇤ are independent of A, by
-assumption we also have kA(x x⇤ )k  2kx x⇤ k with
-probability 1 p. Therefore
-kx⇤
-
-x
-bk  kx
-
-x⇤ k +
-
-4kx
-
-x⇤ k + 2k⌘k + ✏ +
-
-Proof. Consider any linear layer with input x, weight matrix W and bias vector b. Thus, f (x) = W x + b. Now for
-any two x1 , x2 ,
-kf (x1 )
-
-f (x2 )k = kW x1 + b
-= kW (x1
-
- kW kk(x1
-
-W x2 + bk,
-
-x2 )k,
-
- cwmax k(x1
-
-x2 )k,
-x2 )k.
-
-Let fi (·), i 2 [d] denote the function for the i-th layer in G.
-Since each layer is a composition of a linear function and
-a non-linearity, by Lemma 8.4, have that fi is M cwmax Lipschitz.
-Since G = f1 f2 . . . fd , by repeated application
-of Lemma 8.4, we get that G is L-Lipschitz with L =
-d
-(M cwmax ) .
-
-9. Appendix B
-9.1. Noise tolerance
-To understand the noise tolerance of our algorithm, we do
-the following experiment: First we fix the number of measurements so that Lasso does as well as our algorithm.
-From Fig. 1a, and Fig. 1b we see that this point is at
-m = 500 for MNIST and m = 2500 for celebA. Now, we
-look at the performance as the noise level increases. Hyperparameters are kept fixed as we change the noise level
-for both Lasso and for our algorithm.
-In Fig. 8a, we show the results on the MNIST dataset. In
-Fig. 8a, we show the results on celebA dataset. We observe
-that our algorithm has more noise tolerance than Lasso.
-9.2. Scaling with latent dimension
-
-as desired.
-
-8.4. Lipschitzness of Neural Networks
-Lemma 8.4. Consider any two functions f and g. If f is
-Lf -Lipschitz and g is Lg -Lipschitz, then their composition
-f g is Lf Lg -Lipschitz.
-Proof. For any two x1 , x2 ,
-kf (g(x1 ))
-
-Lemma 8.5. If G is a d-layer neural network with at most
-c nodes per layer, all weights  wmax in absolute value,
-and M -Lipschitz non-linearity after each layer, then G(·)
-d
-is L-Lipschitz with L = (M cwmax ) .
-
-f (g(x2 ))k  Lf kg(x1 )
- Lf Lg kx1
-
-g(x2 )k,
-x2 k.
-
-In the experiments in Sec. 6.3, we saw that the representation error was a major component of the total error, and
-thus a better generative model might be helpful. Recall that
-a generative model is a function G : R ! Rn . Thus, one
-way to make the generative model more powerful is to increase the size of the latent space k.
-In this section we present some experiments that investigate how the representation error scales as we use different
-values of k. We keep the rest of the architecture and hyperparameters fixed as we change k. For comparison, we also
-plot the representation error of a k-sparse wavelet as we
-change k. Figure 9 shows the plots for the celebA dataset.
-We observe that for small values of k, our method is far
-
-VA(, m 500
-
-0.20
-0.15
-0.10
-0.05
-0.00 -2
 10
-
-10 -1
-10 1
-10 0
-Standard devLatLRn Rf nRLVe
-
-10 2
-
-LDssR (DCT), m 2500
-
-0.40
-
-LDssR (WDveleW), m 2500
-
-0.35
-
-DCGA1, m 2500
-
-0.30
-0.25
-0.20
-0.15
-0.10
-0.05
-0.00 -2
-10
-
-10 -1
-10 1
-10 0
-SWDnGDrG GevLDWLRn Rf nRLse
-
-(a) Results on MNIST.
-
-10 2
-
-(b) Results on celebA.
-q
-
-E[k⌘k2 ]). The vertical bars
-
-0.12
-
-LaVVR
-VA(
-VA(+5eg
-)Lxed A
-Learned A
-
-0.10
-0.08
-0.06
-0.04
-
-50
-
-0.00
-
-25
-
-0.02
-10
-
-5eFRnVtruFtLRn errRr (per pLxel)
-
-Figure 8. Noise tolerance. We show a plot of per pixel reconstruction error as we vary the noise level (
-indicate 95% confidence intervals.
-
-750
-
-VA(, m 100
-
-300
-400
-500
-
-0.25
-
-0.45
-
-200
-
-LaVVR, m 500
 
 100
 
-0.30
-
-5ecRnsWrucWLRn errRr (Ser SLxel)
-
-5ecRnVtructLRn errRr (Ser SLxel)
-
-Compressed Sensing using Generative Models
-
-1umEer Rf meaVurementV
-
-Figure 9. Results on celebA. We show per pixel representation error vs the latent dimension of the generative model. The vertical
-bars indicate 95% confidence intervals.
-
-Figure 10. Results for end to end model on MNIST. We show per
-pixel reconstruction error vs number of measurements. ‘Fixed
-A’ and ‘Learned A’ are two end to end models. The end to end
-models get noiseless measurements, while the other models get
-noisy ones. The vertical bars indicate 95% confidence intervals.
-
-9.3. Other models
-9.3.1. E ND TO END TRAINING ON MNIST
-superior to k-sparse wavelet. This suggests that neural network based generative models make effective use of the
-latent space by constructing excellent representations. We
-see that as we increase k, the error starts to plateau for our
-method while it goes to zero for k-sparse wavelet model.
-This suggests that beyond a point, some other factor in our
-model, such as the architecture of the DCGAN, starts to
-become the bottleneck. It is possible that the results for our
-method can be improved by more careful hyperparameter
-tuning for each k.
-
-Instead of using a generative model to reconstruct the image, another approach is to learn from scratch a mapping
-that takes the measurements and outputs the original image. A major drawback of this approach is that it necessitates learning a new network if get a different set of measurements.
-If we use a random matrix for every new image, the input
-to the network is essentially noise, and the network does
-not learn well. Instead we use a fixed measurement matrix.
-We explore two approaches. First is to randomly sample
-
-Learned30
-
-Learned20
-
-Learned10
-
-FLxed30
-
-FLxed20
-
-FLxed10
-
-2rLgLnaO
-
-Compressed Sensing using Generative Models
-
-Figure 11. MNIST End to end learned model. Top row are original images. The next three are recovered by model with fixed random
-A, with 10, 20 and 30 measurements. Bottom three rows are with learned A and 10, 20 and 30 measurements.
-
-and fix the measurement matrix and learn the rest of the
-mapping. In the second approach, we jointly optimize the
-measurement matrix as well.
-We do this for 10, 20 and 30 measurements for the MNIST
-dataset. We did not use additive noise. The reconstruction
-errors are shown in Fig. 10. The reconstructed images can
-be seen in Fig. 11.
-9.4. More results
-Here, we show more results on the reconstruction task,
-with varying number of measurements on both MNIST and
-celebA. Fig. 12 shows reconstructions on MNIST with 25,
-100 and 400 measurements. Fig. 13, Fig. 14 and Fig. 15
-show results on celebA dataset.
-
-Compressed Sensing using Generative Models
-
-(a) 25 measurements
-
-(b) 100 measurements
-
-(c) 400 measurements
-Figure 12. Reconstruction on MNIST. In each image, top row is ground truth, middle row is Lasso, bottom row is our algorithm.
-
-DCGAN
-
-LDsso (WDveOeW)
-
-LDsso (DCT)
-
-OrLgLnDO
-
-Compressed Sensing using Generative Models
-
-DCGAN
-
-LDsso (WDveOeW)
-
-LDsso (DCT)
-
-OrLgLnDO
-
-(a) 50 measurements
-
-DCGAN
-
-LDsso (WDveOeW)
-
-LDsso (DCT)
-
-OrLgLnDO
-
-(b) 100 measurements
-
-(c) 200 measurements
-Figure 13. Reconstruction on celebA. In each image, top row is ground truth, subsequent two rows show reconstructions by Lasso (DCT)
-and Lasso (Wavelet) respectively. The bottom row is the reconstruction by our algorithm.
-
-DCGAN
-
-LDsso (WDveOeW)
-
-LDsso (DCT)
-
-OrLgLnDO
-
-Compressed Sensing using Generative Models
-
-DCGAN
-
-LDsso (WDveOeW)
-
-LDsso (DCT)
-
-OrLgLnDO
-
-(a) 500 measurements
-
-DCGAN
-
-LDsso (WDveOeW)
-
-LDsso (DCT)
-
-OrLgLnDO
-
-(b) 1000 measurements
-
-(c) 2500 measurements
-Figure 14. Reconstruction on celebA. In each image, top row is ground truth, subsequent two rows show reconstructions by Lasso (DCT)
-and Lasso (Wavelet) respectively. The bottom row is the reconstruction by our algorithm.
-
-DCGAN
-
-LDsso (WDveOeW)
-
-LDsso (DCT)
-
-OrLgLnDO
-
-Compressed Sensing using Generative Models
-
-DCGAN
-
-LDsso (WDveOeW)
-
-LDsso (DCT)
-
-OrLgLnDO
-
-(a) 5000 measurements
-
-DCGAN
-
-LDsso (WDveOeW)
-
-LDsso (DCT)
-
-OrLgLnDO
-
-(b) 7500 measurements
-
-(c) 10000 measurements
-Figure 15. Reconstruction on celebA. In each image, top row is ground truth, subsequent two rows show reconstructions by Lasso (DCT)
-and Lasso (Wavelet) respectively. The bottom row is the reconstruction by our algorithm.
+Candidate Set Size
+
+(a) When the LTCB dataset is presented in the original order, Recall Tree is able to exploit sequential correlations for improved
+performance. After all examples are processed, the average progressive accuracy is 73.3% vs. 74.6%.
+
+(b) Test error on ALOI for various candidate set sizes, with or
+without path features (all other parameters held fixed). Using
+multiple regressors per leaf and including path features improves
+performance.
+
+Figure 5.
+
+Our use of entropy optimization is closely related to the
+foundational work on decision tree learning (Quinlan,
+1993), picking single features on which to split based on
+entropy. More recently, it is decision tree learning can be
+thought of as boosting (Kearns & Mansour, 1996) for multiclass learning (Takimoto & Maruoka, 2003), based on on
+a generalized notion of entropy, which results in low 0/1
+loss. Relative to these works we show how to efficiently
+achieve weak learning by reduction to binary classification
+making this approach empirically practical. We also address a structural issue in the multiclass analysis (see section 3.3).
+Other approaches such as hierarchical softmax (HSM) and
+the the Filter Tree (Beygelzimer et al., 2009) use a fixed
+tree structure (Morin & Bengio, 2005). In domains in
+which there is no prespecified tree hierarchy, using a random tree structure can lead to considerable underperformance as shown previously (Bengio et al., 2010; Choromanska & Langford, 2015).
+Most other approaches in extreme classification either do
+not work online (Mnih & Hinton, 2009; Prabhu & Varma,
+2014) or only focus on speeding up either prediction time
+or training time but not both. Most of the works that enjoy
+sublinear inference time (but (super)linear training time)
+are based on tree decomposition approaches. In (Mnih &
+Hinton, 2009) the authors try to add tree structure learning
+to HSM via iteratively clustering the classes. While the end
+result is a classifier whose inference time scales logarithmically with the number of classes, the clustering steps are
+batch and scale poorly with the number of classes. Similar
+remarks apply to (Bengio et al., 2010) where the authors
+propose to learn a tree by solving an eigenvalue problem
+after (OAA) training. The work of (Weston et al., 2013)
+is similar in spirit to ours, as the authors propose to learn
+
+a label filter to reduce the number of candidate classes in
+an OAA approach. However they learn the tree after training the underlying OAA regressors while here we learn,
+and more crucially use, the tree during training of the OAS
+regressors. Among the approaches that speed up training time we distinguish exact ones (de Brébisson & Vincent, 2015; Vincent et al., 2015) that have only been proposed for particular loss functions and approximate ones
+such as negative sampling as used e.g. in (Weston et al.,
+2011). Though these techniques do not address inference
+time, separate procedures for speeding up inference (given
+a trained model) have been proposed (Shrivastava & Li,
+2014). However, such two step procedures can lead to substantially suboptimal results.
+
+6. Conclusion
+In this work we proposed the Recall Tree, a reduction of
+multiclass to binary classification, which operates online
+and scales logarithmically with the number of classes. Unlike the LOMTree (Choromanska & Langford, 2015), we
+share classifiers among the nodes of the tree which alleviates data sparsity at deep levels while greatly reducing
+the required state. We also use a tighter analysis which is
+more closely followed in the implementation. These features allow us to reduce the statistical gap with OAA while
+still operating many orders of magnitude faster for large
+K multiclass datasets. In the future we plan to investigate
+multiway splits in the tree since O(log K)-way splits does
+not affect our O(poly log K) running time and they might
+reduce contention in the root and nodes high in the tree.
+
+Logarithmic Time One-Against-Some
+
+References
+Bengio, Samy, Weston, Jason, and Grangier, David. Label
+embedding trees for large multi-class tasks. In Advances
+in Neural Information Processing Systems, pp. 163–171,
+2010.
+Bennett, Paul N and Nguyen, Nam. Refined experts: improving classification in large taxonomies. In Proceedings of the 32nd international ACM SIGIR conference on
+Research and development in information retrieval, pp.
+11–18. ACM, 2009.
+Beygelzimer, Alina, Langford, John, and Ravikumar,
+Pradeep. Error-correcting tournaments. In Algorithmic
+Learning Theory, 20th International Conference, ALT
+2009, Porto, Portugal, October 3-5, 2009. Proceedings,
+pp. 247–262, 2009.
+Bhatia, Kush, Jain, Himanshu, Kar, Purushottam, Varma,
+Manik, and Jain, Prateek. Sparse local embeddings for
+extreme multi-label classification. In Advances in Neural
+Information Processing Systems, pp. 730–738, 2015.
+Blum, Avrim, Furst, Merrick, Kearns, Michael, and Lipton,
+Richard J. Cryptographic primitives based on hard learning problems. In Advances in cryptologyCRYPTO93, pp.
+278–291. Springer, 1993.
+Blum, Avrim, Kalai, Adam, and Langford, John. Beating the hold-out: Bounds for k-fold and progressive
+cross-validation. In Proceedings of the Twelfth Annual
+Conference on Computational Learning Theory, COLT
+1999, Santa Cruz, CA, USA, July 7-9, 1999, pp. 203–
+208, 1999.
+Choromanska, Anna, Choromanski, Krzysztof, and Bojarski, Mariusz. On the boosting ability of top-down
+decision tree learning algorithm for multiclass classification. CoRR, abs/1605.05223, 2016. URL http:
+//arxiv.org/abs/1605.05223.
+Choromanska, Anna E and Langford, John. Logarithmic
+time online multiclass prediction. In Advances in Neural
+Information Processing Systems, pp. 55–63, 2015.
+de Brébisson, Alexandre and Vincent, Pascal. An exploration of softmax alternatives belonging to the spherical
+loss family. arXiv preprint arXiv:1511.05042, 2015.
+Geusebroek, Jan-Mark, Burghouts, Gertjan J, and Smeulders, Arnold WM. The Amsterdam library of object images. International Journal of Computer Vision, 61(1):
+103–112, 2005.
+Good, I. J. The population frequencies of species and
+the estimation of population parameters. Biometrika, 40
+(16):237–264, 1953.
+
+He, Kaiming, Zhang, Xiangyu, Ren, Shaoqing, and Sun,
+Jian. Deep residual learning for image recognition.
+CoRR, abs/1512.03385, 2015.
+Kearns, Michael and Mansour, Yishay. On the boosting
+ability of top-down decision tree learning algorithms. In
+Proceedings of STOC, pp. 459–468. ACM, 1996.
+Mahoney, Matt. Large text compression benchmark.
+http://www.mattmahoney.net/text/text.html, 2009.
+Mansour, Yishay and McAllester, David. Boosting using
+branching programs. Journal of Computer and System
+Sciences, 64(1):103–112, 2002.
+Maurer, Andreas and Pontil, Massimiliano.
+Empirical bernstein bounds and sample variance penalization.
+arXiv preprint arXiv:0907.3740, 2009.
+Mineiro, Paul. Recall tree demo, 2017. URL https:
+//github.com/JohnLangford/vowpal_
+wabbit/tree/master/demo/recall_tree.
+Mnih, Andriy and Hinton, Geoffrey E. A scalable hierarchical distributed language model. In Advances in neural
+information processing systems, pp. 1081–1088, 2009.
+Morin, Frederic and Bengio, Yoshua. Hierarchical probabilistic neural network language model. In Proceedings
+of the international workshop on artificial intelligence
+and statistics, pp. 246–252, 2005.
+Oquab, M., Bottou, L., Laptev, I., and Sivic, J. Learning
+and transferring mid-level image representations using
+convolutional neural networks. In CVPR, 2014.
+Prabhu, Yashoteja and Varma, Manik. Fastxml: A fast,
+accurate and stable tree-classifier for extreme multi-label
+learning. In Proceedings of the 20th ACM SIGKDD, pp.
+263–272. ACM, 2014.
+Quinlan, J.R. C4.5: Programs for Machine Learning. Morgan Kaufmann, 1993.
+Rifkin, Ryan and Klautau, Aldebaro. In defense of onevs-all classification. The Journal of Machine Learning
+Research, 5:101–141, 2004.
+Shrivastava, Anshumali and Li, Ping. Asymmetric lsh
+(alsh) for sublinear time maximum inner product search
+(mips). In Advances in Neural Information Processing
+Systems, pp. 2321–2329, 2014.
+Simonyan, Karen and Zisserman, Andrew. Very deep convolutional networks for large-scale image recognition.
+CoRR, abs/1409.1556, 2014. URL http://arxiv.
+org/abs/1409.1556.
+
+Logarithmic Time One-Against-Some
+
+Takimoto, Eiji and Maruoka, Akira. Top-down decision
+tree learning as information based boosting. Theor.
+Comput. Sci., 292(2):447–464, 2003. doi: 10.1016/
+S0304-3975(02)00181-0. URL http://dx.doi.
+org/10.1016/S0304-3975(02)00181-0.
+Vincent, Pascal, de Brébisson, Alexandre, and Bouthillier,
+Xavier. Efficient exact gradient update for training deep
+networks with very large sparse targets. In NIPS 28, pp.
+1108–1116, 2015.
+Weston, Jason, Bengio, Samy, and Usunier, Nicolas. WSABIE: scaling up to large vocabulary image annotation. In
+IJCAI 2011, Proceedings of the 22nd International Joint
+Conference on Artificial Intelligence, Barcelona, Catalonia, Spain, July 16-22, 2011, pp. 2764–2770, 2011.
+Weston, Jason, Makadia, Ameesh, and Yee, Hector. Label partitioning for sublinear ranking. In Proceedings of
+the 30th International Conference on Machine Learning
+(ICML-13), pp. 181–189, 2013.
 
 

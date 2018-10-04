@@ -1,1441 +1,908 @@
-On Kernelized Multi-armed Bandits
-Sayak Ray Chowdhury 1 Aditya Gopalan 1
+Warped Convolutions: Efficient Invariance to Spatial Transformations
+
+João F. Henriques 1 Andrea Vedaldi 1
 
 Abstract
-We consider the stochastic bandit problem with
-a continuous set of arms, with the expected reward function over the arms assumed to be fixed
-but unknown. We provide two new Gaussian
-process-based algorithms for continuous bandit
-optimization – Improved GP-UCB (IGP-UCB)
-and GP-Thomson sampling (GP-TS), and derive
-corresponding regret bounds. Specifically, the
-bounds hold when the expected reward function
-belongs to the reproducing kernel Hilbert space
-(RKHS) that naturally corresponds to a Gaussian process kernel used as input by the algorithms. Along the way, we derive a new selfnormalized concentration inequality for vectorvalued martingales of arbitrary, possibly infinite,
-dimension. Finally, experimental evaluation and
-comparisons to existing algorithms on synthetic
-and real-world environments are carried out that
-highlight the favorable gains of the proposed
-strategies in many cases.
+Convolutional Neural Networks (CNNs) are extremely efficient, since they exploit the inherent
+translation-invariance of natural images. However, translation is just one of a myriad of useful spatial transformations. Can the same efficiency be attained when considering other spatial invariances? Such generalized convolutions
+have been considered in the past, but at a high
+computational cost. We present a construction
+that is simple and exact, yet has the same computational complexity that standard convolutions
+enjoy. It consists of a constant image warp followed by a simple convolution, which are standard blocks in deep learning toolboxes. With
+a carefully crafted warp, the resulting architecture can be made equivariant to a wide range of
+two-parameter spatial transformations. We show
+encouraging results in realistic scenarios, including the estimation of vehicle poses in the Google
+Earth dataset (rotation and scale), and face poses
+in Annotated Facial Landmarks in the Wild (3D
+rotations under perspective).
 
 1. Introduction
-Optimization over large domains under uncertainty is an
-important subproblem arising in a variety of sequential decision making problems, such as dynamic pricing in economics (Besbes & Zeevi, 2009), reinforcement learning
-with continuous state/action spaces (Kaelbling et al., 1996;
-Smart & Kaelbling, 2000), and power control in wireless
-communication (Chiang et al., 2008). A typical feature of
-such problems is a large, or potentially infinite, domain of
-decision points or covariates (prices, actions, transmit powers), together with only partial and noisy observability of
-the associated outcomes (demand, state/reward, communication rate); reward/loss information is revealed only for
-decisions that are chosen. This often makes it hard to bal1
-Department of Electrical Communication Engineering, Indian Institute of Science, Bengaluru, 560012, India.
-Correspondence to:
-Sayak Ray Chowdhury <srchowdhury@ece.iisc.ernet.in>.
-th
+A crucial aspect of current deep learning architectures is the
+encoding of invariances. This fact is epitomized in the success of convolutional neural networks (CNN), where equivariance to image translation is key: translating the input
+results in a translated output. When invariances are present
+in the data, encoding them explicitly in an architecture provides an important source of regularization, which reduces
+the amount of training data required for learning.
+Invariances may also be used to improve the efficiency of
+implementations. For instance, a convolutional layer requires orders of magnitude less memory (by reusing filters
+1
 
-Proceedings of the 34 International Conference on Machine
+Visual Geometry Group, University of Oxford,
+United Kingdom. Correspondence to: João F. Henriques
+<joao@robots.ox.ac.uk>.
+Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-ance exploration and exploitation, as available knowledge
-must be transferred efficiently from a finite set of observations so far to estimates of the values of infinitely many
-decisions. A classic case in point is that of the canonical
-stochastic MAB with finitely many arms, where the effort
-to optimize scales with the total number of arms or decisions; the effect of this is catastrophic for large or infinite
-arm sets.
-With suitable structure in the values or rewards of arms,
-however, the challenge of sequential optimization can be
-efficiently addressed. Parametric bandits, especially linearly parameterized bandits (Rusmevichientong & Tsitsiklis, 2010), represent a well-studied class of structured decision making settings. Here, every arm corresponds to a
-known, finite dimensional vector (its feature vector), and
-its expected reward is assumed to be an unknown linear
-function of its feature vector. This allows for a large, or
-even infinite, set of arms all lying in space of finite dimension, say d, and a rich line of work gives algorithms that
-attain sublinear regret with a polynomial dependence on
-the dimension, e.g., Confidence Ball (Dani et al., 2008),
-OFUL (Abbasi-Yadkori et al., 2011) (a strengthening of
-Confidence Ball) and Thompson sampling for linear bandits (Agrawal & Goyal, 2013)1 The insight here is that even
-though the number of arms can be large, the number of unknown parameters (or degrees of freedom) in the problem
-is really only d, which makes it possible to learn about the
-values of many other arms by playing a single arm.
-A different approach to modelling bandit problems with a
-continuum of arms is via the framework of Gaussian processes (GPs) (Rasmussen & Williams, 2006). GPs are
-a flexible class of nonparametric models for expressing
-uncertainty over functions on rather general domain sets,
-which generalize multivariate Gaussian random vectors.
-GPs allow tractable regression for estimating an unknown
-function given a set of (noisy) measurements of its values
-at chosen domain points. The fact that GPs, being distributions on functions, can also help quantify function uncertainty makes it attractive for basing decision making strategies on them. This has been exploited to great advantage to
-1
+across space) and less computation (due to their limited
+support) compared to a fully-connected layer. Its local and
+predictable memory access pattern also makes better use of
+modern hardware’s caching mechanisms.
+The success of CNNs indicates that translation invariance
+is an important property of images. However, this does
+not explain why translation equivariant operators work well
+for image understanding. The common interpretation is
+that such operators are matched to the statistics of natural images, which are well known to be translation invariant (Hyvärinen et al., 2009). However, natural image
+statistics are also (largely) invariant to other transformations such as isotropic scaling and rotation, which suggests
+that alternative neural network designs may also work well
+with images. Furthermore, in specific applications, invariances other than translation may be more appropriate.
+Therefore, it is natural to consider generalizing convolutional architectures to other image transformations, and this
+has been the subject of extensive study (Kanazawa et al.,
+2014; Bruna et al., 2013; Cohen & Welling, 2016). Unfortunately these approaches do not possess the same memory
+and speed benefits that CNNs enjoy. The reason is that, ultimately, they have to transform (warp) an image or filter
+several times (Kanazawa et al., 2014; Marcos et al., 2016;
+Dieleman et al., 2015), incurring a high computational burden. Another approach is to consider a basis of filters
+(analogous to eigen-images) encoding the desired invariance (Cohen & Welling, 2014; Bruna et al., 2013; Cohen
+& Welling, 2016). Although they are able to handle transformations with many pose parameters, in practice most
+recent proposals are limited to very coarsely discretized
+transformations, such as horizontal/vertical flips and 90◦
+rotations (Dieleman et al., 2015; Cohen & Welling, 2014).
+In this work we consider generalizations of CNNs that
+overcome these disadvantages. Well known constructions
+in group theory enable the extension of convolution to general transformation groups (Folland, 1995). However, this
+generality usually comes at an increased computational
+cost or complexity. Here we show that, by making appropriate assumptions, we can design convolution operators that are equivariant to a large class of two-parameter
+transformations while reducing to a standard convolution
+in a warped image space. The fixed image warp can be
 
-Roughly, for rewards bounded
-in [−1, 1], these algorithms
-√ 
-achieve optimal regret Õ d T , where Õ (·) hides polylog(T )
-factors.
+Warped Convolutions: Efficient Invariance to Spatial Transformations
 
-On Kernelized Multi-armed Bandits
+implemented using bilinear resampling, a simple and fast
+operation that has been popularized by spatial transformer
+networks (Jaderberg et al., 2015; Heckbert, 1989) and is
+part of most deep learning toolboxes. Unlike previous proposals, the proposed warped convolutions can handle continuous transformations, such as fine rotation and scaling.
+This makes generalized convolution easily implementable
+in neural networks, reusing fast convolution algorithms on
+GPU hardware, such as Winograd (Lavin, 2015) or the Fast
+Fourier Transform (Lyons, 2010).
 
-build nonparametric bandit algorithms, such as GP-UCB
-(Srinivas et al., 2009), GP-EI and GP-PI (Hoffman et al.,
-2011). In fact, GP models for bandit optimization, in terms
-of their kernel maps, can be viewed as the parametric linear
-bandit paradigm pushed to the extreme, where each feature
-vector associated to an arm can have infinite dimension 2 .
-Against this backdrop, our work revisits the problem of
-bandit optimization with stochastic rewards. Specifically,
-we consider stochastic multiarmed bandit (MAB) problems
-with a continuous arm set, and whose (unknown) expected
-reward function is assumed to lie in a reproducing kernel
-Hilbert space (RKHS), with bounded RKHS norm – this
-effectively enforces smoothness on the function3 . We make
-the following contributions• We design a new algorithm – Improved Gaussian
-Process-Upper Confidence Bound (IGP-UCB) – for
-stochastic bandit optimization. The algorithm can be
-viewed as a variant of GP-UCB (Srinivas et al., 2009),
-but uses a significantly reduced confidence interval
-width resulting in an order-wise improvement in regret compared to GP-UCB. IGP-UCB also shows a
-markedly improved numerical performance over GPUCB.
-• We develop a nonparametric version of Thompson
-sampling, called Gaussian Process Thompson sampling(GP-TS),and show that enjoys a regret bound
-√
-of Õ γT dT . Here, T is the total time horizon and
-γT is a quantity depending on the RKHS containing
-the reward function. This is, to our knowledge, the
-first known regret bound for Thompson sampling in
-the agnostic setup with nonparametric structure.
-• We prove a new self-normalized concentration inequality for infinite-dimensional vector-valued martingales, which is not only key to the design and
-analysis of the IGP-UCB and GP-TS algorithms, but
-also potentially of independent interest. The inequality generalizes a corresponding self-normalized bound
-for martingales in finite dimension proven by AbbasiYadkori et al. (2011).
-• Empirical comparisons of the algorithms developed
-above, with other GP-based algorithms, are presented,
-over both synthetic and real-world setups, demonstrating performance improvements of the proposed algorithms, as well as their performance under misspecification.
-2
-The completion of the linear span of all feature vectors (images of the kernel map) is precisely the reproducing kernel Hilbert
-space (RKHS) that characterizes the GP.
-3
-Kernels, and their associated RKHSs,
-
-2. Problem Statement
-We consider the problem of sequentially maximizing a
-fixed but unknown reward function f : D → R over a
-(potentially infinite) set of decisions D ⊂ Rd , also called
-actions or arms. An algorithm for this problem chooses, at
-each round t, an arm xt ∈ D, and subsequently observes
-a reward yt = f (xt ) + εt , which is a noisy version of the
-function value at xt . The arm xt is chosen causally depending upon the arms played and rewards obtained upto
-round t − 1, denoted by the history Ht−1 = {(xs , ys ) : s =
-1, . . . , t−1}. We assume that the noise sequence {εt }∞
-t=1 is
-conditionally R-sub-Gaussian for a fixed constant R ≥ 0,
-i.e.,
- 2 2
-h
-i
-
-λ R
-∀t ≥ 0, ∀λ ∈ R, E eλεt  Ft−1 ≤ exp
-,
-2
-
+2. Generalizing convolution
+2.1. Discrete and continuous convolution
+We start by looking at the basic building block of CNNs,
+i.e. the convolution operator. This operator computes the
+inner product of an image I ∈ RN ×N with a translated
+version of the filter F ∈ RM ×M , producing a new image
+as output:
+X
+(I ∗ F )(j) =
+I(k)F (j − k),
 (1)
+k
 
-where Ft−1 is the σ-algebra generated by the random variables {xs , εs }t−1
-s=1 and xt .This is a mild assumption on the
-noise (it holds, for instance, for distributions bounded in
-[−R, R]) and is standard in the bandit literature (AbbasiYadkori et al., 2011; Agrawal & Goyal, 2013).
-Regret. The goal of an algorithm is to maximize its cumulative reward or alternatively minimize its cumulative
-regret – the loss incurred due to not knowing f ’s maximum point beforehand. Let x? ∈ argmaxx∈D f (x) be
-a maximum point of f (assuming the maximum is attained). The instantaneous regret incurred at time t is
-rt = f (x? ) − f (xt ), and the cumulative regret in a time
-horizonP
-T (not necessarily known a priori) is defined to be
-T
-RT = t=1 rt . A sub-linear growth of RT in T signifies
-that RT /T → 0 as T → ∞, or vanishing per-round regret.
-Regularity Assumptions. Attaining sub-linear regret is
-impossible in general for arbitrary reward functions f and
-domains D, and thus some regularity assumptions are in
-order. In what follows, we assume that D is compact. The
-smoothness assumption we make on the reward function f
-is motivated by Gaussian processes4 and their associated
-reproducing kernel Hilbert spaces (RKHSs, see Schölkopf
-& Smola (2002)). Specifically, we assume that f has small
-norm in the RKHS of functions D → R, with positive
-semi-definite kernel function k : D ×D → R. This RKHS,
-denoted by Hk (D), is completely specified by its kernel
-function k(·, ·) and vice-versa, with an inner product h·, ·ik
-obeying the reproducing property: f (x) = hf, k(x, ·)ik for
-all f ∈ Hk (D). In other words, the kernel plays the role
-of delta functions to represent the evaluation map at each
-point x ∈ D via
-p the RKHS inner product. The RKHS
-norm kf kk = hf, f ik is a measure of the smoothness5
-4
-Other work has also studied continuum-armed bandits with
-weaker smoothness assumptions such as Lipschitz continuity –
-see Related work for details and comparison.
-5
-One way to see this is that for every element g in
-the RKHS, |g(x) − g(y)| = |hg, k(x, ·) − k(y, ·)i| ≤
-kgkk kk(x, ·) − k(y, ·)kk by Cauchy-Schwarz.
-
-On Kernelized Multi-armed Bandits
-
-of f , with respect to the kernel function k, and satisfies:
-f ∈ Hk (D) if and only if kf kk < ∞.
-We assume a known bound on the RKHS norm of the unknown target function6 : kf kk ≤ B. Moreover, we assume
-bounded variance by restricting k(x, x) ≤ 1, for all x ∈ D.
-Two common kernels that satisfy bounded variance property are Squared Exponential and Matérn, defined as
-0
-
-kSE (x, x )
-0
-
-kM atérn (x, x )
-
-=
-=
-
-
-
-2
-
-2
-
-µt (x)
-0
-
-kt (x, x )
-σt2 (x)
-
-= kt (x)T (Kt + λI)−1 y1:t ,
-0
-
-T
-
+where k, j ∈ Z2 are two-dimensional vectors of indexes,
+and the summation ranges inside the extents of both arrays.
+Over the next sections it will be more convenient to translate the image I instead of the filter F . This alternative
+form of eq. (1) is obtained by the substitution k ← j + k:
+X
+(I ∗ F )(j) =
+I(j + k)F (−k)
 (2)
-−1
+k
 
-= k(x, x ) − kt (x) (Kt + λI)
+2.2. Convolution on groups
+The standard convolution operator of eq. (4) can be interpreted as applying the filter to translated versions of the
+image. We wish to replace translations with other image
+transformations g, belonging to a group G. In the context of machine learning models for images, this generalized (group) convolution can be understood to exhaustively
+search for a pattern at various poses g ∈ G (e.g. rotation
+angles or scale factors) (Dieleman et al., 2015; Kanazawa
+et al., 2014).
+Following standard derivations (Folland, 1995), the most
+common way of generalising convolution to transformations other than translations starts from the Haar integral.
+Given a measure µ over a group G, one can define the integral of a real function I˜ : G → R, written:
+ˆ
+˜ dµ(g).
+I(g)
+G
 
-0
+The (left) Haar measure is the most natural choice for µ;
+it is the only measure (up to scaling factors) that is (left)
+invariant to group translation. In other words, µ satisfies
+the equation:
+ˆ
+ˆ
+˜ dµ(g).
+˜
+I(g)
+I(hg) dµ(g) =
+∀h ∈ G :
+G
 
-kt (x ),(3)
+G
 
-= kt (x, x).
-
-(4)
-
-
-
-− s /2l ,
-√
-√
-
-21−ν s 2ν ν  s 2ν 
-Bν
-,
-Γ(ν)
-l
-l
-
-exp
-
-where kt (x) = [k(x1 , x), . . . , k(xt , x)]T . Therefore conditioned on the history Ht , the posterior distribution over f
-is GPD (µt (·), v 2 kt (·, ·)), where
-
-where l > 0 and ν > 0 are hyperparameters, s =
-kx − x0 k2 encodes the similarity between two points
-x, x0 ∈ D, and Bν (·) is the modified Bessel function. Generally the bounded variance property holds for any stationary kernel, i.e. kernels for which k(x, x0 ) = k(x − x0 ) for
-all x, x0 ∈ Rd . These assumptions are required to make
-the regret bounds scale-free and are standard in the literature (Agrawal & Goyal, 2013). Instead if k(x, x) ≤ c or
-kf kk ≤ cB, then our regret bounds would increase by a
-factor of c.
-
-3. Algorithms
-Design philosophy. Both the algorithms we propose
-use Gaussian likelihood models for observations, and
-Gaussian process (GP) priors for uncertainty over reward functions. A Gaussian process over D, denoted
-by GPD (µ(·), k(·, ·)), is a collection of random variables
-(f (x))x∈D , one for each x ∈ D, such that every finite
-sub-collection of random variables (f (xi ))m
-i=1 is jointly
-Gaussian with mean E [f (xi )] = µ(xi ) and covariance
-E [(f (xi ) − µ(xi ))(f (xj ) − µ(xj ))] = k(xi , xj ), 1 ≤
-i, j ≤ m, m ∈ N. The algorithms use GPD (0, v 2 k(·, ·)),
-v > 0, as an initial prior distribution for the unknown reward function f over D, where k(·, ·) is the kernel function associated with the RKHS Hk (D) in which f is assumed to have ‘small’ norm at most B. The algorithms
-also assume that the noise variables εt = yt − f (xt )
-are drawn independently, across t, from N (0, λv 2 ), with
-λ ≥ 0. Thus, the prior distribution for each f (x), is assumed to be N (0, v 2 k(x, x)), x ∈ D. Moreover, given
-a set of sampling points At = (x1 , . . . , xt ) within D, it
-follows under the assumption that the corresponding vector of observed rewards y1:t = [y1 , . . . , yt ]T has the multivariate Gaussian distribution N (0, v 2 (Kt + λI)), where
-Kt = [k(x, x0 )]x,x0 ∈At is the kernel matrix at time t. Then,
-by the properties of GPs, we have that y1:t and f (x) are
-jointly Gaussian given At :
-
-
-  2
-
-f (x)
-v k(x, x)
-v 2 kt (x)T
-∼ N 0,
-,
-y1:t
-v 2 kt (x) v 2 (Kt + λI)
-6
-This is analogous to the bound on the weight θ typically assumed in regret analyses of linear parametric bandits.
-
-Thus for every x ∈ D, the posterior distribution of f (x),
-given Ht , is N (µt (x), v 2 σt2 (x)).
-Remark. Note that the GP prior and Gaussian likelihood
-model described above is only an aid to algorithm design,
-and has nothing to do with the actual reward distribution
-or noise model as in the problem statement (Section 2).
-The reward function f is a fixed, unknown, member of the
-RKHS Hk (D), and the true sequence of noise variables εt
-is allowed to be a conditionally R-sub-Gaussian martingale
-difference sequence (Equation 1). In general, thus, this represents a misspecified prior and noise model, also termed
-the agnostic setting by Srinivas et al. (2009).
-The proposed algorithms, to follow, assume the knowledge
-of only the sub-Gaussianity parameter R, kernel function k
-and upper bound B on the RKHS norm of f . Note that v, λ
-are free parameters (possibly time-dependent) that can be
-set specific to the algorithm.
-3.1. Improved GP-UCB (IGP-UCB) Algorithm
-We introduce the IGP-UCB algorithm (Algorithm 1), that
-uses a combination of the current posterior mean µt−1 (x)
-and standard deviation vσt−1 (x) to (a) construct an upper
-confidence bound (UCB) envelope for the actual function
-f over D, and (b) choose an action to maximize it. Specifically it chooses, at each round t, the action
-xt = argmax µt−1 (x) + βt σt−1 (x),
-
+Mirroring eq. (4), the group convolution of two functions I˜
+and F̃ is defined as1
+ˆ
+˜
+(I˜ ∗ F̃ )(t) = I(tg)
+F̃ (g −1 ) dµ(g).
 (5)
+G
 
-x∈D
+In the neural network literature, this is often written using
+the cross-correlation convention (Goodfellow et al., 2016),
+by considering the reflected filter F− (j) = F (−j):
+X
+(I ∗ F )(j) =
+I(j + k)F− (k).
+(3)
+k
 
-with the scale parameter v set to be 1. Such a rule
-trades off exploration (picking points with high uncertainty
-σt−1 (x)) with exploitation (picking
-p points with high reward µt−1 (x)), with βt = B + R 2(γt−1 + 1 + ln(1/δ))
-being the parameter governing the tradeoff, which we later
-show is related to the width of the confidence interval for f
-at round t. δ ∈ (0, 1) is a free confidence parameter used
-by the algorithm, and γt is the maximum information gain
-at time t, defined as:
-γt :=
+To handle continuous deformations of the input, it is more
+natural to express eq. (2) as an integral over continuous
+rather than discrete inputs:
+ˆ
+(I ∗ F )(y) = I(y + x) F (−x) dx,
+(4)
+where I, F : R2 → R are functions of continuous inputs
+in R2 . The real-valued 2D vectors x, y ∈ R2 now play the
+role of the indexes k ∈ Z2 . Equation (4) reduces to the
+discrete case of eq. (1) if we define I and F as the sum of
+delta functions on grids (Dirac comb). Intermediate values
+can be obtained by interpolation, such as bilinear (which
+amounts to convolution of the delta functions with a triangle filter (Jaderberg et al., 2015)). Importantly, such continuous images can be deformed by a rich set of continuous
+transformations of the input coordinates, whereas strictly
+discrete operations would be more limiting.
 
-max
-A⊂D:|A|=t
-
-I(yA ; fA ).
-
-Here, I(yA ; fA ) denotes the mutual information between
-fA = [f (x)]x∈A and yA = fA + εA , where εA ∼
-N (0, λv 2 I) and quantifies the reduction in uncertainty
-about f after observing yA at points A ⊂ D. γt is
-a problem dependent quantity and can be found given
-the knowledge of domain D and kernel function k. For
-
-On Kernelized Multi-armed Bandits
-
-a compact subset D of Rd , γT is O((ln T )d+1 ) and
-O(T d(d+1)/(2ν+d(d+1)) ln T ), respectively, for the Squared
-Exponential and Matérn kernels (Srinivas et al., 2009), depending only polylogarithmically on the time T .
-Algorithm 1 Improved-GP-UCB (IGP-UCB)
-Input: Prior GP (0, k), parameters B, R, λ, δ.
-for t = 1, 2, 3 . . . T p
-do
-Set βt = B + R 2(γt−1 + 1 + ln(1/δ)).
-Choose xt = argmax µt−1 (x) + βt σt−1 (x).
-x∈D
-
-Observe reward yt = f (xt ) + εt .
-Perform update to get µt and σt using 2, 3 and 4.
-end for
-Discussion. Srinivas et al. (2009) have proposed the GPUCB algorithm, and Valko et al. (2013) the KernelUCB
-algorithm, for sequentially optimizing reward functions lying in the RKHS Hk (D). Both algorithms play an arm
-at time t using the rule: xt = argmaxx∈D µt−1 (x) +
-β̃t σt−1 (x). GP-UCB uses the exploration parameter β̃t =
-q
-
-2B 2 + 300γt−1 ln3 (t/δ), with λ set to σ 2 , where σ is
-additionally assumed to be a known, uniform (i.e., almostsure) upper bound on all noise variables εt (Srinivas et al.,
-2009, Theorem 3). Compared to GP-UCB, IGP-UCB (Algorithm 1) reduces the width of the confidence interval by
-a factor roughly O(ln3/2 t) at every round t, and, as we
-will see, this small but critical adjustment leads to much
-better theoretical and empirical performance compared to
-GP-UCB. In KernelUCB, β̃t is set as η/λ1/2 , where η is
-the exploration parameter and λ is the regularization constant. Thus IGP-UCB can be viewed as a special case of
-KernelUCB where η = βt .
-3.2. Gaussian Process Thompson Sampling (GP-TS)
-
-Our second algorithm, GP-TS (Algorithm 2), inspired
-by the success of Thompson sampling for standard and
-parametric bandits (Agrawal & Goyal, 2012; Kaufmann
-et al., 2012; Gopalan et al., 2014; Agrawal & Goyal,
-2013),
-p uses the time-varying scale parameter vt = B +
-R 2(γt−1 + 1 + ln(2/δ)) and operates as follows. At
-each round t, GP-TS samples a random function ft (·) from
-the GP with mean function µt−1 (·) and covariance function
-vt2 kt−1 (·, ·). Next, it chooses a decision set Dt ⊂ D, and
-plays the arm xt ∈ Dt that maximizes ft 7 . We call it GPThompson-Sampling as it falls under the general framework of Thompson Sampling, i.e., (a) assume a prior on the
-underlying parameters of the reward distribution, (b) play
-the arm according to the prior probability that it is optimal,
-7
-If Dt = D for all t, then this is simply exact Thompson
-sampling. For technical reasons, however, our regret bound is
-valid when Dt is chosen as a suitable discretization of D, so we
-include Dt as an algorithmic parameter.
-
-and (c) observe the outcome and update the prior. However,
-note that the prior is nonparametric in this case.
-Algorithm 2 GP-Thompson-Sampling (GP-TS)
-Input: Prior GP (0, k), parameters B, R, λ, δ.
-for t = 1, 2, 3 . . . , do
-p
-Set vt = B + R 2(γt−1 + 1 + ln(2/δ)).
-Sample ft (·) from GPD (µt−1 (·), vt2 kt−1 (·, ·)).
-Choose the current decision set Dt ⊂ D.
-Choose xt = argmax ft (x).
-x∈Dt
-
-Observe reward yt = f (xt ) + εt .
-Perform update to get µt and kt using 2 and 3.
-end for
-
-4. Main Results
-We begin by presenting two key concentration inequalities
-which are essential in bounding the regret of the proposed
-algorithms.
-d
-Theorem 1 Let {xt }∞
-t=1 be an R -valued discrete time
-stochastic process predictable with respect to the filtration
-∞
-{Ft }∞
-t=0 , i.e., xt is Ft−1 -measurable ∀t ≥ 1. Let {εt }t=1
-be a real-valued stochastic process such that for some R ≥
-0 and for all t ≥ 1, εt is (a) Ft -measurable, and (b) R-subGaussian conditionally on Ft−1 . Let k : Rd ×Rd → R be a
-symmetric, positive-semidefinite kernel, and let 0 < δ ≤ 1.
-For a given η > 0, with probability at least 1 − δ, the following holds simultaneously over all t ≥ 0:
-
-p
-
-det((1 + η)I + Kt )
-.
-δ
+From the viewpoint of statistical learning, a key property of
+convolution is equivariance. Consider the (left) translation
+operator
+˜ : t 7−→ I(h
+˜ −1 t).
+Lh (I)
 (6)
-(Here, Kt denotes the t × t matrix Kt (i, j) = k(xi , xj ),
-1 ≤ i, j ≤ t and for any x ∈ Rt and A ∈ Rt×t , kxkA :=
-√
-xT Ax). Moreover, if Kt is positive definite ∀t ≥ 1 with
-probability 1, then the conclusion above holds with η = 0.
-2
-kε1:t k((Kt +ηI)−1 +I)−1
+Then:
+Lemma 1. (Folland, 1995) Convolution is equivariant with
+group translations, in the sense that Lh commutes with ∗ :
+G
 
-2
+˜ ∗ F̃ )(t).
+Lh (I˜ ∗ F̃ )(t) = (Lh (I)
+G
 
-≤ 2R ln
+G
 
-Theorem 1 represents a self-normalized concentration inequality: the ‘size’ of the increasing-length sequence {εt }t
-of martingale differences is normalized by the growing
-quantity ((Kt + ηI)−1 + I)−1 that explicitly depends on
-the sequence. The following lemma helps provide an alternative, abstract, view of the self-normalized process of
-Theorem 1, based on the feature space representation induced by a kernel.
-Lemma 1 Let k : Rd × Rd → R be a symmetric, positivesemidefinite kernel, with associated feature map ϕ : Rd →
-Hk and the reproducing kernel Hilbert space8 (RKHS) Hk .
-8
-Such a pair (ϕ, Hk ) always exists, see e.g., Rasmussen &
-Williams (2006).
+1
 
-On Kernelized Multi-armed Bandits
+Due to the Haar invariance property, this definition is equivalent to the following one, also commonly found in the literature:
+ˆ
+˜ F̃ (g −1 t) dµ(g).
+(I˜ ∗ F̃ )(t) = I(g)
+G
 
-Pt
-Letting St = s=1 εs ϕ(xs ) and the (possibly infinite diPt
-mensional) matrix9 Vt = I+ s=1 ϕ(xs )ϕ(xs )T , we have,
-whenever Kt is positive definite, that
-kε1:t k(K −1 +I )−1 = kSt kV −1 ,
-t
+The equivalence mirrors the one between eq. (1) and eq. (2), and
+can be easily proved:
+ˆ
+˜
+(I˜ ∗ F̃ )(t) = I(tg)
+F̃ ((tg)−1 t) dµ(g)
+G
+ˆ
+˜
+= I(tg)
+F̃ (g −1 ) dµ(g).
 
-t
+Warped Convolutions: Efficient Invariance to Spatial Transformations
 
+´
+˜ −1 t)g)F̃ (g −1 ) dµ(g) =
+Proof. Lh (I˜ ∗ F̃ )(t) = I((h
+G
+´
+˜ −1 (tg))F̃ (g −1 ) dµ(g) = (Lh (I)
+˜ ∗ F̃ )(t).
+I(h
 
+and group convolution reduces to the standard notion of
+convolution ∗ on V :
+V
 
- −1/2 
-St 
-where kSt kV −1 := Vt
-t
+G
 
-denotes the norm of
+ˆ
+(I˜ ∗ F̃ )(exp(v)) =
 
-Hk
+2.3. From groups to images
 
-−1/2
-Vt
-St
+G
 
-in the RKHS Hk .
-
- 
-
-Observe that St is Ft -measurable and also E St  Ft−1 =
-St−1 . The process {St }t≥0 is thus a martingale with values10 in the RKHS H, which can possibly be infinitedimensional, and moreover, whose deviation is measured
-by the norm weighted by Vt−1 , which is itself derived from
-St . Theorem 1 represents the kernelized generalization
-of the finite-dimensional result of Abbasi-Yadkori et al.
-(2011), and we recover their result under the special case
-of a linear kernel: ϕ(x) = x for all x ∈ Rd .
-We remark that when ϕ is a mapping to a finite-dimensional
-Hilbert space, the argument of Abbasi-Yadkori et al. (2011,
-Theorem 1) can be lifted to establish Theorem 1, but
-it breaks down in the generalized, infinite-dimensional
-RKHS setting, as the self-normalized bound in their paper has an explicit, growing dependence on the feature dimension. Specifically, the method of mixtures (de la Pena
-et al., 2009) or Laplace method, as dubbed by Maillard
-(2016), fails to hold in infinite dimension. The primary reason for this is that the mixture distribution for finite dimensional spaces can be chosen independently of time, but in a
-nonparametric setup like ours, where the dimensionality of
-−1
-the self-normalizing factor Kt−1 + I
-itself grows with
-time, the use of (random) stopping times, precludes using
-time-dependent mixtures. We get around this difficulty by
-applying a novel ‘double mixture’ construction, in which a
-pair of mixtures on (a) the space of real-valued functions on
-Rd , i.e., the support of a Gaussian process, and (b) on real
-sequences is simultaneously used to obtain a more general
-result, of potentially independent interest.
-Our next result shows that how the posterior mean is concentrated around the unknown reward function f .
-Theorem 2 Under the same hypotheses as those of Theorem 1, let D ⊂ Rd , and f : D → R be a member of the
-RKHS of real-valued functions on D with kernel k, with
-RKHS norm bounded by B. Then, with probability at least
-1 − δ, the following holds for all x ∈ D and t ≥ 1:
-
-
-p
-|µt−1 (x) − f (x)| ≤ B + R 2(γt−1 + 1 + ln(1/δ)) σt−1 (x),
-
-where γt−1 is the maximum information gain after t − 1
-2
-rounds and µt−1 (x), σt−1
-(x) are mean and variance of
-9
-
-More formally,
-P Vt : Hk → Hk is the linear operator defined
-by Vt (z) = z + ts=1 ϕ(xs )hϕ(xs ), zi ∀z ∈ Hk .
-10
-We ignore issues of measurability here.
-
-posterior distribution defined as in Equation 2, 3, 4, with λ
-set to 1 + η and η = 2/T .
-Theorem 3.5 of Maillard (2016) states a similar result on
-the estimation of the unknown reward function from the
-RKHS. We improve upon it in the sense that the confidence
-bound in Theorem 2 is simultaneous over all x ∈ D, while
-the bound has been shown only for a single, fixed x in the
-Kernel Least-squares setting. We are able to achieve this
-result by virtue of Theorem 1.
-4.1. Regret Bound of IGP-UCB
-Theorem 3 Let δ ∈ (0, 1), kf kk ≤ B and εt is conditionally R-sub-Gaussian. Running IGP-UCB for a function f
-lying
-RKHS Hk(D), we obtain a regret bound of
-√ in the
-√
-O T (B γT + γT ) with high probability. More pre √
-cisely, with probability at least 1 − δ, RT = O B T γT +
-
-p
-T γT (γT + ln(1/δ)) .
-Improvement over GP-UCB. Srinivas et al. (2009), in
-the course of analyzing the GP-UCB algorithm, show
-that when the reward function
-√ lies√in the RKHS Hk (D),
-
-GP-UCB obtains regret O T (B γT + γT ln3/2 (T ))
-with high probability (see Theorem 3 therein for the exact bound). Furthermore, they assume that the noise εt
-is uniformly bounded by σ, while our sub-Gaussianity assumption (see Equation 1) is slightly more general, and
-we are able to obtain a O(ln3/2 T ) multiplicative factor
-improvement in the final regret bound thanks to the new
-self-normalized inequality (Theorem 1). Additionally, in
-our numerical experiments, we observe a significantly improved performance of IGP-UCB over GP-UCB, both on
-synthetically generated function, and on real-world sensor
-measurement data (see Section 6).
-Comparison with KernelUCB. Valko et al. (2013)pshow
-˜ ),
-that the cumulative regret of KernelUCB is Õ( dT
-˜ defined as the effective dimension, measures, in
-where d,
-a sense, the number of principal directions over which
-the projection of the data in the RKHS is spread. They
-show that d˜ is at least as good as γT , precisely γT ≥
-Ω(d˜ln ln T )√and thus the regret bound of KernelUCB is
-√
-roughly Õ( T γT ), which is γT factor better than IGPUCB. However, KernelUCB requires the number of actions
-to be finite, so the regret bound is not applicable for infinite
-or continuum action spaces.
-4.2. Regret Bound of GP-TS
-For technical reasons, we will analyze the following version of GP-TS. At each round t, the decision set used
-by GP-TS is restricted to be a unique discretization Dt
-
-On Kernelized Multi-armed Bandits
-
-of D with the property that |f (x) − f ([x]t )| ≤ 1/t2
-for all x ∈ D, where [x]t is the closest point to x in
-Dt . This can always be achieved by choosing a compact and convex domain D ⊂ [0, r]d and discretization
-Dt with size |Dt | = (BLrdt2 )d such that kx − [x]t k1 ≤
-rd/BLrdt2 = 1/BLt2 for all x ∈ D, where L =
-1/2
- 2
-|
-. This implies, for every x ∈
-sup sup ∂∂pk(p,q)
-p=q=x
-j ∂qj
-x∈D j∈[d]
-
-ilar O(ln3/2 T ) factor improvement, as obtained by IGPUCB over GP-UCB, was achieved in the linear parametric
-setting by (Abbasi-Yadkori et al., 2011) in the OFUL algorithm, over its predecessor ConfidenceBall (Dani et al.,
-2008). Finally we see that the for linear bandit problem
-with infinitely many actions, IGP-UCB
-√ attains the information theoretic lower bound of √
-Ω(d T ) (see (Dani et al.,
-2008)), but GP-TS is a factor of d away from it.
-
-D,
-|f (x) − f ([x]t )| ≤ kf kk L kx − [x]t k1 ≤ 1/t2 ,
-
+The functions I˜ and F̃ above have been defined on groups.
+In applications, however, we are interested in images, i.e.
+functions I : Ω → R defined on a subset Ω of the real plane
+R2 .
+The connection between the two function types is easy to
+establish. The assumption is that G acts2 on the image domain Ω (i.e. G is a group of transformations of Ω). We can
+then define the ˜· operator as:
+˜ = I(gx0 )
+I(g)
+where x0 ∈ Ω is an arbitrary pivot point. Note that the
+values of I˜ depend only on the values of I on the orbit of
+x0 , i.e. the set Gx0 = {gx0 : g ∈ G}. Therefore we
+typically set the domain Ω of I to be equal to Gx0 .
+By this definition, left translation of I˜ by h corresponds to
+warping the image I by the transformation h:
+˜
+Lh (I)(t)
+= I((h−1 t)x0 ) = I(h−1 (tx0 )) = (I^
+◦ h−1 )(t).
+We can then update eq. (5) to express group convolution as
+a function of images on the real plane:
+ˆ
+(I ∗ F )(t) = I(tgx0 )F (g −1 x0 ) dµ(g).
 (7)
+G
 
-as any f ∈ Hk (D) is Lipschitz continuous with constant
-kf kk L (De Freitas et al., 2012, Lemma 1).
-Theorem 4 (Regret bound for GP-TS) Let δ ∈ (0, 1),
-D ⊂ [0, r]d be compact and convex, kf kk ≤ B and
-{εt }t a conditionally R-sub-Gaussian sequence. Running GP-TS for a function f lying in the RKHS Hk (D)
-and with decision sets Dt chosen as above, with probability at least  1 − δ, the regret of GP-TS
-√ satisp
-(γT + ln(2/δ))d ln(BdT ) T γT +
-fies RT = O
-
-p
-B T ln(2/δ) .
-Comparison with IGP-UCB.
-Observe that regret scal√
-ing of GP-TS is Õ(γT dT ) which is√ a multiplicative
-√
-d factor away from the bound Õ(γT T ) obtained for
-IGP-UCB and similar behavior is reflected in our simulations on
-psynthetic data. The additional multiplicative factor of d ln(BdT ) in the regret bound of GP-TS is essentially a consequence of discretization. How to remove
-this extra logarithmic dependency, and make the analysis
-discretization-independent, remains an open question.
-Remark. The regret bound for GP-TS is inferior compared
-to IGP-UCB in terms of the dependency on dimension d,
-but to the best of our knowledge, Theorem 4 is the first
-(frequentist) regret guarantee of Thompson Sampling in the
-agnostic, non-parametric setting of infinite action spaces.
-Linear Models and a Matching Lower Bound. If the
-mean rewards are perfectly linear, i.e. if there exists a
-θ ∈ Rd such that f (x) = θT x for all x ∈ D, then we
-are in the parametric setup, and one way of casting this
-in the kernelized framework is by using the linear kernel
-k(x, x0 ) = xT x0 . For this kernel, γ√
-T = O(d ln T ), and the
-regret scaling
-of
-IGP-UCB
-is
-Õ(d
-T ) and that of GP-TS
-√
-is Õ(d3/2 T ), which recovers the regret bounds of their
-linear, parametric analogues OFUL (Abbasi-Yadkori et al.,
-2011) and Linear Thompson sampling (Agrawal & Goyal,
-2013), respectively. Moreover,
-in this case d˜ = d, thus
-√
-the regret of IGP-UCB is d factor away from that of KernelUCB. But the regret bound of KernelUCB also depends
-on the number of arms√N , and if N is exponential in d,
-then it also suffers Õ(d T ) regret. We remark that a sim-
+Iw (v + u)Fw (−u) du.
 
-5. Overview of Techniques
-We briefly outline here the key arguments for all the theorems in Section 4. See Chowdhury & Gopalan (2017) for
-complete proofs.
-Proof Sketch for Theorem 1. It is convenient to assume that Kt , the induced kernel matrix at time t, is invertible, since this is where the crux of the argument lies.
-First we show that for any function g : D → R and
-for all t ≥n0, thanks to the sub-Gaussian property
-(1),
-o
+(8)
+
+V
+
+We refer to this standard convolution in warped space
+(eq. (8)) as warped convolution.
+Discussion. Note that the result is an image whose dimensionality P is that of the vector space V ; in the following,
+we mainly work in the case P = 2. By far, the strongest
+requirement is that the map is additive: this is the same as
+requiring the transformation group G to be Abelian, in the
+sense that transformations commute (hg = gh). In section 5 we will show a variety of useful image transformations that respect this property. The advantage of introducing this restriction is that calculations simplify tremendously, ultimately enabling a simple and efficient implementation of the operator as discussed below.
+
+3. Warped convolutions
+Our main contribution is to note that certain group convolutions can be implemented efficiently by a standard convolution, by pre-warping the input image and filter appropriately. The warp is the same for any image, depending
+solely on the nature of the relevant transformations, and
+can be written in closed form. This result allows one to
+implement very efficient group convolutions using simple
+computational blocks, as shown in section 3.2.
+
+2.4. Standard convolutions with exponential maps
+
+3.1. Warped convolution layer
+
+In the definitions of sections 2.2 and 2.3, while we could
+reduce the functions I˜ and F̃ to images I and F , the result of convolution is still a function defined over a group.
+One needs therefore to understand how to represent such
+functions and calculate the corresponding integrals.
+
+We can now reinterpret these results in terms of a new neural network convolutional layer. The input of the layer is an
+image I and the learnable parameters are the coefficients of
+the filter Fw . The output is a new “image” C(I; Fw )(v) defined on the vector space V . This image is obtained by first
+warping I using the exponential map and then by convolving the result with Fw in the standard sense:
+
+We note here that the simplest case is when G is a
+Lie group parameterised by the exponential map exp :
+V → G, where V is a subset of RP , in such a way
+that exp is smooth, bijective and additive (exp(u + v) =
+exp(u) exp(v)). Then:
+ˆ
+ˆ
+˜
+˜
+I(g) dµ(g) =
+I(exp(u))
+du.
+G
+
+V
+
+(9)
+
+The most important property of this layer is equivariance:
+if we warp the image by the transformation h = exp(u),
+then the convolution result translates by u:
+
+V
+
+C(I ◦ h−1 ; Fw ) = C(I; Fw )(v − u),
+
+Hence we can define the warped image
+˜
+Iw (u) = I(exp(u))
+= I(exp(u)x0 ),
 2
-g
-1
-T
-the process Mt := exp(ε1:t g1:t − 2 kg1:t k ) is a nont
-negative super-martingale with respect to the filtration Ft ,
-where g1:t := [g(x1 ), . . . , g(xt )]T and in fact satisfies
-E [Mtg ] ≤ 1. The chief difficulty is to handle the behavior of Mt at a (random) stopping time, since the sizes of
-quantities such as ε1:t at the stopping time will be random.
-We next construct a mixture martingale Mt by mixing Mtg over g drawn from an independent GPD (0, k)
-Gaussian process, which is a measure over a large
-space of functions, i.e., the space RD . Then, by a
-change of measure argument, we show that this induces
-a mixture distribution which is essentially N (0, Kt ) over
-any desired finite
- dimension t, thus
- obtaining Mt =
-2
-√ 1
-exp 12 kε1:t k(I+K −1 )−1 . Next from the fact
-det(I+Kt )
 
-t
+C(I; Fw )(v) = (I(exp(·)x0 ) ∗ Fw )(v).
 
-that E [Mτ ] ≤ 1 and from Markov’s inequality, for any
-δ ∈ (0, 1), we obtain
-p
-h
-i
-2
-P kε1:τ k(Kτ−1 +I)−1 > 2 ln
-det(I + Kτ )/δ ≤ δ.
-Finally, we lift this bound for all t through a standard stopping time construction as in Abbasi-Yadkori et al. (2011).
-Proof Sketch for Theorem 2. Here we sketch the
-special case of η = 0, i.e.
-λ = 1.
-Observe that |µt (x) − f (x)| is upper bounded
-by
-sum
-of
-
-kt (x)T (Kt + I)−1 ε1:t  and Q :=
-two
-terms,
-P
-:=
-
-
-kt (x)T (Kt + I)−1 f1:t − f (x). Now we observe that
-−1
-σt2 (x) = ϕ(x)T (ΦTt Φt + I)
-and use this obser-
- ϕ(x)
-T
-T
-−1 T
-
-
-vation to show
-that
-P
+u ∈ V.
+
+This means that g defines a mapping Ω 7→ Ω and that
+the group multiplication hg corresponds to function composition
+(hg)x = h(gx).
+
+h = exp(u).
+
+Note that the output action equivalent to warping the input
+is simply to translate the result, as for standard convolution. The second most important property is that this operator can be implemented efficiently as the combination of
+warping and standard convolution.
+
+Warped Convolutions: Efficient Invariance to Spatial Transformations
+
+3.2. Implementation and intuition
+
+Algorithm 1 Warped Convolution
+
+The warp (exponential map) that is applied to the input image eq. (9) can be implemented as follows. We start with
+an arbitrary pivot point x0 in the image, and then sample
+all possible transformations of that point, {gx0 : g ∈ G}.
+For discrete images, G will be implemented as a 2D grid of
+discrete transformations (e.g. rotations and scales at regular intervals), and {gx0 } will be a 2D grid as well, referred
+to as the warp grid. Finally, sampling the input image at the
+points {gx0 } (for example, by bilinear interpolation) yields
+the warped image.
+
+Grid generation (offline)
+
+An illustration is given in fig. 1, for various transformations
+(each one is discussed in more detail in section 5). The red
+dot shows the pivot point x0 , and the two arrows pointing
+away from it show the original axes of the sampled grid
+of parameters. The grids were generated by sampling the
+transformation parameters at regular intervals. Note that
+the warp grids are independent of the image contents – they
+can be computed once offline and then applied to any image.
+The steps for implementing a warped convolution block are
+outlined in algorithm 1. The main advantage of implementing group convolution as warped convolution is that it replaces a large number of warping operations (one per group
+element) with a single warp.
+
+4. Discussion
+4.1. Interpretation as a filtering operator in image
+space
+When V ⊂ R2 , we can often interpret group convolution
+as an integration over image space, instead of over group
+elements. For this, we introduce the map η(v) = exp(v)x0
+and assume that it is smooth, invertible, and surjective on
+the image domain Ω. Surjectivity means that G acts transitively on Ω, in the sense that every point x ∈ Ω can be
+reached from x0 by a transformation g. Injectivity means
+that this transformation is unique.
+Next, let h = exp(v) and note that exp(v + u) =
+exp(v) exp(u) = h exp(u). Hence
+ˆ
+(I˜ ∗ F̃ )(h) =
+G
+
+Iw (v + u)Fw (−u) du
+ˆV
+
 =
-ϕ(x)
-(Φ
-
- t Φt + I) Φt ε1:t
-T
-T
-−1
-and Q = ϕ(x) (Φt Φt + I) f , which are in turn upper bounded by the terms σt (x) kSt kV −1 and kf kk σt (x)
-t
-respectively. Then the result follows using Theorem 1,
-along with the assumption that kf kk ≤ B and the fact that
-1
-2 ln(det(I + Kt )) ≤ γt a.s. when Kt is invertible.
 
-On Kernelized Multi-armed Bandits
-4
+I(h exp(u)x0 )F (exp(−u)x0 ) du.
+V
 
-4
-
-x 10
-
-x 10
-
-4
-
-2.5
-
-GP-PI
-GP-EI
-GP-TS
-GP-UCB
-IGP-UCB
-
+Let the filter F− be the reflection3 of F around the pivot
+point x0 by the group G, i.e. F− (gx0 ) = F (g −1 x0 ). It
 3
 
-2.5
+This is well defined because η is invertible. In fact, if x =
+gx0 = exp(u)x0 = η(u), then u = η −1 (x) and F− (x) =
+F (η(−η −1 (x))).
 
-GP-PI
-GP-EI
-GP-TS
-GP-UCB
-IGP-UCB
+• Compute the 2D warp grid w = gu (x0 ) by applying a two-parameter spatial transformation g : R2 ×
+R2 → R2 to a single pivot point x0 , using a 2D
+grid of parameters u = {(u1 + iδ1 , u2 + jδ2 ) : i =
+0, . . . , m, j = 0, . . . , n}.
+Warped convolution
+1. Resample input image I using the warp grid w, by
+bilinear interpolation.
+2. Convolve warped image Iw with a learned filter Fw .
+By eq. (8), and for appropriate transformations, these steps
+are equivalent to group convolution (which performs an exhaustive search across the pose-space of transformations),
+but at a much lower computational cost.
+follows that:
 
-2
+ˆ
 
-Cumulative Regret
+(I˜ ∗ F̃ )(h) =
+G
 
-3.5
+I(h exp(u)x0 )F− (exp(u)x0 ) du.
+V
 
-Cumulative Regret
+We can now use the change of variable u ← η −1 (x) to
+write
+ˆ
+I(hη(u))F− (η(u)) du
+(10)
+(I˜ ∗ F̃ )(h) =
+G
+V
+ −1 
+ˆ
+ dη 
+ dx.
+=
+I(hx)F− (x) 
+(11)
+dx 
+Ω
+Thus we see that the group convolution amounts to applying a certain filter F− to the warped image I ◦ h. The filter
+elements are reweighed by the determinant of the Jacobian
+of η −1 , which accounts for the stretching and shrinking of
+space due to the non-linear map. In practice, both the reflection and Jacobian can be absorbed into a learned filter,
+making such calculations unnecessary. Nevertheless, they
+offer a complementary view of warped convolutions.
+4.2. Efficiency vs. generality
+By reducing to standard convolution, warped convolution allows one to take full advantage of modern convolution implementations (Lavin, 2015; Lyons, 2010), including those with lower computational complexity (e.g.
+FFT (Lyons, 2010)). However, while warped convolution
+works with an important class of transformations (including the ones considered in previous works Kanazawa et al.
+(2014); Cohen & Welling (2014); Marcos et al. (2016)),
+non-trivial restrictions are imposed on the transformation
+group: it must be Abelian and have only two parameters.
+By contrast, the group-theoretic convolution operator
+of eq. (5) does not make (almost) any restriction on the
 
-Proof Sketch for Theorem 3. First from Theorem 2 and
-the choice of xt in Algorithm 1, we show that the instantaneous regret rt at round t is upper bounded by 2βt σt−1 (xt )
-with probability at P
-least 1 − δ. Then the √
-result follows by
-T
-bounding the term t=1 σt−1 (xt ) by O( T γT ).
+Warped Convolutions: Efficient Invariance to Spatial Transformations
 
-2
+(a) translation
 
-1.5
+(b) scale/aspect ratio
 
-1
+(c) scale/rotation
 
-1.5
+(d) 3D rotation (yaw/pitch)
 
-1
+Figure 1. First row: Sampling grids that define the warps associated with different spatial transformations. Second row: An example
+image (a) after warping with each grid (b-d). Third row: A small translation is applied to each warped image, which is then mapped
+back to the original space (by an inverse warp). Translation in one axis of the appropriate warped space is equivalent to (b) horizontal
+scaling; (c) planar rotation; (d) 3D rotation around the vertical axis.
 
-0.5
+transformation group. Unfortunately, it is in general significantly more difficult to compute efficiently than the special
+case we consider here. To understand some of the implementation challenges, consider specializing eq. (7) to a discrete group G such as a discrete set of planar rotations. In
+this case the Haar measure is trivial and equal to 1, and one
+has:
+X
+(I ∗ F )(t) =
+I(tgx0 )F (g −1 x0 ).
+G
 
-First we lower bound the probability of playing an unsatu0
-rated arm at round t. We define a filtration Ft−1 as the history Ht−1 up to round t − 1 and hprove that for “most”i(in
- 0
-0
-a high probability sense) Ft−1 , P xt ∈ Dt \ St  Ft−1 ≥
-√
-p−1/t2 , where p = 1/4e π. This observation, along with
-concentration bounds for ft (x) and f (x) and “smoothness”
-of f , allow us to show that the expected regret at round
-t is upper bounded in terms of σt−1 (xt ), i.e. in terms
-of regret due to playing an unsaturated arm.
-h More
-ipre0
-0
-
-cisely, we show that for “most” Ft−1 , E rt Ft−1 ≤
-h
- 0 i
-11ct
-2B+1
-
-p E σt−1 (xt ) Ft−1 +
-t2 , and use it to prove
-2B+1
-t
-that Xt ' rt − 11c
-p σt−1 (xt ) −
-t2 ; t ≥ 1 is a
-super-martingale difference sequence adapted to filtration
-0
-{Ft }t≥1 . Now, using the Azuma-Hoeffding inequality,
-PT
-along with the bound on t=1 σt−1 (xt ), we obtain the desired high-probability regret bound.
+g∈G
+
+Direct computation of this equation has complexity
+O(|G|2 ) where |G| is the cardinality of the discrete group.
+Assuming that |G| is in the order of O(N 2 ) where N is the
+resolution of the input image (as it would be for standard
+convolution), one would obtain a complexity of O(N 4 ). In
+practice, since usually the support of a M ×M filter is much
+smaller than the image, this complexity might reduce to
+O(N 2 M 2 ), which is the complexity for the spatial domain
+
+implementation of convolution; however, compared to the
+standard case, this has two major disadvantages. First, the
+image is sampled in a spatially-varying manner, using bilinear or other interpolation, which foregoes the benefit of
+the regular, predictable, and local pattern of computations
+in standard convolution. This makes high-performance implementation of the naive algorithm difficult, particularly
+on GPUs. Secondly, it precludes the use of faster convolution routines such as Winograd’s algorithm (Lavin, 2015)
+or the Fast Fourier Transform (Lyons, 2010), the later having lower computational complexity than exhaustive search
+(O(N 2 log N )). The development of analogues of the FFT
+for other general groups remains the subject of active research (Tygert, 2010; Li & Yang, 2016), which we sidestep
+by reusing highly optimized standard convolutions.
+In practice, most recent works focus on very coarse transformations that do not change the filter support and can
+
+Warped Convolutions: Efficient Invariance to Spatial Transformations
+
+be implemented strictly via permutations, like horizontal/vertical flips and 90◦ rotations (Dieleman et al., 2015;
+Cohen & Welling, 2014). Such difficulties may explain
+why group convolutions are not as widespread as CNNs.
+
+5. Examples of spatial transformations
+We now give some concrete examples of two-parameter
+spatial transformations that obey the conditions of section 2.4, and can be useful in practice.
+5.1. Scale and aspect ratio
+Visual object detection tasks require predicting the extent
+of an object as a bounding box. While the location can
+be found accurately by a standard CNN, which is equivariant to translation, the size prediction could similarly benefit
+from equivariance to horizontal and vertical scale (equivalently, scale and aspect ratio).
+Such a spatial transformation, from which a warp can be
+constructed, is given by:
+
+gu (x) =
+
+x1 su1
+x2 su2
+
+
+(12)
+
+The s constant controls the total degree of scaling applied.
+Notice that the output must be exponential in the scale parameters u; this ensures the additive structure of the exponential map (exp(v + u) = exp(v) exp(u)). The resulting
+warp grid can be visualized in fig. 1-b. In this case, the domain of the image must be Ω ∈ R2+ , since a pivot x0 in one
+quadrant cannot reach another quadrant by any amount of
+(positive) scaling.
+5.2. Scale and rotation (log-polar warp)
+Planar scale and rotation are perhaps the most obvious
+spatial transformations in images, and are a natural test
+case for works on spatial transformations (Kanazawa et al.,
+2014; Marcos et al., 2016). Rotating a point x by u1 radians
+and scaling it by u2 , around the origin, can be performed
+with
+
+gu (x) =
+
+su2 kxk cos(atan2 (x2 , x1 ) + u1 )
+su2 kxk sin(atan2 (x2 , x1 ) + u1 )
+
+
+,
+
+(13)
+
+where atan2 is the standard 4-quadrant inverse tangent
+function (atan2). The domain in this case must exclude
+the origin (Ω ∈ R2 \ {0}), since a pivot x0 = 0 cannot
+reach any other points in the image by rotation or scaling.
+The resulting warp grid can be visualized in fig. 1-c. It
+is interesting to observe that it corresponds exactly to the
+log-polar domain, which is used in the signal processing
+
+I
+
+Warp
+
+Iw
+
+CNN
+
+Soft argmax
+
+Scale+bias
+
+û
+
+Figure 2. Equivariant pose estimation strategy used in the experiments (section 6). With an appropriate warp and a standard CNN,
+the shaded block becomes equivalent to a group-equivariant CNN,
+which performs exhaustive searches across pose-space instead of
+image-space.
+
+literature to perform correlation across scale and rotation
+(Tzimiropoulos et al., 2010; Reddy & Chatterji, 1996). In
+fact, it was the source of inspiration for this work, which
+can be seen as a generalization of the log-polar domain to
+other spatial transformations.
+5.3. 3D sphere rotation under perspective
+We will now tackle a more difficult spatial transformation,
+in an attempt to demonstrate the generality of our result.
+The transformations we will consider are yaw and pitch rotations in 3D space, as seen by a perspective camera. In
+the experiments (section 6) we will show how to apply it to
+face pose estimation.
+In order to maintain additivity, the rotated 3D points must
+remain on the surface of a sphere. We consider a simplified
+camera and world model, whose only hyperparameters are
+a focal length f , the radius of a sphere r, and its distance
+from the camera center d. The equations for the spatial
+transformation corresponding to yaw and pitch rotation under this model are in appendix A.
+The corresponding warp grid can be seen in fig. 1-d. It can
+be observed that the grid corresponds to what we would expect of a 3D rendering of a sphere with a discrete mesh. An
+intuitive picture of the effect of the warp grid in such cases
+is that it wraps the 2D image around the surface of the 3D
+object, so that translation in the warped space corresponds
+to moving between vertexes of the 3D geometry.
 
 6. Experiments
-In this section we provide numerical results on both synthetically generated test functions and functions from realworld data. We compare GP-UCB, IGP-UCB and GP-TS
-with GP-EI and GP-PI11 .
-11
-GP-EI and PI perform similarly and thus are not separately
-distinguishable in the plots.
+6.1. Architecture
+As mentioned in section 2.2, group convolution can perform an exhaustive search for patterns across spatial transformations, by varying pose parameters. For tasks where
+invariance to that transformation is important, it is usual to
+pool the detection responses across all poses (Marcos et al.,
+2016; Kanazawa et al., 2014).
+In the experiments, however, we will test the framework in
+pose prediction tasks. As such, we do not want to pool the
+detection responses (e.g. with a max operation) but rather
+find the pose with the strongest response (i.e., an argmax
+operation). To perform this operation in a differentiable
 
-0.5
+Warped Convolutions: Efficient Invariance to Spatial Transformations
 
-0
+manner, we implement a soft argmax operation, defined as
+follows:
+mn
+X
+i
+s1 (a) =
+σij (a),
+m
+ij
 
-0
-0
+mn
+X
+j
+s2 (a) =
+σij (a), (14)
+n
+ij
 
-0.5
+where σ(a) ∈ Rm×n is the softmax over all spatial locations, and σij (a) indexes the element at (i, j). The outputs are the two spatial coordinates of the maximum value,
+s(a) ∈ R2 .
+Our base architecture then consists of the following blocks,
+outlined in fig. 2. First, the input image is warped with a
+pre-generated grid, according to section 4.1. The warped
+image is then processed by a standard CNN, which is now
+equivariant to the spatial transformation that was used to
+generate the warp grid. A soft argmax (eq. (14)) then finds
+the maximum over pose-space. To ensure the pose prediction is well registered to the reference coordinate system, a
+learnable scale and bias are applied to the outputs; multiple predictions can be linearly combined into a single one
+at this stage. Training proceeds by minimizing the L1 loss
+between the predicted pose and ground truth pose.
+6.2. Google Earth
+For the first task in our experiments, we will consider aerial
+photos of vehicles, which have been used in several works
+that deal with rotation invariance (Liu et al., 2014; Schmidt
+& Roth, 2012; Henriques et al., 2014).
+Dataset. The Google Earth dataset (Heitz & Koller, 2008)
+contains bounding box annotations, supplemented with angle annotations from (Henriques et al., 2014), for 697 vehicles in 15 large images. We use the first 10 for training and
+the rest for validation. Going beyond these previous works,
+we focus on the estimation of both rotation and scale parameters. The object scale is taken to be the diagonal length
+of the bounding box. Due to its small size, we augment the
+dataset during training, by randomly rotating the images
+uniformly over 360◦ and scaling them by up to 20%.
+Implementation. A 48 × 48 image is cropped around
+each vehicle, and then fed to a network for pose prediction. The proposed method, Warped CNN, follows the architecture of section 6.1 (visualized in fig. 2). The CNN
+block contains 3 convolutional layers with 3 × 3 filters,
+with 50, 20 and 50 output channels respectively. We use
+dilation factors of 2, 4 and 8 respectively (à trous convolution (Chen et al., 2015)), which increases the receptive
+field and resolution without adding paramenters. There is
+a batch normalization and ReLU layer after each convolution, and a 3 × 3 max-pooling operator (stride 2) after
+the second one. The CNN block outputs response maps
 
-1
+Table 1. Results of scale and rotation pose estimation of vehicles
+in the Google Earth dataset (errors in pixels and degrees, resp.).
+ROT.
+CNN+FC
+CNN+ SOFTARGMAX
+WARPED CNN
+(D IELEMAN ET AL ., 2015)
 
-1.5
+ERR .
 
+22.54
+9.36
+8.29
+31.11
+
+S CALE ERR .
+5.04
+4.87
+4.79
+4.29
+
+over 2D pose-space, which in this case consists of rotation
+and scale. All networks are trained for 40 epochs using
+the ADAM solver (Kingma & Ba, 2015) and implemented
+in MatConvNet (Vedaldi & Lenc, 2015). Angular error is
+taken modulo 180◦ due to annotation ambiguity. We report
+the average validation error over 3 runs.
+Baselines and results. The results of the experiments are
+presented in table 1, which shows angular and scale error in the validation set. To verify whether the proposed
+warped convolution is indeed responsible for a boost in performance, rather than other architectural details, we compare it against a number of baselines with different components removed. The first baseline, CNN+softargmax, consists of the same architecture but without the warp (section 5.2). This is a standard CNN, with the soft argmax at
+the end. Since CNNs are equivariant to translation, rather
+than scale and rotation, we observe a drop in performance.
+For the second baseline, CNN+FC, we replace the soft
+argmax with a fully-connected (FC) layer, to allow a prediction that is not equivariant with translation. Due to the
+larger number of parameters, there is overfitting and a large
+drop in performance. We also compare against the method
+of (Dieleman et al., 2015), which applies the same CNN to
+90◦ rotations and flips of the image, combining the result
+with a FC layer. Just like with CNN+FC, there is overfitting on this small dataset, which requires very fine angular predictions. The proposed Warped CNN achieves the
+best results, except for scale prediction where (Dieleman
+et al., 2015) performs better. Our method has the same runtime performance as the CNN baselines, since the cost of a
+single warp is negligible, however (Dieleman et al., 2015)
+is 16× slower, since it applies the same CNN to multiple
+transformed images.
+6.3. Faces
+We now turn to face pose estimation in unconstrained photos, which requires handling more complex 3D rotations
+under perspective.
+Dataset. For this task we use the Annotated Facial Landmarks in the Wild (AFLW) dataset (Koestinger et al.,
+2011). It contains about 25K faces found in Flickr photos, and includes yaw (left-right) and pitch (up-down) an-
+
+Warped Convolutions: Efficient Invariance to Spatial Transformations
+Table 2. Results of yaw and pitch pose estimation of faces on the
+AFLW dataset (error in degrees).
+
+CNN+FC
+STN (JADERBERG ET AL ., 2015)
+WARPED CNN
+
+YAW ERR .
+
+P ITCH ERR .
+
+12.56
+13.65
+7.07
+
+6.59
+7.22
+5.28
+
+notations. We removed 933 faces with yaw larger than 90
+degrees (i.e., facing away from the camera), resulting in a
+set of 24,384 samples. 20% of the faces were set aside for
+validation.
+
+Implementation. The region in each face’s bounding box
+is resized to a 64 × 64 image, which is then processed by
+the network. Recall that our simplified 3D model of yaw
+and pitch rotation (section 5.3) assumes a spherical geometry. Although a person’s head roughly follows a spherical
+shape, the sample images are centered around the face, not
+the head. As such, we use an affine Spatial Transformer
+Network (STN) (Jaderberg et al., 2015) as a first step, to
+center the image correctly. Similarly, because the optimal
+camera parameters (f , r and d) are difficult to set by hand,
+we let the network learn them, by computing their derivatives numerically (which has a low overhead, since they are
+scalars). The rest of the network follows the same diagram
+as before (fig. 2). The main CNN has 4 convolutional layers, the first two with 5×5 filters, the others being 9×9. The
+numbers of output channels are 20, 50, 20 and 50, respectively. A 3 × 3 max-pooling with a stride of 2 is performed
+after the first layer, and there are ReLU non-linearities between the others. As for the STN, it has 3 convolutional
+layers (5 × 5), with 20, 50 and 6 output channels respectively, and 3 × 3 max-pooling (stride 2) between them. The
+remaining experimental settings are as in section 6.2.
+
+Baselines and results. The angular error of the proposed
+equivariant pose estimation, Warped CNN, is shown in table 2, along with a number of baselines. The goal of
+these experiments is to demonstrate that it is possible to
+achieve equivariance to complex 3D rotations. To compare
+with non-equivariant models, we test two baselines with
+the same CNN architecture, where the softargmax is replaced with a fully-connected (FC) layer. We include the
+Spatial Transformer Network (Jaderberg et al., 2015) and
+CNN+FC, which is a standard CNN of equivalent (slightly
+larger) capacity. We observe that neither the FC or the STN
+components account for the performance of the warped
+convolution, which better exploits the natural 3D rotation
+equivariance of the data.
+
+7. Conclusions
+In this work we show that it is possible to reuse highly optimized convolutional blocks, which are equivariant to image
+translation, and coax them to exhibit equivariance to other
+operators, including 3D transformations. This is achieved
+by a simple warp of the input image, implemented with offthe-shelf components of deep networks, and can be used
+for image recognition tasks involving a large range of image transformations. Compared to other works, warped
+convolutions are simpler, relying on highly optimized convolution routines, and can flexibly handle many types of
+continuous transformations. Studying generalizations that
+support more than two parameters seems like a fruitful direction for future work. In addition to the practical aspects,
+our analysis offers some insights into the fundamental relationships between arbitrary image transformations and convolutional architectures.
+
+A. Spatial transformation for 3D sphere
+rotation under perspective
+Our simplified model consists of a perspective camera with
+focal length f and all other camera parameters equal to
+identity, at a distance d from a centered sphere of radius
+r (see fig. 1-d).
+A 2D point x in image-space corresponds to the 3D point
+p = (x1 , x2 , f ).
+
+(15)
+
+Raycasting it along the z axis, it will intersect the sphere
+surface at the 3D point
+q=
+
+
+p
+fd
+p 
+k − k 2 − d2 + r2 , k =
+.
+kpk
+kpk
+
+(16)
+
+If the argument of the square-root is negative, the ray does
+not intersect the sphere and so the point transformation is
+undefined. This means that the domain of the image Ω
+should be restricted to the sphere region. In practice, in
+such cases we simply leave the point unmodified. Then,
+the yaw and pitch coordinates of the point q on the surface
+of the sphere are
+
+
+ q 
+q1
 2
+φ1 = cos−1 −
+, φ2 = atan2 −
+.
+r
+d − q3
 
-2.5
+(17)
 
+These polar coordinates are now rotated by the spatial
+transformation parameters, φ0 = φ + u. Converting them
+back to a 3D point q 0
+q 0 = (r sin φ01 sin φ02 , −r cos φ01 , r sin φ01 cos φ02 − d) (18)
+Finally, projection of q 0 into image-space yields
+gu (x) = − qf0 (q10 , q20 ) .
 3
 
-Rounds
+(19)
 
-3.5
-
-0
-
-0.5
-
-1
-
-1.5
-
-2
-
-2.5
-
-3
-
-Rounds
-
-4
-
-x 10
-
-(a)
-
-3.5
-4
-
-x 10
-
-(b)
-
-Figure 1. Cumulative regret for functions lying in the RKHS corresponding to (a) Squared Exponential kernel and (b) Matérn kernel.
-4
-
-4
-
-x 10
-
-x 10
-
-3
-
-3.5
-
-GP-PI
-GP-EI
-GP-TS
-GP-UCB
-IGP-UCB
-
-2
-
-GP-PI
-GP-EI
-GP-TS
-GP-UCB
-IGP-UCB
-
-3
-
-Cumulative Regret
-
-2.5
-
-Cumulative Regret
-
-Proof Sketch for Theorem 4. We follow a similar approach given in Agrawal & Goyal (2013) to prove the regret bound of GP-TS. First observe that from our choice of
-discretization sets Dt , the instantaneous regret at round t
-is given by rt = f (x? ) − f ([x? ]t ) + f ([x? ]t ) − f (xt ) ≤
-1
-?
-?
-t2 + ∆t (xt ), where ∆t (x) := f ([x ]t ) − f (x) and [x ]t
-?
-is the closest point to x in Dt . Now at each round t, after an action is chosen, our algorithm improves the confidence about true reward function f , via an update of µt (·)
-and kt (·, ·). However, if we play a suboptimal arm, the regret suffered can be much higher than the improvement of
-our knowledge. To overcome this difficulty, at any round
-t, we divide the arms (in the present discretization Dt )
-into two groups: saturated arms, St , defined as those with
-∆t (x) > ct σt−1 (x) and unsaturated otherwise, where ct
-is an appropriate constant. The idea is to show that the
-probability of playing a saturated arm is small and then
-bound the regret of playing an unsaturated arm in terms
-of
-This is useful because the inequality
-PTstandard deviation. √
-T γT ) allows us to bound the total
-σ
-(x
-)
-≤
-O(
-t−1
-t
-t=1
-regret due to unsaturated arms.
-
-1.5
-
-1
-
-0.5
-
-2.5
-
-2
-
-1.5
-
-1
-
-0.5
-
-0
-
-0
-0
-
-0.5
-
-1
-
-1.5
-
-2
-
-Rounds
-
-(a)
-
-2.5
-
-3
-
-3.5
-4
-
-x 10
-
-0
-
-0.5
-
-1
-
-1.5
-
-2
-
-Rounds
-
-2.5
-
-3
-
-3.5
-4
-
-x 10
-
-(b)
-
-Figure 2. Cumulative regret for functions lying in the GP corresponding to (a) Squared Exponential kernel and (b) Matérn kernel.
-
-Synthetic Test Functions. We use the following procedure
-to generate test functions from the RKHS. First we sample
-100 points uniformly from the interval [0, 1] and use that as
-our decision set. Then we compute a kernel matrix K on
-those points and draw reward vector y ∼ N (0, K). Finally,
-the mean of the resulting posterior distribution is used as
-the test function f . We set noise parameter R2 to be 1%
-of function range and use λ = R2 . We used Squared Exponential kernel with lengthscale parameter l = 0.2 and
-Matérn kernel with parameters ν = 2.5, l = 0.2. Parameters βt , β̃t , vt of IGP-UCB, GP-UCB and GP-TS are
-chosen as given in Section 3, with δ = 0.1, B 2 = f T Kf
-and γt set according to theoretical upper bounds for corresponding kernels. We run each algorithm for T = 30000
-iterations, over 25 independent trials (samples from the
-RKHS) and plot the average cumulative regret along with
-standard deviations (Figure 1). We see a significant improvement in the performance of IGP-UCB over GP-UCB.
-In fact IGP-UCB performs the best in the pool of competitors, while GP-TS also fares reasonably well compared to
-GP-UCB and GP-EI/GP-PI.
-We next sample 25 random functions from the GP (0, K)
-and perform the same experiment (Figure 2) for both kernels with exactly same set of parameters. The relative performance of all methods is similar to that in the previous
-experiment, which is the arguably harder “agnostic” setting
-of a fixed, unknown target function.
-Standard Test Functions. We consider 2 well-known
-
-On Kernelized Multi-armed Bandits
-4
-
-x 10
-
-6000
-5000
-
-7000
-
-Cumulative Regret
-
-Cumulative Regret
-
-7000
-
-8000
-
-GP-PI
-GP-EI
-GP-TS
-GP-UCB
-IGP-UCB
-
-4000
-3000
-2000
-
-6000
-
-5000
-
-2.5
-
-GP-PI
-GP-EI
-GP-TS
-GP-UCB
-IGP-UCB
-
-7000
-
-4000
-
-3000
-
-2000
-
-6000
-
-5000
-
-GP-PI
-GP-EI
-GP-TS
-GP-UCB
-IGP-UCB
-
-2
-
-Cumulative Regret
-
-8000
-
-GP-PI
-GP-EI
-GP-TS
-GP-UCB
-IGP-UCB
-
-8000
-
-Cumulative Regret
-
-9000
-
-4000
-
-3000
-
-2000
-
-1.5
-
-1
-
-0.5
-
-0
-1000
-
-1000
-0
-
-1000
-
-0
-0
-
-0.5
-
-1
-
-1.5
-
-2
-
-Rounds
-
-(a)
-
-2.5
-
-3
-
-3.5
-4
-
-x 10
-
-0
-0
-
-0.5
-
-1
-
-1.5
-
-2
-
-Rounds
-
-2.5
-
-3
-
-3.5
-4
-
-x 10
-
-(b)
-
-Figure 3. Cumulative regret for (a) Rosenbrock and (b) Hartman3
-benchmark function.
-
-synthetic benchmark functions for Bayesian Optimization:
-Rosenbrock and Hartman3 (see Azimi et al. (2012) for exact analytical expressions). We sample 100 d points uniformly from the domain of each benchmark function, d being the dimension of respective domain, as the decision set.
-We consider the Squared Exponential kernel with l = 0.2
-and set all parameters exactly as in previous experiment.
-The cumulative regret for 25 independent trials on Rosenbrock and Hartman3 benchmarks is shown in Figure 3. We
-see GP-EI/PI perform better than the rest, while IGP-UCB
-and GP-TS show competitive performance. Here no algorithm is aware of the underlying kernel function, hence
-we conjecture that the UCB- and TS- based algorithms are
-somewhat less robust on the choice of kernel than EI/PI.
-Temperature Sensor Data. We use temperature data12
-collected from 54 sensors deployed in the Intel Berkeley
-Research lab between February 28th and April 5th, 2004
-with samples collected at 30 second intervals. We tested all
-algorithms in the context of learning the maximum reading of the sensors collected between 8 am to 9 am. We
-take measurements of first 5 consecutive days (starting Feb.
-28th 2004) to learn algorithm parameters. Following Srinivas et al. (2009), we calculate the empirical covariance matrix of the sensor measurements and use it as the kernel
-matrix in the algorithms. Here R2 is set to be 5% of the
-average empirical variance of sensor readings and other algorithm parameters is set similarly as in the previous experiment with γt = 1 (found via cross-validation). The functions for testing consist of one set of measurements from all
-sensors in the two following days and the cumulative regret
-is plotted over all such test functions. From Figure 4, we
-see that IGP-UCB and GP-UCB performs the same, while
-GP-TS outperforms all its competitors.
-Light Sensor Data. We take light sensor data collected
-in the CMU Intelligent Workplace in Nov 2005, which is
-available online as Matlab structure13 and contains locations of 41 sensors, 601 train samples and 192 test samples.
-12
-http://db.csail.mit.edu/labdata/labdata.
-html
-13
-http://www.cs.cmu.edu/˜guestrin/Class/
-10708-F08/projects/lightsensor.zip
-
-−0.5
-0
-
-0.5
-
-1
-
-1.5
-
-2
-
-Rounds
-
-(a)
-
-2.5
-
-3
-
-3.5
-4
-
-x 10
-
-0
-
-0.5
-
-1
-
-1.5
-
-2
-
-Rounds
-
-2.5
-
-3
-
-3.5
-4
-
-x 10
-
-(b)
-
-Figure 4. Cumulative regret plots for (a) temperature data and (b)
-light sensor data.
-
-We compute the kernel matrix, estimate the noise and set
-other algorithm parameters exactly as in the previous experiment. Here also GP-TS is found to perform better than
-the others, with IGP-UCB performing better than GP-EI/PI
-(Figure 4).
-Related work. An alternative line of work pertaining to
-X -armed bandits (Kleinberg et al., 2008; Bubeck et al.,
-2011; Carpentier & Valko, 2015; Azar et al., 2014) studies continuum-armed bandits with smoothness structure.
-For instance, Bubeck et al. (2011) show that with a Lipschitzness assumption on the reward function, algorithms
-based on discretizing the domain yield nontrivial regret
-d+1
-guarantees, of order Ω(T d+2 ) in Rd . Other Bayesian
-approaches to function optimization are GP-EI (Močkus,
-1975), GP-PI (Kushner, 1964), GP-EST (Wang et al.,
-2016) and GP-UCB, including the contextual (Krause &
-Ong, 2011), high-dimensional (Djolonga et al., 2013; Wang
-et al., 2013), time-varying (Bogunovic et al., 2016) safetyaware (Gotovos et al., 2015), budget-constraint (Hoffman
-et al., 2013) and noise-free (De Freitas et al., 2012) settings. Other relevant work focuses on best arm identification problem in the Bayesian setup considering pure exploration (Grünewälder et al., 2010). For Thompson sampling
-(TS), Russo & Van Roy (2014) analyze the Bayesian regret
-of TS, which includes the case where the target function is
-sampled from a GP prior. Our work obtains the first frequentist regret of TS for unknown, fixed functions from an
-RKHS.
-
-7. Conclusion
-For bandit optimization, we have improved upon the existing GP-UCB algorithm, and introduced a new GP-TS algorithm. The proposed algorithms perform well in practice
-both on synthetic and real-world data. An interesting case
-is when the kernel function is also not known to the algorithms a priori and needs to be learnt adaptively. Moreover,
-one can consider classes of time varying functions from the
-RKHS, and general reinforcement learning with GP techniques. There are also important questions on computational aspects of optimizing functions drawn from GPs.
-
-On Kernelized Multi-armed Bandits
-
-Acknowledgement
-Aditya Gopalan was supported by the DST INSPIRE faculty grant IFA13-ENG-69. The authors are grateful to O.A. Maillard for helpful discussions, and to anonymous reviewers for providing useful comments.
+Warped Convolutions: Efficient Invariance to Spatial Transformations
 
 References
-Abbasi-Yadkori, Yasin, Pál, Dávid, and Szepesvári, Csaba.
-Improved algorithms for linear stochastic bandits. In Advances in Neural Information Processing Systems, pp.
-2312–2320, 2011.
-
-Dani, Varsha, Hayes, Thomas P, and Kakade, Sham M.
-Stochastic linear optimization under bandit feedback. In
-COLT, pp. 355–366, 2008.
-De Freitas, Nando, Smola, Alex, and Zoghi, Masrour.
-Exponential regret bounds for gaussian process bandits with deterministic observations. arXiv preprint
-arXiv:1206.6457, 2012.
-de la Pena, Victor H, Lai, Tze Leung, and Shao, Qi-Man.
-Self-normalized processes. probability and its applications, 2009.
-
-Agrawal, Shipra and Goyal, Navin. Analysis of thompson
-sampling for the multi-armed bandit problem. In COLT,
-pp. 39–1, 2012.
-
-Djolonga, Josip, Krause, Andreas, and Cevher, Volkan.
-High-dimensional gaussian process bandits. In Advances
-in Neural Information Processing Systems, pp. 1025–
-1033, 2013.
-
-Agrawal, Shipra and Goyal, Navin. Thompson sampling
-for contextual bandits with linear payoffs. In ICML, pp.
-127–135, 2013.
-
-Gopalan, Aditya, Mannor, Shie, and Mansour, Yishay.
-Thompson sampling for complex online problems. In
-ICML, volume 14, pp. 100–108, 2014.
-
-Azar, Mohammad Gheshlaghi, Lazaric, Alessandro, and
-Brunskill, Emma. Online stochastic optimization under
-correlated bandit feedback. In ICML, pp. 1557–1565,
+Bruna, Joan, Szlam, Arthur, and LeCun, Yann. Learning
+stable group invariant representations with convolutional
+networks. arXiv preprint arXiv:1301.3537, 2013.
+Chen, Liang-Chieh, Papandreou, George, Kokkinos, Iasonas, Murphy, Kevin, and Yuille, Alan L. Semantic image segmentation with deep convolutional nets and fully
+connected CRFs. In Proceedings of the 2015 International Conference on Learning Representations, 2015.
+Cohen, Taco and Welling, Max. Learning the Irreducible
+Representations of Commutative Lie Groups. In Proceedings of the 31st International Conference on Machine Learning, 2014.
+Cohen, Taco and Welling, Max. Group equivariant convolutional networks. In Proceedings of the 33rd International Conference on Machine Learning, 2016.
+Dieleman, Sander, Willett, Kyle W, and Dambre, Joni.
+Rotation-invariant convolutional neural networks for
+galaxy morphology prediction. Monthly notices of the
+royal astronomical society, 450(2):1441–1459, 2015.
+Folland, Gerald B. A course in abstract harmonic analysis.
+CRC Press, 1995.
+Goodfellow, Ian, Bengio, Yoshua, and Courville, Aaron.
+Deep learning. MIT Press, 2016.
+Heckbert, Paul S. Fundamentals of texture mapping and
+image warping. Master’s thesis, University of California,
+Berkeley, 1989.
+Heitz, Geremy and Koller, Daphne. Learning spatial context: Using stuff to find things. In European Conference
+on Computer Vision, pp. 30–43. Springer, 2008.
+Henriques, J. F., Martins, P., Caseiro, R., and Batista, J.
+Fast training of pose detectors in the fourier domain.
+In Advances in Neural Information Processing Systems,
 2014.
-
-Gotovos, Alkis, CH, ETHZ, and Burdick, Joel W. Safe
-exploration for optimization with gaussian processes.
+Hyvärinen, Aapo, Hurri, Jarmo, and Hoyer, Patrick O. Natural Image Statistics: A Probabilistic Approach to Early
+Computational Vision., volume 39. Springer Science &
+Business Media, 2009.
+Jaderberg, Max, Simonyan, Karen, Zisserman, Andrew,
+et al. Spatial transformer networks. In Advances in
+Neural Information Processing Systems, pp. 2017–2025,
 2015.
+Kanazawa, Angjoo, Sharma, Abhishek, and Jacobs, David.
+Locally scale-invariant convolutional neural networks.
+arXiv preprint arXiv:1412.5104, 2014.
 
-Azimi, Javad, Jalali, Ali, and Fern, Xiaoli. Hybrid batch
-bayesian optimization. arXiv preprint arXiv:1202.5597,
+Kingma, Diederik P and Ba, Jimmy Lei. Adam: A method
+for stochastic optimization. In Proceedings of the 2015
+International Conference on Learning Representations,
+2015.
+Koestinger, Martin, Wohlhart, Paul, Roth, Peter M., and
+Bischof, Horst. Annotated facial landmarks in the wild:
+A large-scale, real-world database for facial landmark
+localization. In IEEE International Workshop on Benchmarking Facial Image Analysis Technologies, 2011.
+Lavin, Andrew. Fast algorithms for convolutional neural
+networks. arXiv preprint arXiv:1509.09308, 2015.
+Li, Yingzhou and Yang, Haizhao. Interpolative butterfly
+factorization. arXiv preprint arXiv:1605.03616, 2016.
+Liu, Kun, Skibbe, Henrik, Schmidt, Thorsten, Blein,
+Thomas, Palme, Klaus, Brox, Thomas, and Ronneberger, Olaf. Rotation-Invariant HOG Descriptors Using Fourier Analysis in Polar and Spherical Coordinates.
+International Journal of Computer Vision, 106(3):342–
+364, February 2014. ISSN 0920-5691, 1573-1405. doi:
+10.1007/s11263-013-0634-z.
+Lyons, Richard G. Understanding digital signal processing. Pearson Education, 2010.
+Marcos, Diego, Volpi, Michele, and Tuia, Devis. Learning
+rotation invariant convolutional filters for texture classification. arXiv preprint arXiv:1604.06720, 2016.
+Reddy, B. Srinivasa and Chatterji, Biswanath N. An
+FFT-based technique for translation, rotation, and scaleinvariant image registration. IEEE Transactions on Image Processing, 5(8):1266–1271, 1996.
+Schmidt, Uwe and Roth, Stefan. Learning rotation-aware
+features: From invariant priors to equivariant descriptors. In Computer Vision and Pattern Recognition
+(CVPR), 2012 IEEE Conference on, pp. 2050–2057,
 2012.
-Besbes, Omar and Zeevi, Assaf. Dynamic pricing without
-knowing the demand function: Risk bounds and nearoptimal algorithms. Operations Research, 57(6):1407–
-1420, 2009.
-Bogunovic, Ilija, Scarlett, Jonathan, and Cevher, Volkan.
-Time-varying gaussian process bandit optimization.
-arXiv preprint arXiv:1601.06650, 2016.
-Bubeck, Sébastien, Munos, Rémi, Stoltz, Gilles, and
-Szepesvári, Csaba. X-armed bandits. Journal of Machine Learning Research, 12(May):1655–1695, 2011.
-
-Grünewälder, Steffen, Audibert, Jean-Yves, Opper, Manfred, and Shawe-Taylor, John. Regret bounds for gaussian process bandit problems. In AISTATS, pp. 273–280,
-2010.
-Hoffman, Matthew D, Brochu, Eric, and de Freitas, Nando.
-Portfolio allocation for bayesian optimization. In UAI,
-pp. 327–336, 2011.
-Hoffman, Matthew W, Shahriari, Bobak, and de Freitas,
-Nando. Exploiting correlation and budget constraints
-in bayesian multi-armed bandit optimization. arXiv
-preprint arXiv:1303.6746, 2013.
-Kaelbling, Leslie Pack, Littman, Michael L, and Moore,
-Andrew W. Reinforcement learning: A survey. Journal
-of artificial intelligence research, 4:237–285, 1996.
-
-Carpentier, Alexandra and Valko, Michal. Simple regret for
-infinitely many armed bandits. In ICML, pp. 1133–1141,
-2015.
-
-Kaufmann, Emilie, Korda, Nathaniel, and Munos, Rémi.
-Thompson sampling: An asymptotically optimal finitetime analysis. In International Conference on Algorithmic Learning Theory, pp. 199–213. Springer, 2012.
-
-Chiang, Mung, Hande, Prashanth, Lan, Tian, and Tan,
-Chee Wei. Power control in wireless cellular networks.
-Foundations and Trends in Networking, 2(4):381–533,
-2008. ISSN 1554-057X. doi: 10.1561/1300000009.
-
-Kleinberg, Robert, Slivkins, Aleksandrs, and Upfal, Eli.
-Multi-armed bandits in metric spaces. In Proceedings of
-the fortieth annual ACM symposium on Theory of computing, pp. 681–690. ACM, 2008.
-
-Chowdhury, Sayak Ray and Gopalan, Aditya.
-On
-kernelized multi-armed bandits.
-arXiv preprint
-arXiv:1704.00445, 2017.
-
-Krause, Andreas and Ong, Cheng S. Contextual gaussian
-process bandit optimization. In Advances in Neural Information Processing Systems, pp. 2447–2455, 2011.
-
-On Kernelized Multi-armed Bandits
-
-Kushner, Harold J. A new method of locating the maximum point of an arbitrary multipeak curve in the presence of noise. Journal of Basic Engineering, 86(1):97–
-106, 1964.
-Maillard, Odalric-Ambrym. Self-normalization techniques
-for streaming confident regression. 2016.
-Močkus, J. On bayesian methods for seeking the extremum. In Optimization Techniques IFIP Technical
-Conference, pp. 400–404. Springer, 1975.
-Rasmussen, Carl Edward and Williams, Christopher KI.
-Gaussian processes for machine learning. 2006.
-Rusmevichientong, Paat and Tsitsiklis, John N. Linearly
-parameterized bandits. Math. Oper. Res., 35(2):395–
-411, May 2010.
-Russo, Daniel and Van Roy, Benjamin. Learning to optimize via posterior sampling. Mathematics of Operations
-Research, 39(4):1221–1243, 2014.
-Schölkopf, Bernhard and Smola, Alexander J. Learning
-with kernels: support vector machines, regularization,
-optimization, and beyond. MIT press, 2002.
-Smart, William D and Kaelbling, Leslie Pack. Practical
-reinforcement learning in continuous spaces. In ICML,
-pp. 903–910, 2000.
-Srinivas, Niranjan, Krause, Andreas, Kakade, Sham M, and
-Seeger, Matthias. Gaussian process optimization in the
-bandit setting: No regret and experimental design. arXiv
-preprint arXiv:0912.3995, 2009.
-Valko, Michal, Korda, Nathaniel, Munos, Rémi, Flaounas,
-Ilias, and Cristianini, Nelo.
-Finite-time analysis
-of kernelised contextual bandits.
-arXiv preprint
-arXiv:1309.6869, 2013.
-Wang, Zi, Zhou, Bolei, and Jegelka, Stefanie. Optimization
-as estimation with gaussian processes in bandit settings.
-In International Conf. on Artificial and Statistics (AISTATS), 2016.
-Wang, Ziyu, Zoghi, Masrour, Hutter, Frank, Matheson, David, Freitas, N, et al. Bayesian optimization
-in high dimensions via random embeddings. AAAI
-Press/International Joint Conferences on Artificial Intelligence, 2013.
+Tygert, Mark. Fast algorithms for spherical harmonic expansions, iii. Journal of Computational Physics, 229
+(18):6181–6192, 2010.
+Tzimiropoulos, Georgios, Argyriou, Vasileios, Zafeiriou,
+Stefanos, and Stathaki, Tania. Robust FFT-based scaleinvariant image registration with image gradients. IEEE
+Transactions on Pattern Analysis and Machine Intelligence, 32(10):1899–1906, 2010.
+Vedaldi, A. and Lenc, K. MatConvNet – Convolutional
+Neural Networks for MATLAB. In Proceeding of the
+ACM Int. Conf. on Multimedia, 2015.
+Acknowledgements. This research was funded by ERC
+677195-IDIU.
 
 

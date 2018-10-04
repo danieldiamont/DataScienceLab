@@ -1,1146 +1,1269 @@
-Statistical Inference for Incomplete Ranking Data:
-The Case of Rank-Dependent Coarsening
-
-Mohsen Ahmadi Fahandar 1 Eyke Hüllermeier 1 Inés Couso 2
+SplitNet: Learning to Semantically Split Deep Networks
+for Parameter Reduction and Model Parallelization
+Juyong Kim * 1 Yookoon Park * 1 Gunhee Kim 1 Sung Ju Hwang 2 3
 
 Abstract
-We consider the problem of statistical inference
-for ranking data, specifically rank aggregation, under the assumption that samples are incomplete in
-the sense of not comprising all choice alternatives.
-In contrast to most existing methods, we explicitly
-model the process of turning a full ranking into
-an incomplete one, which we call the coarsening
-process. To this end, we propose the concept of
-rank-dependent coarsening, which assumes that
-incomplete rankings are produced by projecting
-a full ranking to a random subset of ranks. For a
-concrete instantiation of our model, in which full
-rankings are drawn from a Plackett-Luce distribution and observations take the form of pairwise
-preferences, we study the performance of various
-rank aggregation methods. In addition to predictive accuracy in the finite sample setting, we
-address the theoretical question of consistency, by
-which we mean the ability to recover a target ranking when the sample size goes to infinity, despite
-a potential bias in the observations caused by the
-(unknown) coarsening.
+We propose a novel deep neural network that
+is both lightweight and effectively structured for
+model parallelization. Our network, which we
+name as SplitNet, automatically learns to split
+the network weights into either a set or a hierarchy of multiple groups that use disjoint sets
+of features, by learning both the class-to-group
+and feature-to-group assignment matrices along
+with the network weights. This produces a treestructured network that involves no connection
+between branched subtrees of semantically disparate class groups. SplitNet thus greatly reduces the number of parameters and required
+computations, and is also embarrassingly modelparallelizable at test time, since the evaluation
+for each subnetwork is completely independent
+except for the shared lower layer weights that
+can be duplicated over multiple processors, or
+assigned to a separate processor. We validate
+our method with two different deep network
+models (ResNet and AlexNet) on two datasets
+(CIFAR-100 and ILSVRC 2012) for image classification, on which our method obtains networks
+with significantly reduced number of parameters
+while achieving comparable or superior accuracies over original full deep networks, and accelerated test speed with multiple GPUs.
 
 1. Introduction
-The analysis of rank data has a long tradition in statistics,
-and corresponding methods have been used in various fields
-of application, such as psychology and the social sciences
-(Marden, 1995). More recently, applications in information
-retrieval and machine learning have caused a renewed interest in the analysis of rankings and topics such as “learningto-rank” (Liu, 2011) and preference learning (Fürnkranz &
-Hüllermeier, 2011).
-In most applications, the rankings observed are incomplete
-or partial in the sense of including only a subset of the
-underlying choice alternatives (subsequently referred to as
-1
-Paderborn University, Germany 2 University of Oviedo, Spain.
-Correspondence to: Eyke Hüllermeier <eyke@upb.de>.
+Recently, deep neural networks have shown impressive performances on a multitude of tasks, including visual recognition (Krizhevsky et al., 2012; Szegedy et al., 2015; He
+et al., 2016), speech recognition (Hinton et al., 2012), and
+*
 
+Equal contribution 1 Seoul National University, Seoul, South
+Korea 2 UNIST, Ulsan, South Korea 3 AITrics, Seoul, South Korea.
+Correspondence to: Sung Ju Hwang <sjhwang@unist.ac.kr>.
 Proceedings of the 34 th International Conference on Machine
-Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017 by
-the author(s).
+Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
+by the author(s).
+Codes available at http://vision.snu.ac.kr/
+projects/splitnet.
 
-“items”), whereas no preferences are revealed about the remaining ones—pairwise comparisons can be seen as an
-important special case. Somewhat surprisingly, most methods for learning from ranking data, including methods for
-rank aggregation, simply ignore the process of turning a full
-ranking into an incomplete one. Or, they implicitly assume
-that the process is unimportant from a statistical point of
-view, because the subset of items observed is independent
-of the underlying ranking.
-Obviously, this assumption is often not valid, as shown by
-practically relevant examples such as top-k observations.
-Motivated by examples of this kind, we propose the concept
-of rank-dependent coarsening, which assumes that incomplete rankings are produced by projecting a full ranking to
-a random subset of ranks. The notion of “coarsening” is
-meant to indicate that an incomplete ranking can be associated with a set of complete rankings, namely the set of its
-consistent extensions—set-valued data of that kind is also
-called “coarse data” in statistics (Heitjan & Rubin, 1991;
-Gill et al., 1997). The idea of coarsening is similar to the interpretation of partial rankings as “censored data” (Lebanon
-& Mao, 2008). The assumption of rank-dependent coarsening can be seen as orthogonal to standard marginalization,
-which acts on items instead of ranks (Rajkumar & Agarwal,
-2014; Sibony et al., 2015).
-In addition to introducing a general statistical framework for
-analyzing incomplete ranking data (Section 3), we outline
-several problems and learning tasks to be addressed in this
-framework. Learning of the entire model will normally not
-be feasible, even under restrictive assumptions on the coarsening. A specifically interesting question, therefore, is to
-what extent and in what sense successful learning is possible for methods that are agnostic of the coarsening process.
-We investigate this question, both practically (Section 6)
-and theoretically (Section 7), for several ranking methods
-(Section 5) and a concrete instantiation of our framework, in
-which full rankings are drawn from a Plackett-Luce distribution and observations take the form of pairwise preferences
-(Section 4). In particular, we are interested in the property
-of consistency, by which we mean the ability to recover a
-target ranking when the sample size goes to infinity, despite
-a potential bias in the observations caused by the coarsening.
+natural language processing (Bengio et al., 2003; Sutskever
+et al., 2014). However, such remarkable performances are
+achieved at the cost of increased computational complexity
+at both training and test time compared to traditional machine learning models including shallow neural networks.
+This increased complexity of deep networks can be problematic if the model and the task size becomes very large
+(e.g. classifying tens of thousands of object classes), or the
+application is time-critical (e.g. real-time object detection).
+There exist various solutions to tackle this complexity issue. One way is to reduce the number of model parameters; this could be achieved either by training a new smaller
+network while maintaining similar behavior as the original network (Ba & Caruana, 2014; Hinton et al., 2014),
+or by disconnecting unnecessary weights through pruning
+or sparsity regularization (Reed, 1993; Han et al., 2015;
+Collins & Kohli, 2014; Wen et al., 2016; Alvarez & Salzmann, 2016). Another approach to speed up deep networks
+is distributed machine learning (Dean et al., 2012; Chilimbi
+et al., 2014; Zhang et al., 2015); however most research effort has been made on the systems and optimization sides,
+without consideration of the ways to obtain network structure that is intrinsically scalable.
+In this work, we aim to learn a deep neural network that
+not only reduces the number of model parameters, but also
+is effectively structured for model parallelization. How can
+we then achieve these seemingly disjoint goals in a single,
+unified learning framework? We focus on the observation
+that as the number of classes increases, semantically disparate classes (or tasks) can be represented by largely disjoint sets of features. For example, features describing animals may be quite different from those describing vehicles,
+whereas low-level features such as stripes, dots, and colors
+are likely be shared across all classes. It implicates that we
+can cluster classes into mutually exclusive groups based on
+the features they use. Such grouping of concepts based on
+semantic proximity also agrees with the way that our brain
+stores semantic concepts, where semantically related concepts activate similar part of the brain (Huth et al., 2012),
+in a highly localized manner.
+Based on this intuition, we propose a novel deep network
+architecture named SplitNet that automatically performs
 
-Statistical Inference for Incomplete Ranking Data
+SplitNet: Learning to Semantically Split Deep Networks for Parameter Reduction and Model Parallelization
+Non-
 
-2. Preliminaries and Notation
-Let SK denote the collection of rankings (permutations)
-over a set U = {a1 , . . . , aK } of K items ak , k ∈ [K] =
-{1, . . . , K}. We denote by π : [K] −→ [K] a complete
-ranking (a generic element of SK ), where π(k) denotes the
-position of the k th item ak in the ranking, and by π −1 the
-ordering associated with a ranking, i.e., π −1 (j) is the index
-of the item on position j. We write rankings in brackets and
-orderings in parentheses; for example, π = [2, 4, 3, 1, 5] and
-π −1 = (4, 1, 3, 2, 5) both denote the ranking a4  a1 
-a3  a2  a5 .
-For a possibly incomplete ranking, which includes only
-some of the items, we use the symbol τ (instead of π). If
-the k th item does not occur in a ranking, then τ (k) = 0 by
-definition; otherwise, τ (k) is the rank of the k th item. In
-the corresponding ordering, the missing items do simply not
-occur. For example, the ranking a4  a1  a2 would be
-encoded as τ = [2, 3, 0, 1] and τ −1 = (4, 1, 2), respectively.
-We let I(τ ) = {k : τ (k) > 0} ⊂ [K] and denote the set of
-all rankings (complete or incomplete) by SK .
-An incomplete ranking τ can be associated with its set of
-linear extensions E(τ ) ⊂ SK , where π ∈ E(τ ) if π is
-consistent with the order of items in I(τ ), i.e., (τ (i) −
-τ (j))(π(i) − π(j)) ≥ 0 for all i, j ∈ I(τ ). An important
-special case is an incomplete ranking τ = τi,j = (i, j) in
-the form of a pairwise comparison ai  aj (i.e., τ (i) = 1,
-τ (j) = 2, τ (k) = 0 otherwise), which is associated with
-the set of extensions
-E(τ ) = E(ai  aj ) = {π ∈ SK : π(i) < π(j)} .
-Modeling an incomplete observation τ by the set of linear
-extensions E(τ ) reflects the idea that τ has been produced
-from an underlying complete ranking π by some “coarsening” or “imprecisiation” process, which essentially consists
-of omitting some of the items from the ranking. E(τ ) then
-corresponds to the set of all consistent extension π if nothing is known about the coarsening, except that it does not
-change the relative order of any items.
+Mammal mammal Plant Interior Outdoor
 
-3. General Setting and Problems
-The type of data we assume as observations is incomplete
-rankings τ ∈ SK . Statistical inference for this type of
-data requires a probabilistic model of the underlying data
-generating process, that is, a probability distribution on SK .
-3.1. A Stochastic Model for Incomplete Rankings
-Recalling our idea of a coarsening process, it is natural to
-consider the data generating process as a two step procedure,
-in which a full ranking π is generated first and turned into an
-incomplete ranking τ afterward. We model this assumption
-in terms of a distribution on SK × SK , which assigns a
+Living
 
-degree of probability to each pair (τ, π). More specifically,
-we assume a parameterized distribution of the following
-form:
-pθ,λ (τ, π) = pθ (π) · pλ (τ | π)
+GPU 1
+
+(a) Base Network
+
+(b) Splitting Deep
+Neural Network
+
+Non-living
+
+GPU 2
+
+(c) Our Network(SplitNet)
+
+Figure 1. Concept. Our network automatically learns to split the
+classes and associated features into multiple groups at multiple
+network layers, obtaining a tree-structured network. Given a base
+network in (a), (b) our algorithm optimizes network weights as
+well as class-to-group and feature-to-group assignments. Colors
+indicate the group assignments of classes and features. (c) After learning to split the network, the model can be distributed to
+multiple GPUs to accelerate training and inference.
+
+deep splitting of the network into a set of subnetworks or
+a hierarchy of subnetworks sharing common lower layers,
+such that classes in each group share a common subset of
+features, that is completely disjoint from the features for
+other class groups. We train such a network by additionally learning classes-to-group assignments and feature-togroup assignments along with the network weights, while
+regularizing them to be disjoint across groups. Figure 1
+illustrates the key idea of our proposed approach.
+Our splitting algorithm is fairly generic, and is applicable to any general deep neural networks including feedforward and convolutional networks. We test our method
+with ResNet (He et al., 2016; Zagoruyko & Komodakis,
+2016) and AlexNet (Krizhevsky et al., 2012) on CIFAR100 and ILSVRC 2012 datasets, on which our networks
+respectively achieve 32% and 56% parameter reduction,
+while obtaining comparable or even superior performance
+to the full base network. We further perform test-time parallelization of our network with multiple GPUs, where it
+achieved 1.73× speedup to naive parallelization method
+with 2 GPUs. Our contributions in this work are threefold.
+• We propose a novel deep neural network named SplitNet, which is organized as a tree of disjoint subnetworks with greatly reduced the number of parameters and computations in terms of FLOPs, that obtains
+comparable accuracies to fully-connected networks.
+• We propose an efficient algorithm for automatically training such a tree-structured network, which
+learns class-to-group and feature-to-group assignments along with the network weights.
+• The networks trained by our approach are embarrassingly model-parallelizable; in distributed learning setting, we show that our networks scale well to an increased number of processors.
+
+2. Related Work
+Parameter reduction for deep neural networks. Achieving test-time efficiency is an active research topic in deep
+learning. One straightforward approach is to remove weak
+connections during the training, usually implemented using the `1 -norm (Collins & Kohli, 2014). However, the `1 norm often results in a model that trades-off the accuracy
+with the efficiency. Han et al. (2015) presented an iterative
+weight pruning technique that repeatedly retrains the network while removing of weak connections, which achieves
+a superior performance over `1 -regularization. Recently,
+the group sparsity using `2,1 -norm has been explored for
+learning a compact model. Alvarez & Salzmann (2016)
+applied (2,1)-norm regularization at each layer to eliminate
+the hidden units that are not shared across upper-level units,
+thus automatically deciding how many neurons to use at
+each layer. Wen et al. (2016) used the same group sparsity to select unimportant channels and spatial features in
+a CNN, and let the network to automatically decide how
+many layers to use. However, they assume that all classes
+share the same set of features, which is restrictive when the
+number of classes is very large. On the contrary, our proposed SplitNet enforces feature sharing only within a group
+of related classes, and thus semantically reduce the number of parameters and computations for large-scale problems. Recently, Shankar et al. (2016) also addressed the
+use of symmetrical split at mid-level convolutional layers
+in CNNs for architecture refinement. However, they did not
+learn the splits but predefine them, as opposed to SplitNet
+which learns semantic splits along with network weights.
+Parallel and distributed deep learning. As deep networks and training data become increasingly larger, researchers are exploring parallelization and distribution
+techniques to speed up the training process. Most parallelization techniques exploit either 1) data parallelism,
+where the training data is distributed across multiple computational nodes, or 2) model parallelism, where the model
+parameters are distributed. Dean et al. (2012) used both
+data and model parallelism to train a large-scale deep neural network on a computing cluster with thousands of machines. For CNNs, Krizhevsky et al. (2012) used both data
+and model parallelism to train separate convolutional filters from disjoint datasets. Krizhevsky (2014) later proposed to vertically split the network, exploiting the different time/memory characteristics of the convolutional and
+fully connected layers. Chilimbi et al. (2014) proposed a
+server-client architecture where each client computes partial gradients of parameters, that are stored and communicated from the global model parameter server. Zhang et al.
+(2015) proposed a GPU-based distributed deep learning,
+with greatly reduced the communication overheads. However, all these are systems-based approaches that work under the assumption that the model structure is given and
+
+SplitNet: Learning to Semantically Split Deep Networks for Parameter Reduction and Model Parallelization
+
+fixed. Our approach, on the other hand, leverages semantic
+knowledge of class relatedness to learn a network structure
+that is well-fitted to a distributed machine learning setting.
+
+with the network weights in a deep learning framework.
+
+Tree-structured deep networks. There have been some
+efforts to exploit hierarchical class structures for improving the performance of deep networks. To list a few recent
+work, Warde-Farley et al. (2014) proposed to group classes
+based on their weight similarity, and augmented the original deep network with the softmax loss for fine-grained
+classification for classifying classes within each group. Yan
+et al. (2015) proposed a convolutional network that combines predictions from separate sub-networks for coarseand fine-grained category predictions, which share common lower-layers. Goo et al. (2016) exploited the hierarchical structure among the classes to learn common and
+discriminative features across classes, by adding in simple
+feature pooling layers. Murdock et al. (2016) generalized
+dropout to stochastically assign nodes to clusters which results in obtaining a hierarchical structure. However, all of
+these methods focus on improving the model accuracy, at
+the expense of increased computational complexity. On the
+contrary, SplitNet is focused on improving memory/time
+efficiency and parallelization performance of the model.
+
+d
+Given a dataset D = {xi , yi }N
+i=1 , where xi ∈ R is an
+input data instance and yi ∈ {1, . . . , K} is a class label for
+K classes, our goal is to learn a network whose weight at
+each layer l, W (l) is a block-diagonal matrix, where each
+(l)
+block Wg is associated with a class group g ∈ G, where
+G is the set of all groups. Such a block-diagonal W (l) ensures that each disjoint group of classes has exclusive features associated with it, such that no other groups use those
+features; this allows the network to be split across multiple
+class groups, for faster computation and parallelization.
+
+3. Approach
+Given a base network, our goal is to obtain a tree-structured
+network that contains either a set or a hierarchy of subnetworks, where the leaf-level subnetworks are associated
+with a specific group of classes, as in Figure 1. Then what
+is the optimal way to split the classes? A key insight to
+our approach is that classes within each group should share
+features as much as possible, since grouping of disparate
+classes may result in learning redundant features over multiple groups, and may waste network capacity as a result.
+Thus, to maximize the utility of this splitting process, we
+need to cluster classes together into groups so that each
+group uses a subset of features that are completely disjoint
+from the ones used by other groups. One straightforward
+way to obtain such mutually exclusive groupings of classes
+is to leverage a semantic taxonomy, since semantically similar classes are likely to share features, whereas dissimilar
+classes are unlikely to do so. However, in practice, such
+semantic taxonomy may not be available, or may not agree
+with actual hierarchical grouping based on what features
+each class uses. Another simple approach is to perform (hierarchical) clustering on the weights learned in the original
+network, which is also based on actual feature uses. Yet,
+this grouping may be still suboptimal since the groups are
+highly likely to overlap, and is inefficient since it requires
+training the network twice.
+In the following sections, we will describe how to learn
+such groups with disjoint set of classes and features, along
+
+3.1. Problem Statement
+
+In order to obtain such a block diagonal weight matrix
+W (l) , we propose a novel splitting algorithm that learns
+a feature-group and class-group assignment along with the
+network weights. We first illustrate our splitting method on
+the parameters for the softmax classifier in Section 3.2, and
+then describe how to extend this to other layers of DNNs in
+Section 3.3.
+We assume that the number of groups G, is given. Let pgi
+be a binary variable indicating whether feature i is assigned
+to group g (1 ≤ g ≤ G), and qgj be a binary variable indicating whether class j is assigned to group g. We define
+pg ∈ ZD
+2 as a feature group assignment vector for group
+g, where Z2 = {0, 1} and D is the dimension of features.
+Similarly, qg ∈ ZK
+2 denotes a class group assignment vector for group g. That is, pg and qg define a group g together,
+where pg represents features associated with the group and
+qg indicates a set of classes assigned to the group.
+We assume that there is no overlap
+between groups,
+P
+P either
+in features or classes, i.e.
+p
+=
+1
+and
+D
+g g
+g qg =
+1K , where 1D and 1K are the vectors with all-one elements. While this assumption imposes hard regularizations on group assignments, it enables the weight matrix
+W ∈ RD×K to be sorted into a block-diagonal matrix,
+since each class is assigned to a group and each group depends on a disjoint subset of features. This greatly reduces
+the number of parameters, and at the same time, the multiplication W T x can be decomposed into smaller and faster
+block matrix multiplications.
+The objective for training our SplitNet is then defined as:
+min L(ω, X, y) +
+
+ω,P ,Q
+
+L
+X
+l=1
+
+λ||W (l) ||22 +
+
+L
+X
+
+Ω(W (l) , P (l) , Q(l) ),
+
+l=S
+
 (1)
-Thus, while the generation of full rankings is determined by
-the distribution
-pθ : SK −→ [0, 1] ,
 
-(2)
+where L(W , X, y) is the cross entropy loss on the training
+data, ω = {W (1) , . . . , W (L) } is the set of network weights
+at all layers, kW k22 is the weight decay regularizer with
+a hyperparameter λ, S is the layer where splitting starts,
+Ω(W , P , Q) is the regularizer for splitting the network,
+and P (l) and Q(l) are the set of feature-to-group and class-
 
-the coarsening process is specified by a family of conditional
-probability distributions
-
-	
-pλ (· | π) : π ∈ SK , λ ∈ Λ ,
-(3)
-where λ collects all parameters of these distributions;
-pθ,λ (τ, π) is the probability of producing the data (τ, π) ∈
-SK × SK . Note, however, that π is actually not observed.
-3.1.1. R ANK -D EPENDENT C OARSENING
-In its most general form, the coarsening process (3) is extremely rich, even if being restricted by the consistency
-assumption pλ (τ | π) = 0 for π 6∈ E(τ ). In fact, since the
-number of probabilities to be specified is of the order 2K K!,
-inference about λ will generally be difficult. Therefore,
-pλ certainly needs to be restricted by further assumptions.
-Apart from practical reasons, such assumptions are also
-indispensable for successful learning. Otherwise, observations could be arbitrarily biased in favor or disfavor of
-items, so that an estimation of the underlying (full) preferences, as reflected by pθ , becomes completely impossible.
-For example, the coarsening process may leave a ranking
-π unchanged whenever item a1 is on the last position, and
-remove a1 from π otherwise. Obviously, this item will then
-appear to have a very low preference.
-As shown by this example, the estimation of preferences will
-generally be impossible unless the coarsening is somehow
-more “neutral”. The assumption we make here is a property
-we call rank-dependent coarsening. A coarsening procedure
-is rank-dependent if the incompletion is only acting on
-ranks (positions) but not on items. That is, the procedure
-randomly selects a subset of ranks and removes the items
-on these ranks, independently of the items themselves. In
-other words, an incomplete observation τ is obtained by
-projecting a complete ranking π on a random subset of
-positions A ∈ 2[K] , i.e., the family (3) of distributions
-pλ (· | π) is specified by a single measure on 2[K] . Or, stated
-more formally,
-
-
-p π −1 (A) | π −1 = p σ −1 (A) | σ −1
-for all π, σ ∈ SK and A ⊂ [K], where π −1 (A) denotes the
-projection of the ordering π −1 to the positions in A.
-The assumption of rank-dependent coarsening can be seen
-as orthogonal to standard marginalization: while the latter projects a full ranking to a subset of items, the former
-
-Statistical Inference for Incomplete Ranking Data
-
-projects a ranking to a subset of positions. The practically
-relevant case of top-k observations is a special (degenerate)
-case of rank-dependent coarsening, in which
-
-1 if A = {1, . . . , k}
-p(A) =
-0 otherwise
-This model could be weakened in various ways. For example, instead of fixing the length of observed rankings to
-a constant, k could be a random variable. Or, one could
-assume that positions are discarded with increasing probability, though independently of each other; thus, the probability
-to observe a subset of items on ranks A ⊆ {1, . . . , K} is
-given by
-Y
-Y
-P (A) =
-λi ·
-(1 − λj ) .
-i∈A
-
-j6∈A
-
-The coarsening is then defined by the K parameters λ1 >
-λ2 > . . . > λK .
-3.2. Learning Tasks
-Suppose a sample of (training) data D = {τ1 , . . . , τN } to
-be given. As for statistical inference about the process (1),
-several problems could be tackled.
-• The most obvious problem is to estimate the complete
-distribution on SK , i.e., the parameters θ and λ. As
-already explained before, this will require specific assumptions about the coarsening.
-• A somewhat weaker goal is to estimate the “precise
-part”, i.e., the parameter θ. Indeed, in many cases, θ
-will be the relevant part of the model, as it specifies the
-preferences on items, whereas the coarsening is rather
-considered as a complication of the estimation. In this
-case, λ is of interest only in so far as it helps to estimate
-θ. Ideally, it would even be possible to estimate θ
-without any inference about λ, i.e., by simply ignoring
-the coarsening process.
-• An even weaker goal is to estimate, not the parameter θ
-itself, but only an underlying “ground truth” ranking π ∗
-associated with θ. Indeed, in the context of learning to
-rank, the ultimate goal is typically to predict a ranking,
-not necessarily a complete distribution. For example,
-the ranking π ∗ could be the mode of the distribution
-pθ , or any other sort of representative statistics. This
-problem is especially relevant in practical applications
-such as rank aggregation, in which π ∗ would play the
-role of a consensus ranking.
-Here, we are mainly interested in the third problem, i.e.,
-the estimation of a ground-truth ranking π ∗ . Moreover, due
-to reasons of efficiency, we are aiming for an estimation
-technique that circumvents direct inference about λ, while
-
-being robust in the sense of producing reasonably good
-results for a wide range of coarsening procedures.
-
-4. Specific Setting and Problems
-The development and analysis of methods is only possible
-for concrete instantiations of the setting introduced in the
-previous section. An instantiation of that kind will be proposed in this section. The first part of our data generating
-process, pθ , will be modeled by the Plackett-Luce model
-(Plackett, 1975; Luce, 1959). To make the second part, pλ ,
-manageable, we restrict observations to the practically relevant case of pairwise comparisons (i.e., incomplete rankings
-of length 2).
-4.1. The Plackett-Luce Model
-The Plackett-Luce (PL) model is parameterized by a vector
-θ = (θ1 , θ2 , . . . , θK ) ∈ Θ = RK
-+ . Each θi can be interpreted as the weight or “strength” of the option ai . The
-probability assigned by the PL model to a ranking represented by a permutation π ∈ SK is given by
-plθ (π) =
+SplitNet: Learning to Semantically Split Deep Networks for Parameter Reduction and Model Parallelization
 
 K
-Y
+D
 
-θπ−1 (i)
-θ −1 + θπ−1 (i+1) + . . . + θπ−1 (K)
-i=1 π (i)
+K
+
+Q 2 RG⇥K
+
+W 2 RD⇥K
+P 2 RG⇥D
+
+qg
+
+i
+
+D
+
+pg W ||((I
+
+P g )W Qg )i⇤ ||2
+
+Figure 2. Group Assignment and Group Weight Regularization. (Left) An example of group assignment with G = 3. Colors indicate groups. Each row of matrix P , Q is group assignment vectors for group g: pg , qg . (Right) Visualization of matrix
+(I − Pg )W Qg . The group assignment vectors work as soft indicators for inter-group connections. As the groupings converge,
+`2,1 -norm is concentrated on inter-group connections.
+
+We empirically observe that the softmax form results in
+more semantically meaningful grouping. However, the direct optimization of sum-to-one constraint often leads to
+faster convergence than the softmax formulation.
+Let Pg = diag(pg ) and Qg = diag(qg ) be the feature
+and class group assignment matrix for group g respectively.
+Then Pg W Qg represents the weight parameters associated
+with group g, i.e. intra-group connections between features
+and classes. Since our goal is to prune out inter-group connections to obtain block-diagonal weight matrices, we minimize off block-diagonal entries as follows:
+XX
+RW (W , P , Q) =
+||((I − Pg ) W Qg ))i∗ ||2
+g
+
++
+
+to-group assignment vectors respectively, for each layer l.
+
+i
+
+XX
+g
+
+j
+
+||(Pg W (I − Qg ))∗j ||2
 
 (4)
 
-Obviously, the PL model is invariant toward multiplication
-of θ with a constant c > 0, i.e., plθ (π) = plcθ (π) for all
-π ∈ SK and c > 0. Consequently, θ can be normalized
-without loss of generality (and the number of degrees of
-freedom is only K − 1 instead of K). Note that the most
-probable ranking, i.e., the mode of the PL distribution, is
-simply obtained by sorting the items in decreasing order of
-their weight:
-π ∗ = arg max plθ (π) = arg sort{θ1 , . . . , θK } .
-π∈SK
+In the next section, we propose a novel regularization Ω
+that automatically finds appropriate disjoint group assignments with no external semantic information. The objective of Eq.(1) are jointly optimized using (stochastic) gradient descent, starting with a full weight matrix, and an
+unknown group assignment. As we jointly optimize the
+cross entropy loss and the group regularization, our method
+automatically obtains appropriate grouping and prune out
+inter-group connections. Once the grouping is learned, the
+weight matrix can be explicitly split into block diagonal
+matrices to reduce number of parameters, which in turn allows for much faster inference at test time.
 
+where (M )i∗ and (M )∗j denote i-th row and j-th column
+of M . Eq.(4) imposes row/column-wise `2,1 -norm on the
+inter-group connections. Figure 2 illustrates this regularization, where the portions of the weights to which the regularization is applied are colored differently. 1
+
+3.2. Learning to Split Network Weights into Disjoint
+Groups
+
+3.2.2. D ISJOINT G ROUP A SSIGNMENT
+
+Our regularization assigns features and classes into disjoint
+groups; it consists of three objectives as follows:
+Ω(W , P , Q) = γ1 RW (W , P , Q)
++ γ2 RD (P , Q) + γ3 RE (P , Q)
+
+(2)
+
+We observe that this regularization yields groups that are
+fairly similar to semantic groups. One caution is to avoid
+uniform initialization on group assignments, i.e. pi =
+1/G, in which case the objective reduces to row/columnwise `2,1 -norm and some row/column weight vectors may
+die out before appropriate group assignments are obtained.
+
+For the group assignment vectors to be completely mutually exclusive, they should be orthogonal; i.e. they should
+satisfy the condition pi · pj = 0 and qi · qj = 0, ∀ i 6= j.
+We introduce an additional orthogonal regularization term:
+X
+X
+RD (P , Q) =
+pi · pj +
+qi · qj .
 (5)
-
-k∈[K]
-
-As a convenient property of PL, let us mention that it allows
-for an easy computation of marginals, because the marginal
-probability on a subset U 0 = {ai1 , . . . , aiJ } ⊂ U of J ≤ K
-items is again a PL model parametrized by (θi1 , . . . , θiJ ).
-Thus, for every τ ∈ SK with I(τ ) = U 0 ,
-plθ (τ ) =
-
-J
-Y
-
-θτ −1 (j)
-θ −1 + θτ −1 (j+1) + . . . + θτ −1 (J)
-j=1 τ (j)
-
-In particular, this yields pairwise probabilities
-pi,j = plθ (τi,j ) =
-
-θi
-,
-θi + θj
-
-(6)
-
-where τi,j = (i, j) represents the preference ai  aj . This
-is the well-known Bradley-Terry-Luce model (Bradley &
-Terry, 1952), a model for the pairwise comparison of alternatives. Obviously, the larger θi in comparison to θj , the
-
-Statistical Inference for Incomplete Ranking Data
-
-higher the probability that ai is chosen. The PL model can
-be seen as an extension of this principle to more than two
-items: the larger the parameter θi in (4) in comparison to
-the parameters θj , j 6= i, the higher the probability that ai
-appears on a top rank.
-4.2. Pairwise Preferences
-If rank-dependent coarsening is restricted to the generation of pairwise comparisons, the entire distribution pλ is
-specified by the set of K(K − 1)/2 probabilities
-n
-X
-λi,j | 1 ≤ i < j ≤ K, λi,j ≥ 0,
-
-o
-λi,j = 1 ,
-
-(7)
-
-i, j
-
-1, 2
-
-1, 3
-
-2, 3
-
-2, 1
-
-3, 1
-
-3, 2
-
-pi,j
-
-840
-1140
-665
-1140
-665
-931
-
-1064
-1140
-133
-1140
-133
-175
-
-950
-1140
-19
-1140
-19
-34
-
-300
-1140
-266
-1140
-266
-931
-
-76
-1140
-42
-1140
-42
-175
-
-190
-1140
-15
-1140
-15
-34
-
-qi,j
-0
-qi,j
-
-While the pi,j are completely coherent with a PL model
-0
-(namely plθ with θ = (14, 5, 1)), the qi,j and qi,j
-no longer
-are.
-A special case where coarsening is guaranteed to not introduce any bias is the uniform distribution λ ≡ 2/(K 2 − K).
-In this case, random projection to ranks effectively coincides
-with random selection to items.
-
-1≤i<j≤K
-
-4.4. Problems
-where λi,j denotes the probability that the ranks i and j are
-selected.
-The problem of ranking based on pairwise comparisons
-has been studied quite extensively in the literature, albeit
-without taking coarsening into account, i.e., without asking
-where the pairwise comparisons are coming from (or implicitly assuming they are generated as marginals). Yet, worth
-mentioning is a recent study on rank breaking (Soufiani
-et al., 2014), that is, of the estimation bias (for models such
-as PL) caused by replacing full rankings in the training data
-by the set of all pairwise comparisons—our study of the
-bias caused by coarsening is very much in the same spirit.
-4.3. The Data Generating Process
-Combining the PL model (4) with the coarsening process
-(7), we obtain a distribution q on SK such that
-q(τi,j ) = qi,j =
-
-X
-
-plθ (π) λπ(i),π(j)
-
-(8)
-
-π∈E(ai aj )
-
-for pairwise preferences τi,j = (i, j), and q(τ ) = 0 otherwise. Clearly, the pairwise probabilities (8) will normally
-not agree with the pairwise marginals (6). Instead, they may
-provide a biased view of the pairwise preferences between
-items. Please note, however, that the marginals pi,j are not
-directly comparable with the qi,j , because
-the latter is a disP
-tribution on incomplete rankings ( i,j qi,j = 1) whereas
-the former is a set of marginal distributions (pi,j + pj,i = 1).
-0
-Instead, pi,j should be compared to qi,j
-= qi,j /(qi,j + qj,i ),
-which is the probability that, in the coarsened model, ai is
-observed as a winner, given it is paired with aj .
-As an illustration, consider a concrete example with K =
-3, θ = (14, 5, 1), and degenerate coarsening distribution
-specified by λ1,2 = 1 (top-2 selection). One easily derives
-the probabilities of pairwise marginals (6) and coarsened
-(top-2) observations (8) as follows:
-
-Of course, in spite of the inconsistency of the pairwise
-observations in the above example, a PL model could still
-be estimated, for example using the maximum likelihood
-principle. The corresponding estimate θ̂ will also yield an
-estimate π̂ of the target ranking π ∗ (which is simply obtained
-by sorting the items ai in decreasing order of the estimated
-scores θi ). As already said, there is little hope that θ̂ could
-be an unbiased estimate of θ; instead θ̂ will necessarily be
-biased. There is hope, however, to recover the target ranking
-π ∗ . Indeed, the ranking will be predicted correctly provided
-θ̂ is comonotonic with θ, i.e., (θ̂i − θ̂j )(θi − θj ) > 0 for all
-i, j ∈ [K]. Roughly speaking, a small bias in the estimate
-can be tolerated, as long as the order of the parameters is
-preserved.
-Obviously, these considerations are not restricted to the
-PL model. Instead, any method for aggregating pairwise
-comparisons into an overall ranking can be used to predict
-π ∗ . This leads us to the following questions:
-• Practical performance: What is the performance of a
-rank aggregation method in the finite sample setting,
-i.e., how close is the prediction π̂ to the ground truth
-π ∗ ? How is the performance influenced by the coarsening process?
-• Consistency: Is a method consistent in the sense that π ∗
-is recovered (with high probability) with an increasing
-sample size N → ∞, either under specific assumptions
-on the coarsening process, or perhaps even regardless
-of the coarsening (i.e., only assuming the property of
-rank-dependence)?
-
-5. Rank Aggregation Methods
-In this section, we discuss different rank aggregation methods that operate on pairwise data, categorized according to
-the some basic principles. To this end, let us define the comparison matrix C with entries ci,j , where ci,j denotes the
-
-Statistical Inference for Incomplete Ranking Data
-
-number of wins of ai over aj , i.e., the number of times the
-preference ai  aj is observed. Correspondingly, we define
-ci,j
-the probability matrix P̂ with entries p̂i,j = ci,j +c
-, which
-j,i
-can be seen as estimates of the winning probabilities pi,j
-(often also interpreted as weighted preferences). All rank
-aggregation methods produce rankings π̂ based on either
-matrix C or P̂ .
-5.1. Statistical Estimation
-5.1.1. B RADLEY-T ERRY-L UCE M ODEL (BTL)
-The Bradley-Terry-Luce model is well-known in the literature on discrete choice (Bradley & Terry, 1952). It starts
-from the parametric model (6) of pairwise comparisons, i.e.,
-the marginals of the PL model, and estimates the parameters
-by likelihood maximization:
-Y  θi ci,j
-θ̂ ∈ arg max
-θi + θj
-θ∈RK
-1≤i6=j≤K
-
-The predicted ranking is obtained by sorting items according
-to their estimated strengths: π̂ = arg sort(θ̂).
-As already explained, coarsening of rankings may cause a
-bias in the number of observed pairwise preferences. In
-particular, it may happen that some (pairs of) items are observed much more often than others. Therefore, in addition
-to the BTL problem as formalized above, we also consider
-the same problem with relative winning frequencies p̂i,j
-instead of absolute frequencies ci,j ; we call this approach
-BTL(R).
-
-favor of each item:
-π̂ = arg sort{s1 , . . . , sK } ,
-PK
-where si = i=1 p̂i,j .
-5.2.2. C OPELAND (CP)
-Copeland (Copeland, 1951) works in the same way as
-Borda, except that scores are derived from binary instead of
-weighted votes:
-
-
-K
-X
-1
-si =
-I p̂i,j >
-.
-2
-i=1
-5.3. Spectral Methods
-The idea of deriving a consensus ranking from the stationary
-distribution of a suitably constructed Markov chain has been
-thoroughly studied in the literature (Seeley, 1949; Vigna,
-2009; Brin & Page, 1998). The corresponding Markov chain
-with transition probabilities Q is defined by the pairwise
-preferences. Then, if Q is an irreducible, aperiodic Markov
-chain, the stationary distribution π̄ can be computed, and
-the predicted ranking is given by π̂ = arg sort(π̄).
-5.3.1. R ANK C ENTRALITY (RC)
-The rank centrality algorithm (Negahban et al., 2012) is
-based on the following transition probabilities:
-1
-
-if i 6= j
-
- K p̂i,j
-Qi,j =
-1 X
-
-p̂k,i if i = j
-
-1 − K
-k6=i
-
-5.1.2. L EAST S QUARES /H ODGE R ANK (LS)
-The HodgeRank algorithm (Jiang et al., 2011) is based on
-a least squares approach. First, the probability matrix P̂ is
-mapped to a matrix X as follows:
- 
-
-
-log p̂i,j
-if i 6= j and p̂j,i ∈ (0, 1),
-p̂j,i
-Xi,j =
-
-0
-otherwise
-Then, π̂ = arg sort(θ∗ ), where
-θ∗ ∈ arg min
-
-X 
-
-(θj − θi ) − Xi,j
-
-2
-
-,
-
-5.3.2. MC2 AND MC3
-Dwork et al. (2001) introduce four spectral ranking algorithms, two of which we consider for our study (namely
-MC2 and MC3), translated to the setting of pairwise preferences. For MC2, the transition probabilities are given as
-follows:
-
-1
-
- PK
-p̂j,i if i 6= j
-Qi,j =
-j=1 p̂i,j
-
-
-0
-if i = j
-
-5.2. Voting Methods
-
-The MC3 algorithm is based on the transition probabilities
-
-1
-
-
-if i 6= j
-
- deg(ai ) p̂i,j
-Qi,j =
-X
-1
-
-
-1−
-p̂k,i if i = j
-
-
-deg(ai )
-
-5.2.1. B ORDA C OUNT (B ORDA )
-
-where
-
-θ∈RK
-
-(i,j)∈E
-
-
-	
-and E = (i, j) | 1 ≤ i < j ≤ K, Xi,j 6= 0 .
-
-Borda (Borda, 1781) is a scoring rule that sorts items according to the sum of weighted preferences or “votes” in
-
-k6=i
-
-deg(ai ) = max
-
-X
-K
-i=1
-
-I(p̂i,j > 0),
-
-K
-X
-i=1
-
-
-I(p̂j,i > 0) .
-
-Statistical Inference for Incomplete Ranking Data
-
-5.4. Graph-based Methods
-
-5.5.2. M ETHOD BY P RICE ET AL . (P RICE )
-
-5.4.1. F EEDBACK A RC S ET (FAS)
-
-Price et al. (1994) propose the following parameter estimation for each i ∈ [K]:
-
-If the ci,j are interpreted as (weighted) preferences, the
-degree of inconsistency of ranking ai before aj is naturally
-quantified in terms of cj,i . Starting from a formalization
-in terms of a graph whose nodes correspond to the items
-and whose edges are labeled with the weighted preferences,
-the weighted feedback arc set problem (Saab, 2001; Fomin
-et al., 2010) is to find the ranking that causes the lowest sum
-of penalties:
-X
-π̂ = arg min
-cj,i
-π∈SK
-
-(i,j): π(i)<π(j)
-
-For the same reason as in the case of BTL, we also consider
-the FAS problem with edge weights given by relative winning frequencies p̂i,j and binary preferences I(p̂i,j > 1/2)
-instead of absolute frequencies ci,j ; we call the former approach FAS(R) and the latter FAS(B).
-5.5. Pairwise Coupling
-A common approach to multi-class classification is the allpairs decomposition, in which one binary classifier hi,j is
-trained for each pair of classes ai and aj (Fürnkranz, 2002).
-At prediction time, each classifier produces a prediction,
-which can be interpreted as a vote, or weighted vote p̂i,j
-in case of a probabilistic classifier, in favor of item ai over
-aj . The problem of combining these predictions into an
-overall prediction for the multi-class problem is also called
-pairwise coupling (Hastie & Tibshirani, 1998).
-To the best of our knowledge, pairwise coupling has not
-been used for rank aggregation so far. In fact, the original
-purpose of this technique is not to rank items but merely
-to identify a single winner. Nevertheless, since coupling
-methods are eventually based on scoring items, they can be
-generalized for the purpose of ranking in a straightforward
-way. Indeed, they have been used for that purpose in the
-context of label ranking (Hüllermeier et al., 2008).
-5.5.1. M ETHOD BY H ASTIE AND T IBSHIRANI (HT)
-Hastie & Tibshirani (1998) tackle the problem in the following way: Given relative frequencies P̂ , they suggest to find
-the probability vector p = (p1 , . . . , pK ) that minimizes the
-(weighted) Kullback-Leibler (KL) distance
-
-
-X
-p̂i,j
-1 − p̂i,j
-`(p) =
-ni,j p̂i,j log
-+ (1 − p̂i,j ) log
-µi,j
-1 − µi,j
 i<j
-i
-between p̂i,j and µi,j = pip+p
-, where ni,j = ci,j + cj,i . To
-j
-this end, the problem is formulated as a fixed point problem
-and solved using an iterative algorithm. Once p is obtained,
-the predicted ranking is determined by π̂ = arg sort(p).
 
-θ̂i =
+i<j
 
-1
-
+where the inequalities avoid the duplicative dot products.
+where γ1 , γ2 , γ3 controls the strength of each regularization, which will be discussed in following subsections.
+3.2.1. G ROUP W EIGHT R EGULARIZATION
+To make the numerical optimization tractable, we first relax the binary variables pgi and qgj to have
+P real values in
+the
+interval
+of
+[0,
+1]
+with
+the
+constraints
+g pg = 1D and
 P
-
-1
-
-
-j6=i p̂i,j
-
-− (K − 2)
-
-Then, the predicted ranking is given by π̂ = arg sort(θ̂).
-5.5.3. M ETHOD BY T ING -FAN W U ET AL . (WU1, WU2)
-Wu et al. (2004) propose two methods. The first one (WU1)
-is based on the Markov chain approach with transition matrix
-
-if i 6= j
-
-p̂i,j /(K − 1)
-X
-Qi,j =
-p̂i,s /(K − 1) if i = j .
-
-
-s6=i
-
-Once the stationary distribution π̄ of Q is obtained, the predicted ranking is given by π̂ = arg sort(π̄). In their second
-approach (WU2), the following optimization problem is
-proposed:
-min 2θT Qθ ,
-θ
-
-where
-Qi,j
-
-
-
-−p̂i,j p̂j,i
-X
+q
 =
-p̂2s,i
-
-
-
-if i 6= j
-if i = j
-
-.
-
-s6=i
-
-Once the optimization is solved, the predicted ranking is
-π̂ = arg sort(θ).
-
-6. Practical Performance
-6.1. Synthetic Data
-To investigate the practical performance of the methods presented in the previous section, we first conducted controlled
-experiments with synthetic data, for which the ground truth
-π ∗ is known. To this end, data in the form of pairwise
-observations was generated according to (1) with different
-distributions pθ and pλ , predictions π̂ were produced and
-compared with π ∗ in terms of the Kendall distance, i.e., the
-number of pairwise inversions:
-h
-i
-X
-I sign(π ∗ (i) − π ∗ (j)) 6= sign(π̂(i) − π̂(j)) .
-1≤i<j≤K
-
-For each setting, specified by parameters K, θ, λ, we are
-interested in the expected performance of a method as a
-function of the sample size N , which was approximated by
-averaging over 500 simulation runs.
-6.1.1. PL D ISTRIBUTION
-In a first series of experiments, synthetic data was produced
-for K ∈ {3, 4, 5, 7}, pθ the PL model with ground truth
-
-Statistical Inference for Incomplete Ranking Data
-
-• Comparing the results for learning from incomplete
-data with the baseline, it is obvious that coarsening
-comes with a loss of information and makes learning
-more difficult.
-• The difficulty of the learning task increases with decreasing distance |i − j| between observed ranks and is
-most challenging for the case of observing neighboring
-ranks (i, i + 1).
-• All methods perform rather well, although FAS is visibly worse while BTL is a bit better than the others. On
-the one side, this could be explained by the fact that
-the BTL model is consistent with the PL model, as it
-corresponds to the marginals of pθ . On the other side,
-like all other methods, BTL is agnostic of the coarsening pλ ; from this point of view, the strong performance
-is indeed a bit surprising. As a side remark, BTL(R)
-does not improve on BTL.
-• While FAS is on a par with FAS(R), FAS(B) tends
-to do slightly better, especially for a larger number
-of items. However, as already said, FAS performs
-generally worse than the others.
-In another set of experiments, we examined the averaged
-performance of methods over all coarsening positions. The
-results are again shown in the supplementary material. It is
-noticeable that, as the number of items increases, the performance of the FAS-based approaches decreases. Moreover,
-as pointed out earlier, the BTL performs moderately better
-than other approaches.
-6.1.2. M ALLOWS D ISTRIBUTION
-In a second series of experiments, we replaced the PL distribution with another well-known distribution on rankings,
-namely the Mallows distribution. Thus, data is now generated with pθ in (1) given by Mallows instead of PL. This
-experiment serves as a kind of sensitivity analysis, especially for those methods that (explicitly or implicitly) rely
-on the assumption of PL.
-The Mallows model (Mallows, 1957) is parametrized by a
-reference ranking π ∗ (which is the mode) and a dispersion
-
-0.5
-●
-
-0.4
-
-●
-
-●
-
-●
-
-0.4
-
-●
-
-0.3
-
-0.3
-
-0.2
-
-0.2
-●
-
-●
-
-●
-
-●
-
-●
-
-●
-
-0.1
-
-0.1
-●
-
-0.0
-
-●
-
-●
-
-●
-
-0.0
-RC
-LS
-Borda
-CP
-MC2
-MC3
-BTL
-BTL(R)
-FAS
-FAS(R)
-FAS(B)
-Price
-WU2
-HT
-WU1
-
-Due to space restrictions, the results are only shown in the
-supplementary material. The following observations can be
-made:
-
-0.5
-
-RC
-LS
-Borda
-CP
-MC2
-MC3
-BTL
-BTL(R)
-FAS
-FAS(R)
-FAS(B)
-Price
-WU2
-HT
-WU1
-
-parameter θ ∈ RK
-+ , and coarsening rankings by projecting
-to all possible pairs of ranks (i.e., using a degenerate distribution pλ with λi,j = 1 for some 1 ≤ i < j ≤ K). As a
-baseline, we also produced the performance of each method
-for the case of full pairwise information about a ranking, i.e.,
-adding all pairwise preferences to the data (instead of only
-aπ−1 (i)  aπ−1 (j) ) that can be extracted from a ranking π.
-
-Figure 1. Results for the sushi data in terms of normalized Kendall
-distance (one boxblot per method), experiment (a) on the left and
-(b) on the right.
-
-parameter φ, i.e., θ = (π ∗ , φ):
-pπ∗ ,φ (π) =
-
-
 1
-exp − φD(π, π ∗ ) ,
-Z(φ)
+.
+These
+sum-to-one
+constraints
+can be dig
+K
+g
+rectly optimized using reduced gradient algorithm (Rakotomamonjy et al., 2008), which yields sparse solutions. Or,
+we can perform soft assignments, by reparamterizing pgi
+and qgj with unconstrained variables αgi and βgj in the
+softmax form:
+X
+X
+(3)
+pgi = eαgi /
+eαgi , qgj = eβgj /
+eβgj .
+g
 
-where D(π, π ∗ ) is the Kendall distance and Z(φ) a normalization constant.
-The results and observations for this series of experiments
-are quite similar to those for the PL model. What is notable,
-however, is a visible drop in performance for BTL, whereas
-Copeland ranking now performs much better than all other
-algorithms. Furthermore, FAS(B) is significantly better than
-FAS and FAS(R). These results might be explained by the
-ordinal nature of the Mallows model, which is arguably
-better fit by methods based on binary comparisons than by
-score-based approaches.
-6.2. Real Data
-To compare the methods on a real world data set, we used the
-Sushi data (Kamishima, 2003) that contains the preferences
-(full rankings) of 5000 people over 10 types of sushi.
-For this data set, there is no obvious ground truth π ∗ . There-
+g
 
-Statistical Inference for Incomplete Ranking Data
+3.2.3. BALANCED G ROUP A SSIGNMENT
+The disjoint group assignment objective in Eq.(5) alone
+may drive one group to dominate over all other groups; that
+is, one group includes all features and classes, while other
+groups do not. Therefore, we also constrain the group assignments to be balanced, by regularizing the squared sum
+of elements in each group assignment vector.
+
+X X
+X
+RE (P , Q) =
+(
+pgi )2 + (
+qgj )2 . (6)
+g
+1
 
-fore, we define a separate target for each data set individually, which is the ranking produced by that method on the
-full set of pairwise comparisons that can be extracted from
-the training data. The distance between this ranking and the
-one predicted for coarsened data can essentially be seen as
-a measure of the loss of information caused by coarsening.
-We conduct this experiment for (a) degenerate coarsening
-where λi,j = 1 for some (i, j) and (b) random coarsening
-where λi,j = 2/(K 2 − K) for all (i, j). Note that, while
-the information content is the same in both cases (one pairwise comparison per customer), random coarsening does
-not introduce any bias, as opposed to degenerate coarsening.
-The results (distributions for 100 repetitions) are shown in
-Figure 1. Again, all methods are more or less on a par.
-However, as expected, random coarsening does indeed lead
-to better estimates, again suggesting that “real” coarsening
-indeed makes learning harder.
+i
 
-7. Consistency
-Recall the (specific) setting we introduced in Section 4, in
-which full rankings are generated according to a PL model
-with parameter θ = (θ1 , . . . , θK ), and the coarsening corresponds to a projection to a random pair of ranks; for technical reasons, we subsequently assume θi 6= θj for i 6= j.
-Also recall that we denote by pi,j the probability of a ranking π in which ai precedes aj , and by qi,j the probability to
-observe the preference ai  aj after coarsening. According
-to PL, we have pi,j = θi /(θi + θj ), and the ground truth
-ranking π ∗ is such that
-(π(i) < π(j)) ⇔ (θi > θj ) ⇔ (pi,j > 1/2)
-Finally, we denote by p̂i,j the estimate of the pairwise preference (probability) pi,j . If not stated differently, we always
-assume estimates to be given by relative frequencies, i.e.,
-p̂i,j = wi,j /(wi,j + wj,i ), with wi,j the observed number
-of preferences ai  aj .
-Definition 1: Let π̂N denote the ranking produced as a
-prediction by a ranking method on the basis of N observed
-(pairwise) preferences. The method is consistent if p(π̂N =
-π ∗ ) → 1 for N → ∞.
-The proofs of the following results are given in the supplementary material.
-Lemma 2: Let us consider
-a probability measure pθ over
+j
+
+When using group weight regularization followed by batch
+normalization, the weights tend to decrease their magnitudes
+while the scale parameters of BN layers increase. To prevent this
+effect, we use `2 -normalized weights W /||W ||2 , instead of W
+in RW , or simply deactivate the scale parameters of BN layers.
+
+SplitNet: Learning to Semantically Split Deep Networks for Parameter Reduction and Model Parallelization
+
+Algorithm 1 Splitting Deep Neural Networks
+
+ward propagation in each group is independent from the
+
+processes in other groups. This allows the computations for
+Input: Number of groups G, layers to split S ≤ L and hyperparamaters γ1 , γ2 , γ3
+each group to be parallelized, except for the softmax layer.
+Initialize weights and group assignments
+The softmax layer includes a normalizing operation over
+while groupings have not converged do
+all classes which requires aggregating logits over groups;
+Optimize the objective using SGD with a learning rate η
+however, during inference it suffices to identify the class
+L
+L
 P
-SK . Consider qi,j = π∈E(ai aj ) pθ (π)λπ(i),π(j) , ∀ i 6=
-j. (The model (8) with pθ (π) not necessarily PL). If
-pθ (π) ≥ pθ (πi,j ) for all π ∈ E(ai  aj ), then qi,j > qj,i .
-Lemma 3: Assume the model (8), θi 6= θj for i 6= j,
-and θi > 0 for all i ∈ [K]. The coarsening (7) is orderpreserving for PL in the sense that pi,j > 1/2 if and only if
-0
-0
-qi,j
-> 1/2, where qi,j
-= qi,j /(qi,j + qj,i ).
+P
+L(ω, X, Y ) + λ
+||W(l) ||22 + γ1
+RW (W (l) , P (l) , Q(l) ) with the maximum logit, which can be simply obtained
+l=1
 
-The last result is indeed remarkable: Although coarsening
-will bias the pairwise probabilities pi,j , the “binary” preferences will be preserved in the sense that sign(pi,j − 1/2) =
-0
-sign(qi,j
-− 1/2). Indeed, the result heavily exploits properties of the PL distribution and does not hold in general. For example, consider a distribution p on S3 such
-that p([1, 2, 3]) = 0.8, p([3, 1, 2]) = p([3, 2, 1]) = 0.1.
-Then, with a coarsening (7) such that λ2,3 = 1, we have
-0
-0
-p1,2 = p1,3 = 0.8, but q1,2
-= q1,3
-= 0.
-Lemma 4: Assume the model (8), θi 6= θj for i 6= j, and
-θi > 0 for all i ∈ [K]. Let us take an arbitrarily small
-∗ > 0. There exists N0 ∈ N such that θi > θj if and only
-if p̂i,j > 1/2 for all i, j ∈ [K], with probability at least
-1 − ∗ , after having observed at least N0 preferences.
-Theorem 5: Copeland ranking is consistent.
-Theorem 6: FAS, FAS(R), and FAS(B) are consistent.
-Our experimental results so far suggest that consistency does
-not only hold for Copeland and FAS, but also for most other
-methods (including BTL), and hence that rank-dependent
-coarsening is indeed somehow “good-natured”. Anyway,
-for these cases, the proofs are still pending.
++γ2
 
-8. Summary and Conclusion
-In this paper, we addressed the problem of learning from
-incomplete ranking data and advocated an explicit consideration of the process of turning a full ranking into an incomplete one—a step that we referred to as “coarsening”. To
-this end, we proposed a suitable probabilistic model and introduced the property of rank-dependent coarsening, which
-can be seen as orthogonal to standard marginalization: while
-the latter projects a ranking to a subset of items, the former
-projects to a subset of ranks.
-First experimental and theoretical results suggest that agnostic learning can be successful under rank-dependent coarsening: even if ignorance of the coarsening may lead to
-biased parameter estimates, the ranking task itself can still
-be solved properly. This applies at least to the specific setting that we considered, namely rank aggregation based on
-pairwise preferences, with Plackett-Luce (or Mallows) as
-an underlying distribution.
-Needless to say, this paper is only a first step. Many questions are still open, for example regarding the consistency
-of ranking methods, not only for the specific setting considered here but even more so for generalizations thereof. In
-addition to theoretical problems of that kind, we are also
-interested in practical applications such as “crowdordering”
-(Matsui et al., 2014; Chen et al., 2013), in which coarsening
-could play an important role.
+L
+P
 
-Statistical Inference for Incomplete Ranking Data
+RD (P
+
+(l)
+
+l=S
+
+(l)
+
+, Q ) + γ3
+
+l=S
+
+L
+P
+
+RE (P (l) , Q(l) )
+
+l=S
+
+end while
+Split the network using the obtained group assignments and
+weight matrices
+while validation accuracy improves do
+P
+(l) 2
+Optimize L(ω, X, Y ) + λ L
+l=1 ||W ||2 using SGD
+end while
+
+P
+
+D
+
+P
+
+K
+
+Due to the constraints g pg = 1 and g qg = 1 , the
+objective of Eq.(6) is minimized when sums of elements
+in each group assignment vector are even; i.e. each group
+has identical number of elements. Since the dimensions of
+feature and class group assignment vectors may differ, we
+scale the two terms with appropriate weights. See Figure 4
+to see the effect of balanced group regularization.
+3.3. Splitting Deep Neural Networks
+Our weight-splitting method in section 3.2 can be applied
+to deep neural networks (DNN), which has two types of
+layers: 1) the input and hidden layers that produce a feature
+vector for a given input, and 2) the output fully-connected
+(FC) layer on which the softmax classifier produces class
+probabilities. The output FC layer can be split by directly
+applying our method in section 3.2 on the output FC weight
+matrix W (L) . Our splitting framework can be further extended into deep splits, involving either multiple consecutive layers or recursive hierarchical group assignments. Algorithm 1 describes the deep splitting process.
+3.3.1. D EEP S PLIT
+The lower layers of a DNN learn low-level, generic representations, which are likely to be shared across all classes.
+The higher level representations, on the contrary, are more
+likely to be specific to the classes in a particular group.
+Therefore we do not split all layers but split layers down to
+S-th layer (S ≤ L), while maintaining lower layers (l < S)
+to be shared across class groups.
+Each layer consists of input and output nodes with the
+(l)
+(l)
+weights W (l) that connects between them, and Pg , Qg
+for input-to-group and output-to-group assignments. Since
+the output nodes of each layer correspond to the input
+nodes of the next layer, the grouping assignment are shared
+(l)
+(l+1)
+as qg = pg
+. This enforces that no signal is passed
+across different groups of layers, so that forward and back-
+
+by first identifying the class with maximum logit in each
+group, and then selecting the class with maximum logit
+among the identified group-specific maximums. This requires minimal communication overhead.
+The objective function for deep split is the same with the
+weight-splitting method in section 3.2 (i.e. Eq.(1)–(2)), except for the previously explained alignment constraints.
+When applied to CNNs, the proposed group splitting process can be performed in the same manner on the convolutional filters. Suppose that a weight of a convolutional layer is a 4-D tensor Wc ∈ RM ×N ×D×K , where
+M, N denote height and width of receptive fields and D, K
+denote the number of input and output convolutional filters. We reduce the 4-D weight tensor Wc into a 2-D
+matrix Wc0 ∈ RD×K by taking the root sum squared of
+elements over heightqand width dimensions of Wc , i.e.
+P
+0
+2
+} = {
+Wc0 = {wdk
+m,n wmndk }. Then the weight
+regularization objective for the convolutional weight is obtained by Eq.(4), using Wc0 instead.
+3.3.2. H IERARCHICAL G ROUPING
+There often exist natural semantic hierarchies of classes:
+for example, The group dog and the group cat are subgroups of mammal. We can easily extend our deep split
+method to obtain multi-level hierarchies of categories. Figure 1 shows an example of such a hierachical split.
+Assume that the grouping branches at the l-th layer and the
+output nodes of the l-th layer are grouped by G supergroup
+P (l)
+(l)
+assignment vectors qg with g qg = 1D . Suppose
+that in the next layer, for each supergroup g ∈ {1, ..., G}
+there are corresponding S subgroup assignment vectors
+P
+(l+1)
+(l+1)
+pgs
+with s,g pgs
+= 1D . As aforementioned, the
+input nodes to the l+1-th layer corresponds to the output
+P (l+1)
+(l+1)
+nodes of l-th layer. By defining pg
+= s pgs , we
+can map subgroup assignments into corresponding supergroup assignments. This allows us to impose the constraint
+(l)
+(l+1)
+qg = p g
+as in Deep Split.
+3.4. Parallelization of SplitNet
+Our learning algorithm produces a tree-structured network
+whose subnetworks have no inter-group connections. This
+results in an embarrassingly model-parallel network where
+we can simply assign the obtained subnetworks to each
+
+SplitNet: Learning to Semantically Split Deep Networks for Parameter Reduction and Model Parallelization
+Table 1. Comparison of Test Errors According to Depths of Splitting (row) and Splitting Methods (column) on CIFAR-100.
+Postfix S, C and R denote SplitNet variants – Semantic, Clustering and Random, respectively.
+WRN-16-8 ( BASELINE )
+WRN-16-8 ( DROPOUT )
+M ETHOD
+FC S PLIT
+S HALLOW S PLIT
+D EEP S PLIT ( DROPOUT )
+H IER . S PLIT ( DROPOUT )
+
+S PLIT D EPTH
+1
+6
+11
+11
+
+G
+4
+2
+2
+2-4
+
+S PLIT N ET-S
+23.80
+24.46
+25.04
+24.92
+
+S PLIT N ET-C
+23.72
+24.54
+26.04
+25.98
+
+S PLIT N ET-R
+24.30
+25.46
+27.12
+26.78
+
+24.28
+24.52
+S PLIT N ET
+24.26
+23.96
+24.62
+24.80
+
+Table 2. Comparison of Parameter/Computation Reduction and Test Errors on CIFAR-100.
+N ETWORK
+WRN-16-8 ( BASELINE )
+FC S PLIT
+S HALLOW S PLIT
+D EEP S PLIT ( DROPOUT )
+H IER . S PLIT ( DROPOUT )
+
+PARAMS (106 )
+11.0
+11.0
+7.42
+5.90
+4.12
+
+% R EDUCED
+0.0
+0.35
+32.54
+46.39
+62.58
+
+processor, or a machine. In our implementation, we consider two approaches for model parallelization: 1) Assigning both the lower-layers and group-specific upper layers to each node. At the test time the lower layers are
+not changed; thus this approach is acceptable, although it
+causes unnecessary redundant computations across the processors. 2) Assigning the lower layer to a separate processor. This eliminates redundancies in the lower layer but incurs communication overhead between the lower layer and
+the upper layers.
+Training-time parallelization is currently done only at the
+finetuning step, after group assignments have been decided.
+We leave the parallelization from the initial network training stage as future work.
+
+FLOPS(109 )
+3.10
+3.10
+2.64
+2.11
+1.88
+
+% R EDUCED
+0.0
+0.0
+14.63
+31.97
+39.29
+
+T EST E RROR (%)
+24.28
+24.26
+23.96
+24.66
+24.80
+
+2016), which is one of the state-of-the-art networks of the
+dataset. We use AlexNet (Krizhevsky et al., 2012) and
+ResNet-18 (He et al., 2016) variants as the base network
+for the ILSVRC2012.
+2) SplitNet-Semantic. A variant of our SplitNet that obtains class grouping from a provided semantic taxonomy.
+Before training, we split the networks according to the taxonomy, evenly splitting layers and assigning subnetworks
+to each group, and train it from scratch. We use the same
+approach for SplitNet-Clustering and SplitNet-Random.
+3) SplitNet-Clustering. A variant of our SplitNet, where
+classes are split (hierarchical) performing spectral clustering of the pre-trained base network weights.
+4) SplitNet-Random. SplitNet using random class splits.
+
+4. Experiments
+Datasets. We validate our method for image classification
+tasks on two benchmark datasets.
+1) CIFAR-100. The CIFAR-100 dataset contains 32 × 32
+pixel images from 100 generic object classes. For each
+class, there are 500 images for training and 100 images for
+test. We set aside 50 images for each class from the training dataset as a validation set for cross-validation. Note that
+the test errors are not directly comparable to (Zagoruyko &
+Komodakis, 2016), as we use only 45,000 training images.
+2) ImageNet-1K. The ImageNet 1K dataset (Deng et al.,
+2009) that consists of 1.2 million images from 1, 000
+generic object classes. For each class, there are 1K − 1.3K
+images for training and 50 images for validation, which we
+use for test, following the standard procedure.
+Baselines. To compare different ways to obtain grouping,
+we test multiple variants of our SplitNet and baselines.
+1) Base Network. Base networks with full network
+weights. For experiments on the CIFAR-100, we use Wide
+Residual Network (WRN) (Zagoruyko & Komodakis,
+
+5) SplitNet. Our proposed SplitNet, that is trained using
+the proposed automatic splitting of weight matrices.
+All SplitNet variants and other baselines are implemented
+using TensorFlow (Abadi et al., 2016).
+4.1. Parameter Reduction and Accuracies
+Experimental results below validate the two key benefits of
+our SplitNet: 1) Reducing the number of parameters without losing the prediction accuracy, and 2) obtaining a better
+structure for model-parallelization.
+CIFAR-100. Table 1 summarizes split structures and test
+errors of different SplitNet variants and baselines. See the
+supplementary material for more details of used models.
+SplitNet variants using semantic taxonomy provided by the
+dataset (–S) and spectral clustering (–C) are better than random grouping (–R), showing that the appropriate grouping
+is critical for splitting DNNs. The SplitNet with learned
+splits outperforms all other variants, although it does not
+require any additional semantic information or pretrained
+network weights as with semantic or clustering split.
+
+SplitNet: Learning to Semantically Split Deep Networks for Parameter Reduction and Model Parallelization
+Table 3. Comparison of Parameter/Computation Reduction and Test Errors of AlexNet variants on ILSVRC2012. The number
+of splits indicates the split in fc6, fc7 and fc8 layer, respectively. In 2×5 split, we split from conv4 to fc8 with G = 2.
+N ETWORK
+A LEX N ET (BASELINE )
+S PLIT N ET
+
+S PLIT N ET-R
+
+S PLITS
+0
+1-1-3
+1-2-5
+2-4-8
+2×5
+1-1-3
+1-2-5
+2-4-8
+2×5
+
+PARAMS (106 )
+62.37
+59.64
+50.69
+27.34
+31.96
+59.64
+50.70
+27.34
+31.94
+
+% R EDUCED
+0
+4.38
+18.72
+56.17
+48.76
+4.38
+18.70
+56.17
+48.79
+
+FLOPS(109 )
+2.278
+2.273
+2.256
+2.209
+1.847
+2.273
+2.256
+2.209
+1.846
+
+% R EDUCED
+0
+0.21
+1.00
+3.05
+18.95
+0.21
+0.99
+3.05
+18.93
+
+T EST E RROR (%)
+41.72
+42.07
+42.21
+43.02
+44.60
+42.20
+43.20
+43.35
+44.99
+
+Table 4. Comparison of Parameter/Computation Reduction and Test Errors of ResNet-18 variants(ResNet-18x2) on
+ILSVRC2012. The number of splits indicates the split in conv4-1&2, conv5-1&2 and the last fc layer, respectively.
+N ETWORK
+R ES N ET-18 X 2
+S PLIT N ET
+S PLIT N ET-R
+
+S PLITS
+0
+1-1-3
+1-2-2
+2-2-2
+1-1-3
+1-2-2
+2-2-2
+
+S PLIT D EPTH
+0
+1
+6
+11
+1
+6
+11
+
+PARAMS (106 )
+45.67
+44.99
+28.39
+24.21
+44.99
+28.38
+24.14
+
+Table 2 compares test errors, parameter reduction, and
+computation (FLOPs) reduction of SplitNets against the
+base network WRN-16-8: a 16 layer residual network with
+widening factor k = 8. Most of parameters in WRNs exist
+in convolutional layers, especially in higher layers due to
+the large number of filters. Thus, FC Split yields minimal
+parameter reduction. On the other hand, Shallow Split of
+the last 5 convolutional layers significantly reduces the network parameters by 32.44% while even slightly improving
+the accuracy. Deep and Hierarchical Split further reduce
+parameters and FLOPs at the cost of minor accuracy drop.
+Shallow Split shows even better performance than the baseline with significantly fewer parameters. We attribute it to
+the fact that SplitNet starts from a full network and learns
+and cuts unnecessary connections between different groups
+for inner layers, imposing regularization effect on the layers. In addition, splitting layers can be regarded as a form
+of variable selection: each group in the layer parsimoniously selects only a needed group of input nodes.
+ImageNet-1K. Table 3 and 4 summarize the results of ImageNet experiments with two base networks: AlexNet and
+ResNet-18x2, a variant of ResNet-18 where the numbers
+of filters are doubled, respectively. Refer to supplementary
+materials for model description. Using AlexNet as a base
+model, SplitNet greatly reduces the number of parameters
+concentrated in fc layers. However, most of the FLOPs
+come from lower conv layers, yielding only minor FLOPs
+reduction. We observe that SplitNet on AlexNet shows minor test accuracy drop with significant parameter reduction.
+SplitNet based on ResNet-18x2 shows similar results as
+
+% R EDUCED
+0
+1.49
+37.84
+47.00
+1.49
+37.86
+47.14
+
+FLOPS(109 )
+14.04
+14.04
+12.39
+10.75
+14.03
+12.39
+10.75
+
+% R EDUCED
+0
+0.01
+11.72
+23.42
+0.01
+11.72
+23.46
+
+T EST E RROR (%)
+25.58
+24.90
+25.48
+26.45
+25.86
+26.41
+28.61
+
+Table 5. Model Parallelization Benchmark of SplitNet on Multiple GPUs. We measure evaluation time performance of our
+SplitNet over 50,000 CIFAR-100 images with batch size 100 on
+TITAN X Pascal. Baseline implements layer-wise parallelization
+where sequential blocks of layers are distributed on GPUs.
+N ETWORK
+BASELINE
+BASELINE -H ORZ .
+BASELINE -V ERT.
+BASELINE -V ERT.
+S HALLOW S PLIT
+D EEP S PLIT
+H IER . S PLIT
+D EEP S PLIT 3- WAY
+
+GPU S
+1
+2
+2
+3
+2
+2
+2
+3
+
+T IME ( S )
+24.27 ± 0.35
+46.70 ± 0.48
+20.15 ± 0.67
+22.45 ± 0.77
+17.78 ± 0.23
+14.03 ± 0.13
+14.22 ± 0.05
+10.92 ± 0.44
+
+S PEEDUP (×)
+1.00
+0.52
+1.20
+1.08
+1.37
+1.73
+1.71
+2.22
+
+WRN-16-8 on CIFAR-100. With all split schemes, SplitNet outperforms SplitNet-Random. Further, with 1-2-2
+split that splits the last FC layer and two residual blocks, the
+network parameters are significantly reduced by 37.86%
+while the test error is improved.
+4.2. Test-time Model Parallelization
+As illustrated in Figure 1, splitting DNNs yields speedup
+not only by reducing parameters, but also by utilizing the
+split structure for model parallelization. Thus we further
+validate parallelization performance of SplitNet at evaluation time, with multiple GPUs. Table 5 summarizes the
+run-time performance of SplitNet with model parallelization. We test two approaches: 1) Redundant assignment of
+lower layers (Deep and Hier. Split), and 2) assignment of
+lower layers to a separate GPU (Deep Split 3-way). With
+redundant assignment, the speedup becomes larger with
+
+SplitNet: Learning to Semantically Split Deep Networks for Parameter Reduction and Model Parallelization
+Q(f c8)
+
+rg
+e
+la ca
+rn
+rg
+iv
+e
+om or
+m
+es
+ed
+ni
+/h
+iu
+er
+sm m
+bi
+al ma
+vo
+l
+fr ma mm res
+ui
+m
+a
+t
+m ls
+a
+na nd al
+tu
+ve s
+r
+ge
+in al o
+ta
+se
+ut
+bl
+ct
+do
+e
+pe s
+or s
+op
+sc
+le
+en
+tr
+es
+ee
+s
+ve
+hi
+c
+ve les
+2
+hi
+c
+ho les
+us 1
+e
+aq ho
+ua ld
+fu
+t
+rn
+ou ic
+td ma itu
+o
+m re
+m
+fis or
+th
+a
+h
+in ls
+gs
+re
+pt
+ile
+s
+ho
+us
+e
+fo ho
+od ld
+co de
+in
+v
+ve nta ice
+in
+rt
+s
+flo eb ers
+ra
+w
+te
+er
+s
+s
+
+Q(f c7)
+
+la
+
+Q(f c6)
+
+Group1
+Group2
+
+5
+4
+3
+
+Group3
+Group4
+
+2
+1
+0
+
+P (f c6)
+
+W (f c6)
+
+P (f c7)
+
+W (f c7)
+
+P (f c8)
+
+W (f c8)
+
+Figure 3. Learned Groups and Block-diagonal Weight Matrices. Visualization of the weight matrices along with corresponding group assignments learned in in AlexNet 2-4-8 split. Obtained
+block-diagonal weights are split for faster multiplication. Note the
+hierarchical grouping structure.
+(a) Q(fc8) when
+
+2
+
+= 10
+
+4
+
+(b) Q(fc8) when
+
+2
+
+= 10
+
+5
+
+(c) Q(fc8) when
+
+2
+
+= 10
+
+6
+
+Figure 4. Effect of Balanced Group Regularization RE (P , Q).
+The above figures show group-to-class assignment matrix Q(f c8)
+for different values of γ3 on ImageNet-1K with G = 3
+
+deeper splits, up to 1.73×. Assigning lower layers to a
+third GPU eliminates redundant computation and achieves
+2.22× speedup. We compare against model-parallel approaches with both horizontal split (Baseline-Horz.) that
+splits the network horizontally as our split method but without pruning connections between two subnetworks, and
+vertical split (Baseline-Vert.) that splits the network into
+blocks of sequential layers. With vertical split, computations on GPUs are done asynchronously using queues to
+maintain intermediate activations. Horizontal split obtains
+much worse performance to original network due to excessive communication overhead. Vertical splitting scheme
+makes more sense with full networks, but the communication overhead is still large and it yields only 1.20× and
+1.08× speedup with two and three GPUs respectively.
+4.3. Qualitative Analysis
+Figure 3 visualizes the weight matrices and corresponding group assignments obtained in AlexNet 2-4-8 split on
+ImageNet-1K. Both group assignments of classes and features, P and Q, are sparse, and the weight matrices W of
+all layers are block diagonal. It indicates that grouping has
+converged with inter-group connections zeroed out.
+Figure 4 shows the effect of balanced group regularization
+on the group size. With large regularization, groups becomes almost uniform in size, which is desirable for parameter reduction and model parallelization. Relaxing this regularization grants some flexibility on the individual group
+sizes. Setting γ3 to be too small causes all classes and
+features to collapse into a single group, which may more
+
+Figure 5. Learned Groups. Visualization of grouping learned in
+FC SplitNet on CIFAR-100. Rows denote learned groups, while
+columns denote semantic groups provided by CIFAR-100 dataset,
+each of which includes 5 classes. The brightness of a cell shows
+the agreement between learned groups and semantic groups.
+
+closely resemble semantic taxonomies. In experiments, we
+enforced the models to be balanced, as our focus is more
+on efficiency and load balancing.
+Figure 5 compares the learned group assignments in FC
+SplitNet (G = 4) with supercategories provided by the
+CIFAR-100. Each supercategory (column) includes five
+classes. For example, supercategory people includes baby,
+boy, girl, man and woman, which are grouped together by
+our algorithm into Group 2. Note that we have at least three
+classes from the same supercategory in each group. This
+shows that groupings learned by our method bear some resemblance to semantic categories even when no external
+semantic information is given.
+The supplementary file presents the experimental results
+with varying G, the number of groups. Interestingly, with
+Shallow SplitNet on CIFAR-100, a higher G=4 achieves a
+better test accuracy with a parameter reduction of 48.66%.
+
+5. Conclusion
+We proposed a novel solution to split deep network into
+a tree of subnetworks, to not only reduce the number of
+parameters and computations, but to also enable straightforward model-parallelization. Specifically, we proposed
+an algorithm to cluster the classes into groups that fit to
+exclusive sets of features, which results in obtaining blockdiagonal weight matrices. Our splitting algorithm is seamlessly integrated into the network training procedure as a
+regularization term, and thus allows the network weights
+and splitting to be trained at the same time. We validated
+our method on two classification tasks with two different
+CNN architectures, on which it greatly reduced the number of parameters over the base networks, while obtaining superior performance over networks with semantic or
+clustering-based groups. Moreover, our network obtained
+superior parallelization performance against the base networks at test time. As future work, we plan to explore
+ways to efficiently train SplitNet on multi-GPU or multiprocessor environments from the initial training stage.
+Acknowledgements This work was supported by Samsung Research Funding Center of Samsung Electronics under project number SRFC-IT150203.
+
+SplitNet: Learning to Semantically Split Deep Networks for Parameter Reduction and Model Parallelization
 
 References
-Borda, J.C. Mémoire sur les élections au scrutin. Histoire
-de l’Académie Royale des Sciences, 1781.
-Bradley, R.A. and Terry, M.E.˙ The rank analysis of incomplete block designs I. The method of paired comparisons.
-Biometrika, 39:324–345, 1952.
-Brin, S. and Page, L. The anatomy of a large-scale hypertextual web search engine. In Proceedings of the
-7th International Conference on World Wide Web, pp.
-107–117, Amsterdam, The Netherlands, 1998. Elsevier
-Science Publishers B. V.
-Chen, X. Bennett, P.N. Collins-Thompson, K. and Horvitz,
-E.˙ Pairwise ranking aggregation in a crowdsourced setting. In Proceedings of the 6th ACM International Conference on Web Search and Data Mining, pp. 193–202,
-Rome, Italy, 2013.
-Copeland, A. H. A ’reasonable’ social welfare function. In
-Seminar on Mathematics in Social Sciences, University
-of Michigan, 1951.
-Dwork, C., Kumar, R., Naor, M., and Sivakumar, D. Rank
-aggregation methods for the web. In Proceedings of
-the 10th International Conference on World Wide Web,
-WWW ’01, pp. 613–622, New York, USA, 2001. ACM.
+Abadi, Martı́n, Agarwal, Ashish, Barham, Paul, Brevdo,
+Eugene, Chen, Zhifeng, Citro, Craig, Corrado, Greg S,
+Davis, Andy, Dean, Jeffrey, Devin, Matthieu, et al. Tensorflow: Large-scale Machine Learning on Heterogeneous Distributed Systems. arXiv:1603.04467, 2016.
+Alvarez, Jose M and Salzmann, Mathieu. Learning the
+Number of Neurons in Deep Networks. In NIPS. 2016.
+Ba, Jimmy and Caruana, Rich. Do Deep Nets Really Need
+to Be Deep? In NIPS, 2014.
+Bengio, Yoshua, Ducharme, Rejean, Vincent, Pascal, and
+Jauvin, Christian. A Neural Probabilistic Language
+Model. JMLR, 3:1137–1155, 2003.
+Chilimbi, Trishul, Suzue, Yutaka, Apacible, Johnson, and
+Kalyanaraman, Karthik. Project Adam: Building an Efficient and Scalable Deep Learning Training System. In
+OSDI, 2014.
+Collins, Maxwell D. and Kohli, Pushmeet.
+Memory Bounded Deep Convolutional Networks.
+In
+arXiv:1412.1442, 2014.
+Dean, Jeffrey, Corrado, Greg S., Monga, Rajat, Chen, Kai,
+Devin, Matthieu, Le, Quoc V., Mao, Mark Z., Ranzato,
+MarcAurelio, Senior, Andrew, Tucker, Paul, Yang, Ke,
+and Ng, Andrew Y. Large Scale Distributed Deep Networks. In NIPS, 2012.
+Deng, J., Dong, W., Socher, R., Li, L.-J., Li, K., and ei,
+L. Fei-F˙ Imagenet: A Large-Scale Hierarchical Image
+Database. In CVPR, 2009.
+Goo, Wonjoon, Kim, Juyong, Kim, Gunhee, and Hwang,
+Sung Ju. Taxonomy-Regularized Semantic Deep Convolutional Neural Networks. In ECCV, 2016.
+Han, Song, Pool, Jeff, Tran, John, and Dally, William.
+Learning Both Weights and Connections for Efficient
+Neural Network. In NIPS. 2015.
+He, Kaiming, Zhang, Xiangyu, Ren, Shaoqing, and Sun,
+Jian. Deep Residual Learning for Image Recognition. In
+CVPR, 2016.
+Hinton, Geoffrey, Deng, Li, Yu, Dong, Dahl, George, rahman Mohamed, Abdel, Jaitly, Navdeep, Senior, Andrew,
+Vanhoucke, Vincent, Nguyen, Patrick, Kingsbury, Brian,
+and Sainath, Tara. Deep Neural Networks for Acoustic
+Modeling in Speech Recognition. IEEE Signal Processing Magazine, 29:82–97, 2012.
+Hinton, Geoffrey, Vinyals, Oriol, and Dean, Jeff. Distilling
+the Knowledge in a Neural Network. NIPS 2014 Deep
+Learning Workshop, 2014.
 
-Jiang, X., Lim, L., Yao, Y., and Ye, Y. Statistical ranking and
-combinatorial hodge theory. Mathematical Programming,
-127(1):203–244, 2011.
-Kamishima, T. Nantonac collaborative filtering: Recommendation based on order responses. In Proceedings
-of the 9th ACM SIGKDD International Conference on
-Knowledge Discovery and Data Mining, KDD ’03, pp.
-583–588, New York, USA, 2003. ACM.
-Lebanon, G. and Mao, Y. Nonparametric modeling of partially ranked data. Journal of Machine Learning Research,
-9:2401–2429, 2008.
-Liu, T.Y.˙ Learning to Rank for Information Retrieval.
-Springer-Verlag, 2011.
-Luce, R.D. Individual Choice Behavior: A Theoretical
-Analysis. John Wiley and Sons, New York, 1959.
-Mallows, C. Non-null ranking models. Biometrika, 44(1):
-114–130, 1957.
-Marden, J.I. Analyzing and Modeling Rank Data. London,
-New York, 1995.
-Matsui, T. Baba, Y. Kamishima, T. and Kashima, H.˙Crowdordering. In Proceedings of the 18th Pacific-Asia Conference on Advances in Knowledge Discovery and Data
-Mining, pp. 336–347, Tainan, Taiwan, 2014.
-
-Fomin, F.V., Lokshtanov, D., Raman, V., and Saurabh, S.
-Fast local search algorithm for weighted feedback arc
-set in tournaments. In Proceedings of the 24th AAAI
-Conference on Artificial Intelligence, AAAI’10, pp. 65–
-70. AAAI Press, 2010.
-
-Negahban, S., Oh, S., and Shah, D. Iterative ranking from
-pair-wise comparisons. In Advances in Neural Information Processing Systems (NIPS’12), pp. 2474–2482,
-2012.
-
-Fürnkranz, J. Round robin classification. Journal of Machine Learning Research, 2:721–747, 2002.
-
-Plackett, R. The analysis of permutations. Applied Statistics,
-24:193–202, 1975.
-
-Fürnkranz, J. and Hüllermeier, E. Preference Learning.
-Springer-Verlag, 2011.
-
-Price, D., Knerr, S., Personnaz, L., and Dreyfus, G. Pairwise neural network classifiers with probabilistic outputs.
-In Proceedings of the 7th International Conference on
-Neural Information Processing Systems (NIPS’94), pp.
-1109–1116, Cambridge, MA, USA, 1994. MIT Press.
-
-Gill, R. D., Laan, M. J., and Robins, J. M. Coarsening at random: Characterizations, conjectures, counter-examples.
-In Proceedings of the 1st Seattle Symposium in Biostatistics: Survival Analysis, pp. 255–294. Springer US, New
-York, 1997.
-Hastie, T. and Tibshirani, R. Classification by pairwise
-coupling. In Advances in Neural Information Processing
-Systems (NIPS’98). The MIT Press, 1998.
-
-Rajkumar, A. and Agarwal, S.˙A statistical convergence perspective of algorithms for rank aggregation from pairwise
-data. In Proceedings of the 31th International Conference on Machine Learning, pp. 118–126, Beijing, China,
-2014.
-
-Heitjan, D.F. and Rubin, D.B. Ignorability and coarse data.
-The Annals of Statistics, 19(4):2244–2253, 1991.
-
-Saab, Y. A fast and effective algorithm for the feedback arc
-set problem. Journal of Heuristics, 7(3):235–250, May
-2001.
-
-Hüllermeier, E., Fürnkranz, J., Cheng, W., and Brinker, K.
-Label ranking by learning pairwise preferences. Artificial
-Intelligence, 172:1897–1917, 2008.
-
-Seeley, J. R. The net of reciprocal influence; a problem in
-treating sociometric data. Canadian Journal of Psychology, 3(4):234–240, Dec 1949.
-
-Statistical Inference for Incomplete Ranking Data
-
-Sibony, E. Clémençon, S. and Jakubowicz, J.˙ MRA-based
-statistical learning from incomplete rankings. In Proceedings of the 32th International Conference on Machine
-Learning, pp. 1432–1441, Lille, France, 2015.
-Soufiani, H.A. Parkes, D.C. and Xia, L.˙ Computing parametric ranking models via rank-breaking. In Proceedings
-of the 31th International Conference on Machine Learning, Beijing, China, 2014.
-Vigna, S. Spectral ranking. CoRR, abs/0912.0238, 2009.
-Wu, T.F., Lin, C.J., and Weng, R.C. Probability estimates for
-multi-class classification by pairwise coupling. Journal
-of Machine Learning Research, 5:975–1005, December
-2004.
+Huth, Alexander H., Nishimoto, Shinji, Vu, An T., and
+Gallant, Jack L. A Continuous Semantic Space Describes the Representation of Thousands of Object and
+Action Categories across the Human Brain. Neuron, 76
+(6):1210–1224, December 2012.
+Krizhevsky, Alex. One Weird Trick for Parallelizing Convolutional Neural Networks. arXiv:1404.5997, 2014.
+Krizhevsky, Alex, Sutskever, Ilya, and Hinton, Geoffrey E.
+ImageNet Classification with Deep Convolutional Neural Networks. In NIPS, 2012.
+Murdock, Calvin, Li, Zhen, Zhou, Howard, and Duerig,
+Tom. Blockout: Dynamic Model Selection for Hierarchical Deep Networks. In CVPR, 2016.
+Rakotomamonjy, Alain, Bach, Francis R, Canu, Stéphane,
+and Grandvalet, Yves. SimpleMKL. JMLR, 9:2491–
+2521, 2008.
+Reed, Russell. Pruning Algorithms - A Survey. IEEE
+Transactions on Neural Networks, 4(5):740–747, 1993.
+Shankar, Sukrit, Robertson, Duncan, Ioannou, Yani, Criminisi, Antonio, and Cipolla, Roberto. Refining Architectures of Deep Convolutional Neural Networks. In CVPR,
+2016.
+Sutskever, Ilya, Vinyals, Oriol, and Le, Quoc V. Sequence
+to Sequence Learning with Neural Networks. In NIPS,
+pp. 3104–3112, 2014.
+Szegedy, Christian, Liu, Wei, Jia, Yangqing, Sermanet,
+Pierre, Reed, Scott, Anguelov, Dragomir, Erhan, Dumitru, Vanhoucke, Vincent, and Rabinovich, Andrew.
+Going Deeper with Convolutions. In CVPR, 2015.
+Warde-Farley, D., Rabinovich, A., and Anguelov, D.
+Self-informed Neural Network Structure Learning.
+arXiv:1412.6563, 2014.
+Wen, Wei, Wu, Chunpeng, Wang, Yandan, Chen, Yiran,
+and Li, Hai. Learning Structured Sparsity in Deep Neural Networks. In NIPS. 2016.
+Yan, Zhicheng, Zhang, Hao, Jagadeesh, Vignesh, DeCoste,
+Dennis, Di, Wei, and Yu, Yizhou. HD-CNN: Hierarchical Deep Convolutional Neural Network for Image Classification. In ICCV, 2015.
+Zagoruyko, Sergey and Komodakis, Nikos. Wide Residual
+Networks. In BMVC, 2016.
+Zhang, Hao, Hu, Zhiting, Wei, Jinliang, Xie, Pengtao, Kim,
+Gunhee, Ho, Qirong, and Xing, Eric. Poseidon: A System Architecture for Efficient GPU-based Deep Learning on Multiple Machines. arXiv:1512.06216, 2015.
 
 

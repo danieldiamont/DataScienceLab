@@ -1,1150 +1,1015 @@
-Modular Multitask Reinforcement Learning with Policy Sketches
-Jacob Andreas 1 Dan Klein 1 Sergey Levine 1
+Learning the Structure of Generative Models without Labeled Data
+Stephen H. Bach 1 Bryan He 1 Alexander Ratner 1 Christopher Ré 1
 
 Abstract
-We describe a framework for multitask deep reinforcement learning guided by policy sketches.
-Sketches annotate tasks with sequences of named
-subtasks, providing information about high-level
-structural relationships among tasks but not how
-to implement them—specifically not providing
-the detailed guidance used by much previous
-work on learning policy abstractions for RL (e.g.
-intermediate rewards, subtask completion signals, or intrinsic motivations). To learn from
-sketches, we present a model that associates every subtask with a modular subpolicy, and jointly
-maximizes reward over full task-specific policies by tying parameters across shared subpolicies. Optimization is accomplished via a decoupled actor–critic training objective that facilitates
-learning common behaviors from multiple dissimilar reward functions. We evaluate the effectiveness of our approach in three environments
-featuring both discrete and continuous control,
-and with sparse rewards that can be obtained only
-after completing a number of high-level subgoals. Experiments show that using our approach
-to learn policies guided by sketches gives better
-performance than existing techniques for learning task-specific or shared policies, while naturally inducing a library of interpretable primitive behaviors that can be recombined to rapidly
-adapt to new tasks.
+Curating labeled training data has become the
+primary bottleneck in machine learning. Recent frameworks address this bottleneck with
+generative models to synthesize labels at scale
+from weak supervision sources. The generative
+model’s dependency structure directly affects the
+quality of the estimated labels, but selecting a
+structure automatically without any labeled data
+is a distinct challenge. We propose a structure estimation method that maximizes the `1 regularized marginal pseudolikelihood of the observed data. Our analysis shows that the amount
+of unlabeled data required to identify the true
+structure scales sublinearly in the number of possible dependencies for a broad class of models. Simulations show that our method is 100⇥
+faster than a maximum likelihood approach and
+selects 1/4 as many extraneous dependencies.
+We also show that our method provides an average of 1.5 F1 points of improvement over existing, user-developed information extraction applications on real-world data such as PubMed journal abstracts.
 
 1. Introduction
-This paper describes a framework for learning composable deep subpolicies in a multitask setting, guided only
-by abstract sketches of high-level behavior. General reinforcement learning algorithms allow agents to solve tasks
-in complex environments. But tasks featuring extremely
-1
-University of California, Berkeley. Correspondence to: Jacob
-Andreas <jda@cs.berkeley.edu>.
+Supervised machine learning traditionally depends on access to labeled training data, a major bottleneck in developing new methods and applications. In particular, deep
+learning methods require tens of thousands or more labeled
+data points for each specific task. Collecting these labels is
+often prohibitively expensive, especially when specialized
+domain expertise is required, and major technology companies are investing heavily in hand-curating labeled training
+data (Metz, 2016; Eadicicco, 2017). Aiming to overcome
+this bottleneck, there is growing interest in using generative models to synthesize training data from weak super1
 
+Stanford University, Stanford, California. Correspondence
+to: Stephen Bach <bach@cs.stanford.edu>.
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-τ1: make planks
-b1: get wood
+vision sources such as heuristics, knowledge bases, and
+weak classifiers trained directly on noisy sources. Rather
+than treating training labels as gold-standard inputs, such
+methods model training set creation as a process in order to
+generate training labels at scale. The true class label for a
+data point is modeled as a latent variable that generates the
+observed, noisy labels. After fitting the parameters of this
+generative model on unlabeled data, a distribution over the
+latent, true labels can be inferred.
+The structure of such generative models directly affects the
+inferred labels, and prior work assumes that the structure
+is user-specified (Alfonseca et al., 2012; Takamatsu et al.,
+2012; Roth & Klakow, 2013b; Ratner et al., 2016). One
+option is to assume that the supervision sources are conditionally independent given the latent class label. However,
+statistical dependencies are common in practice, and not
+taking them into account leads to misjudging the accuracy
+of the supervision. We cannot rely in general on users to
+specify the structure of the generative model, because supervising heuristics and classifiers might be independent
+for some data sets but not others. We therefore seek an efficient method for automatically learning the structure of the
+generative model from weak supervision sources alone.
+While structure learning in the supervised setting is wellstudied (e.g., Meinshausen & Bühlmann, 2006; Zhao & Yu,
+2006; Ravikumar et al., 2010, see also Section 6), learning the structure of generative models for weak supervision is challenging because the true class labels are latent.
+Although we can learn the parameters of generative models for a given structure using stochastic gradient descent
+and Gibbs sampling, modeling all possible dependencies
+does not scale as an alternative to model selection. For
+example, estimating all possible correlations for a modestly sized problem of 100 weak supervision sources takes
+over 40 minutes. (For comparison, our proposed approach
+solves the same problem in 15 seconds.) As users develop
+their supervision heuristics, rerunning parameter learning
+to identify dependencies becomes a prohibitive bottleneck.
+We propose an estimator to learn the dependency structure
+of a generative model without using any labeled training
+data. Our method maximizes the `1 -regularized marginal
+pseudolikelihood of each supervision source’s output independently, selecting those dependencies that have nonzero
 
-K1
+Learning the Structure of Generative Models without Labeled Data
 
-b2: use workbench
+weights. This estimator is analogous to maximum likelihood for logistic regression, except that we marginalize
+out our uncertainty about the latent class label. Since the
+pseudolikelihood is a function of one free variable and
+marginalizes over one other variable, we compute the gradient of the marginal pseudolikelihood exactly, avoiding
+the need for approximating the gradient with Gibbs sampling, as is done for maximum likelihood estimation.
+Our analysis shows that the amount of data required to
+identify the true structure scales sublinearly in the number
+of possible dependencies for a broad class of models. Intuitively, this follows from the fact that learning the generative model’s parameters is possible when there are a sufficient number of better-than-random supervision sources
+available. With enough signal to estimate the latent class
+labels better than random guessing, those estimates can be
+refined until the model is identified.
+We run experiments to confirm these predictions. We also
+compare against the alternative approach of considering all
+possible dependencies during parameter learning. We find
+that our method is 100⇥ faster. In addition, our method
+returns 1/4 as many extraneous correlations on synthetic
+data when tuned for comparable recall. Finally, we demonstrate that on real-world applications of weak supervision,
+using generative models with automatically learned dependencies improves performance. We find that our method
+provides on average 1.5 F1 points of improvement over existing, user-developed information extraction applications
+on PubMed abstracts and hardware specification sheets.
 
-Π1
-π1
-π2
+2. Background
+When developing machine learning systems, the primary
+bottleneck is often curating a sufficient amount of labeled
+training data. Hand labeling training data is expensive, time
+consuming, and often requires specialized knowledge. Recently researchers have proposed methods for synthesizing
+labels from noisy label sources using generative models.
+(See Section 6 for a summary.) We ground our work in one
+framework, data programming (Ratner et al., 2016), that
+generalizes many approaches in the literature.
+In data programming, weak supervision sources are encoded as labeling functions, heuristics that label data points
+(or abstain). A generative probabilistic model is fit to estimate the accuracy of the labeling functions and the strength
+of any user-specified statistical dependencies among their
+outputs. In this model, the true class label for a data point
+is a latent variable that generates the labeling function outputs. After fitting the parameters of the generative model,
+a distribution over the latent, true labels can be estimated
+and be used to train a discriminative model by minimizing
+the expected loss with respect to that distribution.
 
-τ2: make sticks
-b1: get wood
-b3: use toolshed
+We formally describe this setup by first specifying for each
+data point xi a latent random variable yi 2 { 1, 1} that
+is its true label. For example, in an information extraction
+task, xi might be a span of text. Then, yi can represent
+whether it is a mention of a company or not (entity tagging). Alternatively, xi might be a more complex structure,
+such as a tuple of canonical identifiers along with associated mentions in a document, and then yi can represent
+whether a relation of interest over that tuple is expressed
+in the document (relation extraction).
+We do not have access to yi (even at training time), but
+we do have n user-provided labeling functions 1 , . . . , n
+that can be applied to xi to produce outputs ⇤i1 , . . . , ⇤in .
+For example, for the company-tagging task mentioned
+above, a labeling function might apply the regular expression .+\sInc\. to a span of text and return whether it
+matched. The domain of each ⇤ij is { 1, 0, 1}, corresponding to false, abstaining, and true. Generalizing to
+the multiclass case is straightforward.
+Our goal is to estimate a probabilistic model that generates the labeling-function outputs ⇤ 2 { 1, 0, 1}m⇥n . A
+common assumption is that the outputs are conditionally
+independent given the true label, and that the relationship
+between ⇤ and y is governed by n accuracy dependencies
+Acc
+j (⇤i , yi )
 
-K2
+:= yi ⇤ij
 
-Π2
-π1
-π3
-
-π3
-π2
-π1
-
-π1
-
-Figure 1: Learning from policy sketches. The figure shows simplified versions of two tasks (make planks and make sticks, each
-associated with its own policy (⇧1 and ⇧2 respectively). These
-policies share an initial high-level action b1 : both require the
-agent to get wood before taking it to an appropriate crafting station. Even without prior information about how the associated behavior ⇡1 should be implemented, knowing that the agent should
-initially follow the same subpolicy in both tasks is enough to learn
-a reusable representation of their shared structure.
-
-delayed rewards or other long-term structure are often difficult to solve with flat, monolithic policies, and a long
-line of prior work has studied methods for learning hierarchical policy representations (Sutton et al., 1999; Dietterich, 2000; Konidaris & Barto, 2007; Hauser et al., 2008).
-While unsupervised discovery of these hierarchies is possible (Daniel et al., 2012; Bacon & Precup, 2015), practical
-approaches often require detailed supervision in the form
-of explicitly specified high-level actions, subgoals, or behavioral primitives (Precup, 2000). These depend on state
-representations simple or structured enough that suitable
-reward signals can be effectively engineered by hand.
-But is such fine-grained supervision actually necessary to
-achieve the full benefits of hierarchy? Specifically, is it
-necessary to explicitly ground high-level actions into the
-representation of the environment? Or is it sufficient to
-simply inform the learner about the abstract structure of
-policies, without ever specifying how high-level behaviors
-should make use of primitive percepts or actions?
-To answer these questions, we explore a multitask reinforcement learning setting where the learner is pre-
-
-Modular Multitask Reinforcement Learning with Policy Sketches
-
-sented with policy sketches. Policy sketches are short, ungrounded, symbolic representations of a task that describe
-its component parts, as illustrated in Figure 1. While symbols might be shared across tasks (get wood appears in
-sketches for both the make planks and make sticks tasks),
-the learner is told nothing about what these symbols mean,
-in terms of either observations or intermediate rewards.
-We present an agent architecture that learns from policy
-sketches by associating each high-level action with a parameterization of a low-level subpolicy, and jointly optimizes over concatenated task-specific policies by tying
-parameters across shared subpolicies. We find that this
-architecture can use the high-level guidance provided by
-sketches, without any grounding or concrete definition, to
-dramatically accelerate learning of complex multi-stage behaviors. Our experiments indicate that many of the benefits
-to learning that come from highly detailed low-level supervision (e.g. from subgoal rewards) can also be obtained
-from fairly coarse high-level supervision (i.e. from policy
-sketches). Crucially, sketches are much easier to produce:
-they require no modifications to the environment dynamics or reward function, and can be easily provided by nonexperts. This makes it possible to extend the benefits of
-hierarchical RL to challenging environments where it may
-not be possible to specify by hand the details of relevant
-subtasks. We show that our approach substantially outperforms purely unsupervised methods that do not provide the
-learner with any task-specific guidance about how hierarchies should be deployed, and further that the specific use
-of sketches to parameterize modular subpolicies makes better use of sketches than conditioning on them directly.
-The present work may be viewed as an extension of recent
-approaches for learning compositional deep architectures
-from structured program descriptors (Andreas et al., 2016;
-Reed & de Freitas, 2016). Here we focus on learning in interactive environments. This extension presents a variety of
-technical challenges, requiring analogues of these methods
-that can be trained from sparse, non-differentiable reward
-signals without demonstrations of desired system behavior.
-Our contributions are:
-• A general paradigm for multitask, hierarchical, deep
-reinforcement learning guided by abstract sketches of
-task-specific policies.
-• A concrete recipe for learning from these sketches,
-built on a general family of modular deep policy representations and a multitask actor–critic training objective.
-The modular structure of our approach, which associates
-every high-level action symbol with a discrete subpolicy,
-naturally induces a library of interpretable policy fragments
-
-that are easily recombined. This makes it possible to evaluate our approach under a variety of different data conditions: (1) learning the full collection of tasks jointly via
-reinforcement, (2) in a zero-shot setting where a policy
-sketch is available for a held-out task, and (3) in a adaptation setting, where sketches are hidden and the agent must
-learn to adapt a pretrained policy to reuse high-level actions in a new task. In all cases, our approach substantially
-outperforms previous approaches based on explicit decomposition of the Q function along subtasks (Parr & Russell,
-1998; Vogel & Jurafsky, 2010), unsupervised option discovery (Bacon & Precup, 2015), and several standard policy gradient baselines.
-We consider three families of tasks: a 2-D Minecraftinspired crafting game (Figure 3a), in which the agent must
-acquire particular resources by finding raw ingredients,
-combining them together in the proper order, and in some
-cases building intermediate tools that enable the agent to alter the environment itself; a 2-D maze navigation task that
-requires the agent to collect keys and open doors, and a 3-D
-locomotion task (Figure 3b) in which a quadrupedal robot
-must actuate its joints to traverse a narrow winding cliff.
-In all tasks, the agent receives a reward only after the final
-goal is accomplished. For the most challenging tasks, involving sequences of four or five high-level actions, a taskspecific agent initially following a random policy essentially never discovers the reward signal, so these tasks cannot be solved without considering their hierarchical structure. We have released code at http://github.com/
-jacobandreas/psketch.
-
-2. Related Work
-The agent representation we describe in this paper belongs to the broader family of hierarchical reinforcement
-learners. As detailed in Section 3, our approach may be
-viewed as an instantiation of the options framework first
-described by Sutton et al. (1999). A large body of work
-describes techniques for learning options and related abstract actions, in both single- and multitask settings. Most
-techniques for learning options rely on intermediate supervisory signals, e.g. to encourage exploration (Kearns &
-Singh, 2002) or completion of pre-defined subtasks (Kulkarni et al., 2016). An alternative family of approaches employs post-hoc analysis of demonstrations or pretrained
-policies to extract reusable sub-components (Stolle & Precup, 2002; Konidaris et al., 2011; Niekum et al., 2015).
-Techniques for learning options with less guidance than the
-present work include Bacon & Precup (2015) and Vezhnevets et al. (2016), and other general hierarchical policy
-learners include Daniel et al. (2012), Bakker & Schmidhuber (2004) and Menache et al. (2002). We will see that
-the minimal supervision provided by policy sketches re-
-
-Modular Multitask Reinforcement Learning with Policy Sketches
-
-sults in (sometimes dramatic) improvements over fully unsupervised approaches, while being substantially less onerous for humans to provide compared to the grounded supervision (such as explicit subgoals or feature abstraction
-hierarchies) used in previous work.
-Once a collection of high-level actions exists, agents are
-faced with the problem of learning meta-level (typically
-semi-Markov) policies that invoke appropriate high-level
-actions in sequence (Precup, 2000). The learning problem
-we describe in this paper is in some sense the direct dual
-to the problem of learning these meta-level policies: there,
-the agent begins with an inventory of complex primitives
-and must learn to model their behavior and select among
-them; here we begin knowing the names of appropriate
-high-level actions but nothing about how they are implemented, and must infer implementations (but not, initially,
-abstract plans) from context. Our model can be combined
-with these approaches to support a “mixed” supervision
-condition where sketches are available for some tasks but
-not others (Section 4.5).
-Another closely related line of work is the Hierarchical
-Abstract Machines (HAM) framework introduced by Parr
-& Russell (1998). Like our approach, HAMs begin with
-a representation of a high-level policy as an automaton
-(or a more general computer program; Andre & Russell,
-2001; Marthi et al., 2004) and use reinforcement learning to fill in low-level details. Because these approaches
-attempt to learn a single representation of the Q function
-for all subtasks and contexts, they require extremely strong
-formal assumptions about the form of the reward function
-and state representation (Andre & Russell, 2002) that the
-present work avoids by decoupling the policy representation from the value function. They perform less effectively
-when applied to arbitrary state representations where these
-assumptions do not hold (Section 4.3). We are additionally unaware of past work showing that HAM automata can
-be automatically inferred for new tasks given a pre-trained
-model, while here we show that it is easy to solve the corresponding problem for sketch followers (Section 4.5).
-Our approach is also inspired by a number of recent efforts
-toward compositional reasoning and interaction with structured deep models. Such models have been previously used
-for tasks involving question answering (Iyyer et al., 2014;
-Andreas et al., 2016) and relational reasoning (Socher et al.,
-2012), and more recently for multi-task, multi-robot transfer problems (Devin et al., 2016). In the present work—as
-in existing approaches employing dynamically assembled
-modular networks—task-specific training signals are propagated through a collection of composed discrete structures
-with tied weights. Here the composed structures specify time-varying policies rather than feedforward computations, and their parameters must be learned via interaction
-
-rather than direct supervision. Another closely related family of models includes neural programmers (Neelakantan
-et al., 2015) and programmer–interpreters (Reed & de Freitas, 2016), which generate discrete computational structures but require supervision in the form of output actions
-or full execution traces.
-We view the problem of learning from policy sketches as
-complementary to the instruction following problem studied in the natural language processing literature. Existing
-work on instruction following focuses on mapping from
-natural language strings to symbolic action sequences that
-are then executed by a hard-coded interpreter (Branavan
-et al., 2009; Chen & Mooney, 2011; Artzi & Zettlemoyer,
-2013; Tellex et al., 2011). Here, by contrast, we focus on
-learning to execute complex actions given symbolic representations as a starting point. Instruction following models
-may be viewed as joint policies over instructions and environment observations (so their behavior is not defined in
-the absence of instructions), while the model described in
-this paper naturally supports adaptation to tasks where no
-sketches are available. We expect that future work might
-combine the two lines of research, bootstrapping policy
-learning directly from natural language hints rather than the
-semi-structured sketches used here.
-
-3. Learning Modular Policies from Sketches
-We consider a multitask reinforcement learning problem arising from a family of infinite-horizon discounted
-Markov decision processes in a shared environment. This
-environment is specified by a tuple (S, A, P, ), with S a
-set of states, A a set of low-level actions, P : S ⇥ A ⇥ S !
-R a transition probability distribution, and a discount factor. Each task ⌧ 2 T is then specified by a pair (R⌧ , ⇢⌧ ),
-with R⌧ : S ! R a task-specific reward function and
-⇢⌧ : S ! R an initial distribution over states. For a fixed
-sequence {(si , ai )} of states and actions obtained from a
-rollout of a given policy, weP
-will denote the empirical return
+with a parameter ✓jAcc modeling how accurate each labeling
+function j is. We refer to this structure as the conditionally independent model, and specify it as
+0
 1
-starting in state si as qi := j=i+1 j i 1 R(sj ). In addition to the components of a standard multitask RL problem,
-we assume that tasks are annotated with sketches K⌧ , each
-consisting of a sequence (b⌧ 1 , b⌧ 2 , . . .) of high-level symbolic labels drawn from a fixed vocabulary B.
-3.1. Model
-We exploit the structural information provided by sketches
-by constructing for each symbol b a corresponding subpolicy ⇡b . By sharing each subpolicy across all tasks annotated
-with the corresponding symbol, our approach naturally
-learns the shared abstraction for the corresponding subtask,
-without requiring any information about the grounding of
-that task to be explicitly specified by annotation.
-
-Modular Multitask Reinforcement Learning with Policy Sketches
-
-Algorithm 1 TRAIN - STEP(⇧, curriculum)
-1: D
-;
-2: while |D| < D do
-3:
-// sample task ⌧ from curriculum (Section 3.3)
-4:
-⌧ ⇠ curriculum(·)
-5:
-// do rollout
-6:
-d = {(si , ai , (bi = K⌧,i ), qi , ⌧ ), . . .} ⇠ ⇧⌧
-7:
-D
-D[d
-8: // update parameters
-9: for b 2 B, ⌧ 2 T do
-10:
-d = {(si , ai , b0 , qi , ⌧ 0 ) 2 D : b0 = b, ⌧ 0 = ⌧ }
-11:
-// update subpolicy
-P
-↵
-12:
-✓b
-✓b + D
-c⌧ (si )
-d r log ⇡b (ai |si ) qi
-13:
-// update criticP
-14:
-⌘⌧
-⌘⌧ + D d rc⌧ (si ) qi c⌧ (si )
-
-Algorithm 2 TRAIN - LOOP()
-
-At each timestep, a subpolicy may select either a low-level
-action a 2 A or a special STOP action. We denote the
-augmented state space A+ := A [ {STOP}. At a high
-level, this framework is agnostic to the implementation of
-subpolicies: any function that takes a representation of the
-current state onto a distribution over A+ will do.
-
-over all ✓b to maximize expected discounted reward
+m X
+n
 X
+A ,
+p✓ (⇤, Y ) / exp @
+✓jAcc Acc
+(1)
+j (⇤i , yi )
+i=1 j=1
+
+where Y := y1 , . . . , ym .
+
+We estimate the parameters ✓ by minimizing the negative
+¯ for an observed matrix of
+log marginal likelihood p✓ (⇤)
+¯
+labeling function outputs ⇤:
 X
-⇥X i
+¯ Y).
+arg min
+log
+p✓ (⇤,
+(2)
+✓
+
+Y
+
+Optimizing the likelihood is straightforward using stochastic gradient descent. The gradient of objective (2) with respect to parameter ✓jAcc is
+m
+X
+i=1
+
+E⇤,Y ⇠✓
+
+⇥
+
+Acc
+j (⇤i , yi )
+
 ⇤
-J(⇧) :=
-J(⇧⌧ ) :=
-Esi ⇠⇧⌧
-R⌧ (si )
 
-1:
-2:
-3:
-4:
-5:
-6:
-7:
-8:
-9:
-10:
-11:
-12:
-13:
-14:
+EY ⇠✓|⇤¯
 
-// initialize subpolicies randomly
-⇧ = INIT()
-`max
-1
-loop
-rmin
-1
-// initialize `max -step curriculum uniformly
-T 0 = {⌧ 2 T : |K⌧ |  `max }
-curriculum(·) = Unif(T 0 )
-while rmin < rgood do
-// update parameters (Algorithm 1)
-TRAIN - STEP (⇧, curriculum)
-curriculum(⌧ ) / 1[⌧ 2 T 0 ](1 Êr⌧ ) 8⌧ 2 T
-rmin
-min⌧ 2T 0 Êr⌧
-`max
-`max + 1
+⇥
 
-⌧
+Acc ¯
+j (⇤i , yi )
 
-⌧
+⇤
 
-i
+,
 
-across all tasks ⌧ 2 T .
+the difference between the corresponding sufficient statistic
+of the joint distribution p✓ and the same distribution con¯ In practice, we can interleave samples to
+ditioned on ⇤.
+estimate the gradient and gradient steps very tightly, taking
 
-In this paper, we focus on the case where each ⇡b is represented as a neural network.1 These subpolicies may be
-viewed as options of the kind described by Sutton et al.
-(1999), with the key distinction that they have no initiation
-semantics, but are instead invokable everywhere, and have
-no explicit representation as a function from an initial state
-to a distribution over final states (instead implicitly using
-the STOP action to terminate).
+Learning the Structure of Generative Models without Labeled Data
 
-3.2. Policy Optimization
+a small step after each sample of each variable ⇤ij or yi ,
+similarly to contrastive divergence (Hinton, 2002).
+The conditionally independent model is a common assumption, and using a more sophisticated generative model
+currently requires users to specify its structure. In the rest
+of the paper, we address the question of automatically iden¯
+tifying the dependency structure from the observations ⇤
+without observing Y .
 
-Given a fixed sketch (b1 , b2 , . . . ), a task-specific policy ⇧⌧
-is formed by concatenating its associated subpolicies in sequence. In particular, the high-level policy maintains a subpolicy index i (initially 0), and executes actions from ⇡bi
-until the STOP symbol is emitted, at which point control is
-passed to ⇡bi+1 . We may thus think of ⇧⌧ as inducing a
-Markov chain over the state space S ⇥ B, with transitions:
+3. Structure Learning without Labels
+Statistical dependencies arise naturally among weak supervision sources. In data programming, users often write labeling functions with directly correlated outputs or even
+labeling functions deliberately designed to reinforce others with narrow, more precise heuristics. To address this
+issue, we generalize the conditionally independent model
+as a factor graph with additional dependencies, including
+higher-order factors that connect multiple labeling function
+outputs for each data point xi and label yi . We specify the
+general model as
+!
+m X X
+X
+t t
+p✓ (⇤, Y ) / exp
+✓s s (⇤i , yi ) .
+(3)
 
-where the baseline or “critic” c can be chosen independently of the future without introducing bias into the gradient. Recalling our previous definition of qi as the empirical return starting from si , this form of the gradient corresponds to a generalized advantage estimator (Schulman
-et al., 2015a) with = 1. Here c achieves close to the
-optimal variance (Greensmith et al., 2004) when it is set
+marginal pseudolikelihood of the outputs of a single labeling function j , i.e., conditioned on the outputs of the
+others \j , using `1 regularization to induce sparsity. The
+objective is
+✓
 
-(s, bi ) ! (s0 , bi )
+Cor
+jk (⇤i , yi )
 
-! (s, bi+1 )
+:=
 
-with pr.
+{⇤ij = ⇤ik } .
+
+We refer to such dependencies as pairwise among labeling
+functions because they depend only on two labeling function outputs. We can also consider higher-order dependencies that involve more variables, such as conjunction dependencies of the form
+And
+jk (⇤i , yi )
+
+:=
+
+{⇤ij = yi ^ ⇤ik = yi } .
+
+m
+X
+
+= arg min
+✓
+
+i=1
+
+log
+
+X
+yi
+
+(4)
+
+¯ ij , yi | ⇤
+¯ i\j ) + ✏k✓k1 ,
+p✓ ( ⇤
+
+where ✏ > 0 is a hyperparameter.
+By conditioning
+on all other labeling functions in each term
+P
+¯ ij , yi | ⇤
+¯ i\j ), we ensure that the gradient can
+log yi p✓ (⇤
+be computed in polynomial time with respect to the number
+of labeling functions, data points, and possible dependencies; without requiring any sampling or variational approximations. The gradient of the log marginal pseudolikelihood
+is the difference between two expectations: the sufficient
+statistics conditioned on all labeling functions but j , and
+conditioned on all labeling functions:
+¯j | ⇤
+¯ \j )
+@ log p(⇤
+=↵
+t
+@✓s
+
+,
+
+(5)
+
+where
+
+i=1 t2T s2St
+
+Here T is the set of dependency types of interest, and St is
+a set of index tuples, indicating the labeling functions that
+participate in each dependency of type t 2 T . We start by
+defining standard correlation dependencies of the form
+
+¯j | ⇤
+¯ \j ) + ✏k✓k1
+log p✓ (⇤
+
+arg min
+
+↵ :=
+
+m X
+X
+
+i=1 ⇤ij ,yi
+
+:=
+
+m X
+X
+i=1 yi
+
+¯ i\j )
+p✓ (⇤ij , yi | ⇤
+
+¯ i)
+p(yi | ⇤
+
+t
+¯
+s ((⇤ij , ⇤i\j ), yi )
+
+t ¯
+s (⇤i , yi ).
+
+Note that in the definition of ↵, ts operates on the value of
+¯ i\j .
+⇤ij set in the summation and the observed values of ⇤
+We optimize for each labeling function j in turn, selecting
+those dependencies with parameters that have a sufficiently
+large magnitude and adding them to the estimated structure.
+3.2. Implementation
+
+3.1. Learning Objective
+
+We implement our method as Algorithm 1, a stochastic gradient descent (SGD) routine. At each step of the descent,
+the gradient (5) is estimated for a single data point, which
+can be computed in closed form. Using SGD has two advantages. First, it requires only first-order gradient information. Other methods for `1 -regularized regression like
+interior-point methods (Koh et al., 2007) usually require
+computing second-order information. Second, the obser¯ can be processed incrementally. Since data provations ⇤
+gramming operates on unlabeled data, which is often abundant, scalability is crucial. To implement `1 regularization
+as part of SGD, we use an online truncated gradient method
+(Langford et al., 2009).
+
+We can scale up learning over many potentially irrelevant
+dependencies by optimizing a different objective: the log
+
+In practice, we find that the only parameter that requires
+tuning is ✏, which controls the threshold and regularization
+
+Estimating the structure of the distribution p✓ (⇤, Y ) is
+challenging because Y is latent; we never observe its value,
+even during training. We must therefore work with the
+marginal likelihood p✓ (⇤). Learning the parameters of the
+generative model jointly requires Gibbs sampling to estimate gradients. As the number of possible dependencies
+increases at least quadratically in the number of labeling
+functions, this heavyweight approach to learning does not
+scale (see Section 5.2).
+
+Learning the Structure of Generative Models without Labeled Data
+
+Algorithm 1 Structure Learning for Data Programming
+¯ 2 { 1, 0, 1}m⇥n , threshold ✏,
+Input: Observations ⇤
+distribution p with parameters ✓, initial parameters ✓0 ,
+step size ⌘, epoch count T , truncation frequency K
+D
+;
+for j = 1 to n do
+✓
+✓0
+for ⌧ = 1 to T do
+for i = 1 to m do
+for
+↵
+
+✓st
+
+✓st
+
+in ✓ do
+P
+
+¯ i\j ) ts ((⇤ij , ⇤
+¯ i\j ), yi )
+p(⇤ij , yi |⇤
+P⇤ij ,yi ¯ t ¯
+yi p(yi | ⇤i ) s (⇤i , yi )
+✓st ⌘(↵
+)
+
+if ⌧ m + i mod K is 0 then
+for ✓st in ✓ where ✓st > 0 do
+✓st
+max{0, ✓st K⌘✏}
+t
+for ✓s in ✓ where ✓st < 0 do
+✓st
+min{0, ✓st + K⌘✏}
+for ✓st in ✓ where j 2 s do
+if |✓st | > ✏ then
+D
+D [ {(s, t)}
+return D
+
+proach the true model.
+We now state the conditions necessary for our guarantees.
+First are two standard conditions that are needed to guarantee that the dependency structure can be recovered with any
+number of samples. One, we must have some set ⇥ ⇢ RM
+of feasible parameters. Two, the true model is in ⇥, i.e.,
+there exists some choice of ✓⇤ 2 ⇥ such that
+⇡ ⇤ (⇤, Y ) = p✓⇤ (⇤, Y ),
+
+8⇤ 2 { 1, 0, 1}m⇥n , Y 2 { 1, 1}m
+
+(6)
+
+where ⇡ ⇤ is the true distribution.
+Next, let j denote the set of dependencies that involve
+either labeling function j or the true label y. For any feasible parameter ✓ 2 ⇥ and j 2 {1, . . . , n}, there must exist
+c > 0 such that
+cI +
+
+m
+X
+
+i=1
+m
+X
+i=1
+
+Cov(⇤,Y )⇠p✓ (
+Cov(⇤,Y )⇠p✓ (
+
+j (⇤, Y
+
+j (⇤, Y
+
+¯ i)
+) | ⇤i = ⇤
+) | ⇤i\j
+
+(7)
+
+¯ i\j ).
+=⇤
+
+This means that for each labeling function, we have a better estimate of the dependencies with the labeling function
+than without. It is analogous to assumptions made to analyze parameter learning in data programming.
+
+strength. Higher values induce more sparsity in the selected
+structure. For the other parameters, we use the same values
+in all of our experiments: step size ⌘ = m 1 , epoch count
+T = 10, and truncation frequency K = 10.
+
+Finally, we require that all non-zero parameters be bounded
+away from zero. That is, for all ✓i 6= 0, and some  > 0,
+we have that
+|✓i | .
+(8)
+
+4. Analysis
+
+Under these conditions, we are able to provide guarantees
+on the probability of finding the correct dependency structure. First, we present guarantees for all types of possible
+dependencies in Theorem 1, proved in Appendix A.2. For
+this theorem, we define dj to be the number of possible dependencies involving either ⇤j or y, and we define d as the
+largest of d1 , . . . , dn .
+
+We provide guarantees on the probability that Algorithm 1
+successfully recovers the exact dependency structure. We
+first provide a general recovery guarantee for all types of
+possible dependencies, including both pairwise and higherorder dependencies. However, in many cases, higher-order
+dependencies are not necessary to model the behavior of
+the labeling functions. In fact, as we demonstrate in Section 5.3, in many useful models there are only accuracy
+dependencies and pairwise correlations. In this case, we
+show as a corollary to our general result that the number
+of samples required is sublinear in the number of possible
+dependencies, specifically O(n log n).
+Previous analyses for the supervised case do not carry
+over to the unsupervised setting because the problem is
+no longer convex. For example, analysis of an analogous method for supervised Ising models (Ravikumar et al.,
+2010) relies on Lagrangian duality and a tight duality gap,
+which does not hold for our estimation problem. Instead,
+we reason about a region of the parameter space in which
+we can estimate Y well enough that we can eventually ap-
+
+Theorem 1. Suppose we run Algorithm 1 on a problem
+where conditions (6), (7), and (8) are satisfied. Then, for
+any > 0, an unlabeled input dataset of size
+✓
+◆
+32d
+2nd
+m
+log
+c 2 2
+is sufficient to recover the exact dependency structure with
+a probability of at least 1
+.
+For general dependencies, d can be as large as the number
+of possible dependencies due to the fact that higher-order
+dependencies can connect the true label and many labeling
+functions. The rate of Theorem 1 rate is therefore not directly comparable to that of Ravikumar et al. (2010), which
+applies to Ising models with pairwise dependencies.
+
+Learning the Structure of Generative Models without Labeled Data
+
+As we demonstrate in Section 5.3, however, real-world applications can be improved by modeling just pairwise correlations among labeling functions. If only considering
+these dependencies, then d will only be 2n
+1, rather
+than the number of potential dependencies. In Corollary
+2, we show that a number of samples needed in this case is
+O(n log n). Notice that this is sublinear in the number of
+possible dependencies, which is O(n2 ).
+Corollary 2. Suppose we run Algorithm 1 on a problem
+where conditions (6), (7), and (8) are satisfied. Additionally, assume that the only potential dependencies are accuracy and correlation dependencies. Then, for any > 0,
+an unlabeled input dataset of size
+✓ ◆
+64n
+4n
+m
+log
+c 2 2
+is sufficient to recover the exact dependency structure with
+a probability of at least 1
+.
+In this case, we see the difference in analyses between the
+unsupervised and supervised settings. Whereas the rate of
+Corollary 2 depends on the maximum number of dependencies that could affect a variable in the model class, the
+rate of Ravikumar et al. (2010) depends cubically on the
+maximum number of dependencies that actually affect any
+variable in the true model and only logarithmically in the
+maximum possible degree. In the supervised setting, the
+guaranteed rate is therefore tighter for very sparse models.
+However, as we show in Section 5.1, the guaranteed rates
+in both settings are pessimistic, and in practice they appear
+to scale at the same rate.
+
+5. Experiments
+We implement our method as part of the open source framework Snorkel1 and evaluate it in three ways. First, we measure how the probability of returning the exact correlation
+structure is affected by the problem parameters using synthetic data, confirming our analysis that its sample complexity is sublinear in the number of possible dependencies.
+In fact, we find that in practice the sample complexity is
+lower than the theoretically guaranteed rate, matching the
+rate seen in practice for fully supervised structure learning.
+Second, we compare our method to estimating structures
+via parameter learning over all possible dependencies. We
+demonstrate using synthetic data that our method is 100⇥
+faster and more accurate, selecting 1/4 as many extraneous correlations on average. Third, we apply our method to
+real-world applications built using data programming, such
+as information extraction from PubMed journal abstracts
+and hardware specification sheets. In these applications,
+users did not specify any dependencies between the label1
+
+snorkel.stanford.edu
+
+Figure 1. Algorithm 1 returns the true structure consistently when
+the control parameter reaches 1.0 for the number of samples
+defined by (9). The number of samples required to identify a
+model in practice scales logarithmically in n, the number of labeling functions.
+
+ing functions they authored; however, as we detail in Section 5.3, these dependencies naturally arise, for example
+due to explicit composing, relaxing, or tightening of labeling function heuristics; related distant supervision sources;
+or multiple concurrent developers writing labeling functions. We show that learning this structure improves performance over the conditionally independent model, giving
+an average 1.5 F1 point boost.
+5.1. Sample Complexity
+We test how the probability that Algorithm 1 returns the
+correct correlation structure depends on the true distribution. Our analysis in Section 4 guarantees that the sample
+complexity grows at worst on the order O(n log n) for n
+labeling functions. In practice, we find that structure learning performs better than this guaranteed rate, depending
+linearly on the number of true correlations and logarithmically on the number of possible correlations. This matches
+the observed behavior for fully supervised structure learning for Ising models (Ravikumar et al., 2010), which is also
+tighter than the best known theoretical guarantees.
+To demonstrate this behavior, we attempt to recover the true
+dependency structure using a number of samples defined as
+m := 750 ·
+
+· d⇤ · log n
+
+(9)
+
+where d⇤ is the maximum number of dependencies that affect any one labeling function. For example, in the conditionally independent model d⇤ = 1 and in a model with one
+correlation d⇤ = 2. We vary the control parameter from
+0.1 to 2.0 to determine the point at which m is sufficiently
+large for Algorithm 1 to recover the true dependency structure. (The constant 750 was selected so that it succeeds
+with high probability around = 1.0.)
+We first test the effect of varying n, the number of labeling
+functions. For n 2 {25, 50, 75, 100}, we set two pairs of
+
+Learning the Structure of Generative Models without Labeled Data
+
+Figure 2. Algorithm 1 returns the true structure consistently when
+the control parameter reaches 1.0 for the number of samples defined by (9). The number of samples required to identify a model
+in practice scales linearly in d⇤ , the maximum number of dependencies affecting any labeling function.
+
+Cor
+labeling functions to be correlated with ✓jk
+= 0.25. We set
+Acc
+✓j = 1.0 for all j. We then generate m samples for each
+setting of over 100 trials. Figure 1 shows the fraction of
+times Algorithm 1 returns the correct correlation structure
+as a function of the control parameter . That the curves
+are aligned for different values of n shows that the sample
+complexity in practice scales logarithmically in n.
+
+We next test the effect of varying d⇤ , the maximum number of dependencies that affect a labeling function in the
+true distribution. For 25 labeling functions, we add correlations to the true model to form cliques of increasing degree.
+All parameters are the same as in the previous experiment.
+Figure 2 shows that for increasing values of d⇤ , (9) again
+predicts the number of samples for Algorithm 1 to succeed.
+That the curves are aligned for different values of d⇤ shows
+that the sample complexity in practice scales linearly in d⇤ .
+5.2. Comparison with Maximum Likelihood
+We next compare Algorithm 1 with an alternative approach.
+Without an efficient structure learning method, one could
+¯
+maximize the marginal likelihood of the observations ⇤
+while considering all possible dependencies. To measure
+the benefits of maximizing the marginal pseudolikelihood,
+we compare its performance against an analogous maximum likelihood estimation routine that also uses stochastic
+gradient descent, but instead uses Gibbs sampling to estimate the intractable gradient of the objective.
+We create different distributions over n labeling functions
+by selecting with probability 0.05 pairs of labeling functions to make correlated. Again, the strength of correlation
+Cor
+is set at ✓jk
+= 0.25 and accuracy is set at ✓jAcc = 1.0. We
+generate 100 distributions for n 2 {25, 30, 35, . . . , 100}.
+For each distribution we generate 10,000 samples and attempt to recover the true correlation structure.
+
+Figure 3. Comparison of structure learning with using maximum
+likelihood parameter estimation to select a model structure. Structure learning is two orders of magnitude faster.
+
+We first compare running time between the two methods.
+Our implementation of maximum likelihood estimation is
+designed for speed: for every sample taken to estimate the
+gradient, a small update to the parameters is performed.
+This approach is state-of-the-art for high-speed learning for
+factor graphs (Zhang & Ré, 2014). However, the need for
+sampling the variables ⇤ and Y is still computationally expensive. Figure 3 shows that by avoiding variable sampling, using pseudolikelihood is 100⇥ faster.
+We next compare the accuracy of the two methods, which
+depends on the regularization ✏. The ideal is to maximize
+the probability of perfect recall with few extraneous correlations, because subsequent parameter estimation can reduce the influence of an extraneous correlation but cannot
+discover a missing correlation. We tune ✏ independently for
+each method. Figure 4 (top) shows that maximum pseudolikelihood is able to maintain higher levels of recall than
+maximum likelihood as the problem size increases. Figure 4 (bottom) shows that even tuned for better recall, maximum pseudolikelihood is more precise, returning 1/4 as
+many extraneous correlations. We interpret this improved
+accuracy as a benefit of computing the gradient for a data
+point exactly, as opposed to using Gibbs sampling to estimate it as in maximum likelihood estimation.
+5.3. Real-World Applications
+We evaluate our method on several real-world information
+extraction applications, comparing the performance of data
+programming using dependencies selected by our method
+with the conditionally independent model (Table 1). In the
+data programming method, users express a variety of weak
+supervision rules and sources such as regular expression
+patterns, distant supervision from dictionaries and existing
+knowledge bases, and other heuristics as labeling functions.
+Due to the noisy and overlapping nature of these labeling functions, correlations arise. Learning this correlation
+structure gives an average improvement of 1.5 F1 points.
+
+Learning the Structure of Generative Models without Labeled Data
+
+functions, the majority of which check for membership in
+specific subtrees of a reference disease ontology using different matching heuristics. There is overlap in the labeling
+functions which check identical subtrees of the ontology,
+and we see that our method increases end performance by
+a significant 2.6 F1 points by modeling this structure.
+Examining the Chemical-Disease task, we see that our
+method identifies correlations that are both obviously true
+and ones that are more subtle. For example, our method
+learns dependencies between labeling functions that are
+compositions of one another, such as one labeling function
+checking for the pattern [CHEM] induc.* [DIS], and
+a second labeling function checking for this pattern plus
+membership in an external knowledge base of known
+chemical-disease relations. Our method also learns more
+subtle correlations: for example, it selected a correlation
+between a labeling function that checks for the presence
+of a chemical mention in between the chemical and disease
+mentions comprising the candidate, and one that checks for
+the pattern .*-induced appearing in between.
+Figure 4. Comparison of structure learning with using maximum
+likelihood parameter estimation to select a model structure. Even
+when tuned for better recall (top), structure learning is also more
+precise, returning 1/4 as many extraneous correlations (bottom).
+
+Extracting structured information from unstructured text by
+identifying mentioned entities and relations is a challenging task that is well studied in the context of weak supervision (Bunescu & Mooney, 2007; Alfonseca et al., 2012;
+Ratner et al., 2016). We consider three tasks: extracting mentions of specific diseases from the scientific literature (Disease Tagging); extracting mentions of chemicals
+inducing diseases from the scientific literature (ChemicalDisease); and extracting mentions of electronic device polarity from PDF parts sheet tables (Device Polarity). In the
+first two applications, we consider a training set of 500 unlabeled abstracts from PubMed, and in the third case 100
+PDF parts sheets consisting of mixed text and tabular data.
+We use hand-labeled test sets to evaluate on the candidatemention-level performance, which is the accuracy of the
+classifier in identifying correct mentions of specific entities or relations, given a set of candidate mentions. For
+example, in Chemical-Disease, we consider as candidates
+all pairs of co-occurring chemical-disease mention pairs as
+identified by standard preprocessing tools2 .
+We see that modeling the correlations between labeling
+functions gives gains in performance which appear to be
+correlated with the total number of sources. For example,
+in the disease tagging application, we have 233 labeling
+2
+
+ncbi.nlm.nih.gov/CBBresearch/Lu/Demo/PubTator/index.cgi
+
+5.4. Accelerating Application Development
+Our method is in large part motivated by the new programming model introduced by weak supervision, and the novel
+hurdles that developers face. For example in the Disease
+Tagging application above, we observed developers significantly slowed down in trying to to leverage the rich disease ontologies and matching heuristics they had available
+without introducing too many dependencies between their
+labeling functions. In addition to being slowed down, we
+also observed developers running into significant pitfalls
+due to unnoticed correlations between their weak supervision sources. In one collaborator’s application, for every
+labeling function that referenced the words in a sentence,
+a corresponding labeling function referenced the lemmas,
+which were often identical, and this significantly degraded
+performance. By automatically learning dependencies, we
+were able to significantly mitigate the effects of such correlations. We therefore envision an accelerated development
+process enabled by our method.
+To further explore the way in which our method can protect
+against such types of failure modes, we consider adding
+correlated, random labeling functions to those used in the
+Chemical-Disease task. Figure 5 shows the average estimated accuracy of copies of a random labeling function.
+An independent model grows more confident that the random noise is accurate. However, with structure learning,
+we identify that the noisy sources are not independent and
+they therefore do not outvote the real labeling functions. In
+this way, structure learning can protect against failures as
+users experiment with sources of weak supervision.
+
+Learning the Structure of Generative Models without Labeled Data
+Table 1. Candidate-mention scores of information extraction applications trained with data programming using generative models with
+no dependency structure (Independent) and learned dependency structure (Structure).
+A PPLICATION
+
+I NDEPENDENT
+P
+R
+F1
 
 P
 
-a2A ⇡bi (a|s)
+S TRUCTURE
+R
+F1
 
-with pr. ⇡bi (STOP|s)
+F1 D IFF .
 
-i
+# LF S
 
-· P (s0 |s, a)
+# C OR .
 
-Note that ⇧⌧ is semi-Markov with respect to projection of
-the augmented state space S ⇥ B onto the underlying state
-space S. We denote
-S the complete family of task-specific
-policies ⇧ := ⌧ {⇧⌧ }, and let each ⇡b be an arbitrary
-function of the current environment state parameterized by
-some weight vector ✓b . The learning problem is to optimize
-1
+% C ORR .
+1.17%
 
-Here that optimization is accomplished via a simple decoupled actor–critic method. In a standard policy gradient approach, with a single policy ⇡ with parameters ✓, we compute gradient steps of the form (Williams, 1992):
-X
-r✓ J(⇡) =
-r✓ log ⇡(ai |si ) qi c(si ) , (1)
+D ISEASE TAGGING
 
-For ease of presentation, this section assumes that these subpolicy networks are independently parameterized. As described in
-Section 4.2, it is also possible to share parameters between subpolicies, and introduce discrete subtask structure by way of an
-embedding of each symbol b.
+60.4
 
-b1
+73.3
 
-a1
+66.3
 
-a2
+68.0
 
-b2
+69.8
 
-a3
+68.9
 
-stop
+2.6
 
-π1
+233
 
-s1
+315
 
-a4
+C HEMICAL -D ISEASE
 
-a5
-
-a6
-
-stop
-
-s5
-
-s6
-
-s7
-
-π2
-
-s2
-
-s3
-
-s4
-
-s4
-
-Figure 2: Model overview. Each subpolicy ⇡ is uniquely associated with a symbol b implemented as a neural network that maps
-from a state si to distributions over A+ , and chooses an action ai
-by sampling from this distribution. Whenever the STOP action is
-sampled, control advances to the next subpolicy in the sketch.
-
-Modular Multitask Reinforcement Learning with Policy Sketches
-
-exactly equal to the state-value function V⇡ (si ) = E⇡ qi for
-the target policy ⇡ starting in state si .
-The situation becomes slightly more complicated when
-generalizing to modular policies built by sequencing subpolicies. In this case, we will have one subpolicy per symbol but one critic per task. This is because subpolicies ⇡b
-might participate in a number of composed policies ⇧⌧ ,
-each associated with its own reward function R⌧ . Thus individual subpolicies are not uniquely identified with value
-functions, and the aforementioned subpolicy-specific statevalue estimator is no longer well-defined. We extend the
-actor–critic method to incorporate the decoupling of policies from value functions by allowing the critic to vary persample (that is, per-task-and-timestep) depending on the
-reward function with which
-P the sample is associated. Noting that r✓b J(⇧) = t:b2K⌧ r✓b J(⇧⌧ ), i.e. the sum of
-gradients of expected rewards across all tasks in which ⇡b
-participates, we have:
-X
-r✓ J(⇧) =
-r✓ J(⇧⌧ )
-⌧
-
-=
-
-XX
-⌧
-
-i
-
-r✓b log ⇡b (a⌧ i |s⌧ i ) qi
-
-c⌧ (s⌧ i ) , (2)
-
-where each state-action pair (s⌧ i , a⌧ i ) was selected by the
-subpolicy ⇡b in the context of the task ⌧ .
-Now minimization of the gradient variance requires that
-each c⌧ actually depend on the task identity. (This follows immediately by applying the corresponding argument
-in Greensmith et al. (2004) individually to each term in the
-sum over ⌧ in Equation 2.) Because the value function is
-itself unknown, an approximation must be estimated from
-data. Here we allow these c⌧ to be implemented with an
-arbitrary function approximator with parameters ⌘⌧ . This
-is trained to minimize a squared error criterion, with gradients given by
-
-1X
-r⌘ ⌧
-(qi c⌧ (si ))2
-2 i
-X
-=
-r⌘⌧ c⌧ (si ) qi c⌧ (si ) . (3)
-
-these steps, which is driven by a curriculum learning procedure, is specified in Algorithm 2.) This is an on-policy
-algorithm. In each step, the agent samples tasks from a task
-distribution provided by a curriculum (described in the following subsection). The current family of policies ⇧ is
-used to perform rollouts in each sampled task, accumulating the resulting tuples of (states, low-level actions, highlevel symbols, rewards, and task identities) into a dataset D.
-Once D reaches a maximum size D, it is used to compute
-gradients w.r.t. both policy and critic parameters, and the
-parameter vectors are updated accordingly. The step sizes
-↵ and in Algorithm 1 can be chosen adaptively using any
-first-order method.
-3.3. Curriculum Learning
-For complex tasks, like the one depicted in Figure 3b, it is
-difficult for the agent to discover any states with positive
-reward until many subpolicy behaviors have already been
-learned. It is thus a better use of the learner’s time to focus
-on “easy” tasks, where many rollouts will result in high
-reward from which appropriate subpolicy behavior can be
-inferred. But there is a fundamental tradeoff involved here:
-if the learner spends too much time on easy tasks before
-being made aware of the existence of harder ones, it may
-overfit and learn subpolicies that no longer generalize or
-exhibit the desired structural properties.
-To avoid both of these problems, we use a curriculum learning scheme (Bengio et al., 2009) that allows the model
-to smoothly scale up from easy tasks to more difficult
-ones while avoiding overfitting. Initially the model is presented with tasks associated with short sketches. Once average reward on all these tasks reaches a certain threshold,
-the length limit is incremented. We assume that rewards
-across tasks are normalized with maximum achievable reward 0 < qi < 1. Let Êr⌧ denote the empirical estimate of
-the expected reward for the current policy on task ⌧ . Then
-at each timestep, tasks are sampled in proportion to 1 Êr⌧ ,
-which by assumption must be positive.
-
-Alternative forms of the advantage estimator (e.g. the TD
-residual R⌧ (si )+ V⌧ (si+1 ) V⌧ (si ) or any other member
-of the generalized advantage estimator family) can be easily substituted by simply maintaining one such estimator
-per task. Experiments (Section 4.4) show that conditioning on both the state and the task identity results in noticeable performance improvements, suggesting that the variance reduction provided by this objective is important for
-efficient joint learning of modular policies.
-
-Intuitively, the tasks that provide the strongest learning signal are those in which (1) the agent does not on average
-achieve reward close to the upper bound, but (2) many
-episodes result in high reward. The expected reward component of the curriculum addresses condition (1) by ensuring that time is not spent on nearly solved tasks, while
-the length bound component of the curriculum addresses
-condition (2) by ensuring that tasks are not attempted until
-high-reward episodes are likely to be encountered. Experiments show that both components of this curriculum learning scheme improve the rate at which the model converges
-to a good policy (Section 4.4).
-
-The complete procedure for computing a single gradient
-step is given in Algorithm 1. (The outer training loop over
-
-The complete curriculum-based training procedure is specified in Algorithm 2. Initially, the maximum sketch length
-
-i
-
-Modular Multitask Reinforcement Learning with Policy Sketches
-
-`max is set to 1, and the curriculum initialized to sample
-length-1 tasks uniformly. (Neither of the environments
-we consider in this paper feature any length-1 tasks; in
-this case, observe that Algorithm 2 will simply advance to
-length-2 tasks without any parameter updates.) For each
-setting of `max , the algorithm uses the current collection
-of task policies ⇧ to compute and apply the gradient step
-described in Algorithm 1. The rollouts obtained from the
-call to TRAIN - STEP can also be used to compute reward
-estimates Êr⌧ ; these estimates determine a new task distribution for the curriculum. The inner loop is repeated until the reward threshold rgood is exceeded, at which point
-`max is incremented and the process repeated over a (nowexpanded) collection of tasks.
-
-4. Experiments
-We evaluate the performance of our approach in three environments: a crafting environment, a maze navigation environment, and a cliff traversal environment. These environments involve various kinds of challenging low-level
-control: agents must learn to avoid obstacles, interact with
-various kinds of objects, and relate fine-grained joint activation to high-level locomotion goals. They also feature
-hierarchical structure: most rewards are provided only after the agent has completed two to five high-level actions in
-the appropriate sequence, without any intermediate goals to
-indicate progress towards completion.
-4.1. Implementation
-In all our experiments, we implement each subpolicy as a
-feedforward neural network with ReLU nonlinearities and
-a hidden layer with 128 hidden units, and each critic as a
-linear function of the current state. Each subpolicy network
-receives as input a set of features describing the current
-state of the environment, and outputs a distribution over
-actions. The agent acts at every timestep by sampling from
-this distribution. The gradient steps given in lines 8 and 9
-of Algorithm 1 are implemented using RMSP ROP (Tieleman, 2012) with a step size of 0.001 and gradient clipping
-to a unit norm. We take the batch size D in Algorithm 1 to
-be 2000, and set = 0.9 in both environments. For curriculum learning, the improvement threshold rgood is 0.8.
-4.2. Environments
-The crafting environment (Figure 3a) is inspired by the
-popular game Minecraft, but is implemented in a discrete
-2-D world. The agent may interact with objects in the
-world by facing them and executing a special USE action.
-Interacting with raw materials initially scattered around the
-environment causes them to be added to an inventory. Interacting with different crafting stations causes objects in the
-agent’s inventory to be combined or transformed. Each task
-
-τ: get gold
-b1: get wood
-
-2
-
-K
-
-b2: get iron
-
-(a)
-
-1
-
-b3: use workbench
-
-4
-
-3
-
-b4: get gold
-
-τ: go to goal
-
-2
-
-(b)
-
-1
-
-1
-
-3
-2
-
-b1: north
-
-K
-
-b2: east
-b3: east
-
-3
-
-Figure 3: Examples from the crafting and cliff environments used
-in this paper. An additional maze environment is also investigated.
-(a) In the crafting environment, an agent seeking to pick up the
-gold nugget in the top corner must first collect wood (1) and iron
-(2), use a workbench to turn them into a bridge (3), and use the
-bridge to cross the water (4). (b) In the cliff environment, the
-agent must reach a goal position by traversing a winding sequence
-of tiles without falling off. Control takes place at the level of
-individual joint angles; high-level behaviors like “move north”
-must be learned.
-
-in this game corresponds to some crafted object the agent
-must produce; the most complicated goals require the agent
-to also craft intermediate ingredients, and in some cases
-build tools (like a pickaxe and a bridge) to reach ingredients
-located in initially inaccessible regions of the environment.
-The maze environment (not pictured) corresponds closely
-to the the “light world” described by Konidaris & Barto
-(2007). The agent is placed in a discrete world consisting of a series of rooms, some of which are connected by
-doors. Some doors require that the agent first pick up a
-key to open them. For our experiments, each task corresponds to a goal room (always at the same position relative
-to the agent’s starting position) that the agent must reach
-by navigating through a sequence of intermediate rooms.
-The agent has one sensor on each side of its body, which
-reports the distance to keys, closed doors, and open doors
-in the corresponding direction. Sketches specify a particular sequence of directions for the agent to traverse between
-rooms to reach the goal. The sketch always corresponds
-to a viable traversal from the start to the goal position, but
-other (possibly shorter) traversals may also exist.
-The cliff environment (Figure 3b) is intended to demonstrate the applicability of our approach to problems involving high-dimensional continuous control. In this environment, a quadrupedal robot (Schulman et al., 2015b) is
-placed on a variable-length winding path, and must navi-
-
-Modular Multitask Reinforcement Learning with Policy Sketches
+45.1
+
+69.2
+
+54.6
+
+46.8
+
+69.0
+
+55.9
+
+1.3
+
+33
+
+21
+
+3.98%
+
+D EVICE P OLARITY
+
+78.9
+
+99.6
+
+88.1
+
+80.5
+
+98.6
+
+88.7
 
 0.6
 
-Joint
-Opt–Crit
-Indep
-
-0.4
-
-Q automaton
-
-0.2
-0.0
-
-0.0
-
-0.5
-
-1.0
-
-1.5
-
-Episode
-
-2.0
-
-2.5
-
-3.0
-⇥106
-
-avg. reward
-
-avg. reward
-
-0.8
-
-Maze environment
-
-1.0
-
-Modular
-(ours)
-
-0.8
-
-Modular
-(ours)
-
-0.6
-
-Opt–Crit
-
-0.4
-
-Joint
-Indep.
-
-0.2
-0.0
-
-Q automaton
-
-0.0
-
-0.5
-
-1.0
-
-1.5
-
-Episode
-
-(a)
-
-2.0
-
-2.5
-
-3.0
-⇥106
-
-(b)
-
-log(avg. reward)
-
-Crafting environment
-
-1.0
-
-1.5
-1.0
-0.5
-0.0
-0.5
-1.0
-1.5
-2.0
-2.5
-3.0
-
-Cliff environment
-Modular
-
-Joint
-Opt–Crit
-
-0.0 0.5 1.0 1.5 2.0 2.5 3.0 3.5 4.0
-⇥108
-Timestep
-
-(c)
-
-Figure 4: Comparing modular learning from sketches with standard RL baselines. Modular is the approach described in this paper, while
-Independent learns a separate policy for each task, Joint learns a shared policy that conditions on the task identity, Q automaton learns
-a single network to map from states and action symbols to Q values, and Opt–Crit is an unsupervised option learner. Performance
-for the best iteration of the (off-policy) Q automaton is plotted. Performance is shown in (a) the crafting environment, (b) the maze
-environment, and (c) the cliff environment. The modular approach is eventually able to achieve high reward on all tasks, while the
-baseline models perform considerably worse on average.
-
-gate to the end without falling off. This task is designed to
-provide a substantially more challenging RL problem, due
-to the fact that the walker must learn the low-level walking skill before it can make any progress, but has simpler
-hierarchical structure than the crafting environment. The
-agent receives a small reward for making progress toward
-the goal, and a large positive reward for reaching the goal
-square, with a negative reward for falling off the path.
-A listing of tasks and sketches is given in Appendix A.
-4.3. Multitask Learning
-The primary experimental question in this paper is whether
-the extra structure provided by policy sketches alone is
-enough to enable fast learning of coupled policies across
-tasks. We aim to explore the differences between the
-approach described in Section 3 and relevant prior work
-that performs either unsupervised or weakly supervised
-multitask learning of hierarchical policy structure. Specifically, we compare our modular to approach to:
-1. Structured hierarchical reinforcement learners:
-(a) the fully unsupervised option–critic algorithm
-of Bacon & Precup (2015)
-(b) a Q automaton that attempts to explicitly represent the Q function for each task / subtask combination (essentially a HAM (Andre & Russell,
-2002) with a deep state abstraction function)
-2. Alternative ways of incorporating sketch data into
-standard policy gradient methods:
-(c) learning an independent policy for each task
-(d) learning a joint policy across all tasks, conditioning directly on both environment features
-and a representation of the complete sketch
-
-The joint and independent models performed best when
-trained with the same curriculum described in Section 3.3,
-while the option–critic model performed best with a
-length–weighted curriculum that has access to all tasks
-from the beginning of training.
-Learning curves for baselines and the modular model are
-shown in Figure 4. It can be seen that in all environments,
-our approach substantially outperforms the baselines: it induces policies with substantially higher average reward and
-converges more quickly than the policy gradient baselines.
-It can further be seen in Figure 4c that after policies have
-been learned on simple tasks, the model is able to rapidly
-adapt to more complex ones, even when the longer tasks
-involve high-level actions not required for any of the short
-tasks (Appendix A).
-Having demonstrated the overall effectiveness of our approach, our remaining experiments explore (1) the importance of various components of the training procedure, and
-(2) the learned models’ ability to generalize or adapt to
-held-out tasks. For compactness, we restrict our consideration on the crafting domain, which features a larger and
-more diverse range of tasks and high-level actions.
-4.4. Ablations
-In addition to the overall modular parameter-tying structure
-induced by our sketches, the key components of our training procedure are the decoupled critic and the curriculum.
-Our next experiments investigate the extent to which these
-are necessary for good performance.
-To evaluate the the critic, we consider three ablations: (1)
-removing the dependence of the model on the environment
-state, in which case the baseline is a single scalar per task;
-(2) removing the dependence of the model on the task, in
-which case the baseline is a conventional generalized advantage estimator; and (3) removing both, in which case
-
-Modular Multitask Reinforcement Learning with Policy Sketches
-Critics
-
-1.0
-
-0.4
-
-{}
-
-avg. reward
-
-0.6
-
-0.2
-
-{len, wgt}
-{len}
-
-0.8
-
-{wgt}
-
-0.6
-
-{}
-
-0.4
-0.2
-
-0.0
-
-0.5
-
-1.0
-
-1.5
-
-Episode
-
-2.0
-
-2.5
-
-0.0
-
-3.0
-⇥106
-
-0.0
-
-0.5
-
-1.0
-
-(a)
-
-1.5
-
-Episode
-
-2.0
-
-2.5
-
-3.0
-⇥106
-
-(b)
-Performance by task
-
-1.0
-0.8
-
-avg. reward
-
-avg. reward
-
-0.8
-
-0.0
-
-Curricula
-
-1.0
-{task, state}
-{state}
-{task}
-
-0.6
-
-Model
-Joint
-Independent
-Option–Critic
-Modular (ours)
-
-Multitask
-
-0-shot
-
-Adaptation
-
-.49
-.44
-.47
-.89
-
-.01
-–
-–
-.77
-
-–
-.01
-.42
-.76
-
-Table 1: Accuracy and generalization of learned models in the
-crafting domain. The table shows the task completion rate for
-each approach after convergence under various training conditions. Multitask is the multitask training condition described in
-Section 4.3, while 0-Shot and Adaptation are the generalization
-experiments described in Section 4.5. Our modular approach consistently achieves the best performance.
-
-0.4
-0.2
-0.0
-
-0.0
-
-0.5
-
-1.0
-
-1.5
-
-Episode
-
-2.0
-
-2.5
-
-3.0
-⇥106
-
-(c)
-Figure 5: Training details in the crafting domain. (a) Critics: lines
-labeled “task” include a baseline that varies with task identity,
-while lines labeled “state” include a baseline that varies with state
-identity. Estimating a baseline that depends on both the representation of the current state and the identity of the current task is
-better than either alone or a constant baseline. (b) Curricula: lines
-labeled “len” use a curriculum with iteratively increasing sketch
-lengths, while lines labeled “wgt” sample tasks in inverse proportion to their current reward. Adjusting the sampling distribution
-based on both task length and performance return improves convergence. (c) Individual task performance. Colors correspond to
-task length. Sharp steps in the learning curve correspond to increases of `max in the curriculum.
-
-the baseline is a single scalar, as in a vanilla policy gradient
-approach. Results are shown in Figure 5a. Introducing both
-state and task dependence into the baseline leads to faster
-convergence of the model: the approach with a constant
-baseline achieves less than half the overall performance of
-the full critic after 3 million episodes. Introducing task and
-state dependence independently improve this performance;
-combining them gives the best result.
-We also investigate two aspects of our curriculum learning
-scheme: starting with short examples and moving to long
-ones, and sampling tasks in inverse proportion to their accumulated reward. Experiments are shown in Figure 5b.
-Both components help; prioritization by both length and
-weight gives the best results.
-4.5. Zero-shot and Adaptation Learning
-In our final experiments, we consider the model’s ability to
-generalize beyond the standard training condition. We first
-consider two tests of generalization: a zero-shot setting, in
-which the model is provided a sketch for the new task and
-must immediately achieve good performance, and a adaptation setting, in which no sketch is provided and the model
-must learn the form of a suitable sketch via interaction in
-the new task.
-
-We hold out two length-four tasks from the full inventory
-used in Section 4.3, and train on the remaining tasks. For
-zero-shot experiments, we simply form the concatenated
-policy described by the sketches of the held-out tasks, and
-repeatedly execute this policy (without learning) in order to
-obtain an estimate of its effectiveness. For adaptation experiments, we consider ordinary RL over high-level actions
-B rather than low-level actions A, implementing the highlevel learner with the same agent architecture as described
-in Section 3.1. Note that the Independent and Option–
-Critic models cannot be applied to the zero-shot evaluation,
-while the Joint model cannot be applied to the adaptation
-baseline (because it depends on pre-specified sketch features). Results are shown in Table 1. The held-out tasks
-are sufficiently challenging that the baselines are unable to
-obtain more than negligible reward: in particular, the joint
-model overfits to the training tasks and cannot generalize to
-new sketches, while the independent model cannot discover
-enough of a reward signal to learn in the adaptation setting.
-The modular model does comparatively well: individual
-subpolicies succeed in novel zero-shot configurations (suggesting that they have in fact discovered the behavior suggested by the semantics of the sketch) and provide a suitable basis for adaptive discovery of new high-level policies.
-
-5. Conclusions
-We have described an approach for multitask learning
-of deep multitask policies guided by symbolic policy
-sketches. By associating each symbol appearing in a sketch
-with a modular neural subpolicy, we have shown that it is
-possible to build agents that share behavior across tasks in
-order to achieve success in tasks with sparse and delayed
-rewards. This process induces an inventory of reusable and
-interpretable subpolicies which can be employed for zeroshot generalization when further sketches are available, and
-hierarchical reinforcement learning when they are not. Our
-work suggests that these sketches, which are easy to produce and require no grounding in the environment, provide
-an effective scaffold for learning hierarchical policies from
-minimal supervision.
-
-Modular Multitask Reinforcement Learning with Policy Sketches
-
-Acknowledgments
-JA is supported by a Facebook fellowship and a Berkeley
-AI / Huawei fellowship.
+12
+
+32
+
+48.49%
+
+networks with latent variables (Elidan & Friedman, 2005).
+
+Figure 5. Structure learning identifies and corrects correlated, random labeling functions added to the Chemical-Disease task.
+
+6. Related Work
+Structure learning is a well-studied problem, but most work
+has assumed access to hand-labeled training data. Some of
+the earliest work has focused on generalized linear models. The lasso (Tibshirani, 1996), linear regression with `1
+regularization, is a classic technique. Zhao & Yu (2006)
+showed that the lasso is a consistent structure estimator.
+The Dantzig selector (Candes & Tao, 2007) is another
+structure estimator for linear models that uses `1 , which can
+learn in the high-dimensional setting where there are more
+possible dependencies than samples. Ng (2004) showed
+that `1 -regularized logistic regression has sample complexity logarithmic in the number of features. `1 regularization
+has also been used as a prior for compressed sensing (e.g.,
+Donoho & Elad, 2003; Tropp, 2006; Wainwright, 2009).
+Regularized estimators have also been used to select structures for graphical models. Meinshausen & Bühlmann
+(2006) showed that parameter learning with `1 regularization for Gaussian graphical models under similar assumptions also consistently selects the correct structure. Most
+similar to our proposed estimator, Ravikumar et al. (2010)
+propose a fully supervised pseudolikelihood estimator for
+Ising models. Also related is the work of Chandrasekaran
+et al. (2012), which considers learning the structure of
+Gaussian graphical models with latent variables. Other
+techniques for learning the structure of graphical models
+include grafting (Perkins et al., 2003; Zhu et al., 2010) and
+the information bottleneck approach for learning Bayesian
+
+Using heuristic sources of labels is increasingly common.
+Treating labels from a single heuristic source as gold labels is called distant supervision (Craven & Kumlien, 1999;
+Mintz et al., 2009). Some methods use multi-instance
+learning to reduce the noise in a distant supervision source
+(Riedel et al., 2010; Hoffmann et al., 2011). Others use hierarchical topic models to generate additional training data
+for weak supervision, but they do not support user-provided
+heuristics (Alfonseca et al., 2012; Takamatsu et al., 2012;
+Roth & Klakow, 2013a;b). Previous methods that support
+heuristics for weak supervision (e.g., Bunescu & Mooney,
+2007; Shin et al., 2015) do not model the noise inherent
+in these sources. Also, Downey & Etzioni (2008) showed
+that PAC learning is possible without hand-labeled data if
+the features monotonically order data by class probability.
+Estimating the accuracy of multiple label sources without a
+gold standard is a classic problem (Dawid & Skene, 1979),
+and many proposed approaches are generalized in the data
+programming framework. Parisi et al. (2014) proposed a
+spectral approach to estimating the accuracy of members
+of classifier ensembles. Many methods for crowdsourcing
+estimate the accuracy of workers without hand-labeled data
+(e.g., Dalvi et al., 2013; Joglekar et al., 2015; Zhang et al.,
+2016). In data programming, the scaling of data to label
+sources is different from crowdsourcing; a relatively small
+number of sources label all the data. We can therefore learn
+rich dependency structures among the sources.
+
+7. Conclusion and Future Directions
+We showed that learning the structure of a generative model
+enables higher quality data programming results. Our
+method for structure learning is also 100⇥ faster than a
+maximum likelihood approach. If data programming and
+other forms of weak supervision are to make machine
+learning tools easier to develop, selecting accurate structures for generative models with minimal user intervention
+is a necessary capability. Interesting questions remain. Can
+the guarantee of Theorem 1 be tightened for higher-order
+dependencies to match the pairwise case of Corollary 2?
+Preliminary experiments show that they converge at similar rates in practice.
+
+Learning the Structure of Generative Models without Labeled Data
+
+Acknowledgements
+Thanks to Christopher De Sa for helpful discussions, and
+Henry Ehrenberg and Sen Wu for assistance with experiments. We gratefully acknowledge the support of the
+Defense Advanced Research Projects Agency (DARPA)
+SIMPLEX program under No. N66001-15-C-4043, the
+DARPA D3M program under No. FA8750-17-2-0095,
+the National Science Foundation (NSF) CAREER Award
+under No. IIS- 1353606, the Office of Naval Research
+(ONR) under awards No. N000141210041 and No.
+N000141310129, a Sloan Research Fellowship, the Moore
+Foundation, an Okawa Research Grant, Toshiba, and Intel.
+Any opinions, findings, and conclusions or recommendations expressed in this material are those of the authors and
+do not necessarily reflect the views of DARPA, NSF, ONR,
+or the U.S. government.
 
 References
-Andre, David and Russell, Stuart. Programmable reinforcement learning agents. In Advances in Neural Information
-Processing Systems, 2001.
-Andre, David and Russell, Stuart. State abstraction for programmable reinforcement learning agents. In Proceedings of the Meeting of the Association for the Advancement of Artificial Intelligence, 2002.
-Andreas, Jacob, Rohrbach, Marcus, Darrell, Trevor, and
-Klein, Dan. Learning to compose neural networks for
-question answering. In Proceedings of the Annual Meeting of the North American Chapter of the Association for
-Computational Linguistics, 2016.
-Artzi, Yoav and Zettlemoyer, Luke. Weakly supervised
-learning of semantic parsers for mapping instructions to
-actions. Transactions of the Association for Computational Linguistics, 1(1):49–62, 2013.
-Bacon, Pierre-Luc and Precup, Doina. The option-critic architecture. In NIPS Deep Reinforcement Learning Workshop, 2015.
-Bakker, Bram and Schmidhuber, Jürgen. Hierarchical reinforcement learning based on subgoal discovery and subpolicy specialization. In Proc. of the 8-th Conf. on Intelligent Autonomous Systems, pp. 438–445, 2004.
-Bengio, Yoshua, Louradour, Jérôme, Collobert, Ronan, and
-Weston, Jason. Curriculum learning. pp. 41–48. ACM,
-2009.
-Branavan, S.R.K., Chen, Harr, Zettlemoyer, Luke S., and
-Barzilay, Regina. Reinforcement learning for mapping
-instructions to actions. In Proceedings of the Annual
-Meeting of the Association for Computational Linguistics, pp. 82–90. Association for Computational Linguistics, 2009.
-Chen, David L. and Mooney, Raymond J. Learning to interpret natural language navigation instructions from observations. In Proceedings of the Meeting of the Association
-for the Advancement of Artificial Intelligence, volume 2,
-pp. 1–2, 2011.
-Daniel, Christian, Neumann, Gerhard, and Peters, Jan. Hierarchical relative entropy policy search. In Proceedings
-of the International Conference on Artificial Intelligence
-and Statistics, pp. 273–281, 2012.
+Alfonseca, E., Filippova, K., Delort, J.-Y., and Garrido, G.
+Pattern learning for relation extraction with a hierarchical topic model. In Annual Meeting of the Association
+for Computational Linguistics (ACL), 2012.
+Bunescu, R. C. and Mooney, R. J. Learning to extract relations from the Web using minimal supervision. In Annual Meeting of the Association for Computational Linguistics (ACL), 2007.
+Candes, E. and Tao, T. The Dantzig selector: Statistical
+estimation when p is much larger than n. The Annals of
+Statistics, 35(6):2313–2351, 2007.
+Chandrasekaran, V., Parrilo, P. A., and Willsky, A. S. Latent variable graphical model selection via convex optimization. The Annals of Statistics, 40(4):1935–1967,
+2012.
 
-Devin, Coline, Gupta, Abhishek, Darrell, Trevor, Abbeel,
-Pieter, and Levine, Sergey. Learning modular neural
-network policies for multi-task and multi-robot transfer.
-arXiv preprint arXiv:1609.07088, 2016.
-Dietterich, Thomas G. Hierarchical reinforcement learning
-with the maxq value function decomposition. J. Artif.
-Intell. Res. (JAIR), 13:227–303, 2000.
-Greensmith, Evan, Bartlett, Peter L, and Baxter, Jonathan.
-Variance reduction techniques for gradient estimates in
-reinforcement learning. Journal of Machine Learning
-Research, 5(Nov):1471–1530, 2004.
-Hauser, Kris, Bretl, Timothy, Harada, Kensuke, and
-Latombe, Jean-Claude. Using motion primitives in probabilistic sample-based planning for humanoid robots.
-In Algorithmic foundation of robotics, pp. 507–522.
-Springer, 2008.
-Iyyer, Mohit, Boyd-Graber, Jordan, Claudino, Leonardo,
-Socher, Richard, and Daumé III, Hal. A neural network for factoid question answering over paragraphs. In
-Proceedings of the Conference on Empirical Methods in
-Natural Language Processing, 2014.
-Kearns, Michael and Singh, Satinder. Near-optimal reinforcement learning in polynomial time. Machine Learning, 49(2-3):209–232, 2002.
-Konidaris, George and Barto, Andrew G. Building portable
-options: Skill transfer in reinforcement learning. In IJCAI, volume 7, pp. 895–900, 2007.
-Konidaris, George, Kuindersma, Scott, Grupen, Roderic,
-and Barto, Andrew. Robot learning from demonstration
-by constructing skill trees. The International Journal of
-Robotics Research, pp. 0278364911428653, 2011.
-Kulkarni, Tejas D, Narasimhan, Karthik R, Saeedi, Ardavan, and Tenenbaum, Joshua B. Hierarchical deep reinforcement learning: Integrating temporal abstraction and
-intrinsic motivation. arXiv preprint arXiv:1604.06057,
-2016.
-Marthi, Bhaskara, Lantham, David, Guestrin, Carlos, and
-Russell, Stuart. Concurrent hierarchical reinforcement
-learning. In Proceedings of the Meeting of the Association for the Advancement of Artificial Intelligence, 2004.
-Menache, Ishai, Mannor, Shie, and Shimkin, Nahum.
-Q-cutdynamic discovery of sub-goals in reinforcement
-learning. In European Conference on Machine Learning, pp. 295–306. Springer, 2002.
-Neelakantan, Arvind, Le, Quoc V, and Sutskever, Ilya.
-Neural programmer: Inducing latent programs with gradient descent. arXiv preprint arXiv:1511.04834, 2015.
+Downey, D. and Etzioni, O. Look ma, no hands: Analyzing
+the monotonic feature abstraction for text classification.
+In Neural Information Processing Systems (NIPS), 2008.
+Eadicicco, L. Baidu’s Andrew Ng on the future of artificial
+intelligence, 2017. Time [Online; posted 11-January2017].
+Elidan, G. and Friedman, N. Learning hidden variable networks: The information bottleneck approach. Journal of
+Machine Learning Research, 6:81–127, 2005.
+Hinton, G. E. Training products of experts by minimizing contrastive divergence. Neural Computation, 14(8):
+1771–1800, 2002.
+Hoffmann, R., Zhang, C., Ling, X., Zettlemoyer, L., and
+Weld, D. S. Knowledge-based weak supervision for information extraction of overlapping relations. In Annual
+Meeting of the Association for Computational Linguistics (ACL), 2011.
+Joglekar, M., Garcia-Molina, H., and Parameswaran, A.
+Comprehensive and reliable crowd assessment algorithms. In International Conference on Data Engineering (ICDE), 2015.
+Koh, K., Kim, S. J., and Boyd, S. An interior-point method
+for large-scale `1 -regularized logistic regression. Journal of Machine Learning Research, 3:1519–1555, 2007.
+Langford, J., Li, L., and Zhang, T. Sparse online learning via truncated gradient. Journal of Machine Learning
+Research, 10:777–801, 2009.
+Meinshausen, N. and Bühlmann, P. High-dimensional
+graphs and variable selection with the lasso. The Annals
+of Statistics, 34(3):1436–1462, 2006.
 
-Modular Multitask Reinforcement Learning with Policy Sketches
+Craven, M. and Kumlien, J. Constructing biological knowledge bases by extracting information from text sources.
+In International Conference on Intelligent Systems for
+Molecular Biology (ISMB), 1999.
 
-Niekum, Scott, Osentoski, Sarah, Konidaris, George,
-Chitta, Sachin, Marthi, Bhaskara, and Barto, Andrew G.
-Learning grounded finite-state representations from unstructured demonstrations. The International Journal of
-Robotics Research, 34(2):131–157, 2015.
+Metz, C. Google’s hand-fed AI now gives answers, not
+just search results, 2016. Wired [Online; posted 29November-2016].
 
-Vogel, Adam and Jurafsky, Dan. Learning to follow navigational directions. In Proceedings of the Annual Meeting of the Association for Computational Linguistics,
-pp. 806–814. Association for Computational Linguistics,
-2010.
+Dalvi, N., Dasgupta, A., Kumar, R., and Rastogi, V. Aggregating crowdsourced binary ratings. In International
+World Wide Web Conference (WWW), 2013.
 
-Parr, Ron and Russell, Stuart. Reinforcement learning with
-hierarchies of machines. In Advances in Neural Information Processing Systems, 1998.
+Mintz, M., Bills, S., Snow, R., and Jurafsky, D. Distant
+supervision for relation extraction without labeled data.
+In Annual Meeting of the Association for Computational
+Linguistics (ACL), 2009.
 
-Williams, Ronald J. Simple statistical gradient-following
-algorithms for connectionist reinforcement learning.
-Machine learning, 8(3-4):229–256, 1992.
+Dawid, A. P. and Skene, A. M. Maximum likelihood estimation of observer error-rates using the EM algorithm.
+Journal of the Royal Statistical Society C, 28(1):20–28,
+1979.
 
-Precup, Doina. Temporal abstraction in reinforcement
-learning. PhD thesis, 2000.
-Reed, Scott and de Freitas, Nando. Neural programmerinterpreters. Proceedings of the International Conference on Learning Representations, 2016.
-Schulman, John, Moritz, Philipp, Levine, Sergey, Jordan,
-Michael, and Abbeel, Pieter. High-dimensional continuous control using generalized advantage estimation.
-arXiv preprint arXiv:1506.02438, 2015a.
-Schulman, John, Moritz, Philipp, Levine, Sergey, Jordan,
-Michael, and Abbeel, Pieter. Trust region policy optimization. 2015b.
-Socher, Richard, Huval, Brody, Manning, Christopher, and
-Ng, Andrew. Semantic compositionality through recursive matrix-vector spaces. In Proceedings of the Conference on Empirical Methods in Natural Language Processing, pp. 1201–1211, Jeju, Korea, 2012.
-Stolle, Martin and Precup, Doina. Learning options in reinforcement learning. In International Symposium on Abstraction, Reformulation, and Approximation, pp. 212–
-223. Springer, 2002.
-Sutton, Richard S, Precup, Doina, and Singh, Satinder. Between MDPs and semi-MDPs: A framework for temporal abstraction in reinforcement learning. Artificial intelligence, 112(1):181–211, 1999.
-Tellex, Stefanie, Kollar, Thomas, Dickerson, Steven, Walter, Matthew R., Banerjee, Ashis Gopal, Teller, Seth, and
-Roy, Nicholas. Understanding natural language commands for robotic navigation and mobile manipulation.
-In In Proceedings of the National Conference on Artificial Intelligence, 2011.
-Tieleman, Tijmen. RMSProp (unpublished), 2012.
-Vezhnevets, Alexander, Mnih, Volodymyr, Agapiou, John,
-Osindero, Simon, Graves, Alex, Vinyals, Oriol, and
-Kavukcuoglu, Koray. Strategic attentive writer for learning macro-actions. arXiv preprint arXiv:1606.04695,
-2016.
+Ng, A. Y. Feature selection, l1 vs. l2 regularization, and rotational invariance. In International Conference on Machine Learning (ICML), 2004.
+
+Donoho, D. and Elad, M. Optimally sparse representation
+in general (nonorthogonal) dictionaries via `1 minimization. Proceedings of the National Academy of Sciences
+of the USA, 100(5):2197–2202, 2003.
+
+Parisi, F., Strino, F., Nadler, B., and Kluger, Y. Ranking
+and combining multiple predictors without labeled data.
+Proceedings of the National Academy of Sciences of the
+USA, 111(4):1253–1258, 2014.
+
+Learning the Structure of Generative Models without Labeled Data
+
+Perkins, S., Lacker, K., and Theiler, J. Grafting: Fast, incremental feature selection by gradient descent in function space. Journal of Machine Learning Research, 3:
+1333–1356, 2003.
+Ratner, A., De Sa, C., Wu, S., Selsam, D., and Ré, C. Data
+programming: Creating large training sets, quickly. In
+Neural Information Processing Systems (NIPS), 2016.
+Ravikumar, P., Wainwright, M. J., and Lafferty, J. D. Highdimensional Ising model selection using `1 -regularized
+logistic regression. The Annals of Statistics, 38(3):1287–
+1319, 2010.
+Riedel, S., Yao, L., and McCallum, A. Modeling relations
+and their mentions without labeled text. In European
+Conference on Machine Learning and Knowledge Discovery in Databases (ECML PKDD), 2010.
+Roth, B. and Klakow, D. Feature-based models for improving the quality of noisy training data for relation extraction. In Conference on Information and Knowledge
+Management (CIKM), 2013a.
+Roth, B. and Klakow, D. Combining generative and discriminative model scores for distant supervision. In
+Conference on Empirical Methods on Natural Language
+Processing (EMNLP), 2013b.
+Shin, J., Wu, S., Wang, F., De Sa, C., Zhang, C., and
+Ré, C. Incremental knowledge base construction using
+DeepDive. Proceedings of the VLDB Endowment, 8(11):
+1310–1321, 2015.
+Takamatsu, S., Sato, I., and Nakagawa, H. Reducing wrong
+labels in distant supervision for relation extraction. In
+Annual Meeting of the Association for Computational
+Linguistics (ACL), 2012.
+Tibshirani, R. Regression shrinkage and selection via the
+lasso. Journal of the Royal Statistical Society B, 58(1):
+267–288, 1996.
+Tropp, J. Just relax: Convex programming methods for
+identifying sparse signals in noise. IEEE Transactions
+on Information Theory, 52(3):1030–1051, 2006.
+Wainwright, M. J. Sharp thresholds for high-dimensional
+and noisy sparsity recovery using `1 -constrained
+quadratic programming (lasso). IEEE Transactions on
+Information Theory, 55(5):2183–2202, 2009.
+Zhang, C. and Ré, C. DimmWitted: A study of mainmemory statistical analytics. Proceedings of the VLDB
+Endowment, 7(12):1283–1294, 2014.
+Zhang, Y., Chen, X., Zhou, D., and Jordan, M. I. Spectral methods meet EM: A provably optimal algorithm for
+
+crowdsourcing. Journal of Machine Learning Research,
+17:1–44, 2016.
+Zhao, P. and Yu, B. On model selection consistency of
+lasso. Journal of Machine Learning Research, 7:2541–
+2563, 2006.
+Zhu, J., Lao, N., and Xing, E. P. Grafting-Light: Fast,
+incremental feature selection and structure learning of
+Markov random fields. In International Conference on
+Knowledge Discovery and Data Mining (KDD), 2010.
 
 

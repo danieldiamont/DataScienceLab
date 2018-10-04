@@ -1,1044 +1,1873 @@
-Differentially Private Learning of Undirected Graphical Models Using
-Collective Graphical Models
+MEC: Memory-efficient Convolution for Deep Neural Network
 
-Garrett Bernstein 1 Ryan McKenna 1 Tao Sun 1 Daniel Sheldon 1 2 Michael Hay 3 Gerome Miklau 1
+Minsik Cho 1 Daniel Brand 1
 
 Abstract
-We investigate the problem of learning discrete,
-undirected graphical models in a differentially
-private way. We show that the approach of releasing noisy sufficient statistics using the Laplace
-mechanism achieves a good trade-off between
-privacy, utility, and practicality. A naive learning algorithm that uses the noisy sufficient statistics “as is” outperforms general-purpose differentially private learning algorithms. However,
-it has three limitations: it ignores knowledge
-about the data generating process, rests on uncertain theoretical foundations, and exhibits certain pathologies. We develop a more principled
-approach that applies the formalism of collective graphical models to perform inference over
-the true sufficient statistics within an expectationmaximization framework. We show that this
-learns better models than competing approaches
-on both synthetic data and on real human mobility data used as a case study.
+Convolution is a critical component in modern
+deep neural networks, thus several algorithms for
+convolution have been developed. Direct convolution is simple but suffers from poor performance. As an alternative, multiple indirect
+methods have been proposed including im2colbased convolution, FFT-based convolution, or
+Winograd-based algorithm. However, all these
+indirect methods have high memory-overhead,
+which creates performance degradation and offers a poor trade-off between performance and
+memory consumption. In this work, we propose a memory-efficient convolution or MEC
+with compact lowering, which reduces memoryoverhead substantially and accelerates convolution process. MEC lowers the input matrix in
+a simple yet efficient/compact way (i.e., much
+less memory-overhead), and then executes multiple small matrix multiplications in parallel to
+get convolution completed. Additionally, the reduced memory footprint improves memory subsystem efficiency, improving performance. Our
+experimental results show that MEC reduces
+memory consumption significantly with good
+speedup on both mobile and server platforms,
+compared with other indirect convolution algorithms.
 
 1. Introduction
-Graphical models are a central tool in probabilistic modeling and machine learning. They pair expressive probability models with algorithms that leverage the graphical
-structure for efficient inference and learning. However,
-with data collection and modeling growing in importance
-in nearly all domains of society, there is increasing demand
-to apply graphical models in settings where the underlying
-data is sensitive and must be kept private. For example,
-consider applying graphical models to analyze electronic
-health records, with the goal of guiding public health policy. How can we derive these useful population-level outcomes without compromising the privacy of individuals?
+Deep neural network (DNN) consists of many layers to perform a task such as image classification/recognition, speech recognition, natural language
+translation, and so on. Among these layers, the convolution layer is one of the most important, but the slowest and most memory-intensive ones in advanced/modern
+convolutional DNN (Abuzaid et al., 2015; Chen et al.,
+2016; Cong & Xiao, 2014; Denton et al., 2014; Park et al.,
 1
+IBM T. J. Watson Research Center, NY, USA. Correspondence to: Minsik Cho <minsikcho@us.ibm.com>.
 
-University of Massachusetts Amherst 2 Mount Holyoke College 3 Colgate University. Correspondence to: Garrett Bernstein
-<gbernstein@cs.umass.edu>.
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-Differential privacy is a widely studied formalism for private data analysis (Dwork et al., 2006). It provides a statistical privacy guarantee to individuals: the output of a differentially private algorithm is statistically nearly unchanged
-even if any single individual’s record is added to or removed from the input data set. The general idea is to carefully randomize the algorithm so that the (random) output
-does not depend too much on any individual’s data.
-Differentially private machine learning cleanly addresses
-the problem of extracting useful population-level models
-from data sets while protecting the privacy of individuals.
-Indeed, this is an active and important research area (see
-Section 1.1), which includes private learning algorithms
-for a variety of general frameworks and specific machine
-learning models. This paper addresses the problem of privately learning parameters in a widely used class of probabilistic models: discrete, undirected graphical models. Although our problem can be cast in terms of general private
-learning frameworks, these do not lead to practical algorithms. Previous work also addresses private learning for
-directed graphical models (J. Zhang et al., 2014; Z. Zhang
-et al., 2016). Our problem of learning in undirected models, which are not locally normalized, is more general and
-substantially harder computationally.
-To learn accurate models under differential privacy, it is
-critical to randomize the algorithm “just enough” to achieve
-the desired privacy guarantee without diminishing the quality of the learned model too much. This is usually done by
-modifying a learning algorithm to add noise to some intermediate quantity X, with the noise magnitude calibrated to
-the sensitivity of X, a measure of how much X can depend
-on any single individual’s data in the worst case (Dwork
-et al., 2006). The randomization renders the noisy estimate of X safe for release; all subsequent calculations using the noisy X, but not the original data, are also safe.
-Where should noise be injected into a machine learning algorithm to achieve the best utility? We highlight two highlevel goals: (1) Noise should be added at an “information
-bottleneck”, so the sensitivity is as small as possible relative to the information being sought,1 (2) noise should be
-1
-Sensitivity scales with the number of measurements; all else
-equal, a lower dimensional quantity will have lower sensitivity.
+2016a; Vasilache et al., 2014). To address the performance
+issues in convolutional layers, efficient/approximation algorithms have been proposed (Chellapilla et al., 2006;
+Denton et al., 2014; Jaderberg et al., 2014; Jia, 2014;
+Vasilache et al., 2014), tailed implementations for limited cases have been actively investigated (Lavin, 2015),
+and industrial-strength libraries are offered (Chetlur et al.,
+2014).
+However, the previous approaches have not directly
+addressed the memory consumption problem.
+This
+is becoming a critical issue as DNNs are getting
+in end-point devices with limited memory (e.g., mobile/IOT devices) (Chen et al., 2015; Collins & Kohli,
+2014; Gong et al., 2014; Kim et al., 2015; Lebedev et al.,
+2014; Wang & Cheng, 2016) so as to minimize response
+delay (e.g., better user experience) and network overhead (Han et al., 2015; Lane et al., 2016; 2015). On the
+other hand, the reduced memory consumption leads to
+smaller SRAM usage, which can save energy consumption (e.g., leakage current) on mobile devices (Park et al.,
+2015). Moreover, memory footprint itself has critical impact on convolution computation efficiency (Li et al., 2016;
+Park et al., 2016b). Therefore, minimizing memory footprint in convolution is critical for future deep-learning applications on wide variety of devices and platforms.
+In this paper, we propose a new memory-efficient convolution algorithm, MEC which can reduce memory-overhead
+and further improve the performance of computing convolution in DNN. MEC uses a simple yet novel way of lowering the input matrix in a highly compact way, while still
+exploiting fast matrix-matrix multiplication available in a
+highly-optimized package such as BLAS (Jia, 2014). The
+reduced memory footprint improves memory sub-system
+efficiency (i.e., improves cache locality), so that MEC accelerates the convolution computation itself without compromising accuracy. Through extensive experiments on
+both mobile and server platforms with CPU/GPU, we show
+that MEC can be a very generic/efficient algorithm suitable
+to various platforms with memory constraints. Further, the
+key ideas in MEC should be beneficial/complementary to
+any variant of conventional im2col-based convolution by
+reducing either memory consumption or memory-bus traffic (i.e., less traffic from global memory to shared memory
+on GPU) (Chellapilla et al., 2006; Chetlur et al., 2014; Jia,
 
-Differentially Private Learning of Graphical Models
+MEC: Memory-efficient Convolution for Deep Neural Network
 
-added to a quantity for which the sensitivity can be bounded
-tightly, so the noise magnitude can be kept as small as possible. These two principles are often at odds. For example,
-adding noise to the final learned parameters θ (known as
-output perturbation; Dwork et al., 2006), is appealing from
-the information bottleneck standpoint, but if the learning
-algorithm is complex we may not be able to analyze the
-sensitivity and would have to rely on a coarse bound. Indeed, general private learning frameworks bound the sensitivity using quantities such as Lipschitz, strong-convexity,
-and smoothness constants (Bassily et al., 2014; Wu et al.,
-2016) or diameter of the parameter space (Smith, 2008),
-which may be loose in practice.
-In this paper we will take the approach of adding noise
-to the sufficient statistics of a graphical model using the
-Laplace mechanism, a high-level approach that has also
-been applied recently for directed models (Zhang et al.,
-2016; Foulds et al., 2016). This has a number of advantages. First, sufficient statistics, by definition, are an information bottleneck. Second, it is very easy to exactly analyze the sensitivity of sufficient statistics in graphical models, which are contingency tables. Third, adding Laplace
-noise to contingency tables prior to release is very simple,
-so it is reasonable to imagine adoption in practice, say, by
-public agencies.
-However, it is not entirely clear how to learn parameters
-of a graphical model with noisy sufficient statistics. One
-option, which we will refer to as naive MLE, is to ignore
-the noise and conduct maximum-likelihood estimation as
-if we had true sufficient statistics. This works reasonably
-well in practice, and is competitive with or better than stateof-the-art general-purpose methods. In fact, we will show
-that naive MLE is consistent and achieves the same asymptotic mean-squared error as non-private MLE. However, at
-reasonable sample sizes the error due to privacy is significant, and the approach has several pathologies (see also
-Yang et al., 2012; Karwa et al., 2014; 2016), some of which
-make it difficult to apply in practice. Therefore, we adopt
-a more principled approach of performing inference about
-the true sufficient statistics within an expectationmaximization (EM) learning framework.
-The remaining problem is how to conduct inference over
-sufficient statistics of a graphical model given noisy observations thereof. This is exactly the goal of inference
-in collective graphical models (CGMs; Sheldon & Dietterich, 2011), and we will adapt CGM inference techniques
-to solve this problem. Put together, our results significantly
-advance the state-of-the-art for privately learning discrete,
-undirected graphical models. We clarify the theory and
-practice of naive MLE. We show that it learns better models
-than existing state-of-the-art approaches in most scenarios
-across a broad range of synthetic tasks, and in experiments
+2.2. Previous Work
 
-modeling human mobility from wifi access point data. We
-then show the more principled approach of conducting inference with CGMs is superior to competing approaches in
-nearly all scenarios.
-1.1. Related Work
-Differential privacy has been applied to many areas of machine learning, including learning specific models such as
-logistic regression (Chaudhuri & Monteleoni, 2009), support vector machines (Rubinstein et al., 2009), and deep
-neural networks (Abadi et al., 2016); privacy in general
-frameworks such as empirical risk minimization (ERM;
-Chaudhuri et al., 2011; Kifer et al., 2012; Jain & Thakurta,
-2013; Bassily et al., 2014), gradient descent (Wu et al.,
-2016), and parameter estimation (Smith, 2011); and theoretical analysis of what can be learned privately (e.g., Blum
-et al., 2005; Kasiviswanathan et al., 2011).
-A key aspect of our work is conducting probabilistic inference over data or model parameters given knowledge of
-the probabilistic privacy mechanism and its output. Karwa
-et al. (2014; 2016) take a similar approach but for exponential random graph models, as do Williams & McSherry (2010), but for the factored exponential mechanism. Because sufficient statistics of graphical models are
-contingency tables, our work connects to the well-studied
-problem of releasing differentially private contingency tables (Barak et al., 2007; Yang et al., 2012; Hardt et al.,
-2012); we adopt the Laplace mechanism because it is simple and fits well within our learning framework.
-We highlight connections between CGMs and differential
-privacy and adopt existing inference techniques for CGMs.
-In general, the inference problems we wish to solve are
-NP-hard (Sheldon et al., 2013), but a number of efficient
-approximate inference algorithms are available (Liu et al.,
-2014; Sun et al., 2015; Vilnis et al., 2015). In a paper that
-was primarily about CGM inference, Sun et al. (2015) conducted a case study using CGMs to privately learn Markov
-chains; we build on this approach, which was limited in
-scope and did not address general graph structures.
-Our work connects to an active current line of work on
-private probabilistic inference, some of which directly addresses learning in directed graphical models, but not the
-more challenging problem of learning in undirected graphical models. Several closely related approaches, which we
-refer to as One Posterior Sampling (OPS), show that a single sample drawn from a posterior distribution is differentially private (Dimitrakakis et al., 2014; Wang et al., 2015;
-Zhang et al., 2016). This can be understood as applying the
-exponential mechanism to the log-likelihood function, and
-can provide a point estimate for graphical model parameters (Zhang et al., 2016). To apply OPS, one must sample from the posterior over parameters, p(Θ|X), which is
+Table 1. Notations.
+a:b
+A[a, b]
+A[a : b, c : d]
 
-Differentially Private Learning of Graphical Models
+SEQUENCE
+MATRIX ELEMENT
+SUB - MATRIX
 
-straightforward for directed graphical models with conjugate priors, but not in undirected models, where posteriors
-over parameters are usually intractable. Zhang et al. (2016)
-and Foulds et al. (2016) also developed fully Bayesian
-methods using Laplace noise-corrupted sufficient statistics
-to update posterior parameters. Similar considerations apply to this approach, which matches ours in that it uses the
-same data release mechanism, but, like OPS, requires conjugate priors and thus easily applies only to directed graphical models. Wang et al. (2015) also describe MCMC approaches to draw many private samples from a posterior
-distribution; this is another general framework that could
-apply to our problem, but, it relies on loose sensitivity
-bounds and since we only request point estimates, it would
-waste privacy budget by drawing many samples.
+I
+K
+O
+L
+sh , sw
 
-2. Background and Problem Statement
-We consider data sets consisting of T discrete attributes
-associated with each individual. Let xt ∈ X denote the
-value of the tth attribute of an individual; we assume for
-simplicity of notation that all variables take values in the
-same finite set X . Let x = (x1 , . . . , xT ) denote the complete vector of attributes for an individual, and let X =
-(x(1) , x(2) , . . . , x(N ) ) denote a data set for an entire population of N individuals.
+INPUT TENSOR
+KERNEL TENSOR
+OUTPUT TENSOR
+LOWERED TENSOR
+KERNEL STRIDE
 
-statistics that are computed on the data. Let f be any function that maps datasets to Rd . The amount of noise depends
-on the sensitivity of f .
-Definition 2 (Sensitivity). The sensitivity of a function f
-is defined as ∆f = maxX LSf (X) where LSf denotes
-the local sensitivity of f on input X and is defined as
-LSf (X) = maxX0 ∈nbrs(X) kf (X) − f (X0 )k1 .
-We drop the subscript f when it is clear from context.
-Our approach achieves differential privacy through the application of the Laplace mechanism.
-Definition 3 (Laplace Mechanism; Dwork et al., 2006).
-Given function f that maps datasets to Rd , the Laplace
-mechanism is defined as L(X) = f (X) + z where z =
-(z1 , . . . , zd ) and each zi is an i.i.d. random variable from
-Laplace(∆f /).
-An important property of differential privacy is that any additional post-processing on the output cannot weaken the
-privacy guarantee.
-Proposition 1 (Post-processing; Dwork & Roth, 2014).
-Let A be an (, δ)-differentially private algorithm that
-0
-maps datasets to Rd and let g : Rd → Rd be an arbitrary
-function. Then g ◦ A is also (, δ)-differentially private.
-2.2. Problem Statement
+{a, a + 1, ... b − 1}
+A[i, j], i ∈ a : b, j ∈ c : d
+in × ih × iw × ic
+kh × kw × ic × kc
+in × oh × ow × kc
+i n × o w × i h × kw × i c
 
-2.1. Differential Privacy
-Differential privacy offers strong privacy protection by imposing constraints on any algorithm that computes on the
-private dataset. Informally, it requires that an individual’s data has a bounded effect on the algorithm’s behavior. The formal definition requires reasoning about all
-pairs of datasets that are otherwise identical except one
-dataset contains one additional individual’s data vector. Let
-nbrs(X) denote the set of datasets that differ from X by at
-most one individual’s vector—i.e., if X0 ∈ nbrs(X), then
-X0 = (x(1) , . . . , x(i−1) , x(i+1) , . . . , x(n) ) for some i or
-X0 = (x(1) , . . . , x(i) , x0 , x(i+1) , . . . , x(n) ) for some i and
-some x0 ∈ X T .
-Definition 1 (Differential Privacy; Dwork et al., 2006). A
-randomized algorithm A satisfies (, δ)-differential privacy
-if for any input X, any X0 ∈ nbrs(X) and any subset of
-outputs S ⊆ Range(A),
-Pr[A(X) ∈ S] ≤ exp()Pr[A(X0 ) ∈ S] + δ.
-When δ = 0, we say that the algorithm satisfies differential privacy. All of the algorithms we propose satisfy -differential privacy but we compare against some
-algorithms that satisfy the weaker condition of (, δ)differential privacy with non-zero δ.
-We achieve differential privacy by injecting noise into the
+2014).
+The rest of the paper is organized as follows. We review
+related works and present preliminaries in Section 2. Section 3 presents our proposed algorithm, MEC. Experimental results are in Section 4. Section 5 concludes this paper.
 
-Our goal is to learn a probabilistic model p(x) from the data
-set X while protecting the privacy of individuals. We will
-learn probability distributions p(x) that are undirected discrete graphical models (also called Markov random fields;
-Koller & Friedman, 2009). These are defined by a set
-of local potential functions of the form ψC (xC ), where
-C ⊆ {1, . . . , T } is an index set or clique, xC is a subvector of x corresponding to C, and ψC : X |C| → R+
-assigns a potential value toQ
-each possible xC . The probability model is p(x) = Z1 C∈C ψC (xC ) where C is the
-collection
-of cliques that appear in the model, and Z =
-P Q
-x
-C∈C ψC (xC ) is the normalizing constant or partition function. The graph G with node set V = {1, . . . , T }
-and edges between any two indices that co-occur in some
-C ∈ C is the independence graph of the model; therefore,
-each index set C is a clique in G.
-For learning, it is most convenient to express the model in
-log-linear or exponential family form as:
-(
-)
-X X
-p(x; θ) = exp
-I{xC = iC }θC (iC )−A(θ) .
-C∈C iC ∈X |C|
+2. Preliminaries
+2.1. Notations
+Notation used in this paper is listed in Table 1. For integers
+we use small letters, for tensors and matrices we use capital
+letters. We adopt the C-language convention as representing tensors and matrices in row-major order. For example,
+a p×q ×r tensor is an array of pqr elements. The array can
+be interpreted as consisting of p sections, each divided into
+q subsections, each having r elements. The same array can
+also be interpreted as p × qr matrix, or as pq × r matrix,
+etc. We specifically interpret a tensor as a matrix when it
+requires matrix operations, otherwise (i.e., for data movement) we keep the tensor form. If we work with a math library, such as cuBLAS (cuBLAS), which requires columnmajor order, then we still use the same row-major representation, but interpret all matrices as being transposed.
+We use the notation a : b to denote a sub-matrix. Thus, an
+m × n matrix could be written as A[0 : m, 0 : n]. The most
+common form of a sub-matrix will be of the form A[i :
+i+p, j : j +q]. It is a p×q sub-matrix with top left corner at
+the element A[i, j], which can be easily represented in the
+BLAS interface without moving any elements by having
+leading dimension ld = n.
+The subject of this paper is 2-dimensional convolution O =
+I ⋆ K with strides sh , sw . For simplicity of explanation
+any padding with zeroes is assumed to have been already
+applied to the input I. The output matrix O will have the
+dimensions
+
+oh,w =
+
+ih,w − kh,w
++1
+sh,w
 
 (1)
-In this expression: I{·} is an indicator function; the variable iC ∈ X |C| denotes a particular setting of the variables xC ; the parameters θC (iC ) = log ψC (iC ) are logpotential values; the vector θ ∈ Rd is the concatenation of
 
-Differentially Private Learning of Graphical Models
+Due to the importance of DNN, several techniques
+for efficient convolution computation have been proposed (Chetlur et al., 2014; Perkins, 2016).
+The
+most relevant to our work is im2col-based convolution, FFT (Fast Fourier Transform)-based convolution (Highlander & Rodriguez, 2016; Mathieu et al., 2013;
+Vasilache et al., 2014), and Winograd-based convolution (Lavin, 2015). MEC provides the same functionality
+with reduced memory requirements.
+• im2col-based convolution transforms/lowers the input matrix into a Toeplitz matrix with redundancy
+(a.k.a, lowered matrix) such that convolution can be
+performed as fast matrix-matrix multiplication, which
+can take advantage of highly optimized linear algebra
+packages including BLAS (Chellapilla et al., 2006;
+Chetlur et al., 2014; Jia, 2014).
+• FFT-based convolution relies on the fact that convolution can be done as simple multiplication in the frequency domain. However, FFT-based convolution incurs memory-overhead because all the kernels must
+be padded to be at the same size as the input matrix. Thus, memory-overhead becomes really high
+when kernels are relatively smaller (e.g., 3x3) than
+input matrices (Chetlur et al., 2014; He et al., 2015;
+Perkins, 2016; Simonyan & Zisserman, 2014).
+• Winograd-based convolution is based on the
+Coppersmith-Winograd algorithm (Winograd, 1980)
+which shows how to reduce multiplication counts at
+a cost of more addition counts and a large number of
+intermediate products. It is shown in (Lavin, 2015;
+Park et al., 2016a) that Winograd-based convolution
+can be efficient for small kernels on GPU.
+In contrast to the above schemes, which do not degrade accuracy, various approximation strategies have
+been proposed including low-rank/monochromatic
+approximation (Denton et al., 2014; Jaderberg et al.,
+2014), vector quantization (Gong et al., 2014), finetuning (Lebedev et al., 2014), and DCT (Discrete Cosine
+Transform)/hashing (Lebedev et al., 2014).
 
-all parameters; and A(θ) = log Z(θ) is the log-partition
-function, with the dependence of Z on the parameters now
-made explicit. Note that, for any θ ∈ Rd , the density is
-strictly positive: p(x; θ) > 0 for all x. This is true because the potential values ψC (iC ) are strictly positive, so
-the log-potentials are finite.
-The goal is to learn parameters θ̂ from the data X in a way
-that is -differentially private and such that p(x; θ̂) is as accurate as possible. We will measure accuracy as KullbackLeibler divergence from an appropriate reference distribution (Kullback & Leibler, 1951). In synthetic experiments,
-
-we will measure the divergence D p(·; θ)kp(·; θ̂) , where
-p(x; θ) is the true density. For real data, we
- will measure
-the holdout log-likelihood Eq log p(x; θ̂) where q is the
-empirical distribution of the holdout
-data, which is equal to
-
-a constant minus D qkp(·; θ̂) .
-The problem of privately selecting which cliques to include
-in the model (i.e., model selection or structure learning) is
-interesting but not considered in this paper; we assume the
-cliques C are fixed in advance by the modeler.
+3. Algorithm
+In this section, we propose our algorithm for convolution,
+MEC, with detailed examples. The main goal of MEC is
+to reduce memory-overhead during convolution, which can
+be beneficial for any convolutional DNN in three aspects:
+• MEC can enable training or inferencing with a larger
+model for a given memory capacity.
 
-3. Approach
-To develop our approach to privately learn graphical model
-parameters, we first discuss standard concepts related to
-maximum-likelihood estimation for graphical models.
-Log-Likelihood, Sufficient Statistics, Q
-Marginals. From
-
-N
-Eq. (1), the log-likelihood L(θ) = log i=1 p x(i) ; θ of
-the entire data set can be written as
-"
-#
-X X
-L(θ) =
-nC (iC )θC (iC ) − N A(θ)
-C∈C iC ∈X |C|
+MEC: Memory-efficient Convolution for Deep Neural Network
 
-PN
-(i)
-where nC (iC ) =
-i=1 I{xC = iC } is a count of how
-many times the configuration iC for the variables in clique
-C appears in the
- population. The collection of counts
-nC = nC (iC ) for all possible iC is the (population) contingency table on clique C. Let n denote the vector concatenation of the contingency tables for all cliques. Then
-we can rewrite the log-likelihood more compactly as
-L(θ) = f (n, θ) := θ T n − N A(θ)
+0
+
+0
+
+0
+
+0
+
+0
+
+0
+
+0
+
+0
+
+2
+
+2
+
+1
+
+1
+
+2
+
+0
+
+4
+
+6
+
+3
+
+5
+
+000022020
+
+1
+
+000221201
+
+0
+
+4
+
+000211011
+
+0
+
+.
+.
+.
+
+0
+
+2
+
+0
+
+1
+
+1
+
+0
+
+0
+
+1
+
+0
+
+0
+
+2
+
+6
+
+2
+
+4
+
+4
+
+0
+
+2
+
+0
+
+1
+
+2
+
+0
+
+0
+
+1
+
+1
+
+1
+
+1
+
+5
+
+3
+
+4
+
+4
+
+0
+0
+0
+
+1
+0
+0
+
+1
+0
+0
+
+1
+1
+0
+
+1
+0
+0
+
+1
+2
+0
+
+0
+
+1
+
+0
+
+-1
+
+0
+
+2
+0
+
+4
+2
+
+3
+2
+
+3
+4
+
+0
+
+4
+3
+
+(a) direct convolution
+
+6
+
+3
+
+5
+
+4
+
+2
+
+6
+
+2
+
+4
+
+4
+
+1
+
+1
+
+5
+
+3
+
+4
+
+4
+
+1
+
+2
+
+4
+
+3
+
+3
+
+4
+
+1
+
+0
+
+2
+
+2
+
+4
+
+3
+
+1
+
+110120111
+.
+.
+110020000
+
+4
+
+0
+25 x 9
+
+-1
+
+9 x1
+
+(b) im2col-based convolution with lowered matrix
+
+Figure 1. Conventional convolution examples with iw = ih = 7, kh = kw = 3, sh = sw = 1, ow = oh = 5 (in = ic = kc = 1).
+
+• MEC can allow larger mini-batch sizes to speedup
+turn-around/per-epoch-latency during training.
+• MEC can accelerate computation by improving memory sub-system efficiency (e.g. more cache hits).
+In contrast to the widely-adopted im2col-based convolution (Chellapilla et al., 2006; Chetlur et al., 2014; Jia,
+2014), MEC performs compact/BLAS-friendly lowering
+such that memory-overhead can be minimized without
+degrading performance/accuracy. Section 3.1 motivates
+MEC, and Section 3.2 highlights the key idea in MEC.
+Section 3.3 formally presents MEC with implementation
+details.
+3.1. Motivation
+In this section, we review im2col-based convolution and its
+pros and cons with Fig. 1 which sketches direct convolution in (a) and im2col-based convolution using BLAS in
+(b). In direct convolution, one element of the output matrix
+O is produced by a dot-product between the kernel K and
+a sub-matrix of the input I. The sub-matrices are obtained
+by sliding K over I in both dimensions. Each subsequent
+sub-matrix is obtained by sliding the distance sh or sw , respectively. For example, Fig. 1 (a) shows two sub-matrices
+in gray and dotted boxes w.r.t. the 3 × 3 kernel are processed to generate the corresponding output values in gray
+and dotted boxes (i.e., 3 and 4), respectively.
+Direct convolution is simple and straightforward without
+memory-overhead. However, it is known that the same convolution can be done more efficiently with a lowered matrix (a.k.a. im2col) and gemm in BLAS (Chellapilla et al.,
+2006; Chetlur et al., 2014; Jia, 2014) by off-loading the
+geometry-specific specializations in convolution to a plain
+matrix, which is depicted in Fig. 1 (b). Specifically, each
+sub-matrix instance w.r.t. K is linearized into a row of the
+lowered matrix L as in (b). For example, the gray and
+dotted sub-matrices in (a) are transformed into the gray
+and dotted rows in (b), respectively. Then the output ma-
+
+trix O = L × K, can be computed efficiently by optimized libraries (cuBLAS; Kågström et al., 1998; MKL;
+OpenBLAS). im2col-based convolution is generic enough
+to be used in any DNN on both mobile/IoT and high-end
+platforms (Chetlur et al., 2014; Lane et al., 2015).
+The major drawback of im2col-based convolution is that
+it comes with memory-overhead of temporarily storing the
+lowered matrix L with dimension
+in o h o w × k h k w k c
 
 (2)
 
-The most common approach for parameter learning in
-graphical models is maximum likelihood estimation: find
-the parameters θ̂ that maximize L(θ). The resulting parameter vector θ̂ is a maximum-likelihood estimator (MLE). It
-is clear from Eq. (2) that this problem depends on the data
-only through the contingency tables n. Indeed, the clique
-contingency tables n are sufficient statistics of the model:
-they measure all of the information from the data set X that
-is relevant for estimating the parameter θ (Fisher, 1922).
+which shows that the memory requirement grows quadratically with problem size. The example in Fig. 1 (b) shows
+that the lowered matrix has size 25 × 9, which is even lager
+than the original input matrix. MEC mainly aims to perform the same convolution yet with less memory-overhead,
+while improving computational efficiency.
+3.2. MEC Overview
+In this section, we highlight the key idea in our memoryefficient convolution algorithm, MEC based on a compact lowering scheme. The main reason why the im2colbased algorithm has large memory-overhead is because
+there is a significant amount of redundancy in the lowered matrix when sh or sw is small and K is large. And,
+the overhead becomes even worse when K is relatively
+smaller than I which occurs frequently in the state-ofthe-art DNN architectures (He et al., 2015; Perkins, 2016;
+Simonyan & Zisserman, 2014; Szegedy et al., 2014). In order to reduce memory-overhead, therefore, it is critical to
+reduce the amount of redundancy in the lowered matrix
+and keep the computation pattern BLAS-compatible (otherwise, the poor computation itself may slow down the entire convolution).
+MEC overcomes such challenges by lowering multiple
+columns at once rather than each single individual submatrix w.r.t. K. Consider the example in Fig. 2 for key
+ideas and details. MEC copies sub-matrices W (shaded in
+Fig. 2) of size ih × kw (which is 7 × 3) into one row of L.
 
-The algorithmic approach for maximum-likelihood estimation in graphical models is standard (Koller & Friedman,
-2009), and we do not repeat the details here. However,
-there are a few concepts that are important for our development. The marginals of a graphical model are the marginal
-probabilities µC (iC ) = p(xC = iC ; θ) for all cliques C
-and configurations iC . Let µ be the vector concatenation
-of all marginals, and note that µ = Eθ [n]/N . Similarly,
-let µ̂ = n/N be the data marginals—these are marginal
-probabilities of the empirical distribution of the data.
-Marginals play a fundamental role in estimation. First, note
-that we can divide Eq. (2) by N to see that the MLE only
-depends on the data through the data marginals µ̂. However, we leave L(θ) in the current form because it is more
-convenient for the CGM development in Section 3.2. Second, it is well known that ∇θ L(θ) = N (µ̂ − µ), so maximum likelihood estimation seeks to adjust θ so that the
-data and model marginals match. Third, it can (almost) always succeed in doing so, even if the data marginals do not
-come from a graphical model. More formally, let M be the
-marginal polytope: the set of all vectors µ such that there
-exists some distribution q(x) with marginal probabilities µ.
-Proposition 2 (Wainwright & Jordan, 2008). For any µ
-in the interior of M, there is a unique distribution p(x; θ)
-with marginals µ, i.e., such that µ = Eθ [n]/N .
-Applying Proposition 2 to the data marginals µ̂ shows that
-if these belong to the interior of M, we may learn a distribution with marginals that match what we observe in the
-data. Note that, while the distribution p(x; θ) is unique,
-the parameters θ are not, because our model is overcomplete. If µ belongs to M but not the interior of M, which
-occurs, for example, when some marginals are zero, the situation is more complex: there is no (finite) θ ∈ Rd such
-that p(x; θ) has marginals µ.2 Similarly, the MLE does not
-exist, meaning that its maximum is not attained for any finite θ (Fienberg & Rinaldo, 2012; Haberman, 1973). This
-issue will end up being significant in our understanding of
-the naive MLE approach in the following section.
-3.1. Noisy sufficient statistics
-From the development so far, there are two obvious possibilities for randomizing the learning process to achieve
-privacy:
-1. (Output perturbation) Find the MLE θ̂ and add Laplace
-noise proportional to its sensitivity.
-2. (Sufficient statistics perturbation) Add Laplace noise to
-the sufficient statistics n, and then conduct maximumlikelihood estimation.
-However, there is a sequence {θ k } where θ k ∈ Rd and
-lim Eθk [n]/N = µ.
+MEC: Memory-efficient Convolution for Deep Neural Network
+
+I
+W
+
+C
+
+A
+
+0
+
+0
+
+0
+
+0
+
+0
+
+0
+
+0
+
+0
+
 2
 
-k→∞
+2
 
-Differentially Private Learning of Graphical Models
+1
 
-The two approaches are similar from an information bottleneck standpoint—the dimensionality of n and θ̂ is the
-same. However, the sensitivity of θ̂ is difficult to analyze,
-since it requires reasoning about worst-case inputs. It also
-may be high due to pathological inputs whose local sensitivity is much higher than that of realistic data sets. On the
-other hand, the sensitivity of n is very easy to analyze and
-the analysis is tight: the local sensitivity is the same for all
-data sets.
-Proposition 3. Let n(X) be the sufficient statistics of a
-graphical model with clique set C on data set X. The local sensitivity of n is |C| for all inputs X. Therefore the
-sensitivity of n is |C|.
-(Proofs can be found in the supplementary material.) So,
-a simple approach to achieve privacy is to release noisy
-sufficient statistics y that are obtained after applying the
-Laplace mechanism:
-
-yC (iC ) = nC (iC ) + Laplace |C|/
-(3)
-Positive results. How can we learn with noisy sufficient
-statistics y? A naive approach is to use y in place of n in
-maximum-likelihood estimation, i.e., to find θ̂ to maximize
-f (y, θ). The validity of this approach has been debated in
-the literature (Yang et al., 2012). However, it is relatively
-easy to show that it behaves well asymptotically.
-Proposition 4. Assume x(1) , . . . , x(N ) are drawn iid from
-a probability distribution with marginals µ. The marginal
-estimate µ̄C (iC ) = N1 yC (iC ) obtained from the noisy
-sufficient statistics is unbiased and consistent, with mean
-squared error:
-
- µC (iC ) 1 − µC (iC )
-2|C|2
-MSE µ̄C (iC ) =
-+ 2 2 (4)
-N
-N 
-Now let θ̂ ∈ argmaxθ f (y, θ) be parameters estimated using the noisy sufficient statistics y. If the true distribution
-p(x; θ) is a graphical model with cliques C, then the estimated distribution p(x; θ̂) converges to p(x; θ).
-Pathologies. Asymptotically, the noisy sufficient statistics behave as desired in terms of MSE: the O(1/N ) term,
-which is due to sampling error and not privacy, dominates for large N . However, for practical settings of  the
-O(1/N 2 ) term, which is due to privacy, is dominant until
-N becomes very large, due to the large constant 2|C|2 /2 .
-Figure 1(a) illustrates this issue.
-A second pathology is that the noise added for privacy
-destroys some of the structure expected in the empirical
-marginals. The true data marginals µ̂ = n/N belong to
-the marginal polytope: in particular, this means that each
-clique marginal µ̂C is nonnegative and sums to one, and
+1
 
-that clique marginals agree on common subsets of variables. After adding noise, the pseudo-marginals µ̄ = y/N
-do not belong to the marginal polytope: µ̄ may have negative values, and does not satisfy consistency constraints.
-We find that a partial fix is very helpful empirically: project
-the pseudo-marginal µ̄C for each clique onto the simplex
-prior to conducting MLE, which can be done via a standard procedure (Duchi et al., 2008). Let µ̃ be the projected
-marginals. We now have that µ̃C is a valid marginal for
-each clique C, but consistency constraints are not satisfied
-among cliques, and it is still the case that µ̃ ∈
-/ M. Figure 1(b) illustrates the benefits of projection on the quality
-of the model learned by Naive MLE.
-A more significant pathology has to do with zeros in the
-projected marginals µ̃, which are more prevalent than in
-true data marginals µ̂. This is because the addition of
-Laplace noise creates negative values, which are then truncated to zero during projection. As discussed following
-Proposition 2, zero values in the marginals lead to nonexistence of the MLE (Fienberg & Rinaldo, 2012; Haberman, 1973). If µ̃C (iC ) = 0, the likelihood increases
-monotonically as θC (iC ) goes to negative infinity; in other
-words, the model attempts to drive the learned marginal
-probability to zero. Numerically, we can address this by
-regularization, e.g., adding λkθk2 to the objective function for arbitrarily small λ > 0. However, we may still
-learn vanishingly small marginal probabilities, which can
-lead to a very large KL-divergence between the true and
-learned models. Figure 1(c) illustrates the effect of λ on
-KL-divergence with both noisy sufficient statistics and true
-sufficient statistics. At high λ (strong regularization), both
-methods underfit and yield poor KL divergence. Learning with true sufficient statistics has no tendency to overfit;
-it achieves good performance for a broad range of λ approaching zero. Naive MLE with noisy sufficient statistics
-overfits badly (to zeros) for small λ, and must be tuned “just
-right” to achieve reasonable performance.
-3.2. Collective Graphical Models
-Since learning with noisy sufficient statistics “as-is” has
-several pathologies and is less robust than maximumlikelihood estimation in the absence of privacy, we investigate a more principled approach, which matches the data
-generating process: We treat the true sufficient statistics n
-as latent variables, andP
-learn θ to maximize the marginal
-likelihood p(y; θ) =
-n p(n, y; θ). In this section, we
-will develop an EM approach to accomplish this.
-In EM, we need to conduct inference to compute E[n | y; θ]
-for a fixed value of θ. This is the central problem of
-collective graphical models (CGMs) (Sheldon & Dietterich, 2011). Consider the joint distribution p(n, y; θ) =
-p(n; θ)p(y | n), which we use to compute E[n | y; θ]. The
+2
 
-Differentially Private Learning of Graphical Models
+0
 
-(a)
+P 4
 
-(b)
+6
 
-(c)
+3
 
-Figure 1. Sample results on synthetic data illustrating behavior of naive MLE (see Section 4.1 for experiment details): (a) MSE of learned
-marginals vs population size N on a chain model with T = 10, |X | = 10; reference lines indicate predicted slope for O(1/N ) and
-O(1/N 2 ) error terms, respectively (the function c/N d has slope −d on a log-log plot), (b) effect of projecting marginals on performance
-of naive MLE for an Erdős-Réyni graph with T = 10, |X | = 20,  = 0.5, (c) effect of regularization on KL-divergence for learning
-with and without privacy; chain model with T = 10, |X | = 10,  = 0.1.
+5
 
-noise mechanism p(y | n) arises directly from the Laplace
-mechanism (see Eq. (3)). The distribution of the sufficient
-statistics, p(n; θ), is known as the CGM distribution. It
-can be written in closed form when the model is decomposable, i.e., the cliques C correspond to the nodes of some
-junction tree T . Although decomposability is a significant
-restriction, let us assume that such a tree T exists; we will
-use the exact results derived for this case to develop an approximation for the general case. Let S be the set of separators of T , and let ν(S) be the multiplicity of S ∈ S,
-i.e., the number of distinct edges (Ci , Cj ) ∈ T for which
-S = Ci ∩ Cj . Under these assumptions, the CGM distribution has the form (Liu et al., 2014):
-
-p(n; θ) = h(n) · exp f (n, θ) ,
-Y Y
-ν(S)
-nS (iS )!
-h(n) = N ! ·
+4
 
-S∈S iS ∈X |S|
+Q
 
-Y
+2
 
-Y
+6
 
-nC (iC )!
+2
 
-· I{n ∈ MZN }
+4
 
-C∈C iC ∈X |C|
+4
 
-
-The term exp f (n, θ) is the probability of an ordered
-data set X with sufficient statistics n, as discussed previously. The term h(n) is a base measure that counts the
-number of ordered data sets with sufficient statistics equal
-to n, and enforces constraints on n. The integer-valued
-marginal polytope MZN is the set of all vectors n that are
-sufficient statistics of some data set X of size N .
-Exact inference in CGMs is intractable (Sheldon et al.,
-2013). Therefore, it is typical to relax the integrality
-constraint and apply Stirling’s approximation: log n! ≈
-n log n − n. Let MN be the feasible set with the integrality constraint removed, which is now just the standard
-marginal polytope scaled so that each marginal sums to N
-instead of one.
-Proposition 5 (Sun et al.; Nguyen et al., 2015; 2016). For
-a decomposable CGM with junction tree T , the following
+000211011012111010000
 
-approximation of the CGM log-density for any n ∈ MN is
-obtained by applying Stirling’s approximation:
-log p(n, y; θ) ≈ θ T n−N A(θ)+H(n)+log p(y|n). (5)
+1
+
+R 1
+
+5
+
+3
+
+4
+
+4
+
+S 2
+
+4
+
+3
+
+3
+
+4
+
+T 0
+
+2
+
+2
+
+4
+
+3
+
+0
+
+1
+
+1
+
+0
+
+0
+
+0
+
+1
+
+2
+
+0
+
+0
+
+C
+
+1
+
+1
+
+1
+
+0
+
+0
+
+1
+
+0
+
+2
+
+0
+
+0
+
+0
+
+0
+B
+
+0
+
+0
+
+0
+
+O
+
+0
+
+1
+
+2
+
+1
+
+T
+
+0
+
+2
+
+0
+
+S
+
+000221201201111001000
+
+0
+
+1
+
+R
+
+000022020020011000000
+
+0
+
+0
+
+Q
+
+1
+
+A
+B
+
+0
+
+K
+
+L
 P
-Here, H(n) = −N x q(x) log q(x) is the entropy of the
-unique distribution q(x) = p(x; θ) in the graphical model
-family with marginals equal to n/N .
-Proposition 5 is the basis for approximate MAP inference
-problem in CGMs: find n to maximize Eq. (5) and obtain
-an approximate mode of p(n | y; θ). Even though our goal
-is to compute the mean E[n | y; θ], it has been shown that
-the approximate mode, which is also a real-valued vector,
-is an excellent approximation to the mean for use within
-the EM algorithm (Sheldon et al., 2013). Note that for
-non-decomposable models, we will simply apply the same
-approximation as in Proposition 5, even though an exact
-expression for the counting measure h(n), and therefore
-the correspondence of log h(n) to an entropy H(n), is not
-known in this case. Then, after dropping the term N A(θ)
-from Proposition 5, which is constant with respect to n, the
-approximate MAP problem can be rewritten as:
-n∗ ∈ argmax θ T n + H(n) + log p(y | n)
 
-(6)
+E
 
-n∈MN
+D
+E
 
-This equation reveals a close connection to variational principles for graphical models (Wainwright & Jordan, 2008).
-It is identical to the variational optimization problem for
-marginal inference in standard graphical models, except the
-objective has an additional term log p(y|n), which is nonlinear in n. Several message-passing based algorithms have
-been developed to efficiently solve the approximate MAP
-problem. For trees or junction trees, Problem (6) is convex
-as long as log p(y|n) is concave in n (which is true in most
-cases of interest, such as Laplace noise) so it can be solved
-exactly (Sun et al., 2015; Vilnis et al., 2015). For loopy
-models, both the entropy H(n) and the feasible set MN
-must be approximated (Nguyen et al., 2016).
+1
 
-Differentially Private Learning of Graphical Models
+000112110120111102000
+000120100200110020000
 
-Algorithm 1 Non-Linear Belief Propagation (NLBP)
-Input: θ, y, damping parameter α > 0
-while ¬ converged do
-θ 0 ← θ + ∇n log p(y | n)
-
-n0 ← STANDARD-BP θ 0 {Normalized to sum to N }
-n ← (1 − α)n + αn0
+1
+5 × 21
 
-end while
-Algorithm 2 EM for CGMs
-Input: Noisy sufficient statistics y
-Initialize θ 0 arbitrarily
-while ¬ converged do
-nt ← NLBP(θ t , y)
-θ t+1 ← argmaxθ θ T nt − N A(θ)
-end while
+0
+5×9
 
-Algorithm 1 shows pseudocode non-linear belief propagation (NLBP; Sun et al., 2015), which we select as our primary inference approach due to its simplicity. It is a thin
-wrapper around standard BP, and can be applied to trees,
-in which case it exactly solves Problem (6), or it can be
-applied to loopy graphs by using loopy BP (LBP) as the
-subroutine, in which case it is approximate.
-Our final EM learning procedure is shown in Algorithm 2.
-It alternates between inference steps that solve the approximate MAP problem to find nt ≈ E[n | y; θt ], and optimization steps to re-estimate parameters given the inferred
-sufficient statistics nt . See also (Sheldon et al., 2013; Liu
-et al., 2014; Sun et al., 2015).
+D
 
-4. Experiments
-We conduct a number of experiments on synthetic and
-real data to evaluate the quality of models learned by both
-Naive MLE and CGM.
-Methods. We compare three algorithms: Naive MLE,
-CGM, and a version of private stochastic gradient descent
-(PSGD) due to Abadi et al. (2016). PSGD belongs to a
-class of general-purpose private learning algorithms that
-can be adapted to our problem, including gradient descent
-or stochastic gradient descent algorithms for empirical risk
-minimization (Chaudhuri et al., 2011; Kifer et al., 2012;
-Jain & Thakurta, 2013; Bassily et al., 2014; Abadi et al.,
-2016) and the subsample-and-aggregate approach for parameter estimation (Smith, 2011). We chose PSGD because it is a state-of-the-art method and it significantly outperformed other approaches in preliminary experiments.
-However, note that PSGD satisfies only (, δ)-differential
-privacy for δ > 0, which is a weaker privacy guarantee than
--differential privacy. We tune PSGD using a grid search
-over all relevant parameters to ensure it performs as well as
+0
+-1
 
-possible.
-4.1. Synthetic data
-We evaluate two types of pairwise graphical models: thirdorder chains with edges between two nodes i and j if
-1 ≤ |i − j| ≤ 3, and (connected) Erdős-Réyni (ER) random graphs. We report results for graphs of 10 nodes,
-where potentials on each edge are drawn from a Dirichlet distribution with concentration parameter of one; results
-are similar for smaller and larger models, models with different structures, and for different types of potentials. We
-vary data size N and privacy parameter . For each setting
-of model type, N , and , we conduct 25 trials. The trials
-are nested, with five random populations and five replications per population, i.e.: ni ∼ p(n), yi,j ∼ p(y | ni ) for
-i ∈ {1, . . . , 5}, j ∈ {1, . . . , 5}. We measure the quality
-of learned models using KL divergence from the true distribution, and include for comparison two reference models: a random estimator and a non-private MLE estimator.
-The random estimator is obtained by randomly generating
-marginals µ̄ and then learning potentials via MLE.
-Results. Figure 2 shows the results for the two models
-(top: third-order chain, bottom: ER) for different values of
-N and . CGM improves upon Naive MLE for all models, privacy levels, and population sizes. Recall that PSGD
-promises only (, δ)-differential privacy. While δ is often
-assumed to be “cryptographically small”, e.g., O(2−N ), we
-set δ to a relatively large value of δ = 1/N . Increasing δ
-weakens the privacy guarantee but enables PGSD to run on
-a wider range of . However, even with this setting for δ,
-some of the smaller values of  are not attainable by PGSD
-and are omitted from those plots.
-Figure 3(a) shows a qualitative comparison of edge
-marginals of a single graph learned by the different methods, compared with the true model marginals; it is evident
-that CGM learns marginals that are much closer to both
-the true marginals and those learned by the non-private estimator than Naive MLE is able to learn. Naive MLE is
-the fastest method; CGM is approximately 4x/8x slower on
-third-order chains and ER graphs, respectively, and PSGD
-is approximately 27x/40x slower.
-4.2. Wifi data
-We study human mobility data in the form of connections
-to wifi access points throughout a highly-trafficked academic building over a twenty-one day period. We treat
-each (user ID, day) combination as an “individual”, leading to 124,399 unique individuals; with this data preparation scheme, the unit of protection is one day’s worth of a
-user’s data. We discretize time by recording the location
-every 10 minutes, and assign null if the user is not connected to the network. Our probability model p(x) is a
+Figure 2. MEC example for the same problem in Fig. 1
 
-Differentially Private Learning of Graphical Models
+For example, A is the first partition of I, A = I[0 : 7, 0 : 3].
+Then, we slide W by sw (which is 1) to the right and create another partition B = I[0 : 7, 1 : 4]. As we continue
+this process in Fig. 2, there will be 5 horizontal partitions,
+{A, B, C, D, E} in L eventually. The resulting lowered
+matrix, L has dimensions 5 × 21, which is 54% smaller
+than one in Fig. 1 with dimensions 25 × 9.
+Once the lowered matrix L is formed, MEC multiplies L
+by K in a way significantly different from im2col-based
+algorithms. MEC creates another set of vertical partitions,
+{P, Q, R, S, T } within L, where each partition is of size
+of ow × kh kw (which is 5 × 9). Each subsequent partition is obtained by shifting to the right by sh kw (which
+is 3) elements. For example, P = L[0 : 5, 0 : 9] and
+Q = L[0 : 5, 3 : 12]. Then each row of the output
+matrix O is the product between one of the partitions in
+{P, Q, R, S, T } and K. Rows in O in Fig. 2 are annotated
+with the corresponding source partitions.
+These multiplications rely on the BLAS gemm interface in
+three ways. First, the kh × kw matrix K is interpreted as
+a kh kw × 1 matrix. Second, the partitions {P, Q, R, S, T }
+are specified by providing a pointer to the initial element
+and ld = ih kw , which is the entire length of one row of L.
+Thirdly, each row of O is formed by 5 separate gemm calls
+between {P, Q, R, S, T } and K. Although the number of
+gemm calls increases, the total number of mult/add operations remains identical to that of the im2col-based convolution, keeping computationally complexity same.
+Intuitively, MEC eliminates the vertical redundancy in the
+conventional im2col-based convolution. Then it recovers
+the information by merely shifting the vertical partitions
+(i.e., P, Q, R, S, T ) by a constant interval. These submatrix manipulations are made efficient by keeping the pattern BLAS compatible. The lowering in MEC is highly
+efficient as we move fewer elements from I to smaller L,
+
+Algorithm 1 O = V anillaM EC(I, K, s)
+1: Allocate O with oh ow elements
+2: Allocate L with ow ih kw elements
+3: Interpret L as ow × ih × kw tensor
+4: for w ∈ 0 : ow , h ∈ 0 : ih in parallel do
+5:
+L[w, h, 0 : kw ] = I[h, sw w : sw w + kw ]
+6: end for
+7: Interpret L as ow × ih kw matrix
+8: Interpret K as kh kw × 1 matrix
+9: Interpret O as oh × ow matrix
+10: for h ∈ 0 : oh in parallel do
+11:
+O[h, 0 : ow ] =
+L[0 : ow , sh kw h : sh kw h + kh kw ] × K
+12: end for
+13: Return O
+
+compared with im2col-based convolution, saving memorybus traffic as well.
+The process is stated in Algorithm 1 where in = ic = kc =
+1. It first allocates the output O and temporary L. The
+first loop in line 4 forms the matrix L, which copies kw
+consecutive elements from I to L, and all these copies can
+be done in parallel. The second loop in line 10 forms the
+output O. Each execution of the body is done by one gemm
+call, and those matrix multiplications can be parallelized.
+3.3. MEC Algorithm
+In this section, we present the complete MEC by extending Algorithm 1 to Algorithm 2 in order to handle channels
+(ic and kc ) and mini-batches (in ), and discuss the implementation details in the context of deep-learning (mainly
+about image format issue). Due to the compact lowering
+in MEC, it is computationally advantageous to use I in
+in × ih × iw × ic (or n-h-w-c) as in Table 2, because
+it ensures vertical redundant pixels to be eliminated and re-
+
+MEC: Memory-efficient Convolution for Deep Neural Network
+
+0000000
+0221120
+0201100
+0201200
+0111110
+0001020
+0000000
+0000000
+0221120
+0201100
+0201200
+0111110
+0001020
+0000000
+0000000
+0221120
+0201100
+0201200
+0111110
+0 0 0 1 0 2 0 n-h-w-c
+0000000
+
+1
+00 00 22 02 00 20 01 10 00 00 0
+
+0
+
+00 02 21 20 12 01 11 10 01 00 0
+00 02 11 01 10 12 11 10 10 00 0
+00 01 12 11 01 20 11 11 02 00 0
+00 01 20 10 02 00 11 00 20 00 0
+00 00 22 02 00 20 01 10 00 00 0
+00 02 21 20 12 01 11 10 01 00 0
+00 02 11 01 10 12 11 10 10 00 0
+
+0
+
+Solution A
+4
+2
+1
+5 gemm 20
+
+6
+6
+5
+4
+2
+
+3
+2
+3
+3
+2
+
+5
+4
+4
+3
+4
+
+4
+4
+4
+4
+3
+
+1
+
+00 00 22 02 00 20 01 10 00 00 0
+00 02 21 20 12 01 11 10 01 00 0
+00 02 11 01 10 12 11 10 10 00 0
+00 01 12 11 01 20 11 11 02 00 0
+00 01 20 10 02 00 11 00 20 00 0
+
+1
+
+4
+15 gemm 2
+1
+1
+2
+0
+0
+-1
+
+6
+6
+5
+4
+2
+
+3
+2
+3
+3
+2
+
+5
+4
+4
+3
+4
+
+4
+4
+4
+4
+3
+
+4
+2
+1
+2
+0
+
+6
+6
+5
+4
+2
+
+3
+2
+3
+3
+2
+
+5
+4
+4
+3
+4
+
+4
+4
+4
+4
+3
+
+h-n-w-c
+
+1
+
+4
+2
+1
+2
+0
+
+6
+6
+5
+4
+2
+
+3
+2
+3
+3
+2
+
+5
+4
+4
+3
+4
+
+4
+4
+4
+4
+3
+
+4
+2
+1
+2
+0
+
+6
+6
+5
+4
+2
+
+3
+2
+3
+3
+2
+
+5
+4
+4
+3
+4
+
+4
+4
+4
+4
+3
+
+4
+2
+1
+2
+0
+
+6
+6
+5
+4
+2
+
+3
+2
+3
+3
+2
+
+5
+4
+4
+3
+4
+
+4
+4
+4
+4
+3
+
+n-h-w-c
+
+Solution B
+
+00 01 12 11 01 20 11 11 02 00 0
+00 01 20 10 02 00 11 00 20 00 0
+
+4
+2
+1
+2
+0
+
+6
+6
+5
+4
+2
+
+3
+2
+3
+3
+2
+
+5
+4
+4
+3
+4
+
+4
+4
+4
+4
+3
+
+4
+2
+1
+2
+0
+
+6
+6
+5
+4
+2
+
+3
+2
+3
+3
+2
+
+5
+4
+4
+3
+4
+
+4
+4
+4
+4
+3
+
+4
+2
+1
+2
+0
+
+6
+6
+5
+4
+2
+
+3
+2
+3
+3
+2
+
+5
+4
+4
+3
+4
+
+4
+4
+4
+4
+3
+
+n-h-w-c
+
+Figure 3. MEC with mini-batch example
+
+covered in a contiguous memory space.
+Algorithm 2 O = M EC(I, K, s)
+1: Allocate O with in oh ow kc elements
+2: Allocate L with in ow ih kw ic elements
+3: Interpret L as in × ow × ih × kw × ic tensor
+4: for n ∈ 0 : in , w ∈ 0 : ow , h ∈ 0 : ih in parallel do
+5:
+L[n, w, h, 0 : kw , 0 : ic ] =
+I[n, h, sw w : sw w+kw , 0 : ic ]
+6: end for
+7: Interpret K as kh kw ic × kc matrix
+8: if ow ≤ T and |O| ≤ |L| then
+9:
+Interpret L as in ow × ih kw ic matrix
+10:
+Interpret O as oh × in ow kc matrix
+11:
+for h ∈ 0 : oh in parallel do
+12:
+O[h, 0 : in ow kc ] =
+L[0 : in ow , sh kw ic h : sh kw ic h+kh kw ic ] × K
+13:
+end for
+14:
+Copy L = O
+15:
+Interpret L as oh × in × ow kc tensor
+16:
+Interpret O as in × oh × ow kc tensor
+17:
+for n ∈ 0 : in , h ∈ 0 : oh in parallel do
+18:
+O[n, h, 0 : ow kc ] = L[h, n, 0 : ow kc ]
+19:
+end for
+20: else
+21:
+Interpret L as in matrices of ow × ih kw ic
+22:
+Interpret O as in matrices of oh × ow kc
+23:
+for n ∈ 0 : in , h ∈ 0 : oh in parallel do
+24:
+O[n][h, 0 : ow kc ] =
+L[n][0 : ow , sh kw ic h : sh kw ic h+kh kw ic ] × K
+25:
+end for
+26: end if
+27: Return O as in × oh × ow kc tensor
+Based on I as in × ih × iw × ic , Algorithm 2 still has the
+same key idea in presence of channels and mini-batches.
+The lowering step lines 4-6 in Algorithm 1 is similar to
+
+lines 4-6 in Algorithm 2. However, the parallel multiplication loop in lines 10-12 in Algorithm 1 extends to lines
+8-25 in Algorithm 2 mainly due to the image format issue.
+A direct extension of Algorithm 1 would interpret O as
+oh × in ow kc matrix, and perform oh multiplications for
+convolution of the whole mini-batch. This leads to the output format h-n-w-c, which is different from the input format of I. This may be acceptable in DNNs, where each
+convolution layer is followed by a pooling layer expecting
+h-n-w-c format and generating the standard n-h-w-c
+format. However, it would be troublesome in a network
+where all layers expect and produce the n-h-w-c format.
+Therefore, we provide two solutions depicted in Fig. 3 to
+handle such format-related issues.
+Solution A (Lines 9 to 19 of Algorithm 2) First we perform the direct extension of Algorithm 1 (lines 9 13) and end up with O in format h-n-w-c. Then,
+we transform O into n-h-w-c format (lines 14-19)
+where we repurpose L as an auxiliary space.
+Solution B (lines 21 to 25 of Algorithm 2) We can handle the in samples in the mini-batch separately as
+in line 21, resulting in in oh parallel/batched gemm
+calls with smaller inputs, as opposed to oh gemm calls
+with larger inputs. This will directly generate O in
+n-h-w-c.
+In terms of complexity, both solutions perform the same
+number of floating point multiplications. In practice, however, the size of sub-matrices can impact performance, particularly on implementation-sensitive platform like GPU.
+Therefore, MEC tries to find a good trade-off between Solution A and B with a tunable parameter T in line 8. (In
+addition, Solution A is available only if L can be used as
+an auxiliary space, i.e. it is at least as large as O). T is a
+platform-dependent parameter (e.g., on CPU vs. GPU, or
+
+MEC: Memory-efficient Convolution for Deep Neural Network
+
+on GPU-compute capability), and we found T around 100
+to be a good threshold for latest GPUs.
+3.4. Analysis
+In this section, we analyze the memory saving in MEC over
+im2col-based convolution. The size of the lowered matrix,
+L in MEC is:
+in o w ih k w k c
+(3)
+In comparison with the lowered matrix of im2col (see
+Eq. (2)), there is approximately a factor of kh . For a more
+exact comparison, let us form their difference R.
+R
+
+=
+=
+=
+=
+
+in kc (oh ow kh kw − ow ih kw )
+in kc ow kw (oh kh − ih )
+ih − k h
+in k c o w k w (
+k h + k h − ih )
+sh
+kh
+− 1)
+in kc ow kw (ih − kh )(
+sh
+
+Conv.cpu Conventional im2col-based convolution for
+CPU with openBLAS/openMP
+Conv.gpu Conventional im2col-based convolution for
+GPU with cuBLAS
+Wino.cpu Winograd-based F (2×2, 3×3) convolution for
+CPU (applicable only when kh = kw = 3)
+Wino.gpu Winograd-based F (2 × 2, 3 × 3) convolution
+for GPU (applicable only when kh = kw = 3)
+FFT.gpu FFT-based convolution for GPU with cuFFT
+
+(4)
+
+Since ih > kh , MEC always reduces memory footprint as
+long as kh > sh (i.e., there is an overlap between kernel
+instances). Note that in case kh ≤ sh , there is no redundant
+information to eliminate.
+
+4. Experimental Results
+We implemented MEC for CPU/GPU in C++ with multithreaded OpenBLAS, OpenMP, and cuBLAS (cuBLAS)
+using single 32-bit precision. We also implemented a fully
+parallelized im2col-based convolution on CPU/GPU (Jia,
+2014) with the same libraries. We compared MEC with
+other open-source convolution packages in C++, in order to make fair point-by-point comparison and accurately capture the memory-overhead and performance.
+We downloaded an open-source FFT-based convolution (cuFFT; Theano-FFT) for GPU. We took an open-
+
+Table 2. Benchmarks.
+
+source Winograd-based convolution (Falcon, 2016) and optimized it to reduce memory-overhead for CPU, and further modified/optimized it for GPU following (Lavin, 2015;
+Park et al., 2016a). The brief descriptions of the convolution algorithms in this section are as follows:
+
+MEC.cpu MEC for CPU with OpenBLAS/OpenMP
+MEC.gpu MEC for GPU with cuBLAS
+Note that it is performance-critical to combine multiple
+sgemm calls into a single cublasSgemmBatched call
+in MEC.gpu. When modifying/optimizing Wino.gpu,
+we tried to make the best trade-off between parallelism
+and memory-overhead (i.e., global memory) by utilizing
+register/shared-memory as much as possible, and ensured
+experiments representative. Please see Appendix for details on Wino.gpu optimization.
+For thorough comparison, we built a comprehensive
+benchmark set consisting of 12 unique convolution layers, cv1-cv12 from various public DNNs (He et al.,
+2015; Krizhevsky et al., 2012; Sermanet et al., 2013;
+Simonyan & Zisserman, 2014; Szegedy et al., 2014) as in
+Table 2. The runtime in our experiments is measured as
+a wall-clock time by a standard C++ library, running each
+algorithm 10 times and reporting the average. Our experiments were performed on the two platforms:
+
+NAME
+
+I NPUT
+ih × iw × ic
+
+K ERNEL
+kh × kw × oc , sh (sw )
+
+Mobile Android phone with ARM7 (MSM8960) for userside inference and training (mini-bath size=1)
+
+CV 1
+CV 2
+CV 3
+CV 4
+CV 5
+CV 6
+CV 7
+CV 8
+CV 9
+CV 10
+CV 11
+CV 12
+
+227×227×3
+231×231×3
+227×227×3
+224×224×64
+24×24×96
+12×12×256
+224×224×3
+112×112×64
+56×56×64
+28×28×128
+14×14×256
+7×7×512
+
+11×11×96, 4
+11×11×96, 4
+7×7×64, 2
+7×7×64, 2
+5×5×256, 1
+3×3×512, 1
+3×3×64, 1
+3×3×128, 1
+3×3×64, 1
+3×3×128, 1
+3×3×256, 1
+3×3×512, 1
+
+Server Linux server with Intel CPU (E5-2680) and Nvidia
+GPU (P100) for inference and training (mini-bath
+size=32)
+We present our results in Fig. 4, and made the following
+summaries:
+• (a) plots the factor by which MEC.cpu improves
+memory-overhead and performance over Conv.cpu
+for cv1 on Server-CPU. While the kernel K is fixed at
+
+MEC: Memory-efficient Convolution for Deep Neural Network
+18.5
+
+6
+
+memory
+runtime
+
+Normalized Memory Overhead
+
+Improvement Factor
+
+15
 
 10
 
-105
+5
 
-−5
+0
 
-10
+Wino.cpu
+Conv.cpu
 
-10−7
+5
 
-106
+MEC.cpu
 
-104
+4
+3
+2
+1
 
-Number of individuals
+0
 
-(a)  = 0.01
+1
 
-10−3
+2
 
-−5
+3
 
-10
+4
 
-10−7
+5
 
-104
+6
 
-10
+7
 
-10−7
+8
 
-106
+9
 
-104
+10 11
+0
 
-105
+sh (sw) with K= 11x11
 
-106
+cv1
 
-Number of individuals
+3.5
 
-(e)  = 0.01
+5
 
-10−1
+3
 
-−5
+4.5
+Wino.cpu
+Conv.cpu Lowering
+Conv.cpu Sgemm
+MEC.cpu Lowering
+MEC.cpu Sgemm
 
-10
+2.5
+2
 
-104
+cv3
 
-10−3
+cv4
 
-10−5
+cv5
 
-10−7
+cv6
 
-106
+cv7
 
-104
+cv8
 
-105
+10.5 9.3
 
-106
+9.7
 
-Number of individuals
+12.3
 
-(f)  = 0.1
+1
 
-10−1
+cv10 cv11 cv12
 
-10−3
+10.9 15.4 11.0 8.8
 
-−5
+6.1
 
-10
+Wino.cpu
+Conv.cpu Lowering
+Conv.cpu Sgemm
+MEC.cpu Lowering
+MEC.cpu Sgemm
 
-10−7
+4
 
-104
+1.5
 
-105
+cv9
 
-Number of individuals
+(b) Memory-overhead on Mobile and Server-CPU
 
-(g)  = 0.5
+Normalized Runtime
 
-106
+Normalized Runtime
 
-(d)  = 1.0
-Random
-Non-Private
-Naive MLE
-CGM
-PSGD
+(a) Memory and runtime change for various sh = sw values
 
-101
+cv2
 
-105
+3.5
+3
+2.5
+2
+1.5
+1
 
-Number of individuals
+0.5
 
-(c)  = 0.5
+0.5
+0
 
-10−3
+0
+cv1
 
-10−7
+cv2
 
-105
+cv3
 
-10−1
+cv4
 
-Number of individuals
+cv5
 
-Random
-Non-Private
-Naive MLE
-CGM
+cv6
 
-101
+cv7
 
-KL from True Distn.
+cv8
 
-KL from True Distn.
+cv9
 
-10−1
+cv10 cv11 cv12
 
-−5
+cv1
 
-(b)  = 0.1
-Random
-Non-Private
-Naive MLE
-CGM
+cv2
 
-101
+cv3
 
-105
+(c) Runtime on Mobile
+4
 
-10−3
+13.6 13.6 7.1
 
-Number of individuals
+6.5
 
-KL from True Distn.
+10.1 8.3
 
-104
+5.0
 
-10−3
+7
 
-KL from True Distn.
+9.6
 
-Random
-Non-Private
-Naive MLE
-CGM
+cv6
 
-−5
+2.5
+2
+1.5
+1
 
-10−1
+21.3
 
-Random
-Non-Private
-Naive MLE
-CGM
-PSGD
+cv7
 
-101
+cv8
 
-106
+cv9
 
-Random
-Non-Private
-Naive MLE
-CGM
-PSGD
+FFT.gpu
+Conv.gpu Lowering
+MEC.gpu Lowering
 
-101
+6
 
-KL from True Distn.
+Normalized Runtime
 
-10−3
+Noramlized Memory Overhead
 
-10−1
+3
 
-Random
-Non-Private
-Naive MLE
-CGM
-PSGD
+cv5
 
-101
+cv10 cv11 cv12
 
-KL from True Distn.
+(d) Runtime on Server-CPU
+FFT.gpu
+Wino.gpu
+Conv.gpu
+MEC.gpu
 
-10−1
+3.5
 
-10−7
+cv4
 
-Random
-Non-Private
-Naive MLE
-CGM
+Wino.gpu
+Conv.gpu Sgemm
+MEC.gpu Sgemm
 
-101
+5
+4
+3
+2
+1
 
-KL from True Distn.
+0.5
 
-KL from True Distn.
+0
 
-101
+0
+cv1
 
-10−1
+cv2
 
-10−3
+cv3
 
-10−5
+cv4
 
-10−7
+cv5
 
-104
+cv6
 
-105
+cv7
 
-106
+cv8
 
-Number of individuals
+cv9
 
-(h)  = 1.0
+cv10 cv11 cv12
 
-Figure 2. Results on synthetic data generated from third-order chains, (a)–(d), and connected Erdős-Réyni random graphs (e)–(h). Each
-column represents a different privacy level. Lower  signifies stricter privacy guarantees. The x-axis measures population size. The
-y-axis is KL divergence from the true distribution.
+(e) Memory-overhead on Server-GPU
 
-this technique is that we bias the model towards individuals
-with fewer transitions, but we reduce the amount of noise
-by limiting sensitivity caused by null–null transitions.
+cv1
 
-0.0200
+cv2
 
-Inferred marginals
+cv3
 
-0.0175
-0.0150
-0.0125
-0.0100
-0.0075
-0.0050
+cv4
 
-Naive MLE
-CGM
-Non-Private
+cv5
 
-0.0025
-0.0000
-0.000
+cv6
 
-0.005
+cv7
 
-0.010
+cv8
 
-0.015
+cv9
 
-0.020
+cv10 cv11 cv12
 
-True marginals
+(f) Runtime on Server-GPU
 
-(a)
+Figure 4. Memory-overhead and Performance of various sorting convolution algorithms on Mobile and Server.
 
-(b)
+11×11, sh = sw varies from 1 to 10 on the x-axis. We
+can clearly observe that both memory-overhead and
+runtime improve with a larger k/s ratio as explained
+in Eq. (4).
 
-Figure 3. (a) Scatter plots for true vs. inferred values of all edge
-marginals in an ER graph of 10 nodes with 20 states each. (b)
-Results for fitting a first-order chain on wifi data. The x-axis is
-privacy level; lower  signifies stronger privacy guarantees. The
-y-axis is holdout log-likelihood.
+• (c) shows that MEC.cpu is overall 20% faster than
+Conv.cpu on Mobile, yet can be over 90% faster
+for some layers like cv6. MEC.cpu is faster than
+Wino.cpu on 5 benchmarks out of 7.
 
-pairwise graphical model over hour-long segments. Therefore, we break each individual’s data into 24 one-hour long
-segments.
-An individual now contributes 24 records to each contingency table for the model p(x). Therefore, the sensitivity
-is now 24 times the number of edges (cliques). However,
-real data is typically sparse—i.e., an individual is typically
-observed only a small number of times over the observation
-period. Therefore, to reduce the sensitivity, the data is normalized prior to calculating sufficient statistics, in a fashion
-similar to (He et al., 2015). Each user contributes a value
-of 1/K to each contingency table, where K is the number of edges (xs , xt ) for which the user’s values are not
-both null. With this pre-processing in place, the sensitivity equals the number of edges in the model. A trade-off of
+• (b) supports that MEC can substantially reduce the
+memory-overhead. Compared with Conv.cpu, the improvement is as large as 3.4x with high k/s ratio, and
+is on average 3.2x. For cv6-cv12, MEC.cpu improves
+memory-overhead by 5.9x on average, compared with
+Wino.cpu.
 
-We reserve data from 25% of the individuals for testing.
-To compare different approaches, we apply Naive MLE,
-CGM, and PSGD to privately learn parameters of a graphical model from the training set (75% of the data), with
-varying privacy levels. We then calculate holdout loglikelihood of the learned parameters on the test set. We
-again include a non-private method for reference, but in
-this case, all methods perform better than the random estimator, so we do not show it.
-Figure 3(b) shows the results for fitting a timehomogeneous chain model (edges between adjacent time
-steps, every potential ψ(xt , xt+1 ) is the same, and the
-model includes a node potential φ(x1 ) so it can learn a
-time-stationary model). As in the synthetic data experiments, CGM improves upon naive MLE across all parameter regimes, and performance improves with population size N and with weakening of privacy (larger ).
-Both methods outperform PSGD. Naive MLE is the fastest
-method; CGM is approximately 15x slower, and PSGD is
-approximately 46x slower.
-Acknowledgments
-This material is based upon work supported by the National
-Science Foundation under Grant Nos. 1409125, 1409143,
-1421325, and 1617533.
+• (d) shows that on Server-CPU, MEC.cpu overall shows about 8.8x better runtime than Conv.cpu.
+Compared with Wino.cpu, performance is highly dependent on the benchmarks: it is similar or faster for
+cv7,cv8, and cv9.
+• (e) presents memory-overheads from various algorithms on Server-GPU. MEC.gpu shows the least
 
-Differentially Private Learning of Graphical Models
+MEC: Memory-efficient Convolution for Deep Neural Network
+
+Table 3. ResNet-101 (He et al., 2015) on Mobile.
+C ONV. CPU
+
+MEC. CPU
+
+RUNTIME
+
+MEM
+
+RUNTIME
+
+NAME W EIGHT (MB)
+
+( MSEC )
+
+(MB)
+
+( MSEC )
+
+CV 4
+CV 9
+CV 10
+CV 11
+CV 12
+
+142.1
+19.2
+11.9
+29.1
+1.3
+
+1228.9
+26.8
+126.7
+302.7
+16.5
+
+41.7
+6.7
+4.3
+11.3
+0.6
+
+1061.3
+16.0
+81.0
+222.9
+10.4
+
+SUM
+
+203.6
+
+1701.6
+
+64.6
+
+1391.6
+
+RATIO
+
+3.2
+
+1.2
+
+1.0
+
+1.0
+
+MEM
+
+1
+3
+4
+23
+3
+
+memory-overhead on all benchmarks.
+FFT.gpu
+requires substantially large memory-overhead.
+Wino.gpu is tested for only cv6-cv12 due to its kernel
+configuration limitation.
+• (f) compares performance of various algorithms on
+Server-GPU. MEC.gpu can lower the matrix about
+85% faster than Conv.gpu due to much fewer bytes to
+write (which is especially critical on GPU). Wino.gpu
+still has larger memory-overhead than MEC.gpu due
+to the fully parallelized computation of transformed
+matrices (i.e., GgGT for each kernel and B T dB for
+each channel (Lavin, 2015; Park et al., 2016a)), even
+though M matrix is kept at registers/shared-memory.
+As observed, MEC shows greater performance boost on
+Server-CPU than on Mobile or Server-GPU, because
+Server-CPU is very sensitive to memory-footprint due to
+the complex cache-architecture. For the example of cv10,
+we observed through Valgrind cache simulation (Valgrind)
+that the last-level cache miss in MEC.cpu is 0.3%, substantially smaller than 4% in Conv.cpu, on a default cache
+system. Mobile has tiny/simple caches, and GPU does not
+have a sophisticated memory sub-system (deep/big cache
+hierarchy) to benefit from large memory footprint reduction. Also, cuBLAS is highly optimized to efficiently use
+fast shared-memory. Overall, MEC is all-around player on
+both Mobile or Server-CPU/GPU that has no limitation
+on kernel configuration, incurs the least memory-overhead,
+yet offers high-performance.
+In practice, some convolution layers appear more frequently than others. Therefore, we applied MEC.cpu and
+Conv.cpu to ResNet-101 in (He et al., 2015) and estimated the weighted impact on memory-overhead and runtime on Mobile as in Table 3, which shows that MEC.cpu
+can reduce the memory-overhead by 3x and improve runtime by 20% for a large scale convolutional DNN.
+
+5. Conclusion
+In this paper, we presented MEC, a memory-efficient convolution algorithm for deep learning. We proposed a novel
+matrix lowering scheme to improve memory efficiency for
+MEC which also improves the computational efficiency
+due to reduced memory footprint. We can clearly observe through extensive experiments that MEC needs the
+least memory-overhead, yet offers high-performance in
+most cases on both mobile and server platforms without
+any restriction, positioning MEC as an attractive convolution engine on various platforms. MEC is well suited for
+DNN-based applications in memory-constrained environment such as mobile/IoT, while allowing to increase the
+learning capacity of DNN on high-end server systems.
+
+Appendix
+In this appendix, we sketch Wino.gpu optimizations in
+Section 4 in detail. Our Wino.gpu are all hand-tuned/fullyunrolled F (2 × 2, 3 × 3) which can fit into the instruction
+cache in GPU (Lavin, 2015) for maximum performance.
+We started with an open-source package (Falcon, 2016) and
+followed the techniques in (Lavin, 2015; Park et al., 2016a)
+to improve it for GPU. We mainly focused on the high-level
+optimization including the following:
+• For a given input matrix, all transformed kernel and
+input matrices across all kernels/channels are computed in full parallel for maximum GPU utilization.
+• The output matrix is computed by multiplying all pairs
+of the transformed kernel and input matrices in full
+parallel for maximum GPU utilization.
+• All intermediate products from multiplications are
+kept in thread registers first and reduced using sharedmemory.
+• All loops are manually unrolled for maximum performance.
+• Read-only cache ( ldg) is actively used when computing the output matrix with transformed kernel and
+input matrices which are shared across blocks.
 
 References
-Abadi, Martı́n, Chu, Andy, Goodfellow, Ian, McMahan,
-H. Brendan, Mironov, Ilya, Talwar, Kunal, and Zhang,
-Li. Deep learning with differential privacy. In Proceedings of the 2016 ACM SIGSAC Conference on
-Computer and Communications Security, pp. 308–318.
-ACM, 2016.
-Barak, Boaz, Chaudhuri, Kamalika, Dwork, Cynthia, Kale,
-Satyen, McSherry, Frank, and Talwar, Kunal. Privacy,
-accuracy, and consistency too: a holistic solution to contingency table release. In Proceedings of the twenty-sixth
-ACM SIGMOD-SIGACT-SIGART symposium on Principles of database systems, pp. 273–282. ACM, 2007.
-Bassily, Raef, Smith, Adam, and Thakurta, Abhradeep. Private empirical risk minimization: Efficient algorithms
-and tight error bounds. In Foundations of Computer Science (FOCS), 2014 IEEE 55th Annual Symposium on,
-pp. 464–473. IEEE, 2014.
-Blum, Avrim, Dwork, Cynthia, McSherry, Frank, and Nissim, Kobbi. Practical privacy: the SuLQ framework.
-In Proceedings of the Twenty-Fourth ACM SIGMODSIGACT-SIGART Symposium on Principles of Database
-Systems (PODS), pp. 128–138. ACM, 2005.
-Chaudhuri, Kamalika and Monteleoni, Claire. Privacypreserving logistic regression. In Advances in Neural
-Information Processing Systems, pp. 289–296, 2009.
-Chaudhuri, Kamalika, Monteleoni, Claire, and Sarwate,
-Anand D. Differentially private empirical risk minimization. Journal of Machine Learning Research, 12(Mar):
-1069–1109, 2011.
-Dimitrakakis, Christos, Nelson, Blaine, Mitrokotsa, Aikaterini, and Rubinstein, Benjamin I.P. Robust and private Bayesian inference. In International Conference
-on Algorithmic Learning Theory, pp. 291–305. Springer,
+Abuzaid, Firas, Hadjis, Stefan, Zhang, Ce, and Ré, Christopher. Caffe con troll: Shallow ideas to speed up deep
+learning. CoRR, abs/1504.04343, 2015.
+Chellapilla, Kumar, Puri, Sidd, and Simard, Patrice. High
+Performance Convolutional Neural Networks for Document Processing. In Tenth International Workshop on
+Frontiers in Handwriting Recognition, October 2006.
+
+MEC: Memory-efficient Convolution for Deep Neural Network
+
+Chen, Wenlin, Wilson, James T., Tyree, Stephen, Weinberger, Kilian Q., and Chen, Yixin. Compressing neural
+networks with the hashing trick. CoRR, abs/1504.04788,
+2015.
+Chen, Yu-Hsin, Krishna, Tushar, Emer, Joel, and Sze,
+Vivienne. Eyeriss: An Energy-Efficient Reconfigurable
+Accelerator for Deep Convolutional Neural Networks.
+In IEEE International Solid-State Circuits Conference,
+ISSCC 2016, Digest of Technical Papers, pp. 262–263,
+2016.
+Chetlur, Sharan, Woolley, Cliff, Vandermersch, Philippe,
+Cohen, Jonathan, Tran, John, Catanzaro, Bryan, and
+Shelhamer, Evan. cudnn: Efficient primitives for deep
+learning. CoRR, abs/1410.0759, 2014.
+Collins, Maxwell D. and Kohli, Pushmeet.
+ory bounded deep convolutional networks.
+abs/1412.1442, 2014.
+
+MemCoRR,
+
+Cong, Jason and Xiao, Bingjun. Minimizing computation in convolutional neural networks. In International
+Conference on Artificial Neural Networks, pp. 281–290.
+Springer, 2014.
+cuBLAS. http://docs.nvidia.com/cuda/cublas.
+cuFFT. http://docs.nvidia.com/cuda/cufft.
+Denton, Emily, Zaremba, Wojciech, Bruna, Joan, LeCun,
+Yann, and Fergus, Rob. Exploiting linear structure
+within convolutional networks for efficient evaluation.
+CoRR, abs/1404.0736, 2014.
+Falcon. https://colfaxresearch.com/falcon-library. 2016.
+Gong, Yunchao, Liu, Liu, Yang, Ming, and Bourdev,
+Lubomir D. Compressing deep convolutional networks
+using vector quantization. CoRR, abs/1412.6115, 2014.
+Han, Song, Mao, Huizi, and Dally, William J. Deep compression: Compressing deep neural network with pruning, trained quantization and huffman coding. CoRR,
+abs/1510.00149, 2015.
+He, Kaiming, Zhang, Xiangyu, Ren, Shaoqing, and Sun,
+Jian. Deep residual learning for image recognition. In
+arXiv prepring arXiv:1506.01497, 2015.
+Highlander, Tyler and Rodriguez, Andres. Very efficient training of convolutional neural networks using
+fast fourier transform and overlap-and-add. CoRR,
+abs/1601.06815, 2016.
+Jaderberg, Max, Vedaldi, Andrea, and Zisserman, Andrew.
+Speeding up convolutional neural networks with low
+rank expansions. CoRR, abs/1405.3866, 2014.
+
+Jia, Yangqing. Learning Semantic Image Representations
+at a Large Scale. PhD thesis, EECS Department, University of California, Berkeley, May 2014.
+Kågström, Bo, Ling, Per, and van Loan, Charles. Gemmbased level 3 blas: High-performance model implementations and performance evaluation benchmark. ACM
+Trans. Math. Softw., 24(3):268–302, September 1998.
+ISSN 0098-3500.
+Kim, Yong-Deok, Park, Eunhyeok, Yoo, Sungjoo, Choi,
+Taelim, Yang, Lu, and Shin, Dongjun. Compression
+of deep convolutional neural networks for fast and low
+power mobile applications. CoRR, abs/1511.06530,
+2015.
+Krizhevsky, Alex, Sutskever, Ilya, and Hinton, Geoffrey E.
+Imagenet classification with deep convolutional neural
+networks. In Advances in Neural Information Processing
+Systems 25, pp. 1097–1105. 2012.
+Lane, N. D., Bhattacharya, S., Georgiev, P., Forlivesi, C.,
+Jiao, L., Qendro, L., and Kawsar, F. Deepx: A software accelerator for low-power deep learning inference
+on mobile devices. In 2016 15th ACM/IEEE International Conference on Information Processing in Sensor
+Networks (IPSN), pp. 1–12, April 2016.
+Lane, Nicholas D., Bhattacharya, Sourav, Georgiev, Petko,
+Forlivesi, Claudio, and Kawsar, Fahim. An early resource characterization of deep learning on wearables,
+smartphones and internet-of-things devices. In Proceedings of the 2015 International Workshop on Internet of
+Things Towards Applications, IoT-App ’15, pp. 7–12,
+2015. ISBN 978-1-4503-3838-7.
+Lavin, Andrew. Fast algorithms for convolutional neural
+networks. CoRR, abs/1509.09308, 2015.
+Lebedev, Vadim, Ganin, Yaroslav, Rakhuba, Maksim, Oseledets, Ivan V., and Lempitsky, Victor S. Speedingup convolutional neural networks using fine-tuned cpdecomposition. CoRR, abs/1412.6553, 2014.
+Li, Chao, Yang, Yi, Feng, Min, Chakradhar, Srimat, and
+Zhou, Huiyang. Optimizing memory efficiency for deep
+convolutional neural networks on gpus. In Proceedings
+of the International Conference for High Performance
+Computing, Networking, Storage and Analysis, SC ’16,
+pp. 54:1–54:12, 2016. ISBN 978-1-4673-8815-3.
+Mathieu, Michaël, Henaff, Mikael, and LeCun, Yann. Fast
+training of convolutional networks through ffts. CoRR,
+abs/1312.5851, 2013.
+MKL. https://software.intel.com/en-us/intel-mkl.
+OpenBLAS. http://www.openblas.net.
+
+MEC: Memory-efficient Convolution for Deep Neural Network
+
+Park, Eunhyeok, Kim, Dongyoung, Kim, Soobeom, Kim,
+Yong-Deok, Kim, Gunhee, Yoon, Sungroh, and Yoo,
+Sungjoo. Big/little deep neural network for ultra low
+power inference. In Proceedings of the 10th International Conference on Hardware/Software Codesign and
+System Synthesis, CODES ’15, 2015.
+Park, Hyunsun, Kim, Dongyoung, Ahn, Junwhan, and Yoo,
+Sungjoo. Zero and data reuse-aware fast convolution
+for deep neural networks on gpu. In Proceedings of
+the Eleventh IEEE/ACM/IFIP International Conference
+on Hardware/Software Codesign and System Synthesis,
+CODES ’16, 2016a.
+Park, Jongsoo, Li, Sheng R., Wen, Wei, Li, Hai, Chen,
+Yiran, and Dubey, Pradeep. Holistic sparsecnn: Forging the trident of accuracy, speed, and size. CoRR,
+abs/1608.01409, 2016b.
+Perkins, Hugh. cltorch: a hardware-agnostic backend for
+the torch deep neural network library, based on opencl.
+CoRR, abs/1606.04884, 2016.
+Sermanet, Pierre, Eigen, David, Zhang, Xiang, Mathieu,
+Michaël, Fergus, Rob, and LeCun, Yann. Overfeat: Integrated recognition, localization and detection using convolutional networks. CoRR, abs/1312.6229, 2013.
+Simonyan, K. and Zisserman, A. Very deep convolutional networks for large-scale image recognition. CoRR,
+abs/1409.1556, 2014.
+Szegedy, Christian, Liu, Wei, Jia, Yangqing, Sermanet,
+Pierre, Reed, Scott E., Anguelov, Dragomir, Erhan, Dumitru, Vanhoucke, Vincent, and Rabinovich, Andrew.
+Going deeper with convolutions. CoRR, abs/1409.4842,
 2014.
-Duchi, John, Shalev-Shwartz, Shai, Singer, Yoram, and
-Chandra, Tushar. Efficient projections onto the l 1-ball
-for learning in high dimensions. In Proceedings of the
-25th international conference on Machine learning, pp.
-272–279. ACM, 2008.
-Dwork, Cynthia and Roth, Aaron. The Algorithmic Foundations of Differential Privacy. Found. and Trends in
-Theoretical Computer Science, 2014.
-Dwork, Cynthia, McSherry, Frank, Nissim, Kobbi, and
-Smith, Adam. Calibrating noise to sensitivity in private
-data analysis. In Theory of Cryptography Conference,
-pp. 265–284. Springer, 2006.
-
-Fienberg, Stephen E. and Rinaldo, Alessandro. Maximum
-likelihood estimation in log-linear models. The Annals
-of Statistics, pp. 996–1023, 2012.
-Fisher, Ronald Aylmer. On the mathematical foundations
-of theoretical statistics. Philosophical Transactions of
-the Royal Society of London. Series A, Containing Papers of a Mathematical or Physical Character, 222:309–
-368, 1922.
-Foulds, James, Geumlek, Joseph, Welling, Max, and
-Chaudhuri, Kamalika. On the theory and practice of
-privacy-preserving Bayesian data analysis. In Proceedings of the Thirty-Second Conference on Uncertainty in
-Artificial Intelligence, UAI’16, pp. 192–201, 2016.
-Haberman, Shelby J. Log-linear models for frequency data:
-Sufficient statistics and likelihood equations. The Annals
-of Statistics, 1(4):617–632, 1973. ISSN 00905364. URL
-http://www.jstor.org/stable/2958307.
-Hardt, Moritz, Ligett, Katrina, and McSherry, Frank. A
-simple and practical algorithm for differentially private
-data release. In Advances in Neural Information Processing Systems, pp. 2339–2347, 2012.
-He, Xi, Cormode, Graham, Machanavajjhala, Ashwin, Procopiuc, Cecilia M., and Srivastava, Divesh. DPT: differentially private trajectory synthesis using hierarchical
-reference systems. Proceedings of the VLDB Endowment, 8(11):1154–1165, 2015.
-Jain, Prateek and Thakurta, Abhradeep. Differentially private learning with kernels. ICML (3), 28:118–126, 2013.
-Karwa, Vishesh, Slavković, Aleksandra B., and Krivitsky,
-Pavel. Differentially private exponential random graphs.
-In International Conference on Privacy in Statistical
-Databases, pp. 143–155. Springer, 2014.
-Karwa, Vishesh, Slavković, Aleksandra, et al. Inference
-using noisy degrees: Differentially private beta-model
-and synthetic graphs. The Annals of Statistics, 44(1):
-87–112, 2016.
-Kasiviswanathan, Shiva Prasad, Lee, Homin K., Nissim,
-Kobbi, Raskhodnikova, Sofya, and Smith, Adam. What
-can we learn privately? SIAM Journal on Computing, 40
-(3):793–826, 2011.
-Kifer, Daniel, Smith, Adam, and Thakurta, Abhradeep.
-Private convex empirical risk minimization and highdimensional regression. Journal of Machine Learning
-Research, 1(41):3–1, 2012.
-Koller, Daphne and Friedman, Nir. Probabilistic graphical
-models: principles and techniques. MIT press, 2009.
-
-Differentially Private Learning of Graphical Models
-
-Kullback, Solomon and Leibler, Richard A. On information and sufficiency. The annals of mathematical statistics, 22(1):79–86, 1951.
-
-Williams, Oliver and McSherry, Frank. Probabilistic inference and differential privacy. In Advances in Neural
-Information Processing Systems, pp. 2451–2459, 2010.
-
-Liu, Li-Ping, Sheldon, Daniel R., and Dietterich,
-Thomas G. Gaussian approximation of collective graphical models. In Proceedings of the 31st International
-Conference on Machine Learning (ICML), 2014.
-
-Wu, Xi, Kumar, Arun, Chaudhuri, Kamalika, Jha, Somesh,
-and Naughton, Jeffrey F. Differentially private stochastic gradient descent for in-RDBMS analytics. CoRR,
-abs/1606.04722, 2016. URL http://arxiv.org/
-abs/1606.04722.
-
-Nguyen, Duc Thien, Kumar, Akshat, Lau, Hoong Chuin,
-and Sheldon, Daniel. Approximate inference using DC
-programming for collective graphical models. In Proceedings of the 19th International Conference on Artificial Intelligence and Statistics, pp. 685–693, 2016.
-Rubinstein, Benjamin I.P., Bartlett, Peter L., Huang,
-Ling, and Taft, Nina. Learning in a large function
-space: Privacy-preserving mechanisms for SVM learning. arXiv preprint arXiv:0911.5708, 2009.
-Sheldon, Daniel R. and Dietterich, Thomas G. Collective
-graphical models. Neural Information Processing Systems (NIPS), 2011.
-Sheldon, Daniel R., Sun, Tao, Kumar, Akshat, and Dietterich, Thomas G. Approximate inference in collective
-graphical models. In Proceedings of the 30th International Conference on Machine Learning (ICML), 2013.
-Smith, Adam. Efficient, differentially private point estimators. arXiv preprint arXiv:0809.4794, 2008.
-Smith, Adam. Privacy-preserving statistical estimation
-with optimal convergence rates. In Proceedings of the
-Forty-Third Annual ACM Symposium on Theory of Computing (STOC), pp. 813–822. ACM, 2011.
-Sun, Tao, Sheldon, Daniel R., and Kumar, Akshat. Message passing for collective graphical models. In Proceedings of the 32nd International Conference on Machine Learning (ICML), 2015.
-Vilnis, Luke, Belanger, David, Sheldon, Daniel, and McCallum, Andrew. Bethe projections for non-local inference. In Proceedings of the Thirty-First Conference
-on Uncertainty in Artificial Intelligence, pp. 892–901.
-AUAI Press, 2015.
-Wainwright, Martin J. and Jordan, Michael I. Graphical
-models, exponential families, and variational inference.
-Foundations and Trends in Machine Learning, 1(1-2):1–
-305, 2008.
-Wang, Yu-Xiang, Fienberg, Stephen, and Smola, Alex. Privacy for free: Posterior sampling and stochastic gradient
-Monte Carlo. In Proceedings of the 32nd International
-Conference on Machine Learning (ICML-15), pp. 2493–
-2502, 2015.
-
-Yang, Xiaolin, Fienberg, Stephen E., and Rinaldo,
-Alessandro. Differential privacy for protecting multidimensional contingency table data: Extensions and applications. Journal of Privacy and Confidentiality, 4(1):
-5, 2012.
-Zhang, Jun, Cormode, Graham, Procopiuc, Cecilia M., Srivastava, Divesh, and Xiao, Xiaokui. Privbayes: Private
-data release via Bayesian networks. In Proceedings of
-the 2014 ACM SIGMOD International Conference on
-Management of Data, pp. 1423–1434, 2014.
-Zhang, Zuhe, Rubinstein, Benjamin I.P., and Dimitrakakis,
-Christos. On the differential privacy of Bayesian inference. In Thirtieth AAAI Conference on Artificial Intelligence, 2016.
+Theano-FFT. https://github.com/andersbll/theano ops.
+Valgrind. http://valgrind.org.
+Vasilache, Nicolas, Johnson, Jeff, Mathieu, Michaël, Chintala, Soumith, Piantino, Serkan, and LeCun, Yann. Fast
+convolutional nets with fbfft: A GPU performance evaluation. CoRR, abs/1412.7580, 2014.
+Wang, Peisong and Cheng, Jian. Accelerating convolutional neural networks for mobile applications. In Proceedings of the 2016 ACM on Multimedia Conference,
+2016.
+Winograd, Shmuel. Arithmetic complexity of computations. SIAM, 1980.
 
 

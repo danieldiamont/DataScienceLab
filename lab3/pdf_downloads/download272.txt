@@ -1,1029 +1,743 @@
-Learning Discrete Representations via Information Maximizing
-Self-Augmented Training
-Weihua Hu 1 2 Takeru Miyato 3 4 Seiya Tokui 3 1 Eiichi Matsumoto 3 1 Masashi Sugiyama 2 1
+Conditional Image Synthesis with Auxiliary Classifier GANs
+
+Augustus Odena 1 Christopher Olah 1 Jonathon Shlens 1
 
 Abstract
-Learning discrete representations of data is a central machine learning task because of the compactness of the representations and ease of interpretation. The task includes clustering and
-hash learning as special cases. Deep neural networks are promising to be used because they can
-model the non-linearity of data and scale to large
-datasets. However, their model complexity is
-huge, and therefore, we need to carefully regularize the networks in order to learn useful representations that exhibit intended invariance for
-applications of interest. To this end, we propose a method called Information Maximizing
-Self-Augmented Training (IMSAT). In IMSAT,
-we use data augmentation to impose the invariance on discrete representations. More specifically, we encourage the predicted representations
-of augmented data points to be close to those of
-the original data points in an end-to-end fashion.
-At the same time, we maximize the informationtheoretic dependency between data and their predicted discrete representations. Extensive experiments on benchmark datasets show that IMSAT
-produces state-of-the-art results for both clustering and unsupervised hash learning.
+In this paper we introduce new methods for the
+improved training of generative adversarial networks (GANs) for image synthesis. We construct a variant of GANs employing label conditioning that results in 128 × 128 resolution image samples exhibiting global coherence. We
+expand on previous work for image quality assessment to provide two new analyses for assessing the discriminability and diversity of samples
+from class-conditional image synthesis models.
+These analyses demonstrate that high resolution
+samples provide class information not present in
+low resolution samples. Across 1000 ImageNet
+classes, 128 × 128 samples are more than twice
+as discriminable as artificially resized 32 × 32
+samples. In addition, 84.7% of the classes have
+samples exhibiting diversity comparable to real
+ImageNet data.
 
 1. Introduction
-The task of unsupervised discrete representation learning
-is to obtain a function that maps similar (resp. dissimilar)
-data into similar (resp. dissimilar) discrete representations,
-where the similarity of data is defined according to applications of interest. It is a central machine learning task
-because of the compactness of the representations and ease
+Characterizing the structure of natural images has been a
+rich research endeavor. Natural images obey intrinsic invariances and exhibit multi-scale statistical structures that
+have historically been difficult to quantify (Simoncelli &
+Olshausen, 2001). Recent advances in machine learning
+offer an opportunity to substantially improve the quality of
+image models. Improved image models advance the stateof-the-art in image denoising (Ballé et al., 2015), compression (Toderici et al., 2016), in-painting (van den Oord et al.,
+2016a), and super-resolution (Ledig et al., 2016). Better models of natural images also improve performance in
+semi-supervised learning tasks (Kingma et al., 2014; Springenberg, 2015; Odena, 2016; Salimans et al., 2016) and reinforcement learning problems (Blundell et al., 2016).
+One method for understanding natural image statistics is to
+build a system that synthesizes images de novo. There are
 1
-University of Tokyo, Japan 2 RIKEN AIP, Japan 3 Preferred
-Networks, Inc., Japan 4 ATR Cognitive Mechanism Laboratories, Japan. Correspondence to: Weihua Hu <hu@ms.k.utokyo.ac.jp>, Takeru Miyato <takeru.miyato@gmail.com>.
+Google Brain. Correspondence to: Augustus Odena <augustusodena@google.com>.
 
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-00
-0
+several promising approaches for building image synthesis models. Variational autoencoders (VAEs) maximize a
+variational lower bound on the log-likelihood of the training data (Kingma & Welling, 2013; Rezende et al., 2014).
+VAEs are straightforward to train but introduce potentially
+restrictive assumptions about the approximate posterior
+distribution (but see (Rezende & Mohamed, 2015; Kingma
+et al., 2016)). Autoregressive models dispense with latent
+variables and directly model the conditional distribution
+over pixels (van den Oord et al., 2016a;b). These models
+produce convincing samples but are costly to sample from
+and do not provide a latent representation. Invertible density estimators transform latent variables directly using a
+series of parameterized functions constrained to be invertible (Dinh et al., 2016). This technique allows for exact
+log-likelihood computation and exact inference, but the invertibility constraint is restrictive.
+Generative adversarial networks (GANs) offer a distinct
+and promising approach that focuses on a game-theoretic
+formulation for training an image synthesis model (Goodfellow et al., 2014). Recent work has shown that GANs can
+produce convincing image samples on datasets with low
+variability and low resolution (Denton et al., 2015; Radford
+et al., 2015). However, GANs struggle to generate globally coherent, high resolution samples - particularly from
+datasets with high variability. Moreover, a theoretical understanding of GANs is an on-going research topic (Uehara
+et al., 2016; Mohamed & Lakshminarayanan, 2016).
+In this work we demonstrate that that adding more structure
+to the GAN latent space along with a specialized cost function results in higher quality samples. We exhibit 128×128
+pixel samples from all classes of the ImageNet dataset
+(Russakovsky et al., 2015) with increased global coherence
+(Figure 1). Importantly, we demonstrate quantitatively that
+our high resolution samples are not just naive resizings of
+low resolution samples. In particular, downsampling our
+128 × 128 samples to 32 × 32 leads to a 50% decrease in
+visual discriminability. We also introduce a new metric for
+assessing the variability across image samples and employ
+this metric to demonstrate that our synthesized images exhibit diversity comparable to training data for a large fraction (84.7%) of ImageNet classes. In more detail, this work
+is the first to:
 
-11
-1
+Conditional Image Synthesis with Auxiliary Classifier GANs
 
-11
-1
+monarch butterfly
 
-Discrete representations
-Similarization
+goldfinch
 
-Information
-Maximization
+daisy
 
-Data augmentation
+redshank
 
-Figure 1. Basic idea of our proposed method for unsupervised discrete representation learning. We encourage the prediction of
-a neural network to remain unchanged under data augmentation
-(Red arrows), while maximizing the information-theoretic dependency between data and their representations (Blue arrow).
+grey whale
 
-of interpretation. The task includes two important machine
-learning tasks as special cases: clustering and unsupervised
-hash learning. Clustering is widely applied to data-driven
-application domains (Berkhin, 2006), while hash learning
-is popular for an approximate nearest neighbor search for
-large scale information retrieval (Wang et al., 2016).
-Deep neural networks are promising to be used thanks to
-their scalability and flexibility of representing complicated,
-non-linear decision boundaries. However, their model
-complexity is huge, and therefore, regularization of the networks is crucial to learn meaningful representations of data.
-Particularly, in unsupervised representation learning, target representations are not provided and hence, are unconstrained. Therefore, we need to carefully regularize the networks in order to learn useful representations that exhibit
-intended invariance for applications of interest (e.g., invariance to small perturbations or affine transformation). Naı̈ve
-regularization to use is a weight decay (Erin Liong et al.,
-2015). Such regularization, however, encourages global
-smoothness of the function prediction; thus, may not necessarily impose the intended invariance on the predicted discrete representations.
+Figure 1. 128 × 128 resolution samples from 5 classes taken from an AC-GAN trained on the ImageNet dataset. Note that the classes
+shown have been selected to highlight the success of the model and are not representative. Samples from all ImageNet classes are linked
+later in the text.
 
-Learning Discrete Representations via Information Maximizing Self-Augmented Training
+• Demonstrate an image synthesis model for all 1000
+ImageNet classes at a 128x128 spatial resolution (or
+any spatial resolution - see Section 3).
+• Measure how much an image synthesis model actually
+uses its output resolution (Section 4.1).
+• Measure perceptual variability and ’collapsing’ behavior in a GAN with a fast, easy-to-compute metric
+(Section 4.2).
+• Highlight that a high number of classes is what makes
+ImageNet synthesis difficult for GANs and provide an
+explicit solution (Section 4.6).
+• Demonstrate experimentally that GANs that perform
+well perceptually are not those that memorize a small
+number of examples (Section 4.3).
+• Achieve state of the art on the Inception score metric
+when trained on CIFAR-10 without using any of the
+techniques from (Salimans et al., 2016) (Section 4.4).
 
-Instead, in this paper, we use data augmentation to model
-the invariance of learned data representations. More specifically, we map data points into their discrete representations by a deep neural network and regularize it by encouraging its prediction to be invariant to data augmentation.
-The predicted discrete representations then exhibit the invariance specified by the augmentation. Our proposed regularization method is illustrated as red arrows in Figure 1.
-As depicted, we encourage the predicted representations of
-augmented data points to be close to those of the original data points in an end-to-end fashion. We term such
-regularization Self-Augmented Training (SAT). SAT is inspired by the recent success in regularization of neural networks in semi-supervised learning (Bachman et al., 2014;
-Miyato et al., 2016; Sajjadi et al., 2016). SAT is flexible to
-impose various types of invariances on the representations
-predicted by neural networks. For example, it is generally
-preferred for data representations to be locally invariant,
-i.e., remain unchanged under local perturbations on data
-points. Using SAT, we can impose the local invariance on
-the representations by pushing the predictions of perturbed
-data points to be close to those of the original data points.
-For image data, it may also be preferred for data representations to be invariant under affine distortion, e.g., rotation,
-scaling and parallel movement. We can similarly impose
-the invariance via SAT by using the affine distortion for the
-data augmentation.
-We then combine the SAT with the Regularized Information Maximization (RIM) for clustering (Gomes et al.,
-2010; Bridle et al., 1991), and arrive at our Information Maximizing Self-Augmented Training (IMSAT), an
-information-theoretic method for learning discrete representations using deep neural networks. We illustrate the
-basic idea of IMSAT in Figure 1. Following the RIM, we
-maximize information theoretic dependency between inputs and their mapped outputs, while regularizing the mapping function. IMSAT differs from the original RIM in two
-ways. First, IMSAT deals with a more general setting of
-learning discrete representations; thus, is also applicable to
-hash learning. Second, it uses a deep neural network for the
-mapping function and regularizes it in an end-to-end fashion via SAT. Learning with our method can be performed
-by stochastic gradient descent (SGD); thus, scales well to
-large datasets.
-In summary, our contributions are: 1) an informationtheoretic method for unsupervised discrete representation
-learning using deep neural networks with the end-to-end
-regularization, and 2) adaptations of the method to clustering and hash learning to achieve the state-of-the-art performance on several benchmark datasets.
-The rest of the paper is organized as follows. Related work
-is summarized in Section 2, while our method, IMSAT, is
-
-presented in Section 3. Experiments are provided in Section 4 and conclusions are drawn in Section 5.
-
-2. Related Work
-Various methods have been proposed for clustering and
-hash learning. The representative ones include K-means
-clustering and hashing (He et al., 2013), Gaussian mixture model clustering, iterative quantization (Gong et al.,
-2013), and minimal-loss hashing (Norouzi & Blei, 2011).
-However, these methods can only model linear boundaries between different representations; thus, cannot fit
-to non-linear structures of data. Kernel-based (Xu et al.,
-2004; Kulis & Darrell, 2009) and spectral (Ng et al., 2001;
-Weiss et al., 2009) methods can model the non-linearity of
-data, but they are difficult to scale to large datasets.
-Recently, clustering and hash learning using deep neural networks have attracted much attention. In clustering, Xie et al. (2016) proposed to use deep neural networks to simultaneously learn feature representations and
-cluster assignments, while Dilokthanakul et al. (2016) and
-Zheng et al. (2016) proposed to model the data generation
-process by using deep generative models with Gaussian
-mixture models as prior distributions.
-Regarding hashing learning, a number of studies have
-used deep neural networks for supervised hash learning
-and achieved state-of-the-art results on image and text
-retrievals (Xia et al., 2014; Lai et al., 2015; Zhang et al.,
-2015; Xu et al., 2015; Li et al., 2015). Relatively few studies have focused on unsupervised hash learning using deep
-neural networks. The pioneering work is semantic hashing, which uses stacked RBM models to learn compact
-binary representations (Salakhutdinov & Hinton, 2009).
-Erin Liong et al. (2015) recently proposed to use deep neural networks for the mapping function and achieved stateof-the-art results. These unsupervised methods, however,
-did not explicitly intended impose the invariance on the
-learned representations. Consequently, the predicted representations may not be useful for applications of interest.
-In supervised and semi-supervised learning scenarios, data
-augmentation has been widely used to regularize neural
-networks. Leen (1995) showed that applying data augmentation to a supervised learning problem is equivalent
-to adding a regularization to the original cost function.
-Bachman et al. (2014); Miyato et al. (2016); Sajjadi et al.
-(2016) showed that such regularization can be adapted to
-semi-supervised learning settings to achieve state-of-theart performance.
-In unsupervised representation learning scenarios,
-Dosovitskiy et al. (2014) proposed to use data augmentation to model the invariance of learned representations.
-Our IMSAT is different from Dosovitskiy et al. (2014)
-
-Learning Discrete Representations via Information Maximizing Self-Augmented Training
-
-in two important aspects: 1) IMSAT directly imposes
-the invariance on the learned representations, while
-Dosovitskiy et al. (2014) imposes invariance on surrogate
-classes, not directly on the learned representations. 2)
-IMSAT focuses on learning discrete representations that
-are directly usable for clustering and hash learning, while
-Dosovitskiy et al. (2014) focused on learning continuous
-representations that are then used for other tasks such
-as classification and clustering. Relation of our work to
-denoising and contractive auto-encoders (Vincent et al.,
-2008; Rifai et al., 2011) is discussed in Appendix A.
-
-3. Method
-Let X and Y denote the domains of inputs and discrete representations, respectively. Given training samples,
-{x1 , x2 , . . . , xN }, the task of discrete representation learning is to obtain a function, f : X → Y, that maps similar
-inputs into similar discrete representations. The similarity
-of data is defined according to applications of interest.
-We organize Section 3 as follows. In Section 3.1, we review the RIM for clustering (Gomes et al., 2010). In Section 3.2, we present our proposed method, IMSAT, for discrete representation learning. In Sections 3.3 and 3.4, we
-adapt IMSAT to the tasks of clustering and hash learning,
-respectively. In Section 3.5, we discuss an approximation
-technique for scaling up our method.
-3.1. Review of Regularized Information Maximization
-for Clustering
-The RIM (Gomes et al., 2010) learns a probabilistic classifier pθ (y|x) such that mutual information
-(Cover & Thomas, 2012) between inputs and cluster assignments is maximized. At the same time, it regularizes the complexity of the classifier. Let X ∈ X and
-Y ∈ Y ≡ {0, . . . , K − 1} denote random variables for
-data and cluster assignments, respectively, where K is the
-number of clusters. The RIM minimizes the objective:
-R(θ) − λI(X; Y ),
+2. Background
+A generative adversarial network (GAN) consists of two
+neural networks trained in opposition to one another. The
+generator G takes as input a random noise vector z and
+outputs an image Xf ake = G(z). The discriminator D
+receives as input either a training image or a synthesized
+image from the generator and outputs a probability distribution P (S | X) = D(X) over possible image sources.
+The discriminator is trained to maximize the log-likelihood
+it assigns to the correct source:
+L = E[log P (S = real | Xreal )]+
+E[log P (S = f ake | Xf ake )]
 
 (1)
 
-where R(θ) is the regularization penalty, and I(X; Y ) is
-mutual information between X and Y , which depends on
-θ through the classifier, pθ (y|x). Mutual information measures the statistical dependency between X and Y , and is
-0 iff they are independent. Hyper-parameter λ ∈ R trades
-off the two terms.
-3.2. Information Maximizing Self-Augmented Training
-Here, we present two components that make up our IMSAT.
-We present the Information Maximization part in Section
-3.2.1 and the SAT part in Section 3.2.2 .
-
-3.2.1. I NFORMATION MAXIMIZATION FOR LEARNING
-DISCRETE REPRESENTATIONS
-
-We extend the RIM and consider learning M -dimensional
-discrete representations of data. Let the output domain be
-Y = Y1 × · · · × YM , where Ym ≡ {0, 1, . . . , Vm − 1}, 1 ≤
-m ≤ M . Let Y = (Y1 , . . . , YM ) ∈ Y be a random variable
-for the discrete representation. Our goal is to learn a multioutput probabilistic classifier pθ (y1 , . . . , yM |x) that maps
-similar inputs into similar representations. For simplicity,
-we model the conditional probability pθ (y1 , . . . , yM |x) by
-using the deep neural network depicted in Figure 1. Under the model, {y1 , . . . , yM } are conditionally independent
-given x:
-pθ (y1 , . . . , yM |x) =
-
-M
-!
-
-m=1
-
-pθ (ym |x).
-
-(2)
-
-Following the RIM (Gomes et al., 2010), we maximize the
-mutual information between inputs and their discrete representations, while regularizing the multi-output probabilistic
-classifier. The resulting objective to minimize looks exactly
-the same as Eq. (1), except that Y is multi-dimensional in
-our setting.
-3.2.2. R EGULARIZATION OF DEEP NEURAL NETWORKS
-VIA SELF - AUGMENTED TRAINING
-We present an intuitive and flexible regularization objective, termed Self-Augmented Training (SAT). SAT uses data
-augmentation to impose the intended invariance on the
-data representations. Essentially, SAT penalizes representation dissimilarity between the original data points and
-augmented ones. Let T : X → X denote a pre-defined data
-augmentation under which the data representations should
-be invariant. The regularization of SAT made on data point
-x is
-RSAT (θ; x, T (x))
-=−
-
-M V"
-m −1
-"
-
-m=1 ym =0
-
-pθ!(ym |x) log pθ (ym |T (x)),
-
-(3)
-
-where pθ!(ym |x) is the prediction of original data point x,
-and θ# is the current parameter of the network. In Eq. (3),
-the representations of the augmented data are pushed to be
-close to those of the original data. Since probabilistic classifier pθ (y|x) is modeled using a deep neural network, it
-is flexible enough to capture a wide range of invariances
-specified by the augmentation function T . The regularization by SAT is then the average of RSAT (θ; x, T (x)) over
-all the training data points:
-RSAT (θ; T ) =
-
-N
-1 "
-RSAT (θ; xn , T (xn )).
-N n=1
-
-(4)
-
-Learning Discrete Representations via Information Maximizing Self-Augmented Training
-
-The augmentation function T can either be stochastic or
-deterministic. It can be designed specifically for the applications of interest. For example, for image data, affine
-distortion such as rotation, scaling and parallel movement
-can be used for the augmentation function.
-Alternatively, more general augmentation functions that do
-not depend on specific applications can be considered. A
-representative example is local perturbations, in which the
-augmentation function is
-T (x) = x + r,
-
-(5)
-
-where r is a small perturbation that does not alter the meaning of the data point. The use of local perturbations in SAT
-encourages the data representations to be locally invariant.
-The resulting decision boundaries between different representations tend to lie in low density regions of a data distribution. Such boundaries are generally preferred and follow the low-density separation principle (Grandvalet et al.,
-2004).
-The two representative regulariztion methods based on local perturbations are: Random Perturbation Training (RPT)
-(Bachman et al., 2014) and Virtual Adversarial Training
-(VAT) (Miyato et al., 2016). In RPT, perturbation r is sampled randomly from hyper-sphere ||r||2 = ϵ, where ϵ is a
-hyper-parameter that controls the range of the local perturbation. On the other hand, in VAT, perturbation r is chosen
-to be an adversarial direction:
-# x, x + r′ ); ||r′ ||2 ≤ ϵ}.
-r = arg max {RSAT (θ;
-r′
-
-(6)
-
-The solution of Eq. (6) can be approximated efficiently by
-a pair of forward and backward passes. For further details,
-refer to Miyato et al. (2016).
-3.3. IMSAT for Clustering
-In clustering, we can directly apply the RIM (Gomes et al.,
-2010) reviewed in Section 3.1. Unlike the original
-RIM, however, our method, IMSAT, uses deep neural networks for the classifiers and regularizes them via
-SAT. By representing mutual information as the difference between marginal entropy and conditional entropy
-(Cover & Thomas, 2012), we have the objective to minimize:
-RSAT (θ; T ) − λ [H(Y ) − H(Y |X)] ,
-
-(7)
-
-where H(·) and H(·|·) are entropy and conditional entropy,
-respectively. The two entropy terms can be calculated as
-$
-%
-N
-1 "
-H(Y ) ≡ h(pθ (y)) = h
-pθ (y|x) , (8)
-N i=1
-H(Y |X) ≡
-
-N
-1 "
-h(pθ (y|xi )),
-N i=1
-
-(9)
-
-&
-where h(p(y)) ≡ − y′ p(y ′ ) log p(y ′ ) is the entropy
-function. Increasing the marginal entropy H(Y ) encourages the cluster sizes to be uniform, while decreasing
-the conditional entropy H(Y |X) encourages unambiguous
-cluster assignments (Bridle et al., 1991).
-In practice, we can incorporate our prior knowledge on
-cluster sizes by modifying H(Y ) (Gomes et al., 2010).
-Note that H(Y ) = log K − KL[pθ (y)|| U ], where K is
-the number of clusters, KL[·||·] is the Kullback-Leibler
-divergence, and U is a uniform distribution. Hence,
-maximization of H(Y ) is equivalent to minimization of
-KL[pθ (y)|| U ], which encourages predicted cluster distribution pθ (y) to be close to U . Gomes et al. (2010) replaced U in KL[pθ (y)|| U ] with any specified class prior
-q(y) so that pθ (y) is encouraged to be close to q(y). In our
-preliminary experiments, we found that the resulting pθ (y)
-could still be far apart from pre-specified q(y). To ensure
-that pθ (y) is actually close to q(y), we consider the following constrained optimization problem:
-min RSAT (θ; T ) + λH(Y |X),
-θ
-
-subject to KL[pθ (y)|| q(y)] ≤ δ,
-
-(10)
-
-where δ > 0 is a tolerance hyper-parameter that is set sufficiently small so that predicted cluster distribution pθ (y) is
-the same as class prior q(y) up to δ-tolerance. Eq. (10) can
-be solved by using the penalty method (Bertsekas, 1999),
-which turns the original constrained optimization problem
-into a series of unconstrained optimization problems. Refer
-to Appendix B for the detail.
-3.4. IMSAT for Hash Learning
-In hash learning, each data point is mapped into a D-bitbinary code. Hence, the original RIM is not directly applicable. Instead, we apply our method for discrete representation learning presented in Section 3.2.1.
-The computation of mutual information I(Y1 , . . . , YD ; X),
-however, is intractable for large D because it involves a
-summation over an exponential number of terms, each of
-which corresponds to a different configuration of hash bits.
-Brown (2009) showed that mutual information
-I(Y1 , . . . , YD ; X) can be expanded as the sum of
-interaction information (McGill, 1954):
-"
-I(Y1 , . . . , YD ; X) =
-I(C ∪ X), |C| ≥ 1, (11)
-C⊆SY
-
-where SY ≡ {Y1 , . . . , YD }. Note that I denotes interaction information when its argument is a set of random variables. Interaction information is a generalization of mutual
-information and can take a negative value. When the argument is a set of two random variables, the interaction information reduces to mutual information between the two
-
-Learning Discrete Representations via Information Maximizing Self-Augmented Training
-
-random variables. Following Brown (2009), we only retain
-terms involving pairs of output dimensions in Eq. (11), i.e.,
-all terms where |C| ≤ 2. This gives us
-D
-"
-d=1
-
-I(Yd ; X) +
-
-"
-
-I({Yd , Yd′ , X}).
-
-(12)
-
-1≤d̸=d′ ≤D
-
-Table 1. Summary of the variants.
-Method
-Used classifier
-Regularization
-Linear RIM
-Linear
-Weight-decay
-Deep RIM
-Deep neural nets
-Weight-decay
-Linear IMSAT (VAT)
-Linear
-VAT
-IMSAT (RPT)
-Deep neural nets
-RPT
-IMSAT (VAT)
-Deep neural nets
-VAT
-
-This approximation ignores the interactions among hash
-bits beyond the pairwise interactions. It is related to the
-orthogonality constraint that is widely used in the literature
-to remove redundancy among hash bits (Wang et al., 2016).
-In fact, the orthogonality constraint encourages the covariance between a pair of hash bits to 0. Thus, it also takes
-into account the pairwise interactions.
-
-where B is a set of data in the mini-batch. In the case
-of clustering, the approximated objective that we actually
-minimize is an upper bound of the exact objective that we
-try to minimize. Refer to Appendix C of the supplementary
-material for the detailed discussion.
-
-It follows from the definition of interaction information and
-the conditional independence in Eq. (2) that
-
-4. Experiments
-
-I({Yd , Yd′ , X}) ≡ I(Yd ; Yd′ |X) − I(Yd ; Yd′ )
-= −I(Yd ; Yd′ ).
-
-(13)
-
-In summary, our approximated objective to minimize is
-⎛
-⎞
-D
-"
-"
-RSAT (θ; T ) − λ ⎝
-I(X; Yd ) −
-I(Yd ; Yd′ )⎠ .
-1≤d̸=d′ ≤D
-
-d=1
-
-(14)
-
-The first term regularizes the neural network. The second
-term maximizes the mutual information between data and
-each hash bit, and the third term removes the redundancy
-among the hash bits.
-3.5. Approximation of the Marginal Distribution
-To scale up our method to large datasets, we would like the
-objective in Eq. (1) to be amenable to optimization based
-on mini-batch SGD. For the regularization term, we use
-the SAT in Eq. (4), which is the sum of per sample penalties and can be readily adapted to mini-batch computation.
-For the approximated mutual information in Eq. (14), we
-can decompose it into three parts: (i) conditional entropy
-H(Yd |X), (ii) marginal entropy H(Yd ), and (iii) mutual information between a pair of output dimensions I(Yd ; Yd′ ).
-The conditional entropy only consists of a sum over per example entropies (see Eq. (9)); thus, can be easily adapted
-to mini-batch computation. However, the marginal entropy (see Eq. (8)) and the mutual information involve the
-marginal distribution
-&N over a subset of target dimensions,
-i.e., pθ (c) ≡ N1 n=1 pθ (c|xn ), where c ⊆ {y1 , . . . , yM }.
-Hence, the marginal distribution can only be calculated using the entire dataset and is not amenable to the mini-batch
-setting. Following Springenberg (2015), we approximate
-the marginal distributions using mini-batch data:
-1 "
-pθ (c) ≈
-pθ (c|x) ≡ p#θ (B) (c),
-(15)
-|B|
-x∈B
-
-In this section, we evaluate IMSAT for clustering and hash
-learning using benchmark datasets.
-4.1. Implementation
-In unsupervised learning, it is not straightforward to determine hyper-parameters by cross-validation. Therefore,
-in all the experiments with benchmark datasets, we used
-commonly reported parameter values for deep neural networks and avoided dataset-specific tuning as much as possible. Specifically, inspired by Hinton et al. (2012), we set
-the network dimensionality to d-1200-1200-M for clustering across all the datasets, where d and M are input
-and output dimensionality, respectively. For hash learning, we used smaller network sizes to ensure fast computation of mapping data into hash codes. We used
-rectified linear units (Jarrett et al., 2009; Nair & Hinton,
-2010; Glorot et al., 2011) for all the hidden activations
-and applied batch normalization (Ioffe & Szegedy, 2015)
-to each layer to accelerate training. For the output layer,
-we used the softmax for clustering and the sigmoids for
-hash learning. Regarding optimization, we used Adam
-(Kingma & Ba, 2015) with the step size 0.002. Refer
-to Appendix D for further details. Our implementation based on Chainer (Tokui et al., 2015) is available at
-https://github.com/weihua916/imsat.
-4.2. Clustering
-4.2.1. DATASETS AND COMPARED METHODS
-We evaluated our method for clustering presented in Section 3.3 on eight benchmark datasets. We performed experiments with two variants of the RIM and three variants
-of IMSAT, each of which uses different classifiers and regularization. Table 1 summarizes these variants. We also
-compared our IMSAT with existing clustering methods including K-means, DEC (Xie et al., 2016), denoising AutoEncoder (dAE)+K-means (Xie et al., 2016).
-
-Learning Discrete Representations via Information Maximizing Self-Augmented Training
-
-Table 2. Summary of dataset statistics.
-
-Dataset
-MNIST (LeCun et al., 1998)
-Omniglot (Lake et al., 2011)
-STL (Coates et al., 2010)
-CIFAR10 (Torralba et al., 2008)
-CIFAR100 (Torralba et al., 2008)
-SVHN (Netzer et al., 2011)
-Reuters (Lewis et al., 2004)
-20news (Lang, 1995)
-
-#Points
-70000
-40000
-13000
-60000
-60000
-99289
-10000
-18040
-
-#Classes
-10
-100
-10
-10
-100
-10
-4
-20
-
-Dimension
-784
-441
-2048
-2048
-2048
-960
-2000
-2000
-
-%Largest class
-11%
-1%
-10%
-10%
-1%
-19%
-43%
-5%
-
-Table 3. Comparison of clustering accuracy on eight benchmark datasets (%). Averages and standard deviations over twelve trials were
-reported. Results marked with † were excerpted from Xie et al. (2016).
-Method
-MNIST
-Omniglot
-STL
-CIFAR10 CIFAR100
-SVHN
-Reuters
-20news
-K-means
-53.2
-12.0
-85.6
-34.4
-21.5
-17.9
-54.1
-15.5
-dAE+K-means
-79.8 †
-14.1
-72.2
-44.2
-20.8
-17.4
-67.2
-22.1
-DEC
-84.3 †
-5.7 (0.3)
-78.1 (0.1) 46.9 (0.9)
-14.3 (0.6)
-11.9 (0.4) 67.3 (0.2) 30.8 (1.8)
-Linear RIM
-59.6 (2.3) 11.1 (0.2) 73.5 (6.5) 40.3 (2.1)
-23.7 (0.8)
-20.2 (1.4) 62.8 (7.8) 50.9 (3.1)
-Deep RIM
-58.5 (3.5)
-5.8 (2.2)
-92.5 (2.2) 40.3 (3.5)
-13.4 (1.2)
-26.8 (3.2) 62.3 (3.9) 25.1 (2.8)
-Linear IMSAT (VAT)
-61.1 (1.9) 12.3 (0.2) 91.7 (0.5) 40.7 (0.6)
-23.9 (0.4)
-18.2 (1.9) 42.9 (0.8) 43.9 (3.3)
-IMSAT (RPT)
-89.6 (5.4) 16.4 (3.1) 92.8 (2.5) 45.5 (2.9)
-24.7 (0.5)
-35.9 (4.3) 71.9 (6.5) 24.4 (4.7)
-IMSAT (VAT)
-98.4 (0.4) 24.0 (0.9) 94.1 (0.4) 45.6 (0.8)
-27.5 (0.4)
-57.3 (3.9) 71.0 (4.9) 31.1 (1.9)
-
-A brief summary of dataset statistics is given in Table 2. In
-the experiments, our goal was to discover clusters that correspond well with the ground-truth categories. For the STL,
-CIFAR10 and CIFAR100 datasets, raw pixels are not suited
-for our goal because color information is dominant. We
-therefore applied 50-layer pre-trained deep residual networks (He et al., 2016) to extract features and used them
-for clustering. Note that since the residual network was
-trained on ImageNet, each class of the STL dataset (which
-is a subset of ImageNet) was expected to be well-separated
-in the feature space. For Omniglot, 100 types of characters were sampled, each containing 20 data points. Each
-data point was augmented 20 times by the stochastic affine
-distortion described in Appendix F. For SVHN, each image was represented as a 960-dimensional GIST feature
-(Oliva & Torralba, 2001). For Reuters and 20news, we
-removed stop words and retained the 2000 most frequent
-words. We then used tf-idf features. Refer to Appendix E
-of the supplementary material for further details.
-4.2.2. E VALUATION METRIC
-Following Xie et al. (2016), we set the number of clusters to the number of ground-truth categories and evaluated
-clustering performance with unsupervised clustering accuracy (ACC):
-
-ACC = max
-m
-
-&N
-
-n=1
-
-1{ln = m(cn )}
-,
-N
-
-(16)
-
-where ln and cn are the ground-truth label and cluster
-assignment produced using the algorithm for xn , respectively. The m ranges over all possible one-to-one mappings
-between clusters and labels. The best mapping can be efficiently computed using the Hungarian algorithm (Kuhn,
-1955).
-4.2.3. H YPER - PARAMETER SELECTION
-In unsupervised learning, it is not straightforward to determine hyper-parameters by cross-validation. Hence, we
-fixed hyper-parameters across all the datasets unless there
-was an objective way to select them. For K-means,
-we tried 12 different initializations and reported the results with the best objectives. For dAE+K-means and
-DEC (Xie et al., 2016), we used the recommended hyperparameters for the network dimensionality and annealing
-speed.
-Inspired by the automatic kernel width selection in spectral clustering (Zelnik-Manor & Perona, 2004), we set the
-perturbation range, ϵ, on data point x in VAT and RPT as
-ϵ(x) = α · σt (x),
-
-(17)
-
-where α is a scalar and σt (x) is the Euclidian distance to
-the t-th neighbor of x. In our experiments, we fixed t =
-10. For Linear IMSAT (VAT), IMSAT (RPT) and IMSAT
-(VAT), we fixed α = 0.4, 2.5 and 0.25, respectively, which
-performed well across the datasets.
-
-Learning Discrete Representations via Information Maximizing Self-Augmented Training
-
-Table 4. Comparison of clustering accuracy on the Omniglot
-dataset using IMSAT with different types of SAT.
-
-Method
-IMSAT (VAT)
-IMSAT (affine)
-IMSAT (VAT & affine)
-
-Omniglot
-24.0 (0.9)
-45.1 (2.0)
-70.0 (2.0)
-
-For the methods shown in Table 1, we varied one hyperparameter and chose the best one that performed well
-across the datasets. More specifically, for Linear RIM and
-Deep RIM, we varied the decay rate over 0.0025 · 2i , i =
-0, 1, . . . , 7. For the three variants of IMSAT, we varied λ in
-Eq. (19) for 0.025 · 2i , i = 0, 1, . . . , 7. We set q to be the
-uniform distribution and let δ = 0.01 · h(q(y)) in Eq. (10)
-for the all experiments.
-Consequently, we chose 0.005 for decay rates in both Linear RIM and Deep RIM. Also, we set λ = 1.6, 0.05
-and 0.1 for Linear IMSAT (VAT), IMSAT (RPT) and IMSAT (VAT), respectively. We hereforth fixed these hyperparameters throughout the experiments for both clustering
-and hash learning. In Appendix G, we report all the experimental results and the criteria to choose the parameters.
-4.2.4. E XPERIMENTAL RESULTS
-In Table 3, we compare clustering performance across eight
-benchmark datasets. We see that IMSAT (VAT) performed
-well across the datasets. The fact that our IMSAT outperformed Linear RIM, Deep RIM and Linear IMSAT (VAT)
-for most datasets suggests the effectiveness of using deep
-neural networks with an end-to-end regularization via SAT.
-Linear IMSAT (VAT) did not perform well even with the
-end-to-end regularization probably because the linear classifier was not flexible enough to model the intended invariance of the representations. We also see from Table 3 that
-IMSAT (VAT) consistently outperformed IMSAT (RPT) in
-our experiments. This suggests that VAT is an effective
-regularization method in unsupervised learning scenarios.
-We further conducted experiments on the Omniglot dataset
-to demonstrate that clustering performance can be improved by incorporating domain-specific knowledge in the
-augmentation function of SAT. Specifically, we used the
-affine distortion in addition to VAT for the augmented function of SAT. We compared the clustering accuracy of IMSAT with three different augmentation functions: VAT,
-affine distortion, and the combination of VAT & affine distortion, in which we simply set the regularization to be
+The generator is trained to minimize the second term in
+Equation 1.
+The basic GAN framework can be augmented using side
+information. One strategy is to supply both the generator
+and discriminator with class labels in order to produce class
+conditional samples (Mirza & Osindero, 2014). Class conditional synthesis can significantly improve the quality of
+generated samples (van den Oord et al., 2016b). Richer side
+information such as image captions and bounding box localizations may improve sample quality further (Reed et al.,
+2016a;b).
+Instead of feeding side information to the discriminator,
+one can task the discriminator with reconstructing side information. This is done by modifying the discriminator to
+contain an auxiliary decoder network1 that outputs the class
+label for the training data (Odena, 2016; Salimans et al.,
+2016) or a subset of the latent variables from which the
+samples are generated (Chen et al., 2016). Forcing a model
+to perform additional tasks is known to improve performance on the original task (e.g. (Sutskever et al., 2014;
+Szegedy et al., 2014; Ramsundar et al., 2016)). In addition, an auxiliary decoder could leverage pre-trained discriminators (e.g. image classifiers) for further improving
+the synthesized images (Nguyen et al., 2016). Motivated
+by these considerations, we introduce a model that combines both strategies for leveraging side information. That
+is, the model proposed below is class conditional, but with
+an auxiliary decoder that is tasked with reconstructing class
+labels.
 1
-1
-· RSAT (θ; TVAT ) + · RSAT (θ; Taﬃne ),
-(18)
-2
-2
-where TVAT and Taﬃne are augmentation functions of VAT
-and affine distortion, respectively. For Taﬃne , we used the
-stochastic affine distortion function defined in Appendix F.
+Alternatively, one can force the discriminator to work with
+the joint distribution (X, z) and train a separate inference network
+that computes q(z|X) (Dumoulin et al., 2016; Donahue et al.,
+2016).
 
-We report the clustering accuracy of Omniglot in Table 4.
-We see that including affine distortion in data augmentation
-significantly improved clustering accuracy. Figure 2 shows
-ten randomly selected clusters of the Omniglot dataset that
-were found using IMSAT (VAT) and IMSAT (VAT & affine
-distortion). We observe that IMSAT (VAT & affine distortion) was able to discover cluster assignments that are invariant to affine distortion as we intended. These results
-suggest that our method successfully captured the invariance in the hand-written character recognition in an unsupervised way.
-4.3. Hash Learning
-4.3.1. DATASETS AND C OMPARED METHODS
-We evaluated our method for hash learning presented
-in Section 3.4 on two benchmark datasets: MNIST
-and CIFAR10 datasets.
-Each data sample of CIFAR10 is represented as a 512-dimensional GIST feature (Oliva & Torralba, 2001). Our method was compared
-against several unsupervised hash learning methods: spectral hashing (Weiss et al., 2009), PCA-ITQ (Gong et al.,
-2013), and Deep Hash (Erin Liong et al., 2015). We also
-compared our method to the hash versions of Linear RIM
-and Deep RIM. For our IMSAT, we used VAT for the regularization. We used the same hyper-parameters as in Section 4.2.3.
-4.3.2. E VALUATION METRIC
-Following Erin Liong et al. (2015), we used three evaluation metrics to measure the performance of the different
-methods: 1) mean average precision (mAP); 2) precision at
-N = 500 samples; and 3) Hamming look-up result where
-the hamming radius is set as r = 2. We used the class labels to define the neighbors. We repeated the experiments
-ten times and took the average as the final result.
-4.3.3. E XPERIMENTAL RESULTS
-The MNIST and CIFAR10 datasets both have 10 classes,
-and contain 70000 and 60000 data points, respectively.
-Following Erin Liong et al. (2015), we randomly sampled
-1000 samples, 100 per class, as the query data and used the
-remaining data as the gallery set.
-We tested performance for 16 and 32-bit hash codes. In
-practice, fast computation of hash codes is crucial for fast
-information retrieval. Hence, small networks are preferable. We therefore tested our method on three different network sizes: the same ones as Deep Hash (Erin Liong et al.,
-2015), d-200-200-M , and d-400-400-M . Note that Deep
-Hash used d-60-30-M and d-80-50-M for learning 16 and
-32-bit hash codes, respectively.
-Table 5 lists the results for 16-bit hash. Due to the space
+Conditional Image Synthesis with Auxiliary Classifier GANs
 
-Learning Discrete Representations via Information Maximizing Self-Augmented Training
+3. AC-GANs
+We propose a variant of the GAN architecture which we
+call an auxiliary classifier GAN (or AC-GAN). In the ACGAN, every generated sample has a corresponding class label, c ∼ pc in addition to the noise z. G uses both to generate images Xf ake = G(c, z). The discriminator gives both
+a probability distribution over sources and a probability distribution over the class labels, P (S | X), P (C | X) =
+D(X). The objective function has two parts: the loglikelihood of the correct source, LS , and the log-likelihood
+of the correct class, LC .
 
-(a) IMSAT (VAT)
+LS = E[log P (S = real | Xreal )]+
+E[log P (S = f ake | Xf ake )] (2)
+LC = E[log P (C = c | Xreal )]+
+E[log P (C = c | Xf ake )] (3)
+D is trained to maximize LS + LC while G is trained to
+maximize LC − LS . AC-GANs learn a representation for
+z that is independent of class label (e.g. (Kingma et al.,
+2014)).
+Structurally, this model is not tremendously different from
+existing models. However, this modification to the standard GAN formulation produces excellent results and appears to stabilize training. Moreover, we consider the ACGAN model to be only part of the technical contributions of
+this work, along with our proposed methods for measuring
+the extent to which a model makes use of its given output
+resolution, methods for measuring perceptual variability of
+samples from the model, and a thorough experimental analyis of a generative model of images that creates 128 × 128
+samples from all 1000 ImageNet classes.
+Early experiments demonstrated that increasing the number of classes trained on while holding the model fixed decreased the quality of the model outputs. The structure of
+the AC-GAN model permits separating large datasets into
+subsets by class and training a generator and discriminator
+for each subset. All ImageNet experiments are conducted
+using an ensemble of 100 AC-GANs, each trained on a 10class split.
 
-(b) IMSAT (VAT & aﬃne)
+4. Results
+We train several AC-GAN models on the ImageNet data
+set (Russakovsky et al., 2015). Broadly speaking, the architecture of the generator G is a series of ‘deconvolution’
+layers that transform the noise z and class c into an image
+(Odena et al., 2016). We train two variants of the model architecture for generating images at 128 × 128 and 64 × 64
 
-Figure 2. Randomly sampled clusters of Omniglot discovered using (a) IMSAT (VAT) and (b) IMSAT (VAT & affine). Each row contains
-randomly sampled data points in same cluster.
-Table 5. Comparison of hash performance for 16-bit hash codes (%). Averages and standard deviations over ten trials were reported.
-Experimental results of Deep Hash and the previous methods were excerpted from Erin Liong et al. (2015).
+spatial resolutions. The discriminator D is a deep convolutional neural network with a Leaky ReLU nonlinearity
+(Maas et al., 2013). As mentioned earlier, we find that reducing the variability introduced by all 1000 classes of ImageNet significantly improves the quality of training. We
+train 100 AC-GAN models – each on images from just 10
+classes – for 50000 mini-batches of size 100.
+Evaluating the quality of image synthesis models is challenging due to the variety of probabilistic criteria (Theis
+et al., 2015) and the lack of a perceptually meaningful image similarity metric. Nonetheless, in later sections we attempt to measure the quality of the AC-GAN by building
+several ad-hoc measures for image sample discriminability and diversity. Our hope is that this work might provide
+quantitative measures that may be used to aid training and
+subsequent development of image synthesis models.
+4.1. Generating High Resolution Images Improves
+Discriminability
+Building a class-conditional image synthesis model necessitates measuring the extent to which synthesized images
+appear to belong to the intended class. In particular, we
+would like to know that a high resolution sample is not just
+a naive resizing of a low resolution sample. Consider a
+simple experiment: pretend there exists a model that synthesizes 32 × 32 images. One can trivially increase the
+resolution of synthesized images by performing bilinear interpolation. This would yield higher resolution images, but
+these images would just be blurry versions of the low resolution images that are not discriminable. Hence, the goal
+of an image synthesis model is not simply to produce high
+resolution images, but to produce high resolution images
+that are more discriminable than low resolution images.
+To measure discriminability, we feed synthesized images
+to a pre-trained Inception network (Szegedy et al., 2015)
+and report the fraction of the samples for which the Inception network assigned the correct label2 . We calculate
+this accuracy measure on a series of real and synthesized
+images which have had their spatial resolution artificially
+decreased by bilinear interpolation (Figure 2, top panels).
+Note that as the spatial resolution is decreased, the accuracy
+decreases - indicating that resulting images contain less
+class information (Figure 2, scores below top panels). We
+summarized this finding across all 1000 ImageNet classes
+for the ImageNet training data (black), a 128 × 128 reso2
+One could also use the Inception score (Salimans et al.,
+2016), but our method has several advantages: accuracy figures are easier to interpret than exponentiated KL-divergences;
+accuracy may be assessed for individual classes; accuracy
+measures whether a class-conditional model generated samples from the intended class. To compute the Inception accuracy, we modified a version of Inception-v3 supplied in
+https://github.com/openai/improved-gan/.
 
-Method
-(Dimensions of hidden layers)
-Spectral hash (Weiss et al., 2009)
-PCA-ITQ (Gong et al., 2013)
-Deep Hash (60-30)
-Linear RIM
-Deep RIM (60-30)
-Deep RIM (200-200)
-Deep RIM (400-400)
-IMSAT (VAT) (60-30)
-IMSAT (VAT) (200-200)
-IMSAT (VAT) (400-400)
+Conditional Image Synthesis with Auxiliary Classifier GANs
 
-Hamming ranking (mAP)
-MNIST
-CIFAR10
-26.6
-12.6
-41.2
-15.7
-43.1
-16.2
-35.9 (0.6)
-24.0 (3.5)
-42.7 (2.8)
-15.2 (0.5)
-43.7 (3.7)
-15.6 (0.6)
-43.9 (2.7)
-15.4 (0.2)
-61.2 (2.5)
-19.8 (1.2)
-80.7 (2.2)
-21.2 (0.8)
-83.9 (2.3)
-21.4 (0.5)
+16 x 16
 
-constraint, we report the results for 32-bit hash codes in
-Appendix H, but the results showed a similar tendency as
-that of 16-bit hash codes. We see from Table 5 that IMSAT
-with the largest network sizes (400-400) achieved competitive performance in both datasets. The performance of IMSAT improved significantly when slightly bigger networks
-(200-200) were used, while the performance of Deep RIM
-did not improve much with the larger networks. We deduce that this is because we can better model the local
-invariance by using more flexible networks. Deep RIM,
-on the other hand, did not significantly benefit from the
-larger networks, because the additional flexibility of the
-networks was not used by the global function regularization via weight-decay.1 In Appendix I, our deduction is
-supported using a toy dataset.
-1
+32 x 32
 
-Hence, we deduce that Deep Hash, which is only regularized by weight-decay, would not benefit much by using larger
-networks.
+64 x 64
 
-precision @ sample = 500
-MNIST
-CIFAR10
-56.3
-18.8
-66.4
-22.5
-67.9
-23.8
-68.9 (1.1)
-15.9 (0.5)
-67.9 (2.7)
-21.8 (0.9)
-68.7 (4.9)
-21.6 (1.2)
-69.0 (3.2)
-21.5 (0.4)
-78.6 (2.1)
-21.0 (1.8)
-95.8 (1.0)
-27.3 (1.3)
-97.0 (0.8)
-27.3 (1.1)
+128 x 128
 
-precision @ r = 2
-MNIST
-CIFAR10
-57.5
-18.5
-65.7
-22.6
-66.1
-23.3
-71.3 (0.9) 14.2 (0.3)
-65.9 (2.7) 21.2 (0.9)
-67.0 (4.9) 21.1 (1.1)
-66.7 (3.2) 20.9 (0.3)
-76.5 (2.3) 19.3 (1.6)
-94.6 (1.4) 26.1 (1.3)
-96.2 (1.1) 26.4 (1.0)
+256 x 256
 
-5. Conclusion & Future Work
-In this paper, we presented IMSAT, an informationtheoretic method for unsupervised discrete representation
-learning using deep neural networks. Through extensive
-experiments, we showed that intended discrete representations can be obtained by directly imposing the invariance to
-data augmentation on the prediction of neural networks in
-an end-to-end fashion. For future work, it is interesting to
-apply our method to structured data, i.e., graph or sequential data, by considering appropriate data augmentation.
+0%
 
-Acknowledgements
-We thank Brian Vogel for helpful discussions and insightful reviews on the paper. This paper is based on results
-obtained from Hu’s internship at Preferred Networks, Inc.
+7%
 
-Learning Discrete Representations via Information Maximizing Self-Augmented Training
+62%
+
+94%
+
+94%
+
+0%
+
+0%
+
+42%
+
+76%
+
+76%
+
+Real
+
+Fake
+
+Figure 2. Generating high resolution images improves discriminability. Top: Training data and synthesized images from the zebra
+class resized to a lower spatial resolution (indicated above) and subsequently artificially resized to the original resolution (128 × 128 for
+the red and black lines; 64 × 64 for the blue line). Inception accuracy is shown below the corresponding images. Bottom Left: Summary
+of accuracies across varying spatial resolutions for training data and image samples from 64 × 64 and 128 × 128 models. Error bar
+measures standard deviation across 10 subsets of images. Dashed lines highlight the accuracy at the output spatial resolution of the
+model. The training data (clipped) achieves accuracies of 24%, 54%, 81% and 81% at resolutions of 32, 64, 128, and 256 respectively.
+Bottom Right: Comparison of accuracy scores at 128 × 128 and 32 × 32 spatial resolutions (x and y axis, respectively). Each point
+represents an ImageNet class. 84.4% of the classes are below the line of equality. The green dot corresponds to the zebra class. We
+also artificially resized 128 × 128 and 64 × 64 images to 256 × 256 as a sanity check to demonstrate that simply increasing the number
+of pixels will not increase discriminability.
+
+lution AC-GAN (red) and a 64 × 64 resolution AC-GAN
+(blue) in Figure 2 (bottom, left). The black curve (clipped)
+provides an upper-bound on the discriminability of real images.
+The goal of this analysis is to show that synthesizing higher
+resolution images leads to increased discriminability. The
+128 × 128 model achieves an accuracy of 10.1% ± 2.0%
+versus 7.0% ± 2.0% with samples resized to 64 × 64 and
+5.0% ± 2.0% with samples resized to 32 × 32. In other
+words, downsizing the outputs of the AC-GAN to 32 × 32
+and 64 × 64 decreases visual discriminability by 50% and
+38% respectively. Furthermore, 84.4% of the ImageNet
+classes have higher accuracy at 128 × 128 than at 32 × 32
+(Figure 2, bottom left).
+We performed the same analysis on an AC-GAN trained
+to 64 × 64 spatial resolution. This model achieved less discriminability than a 128×128 AC-GAN model. Accuracies
+from the 64 × 64 model plateau at a 64 × 64 spatial resolution consistent with previous results. Finally, the 64 × 64
+
+resolution model achieves less discriminability at 64 spatial
+resolution than the 128 × 128 model.
+To the best of our knowledge, this work is the first that attempts to measure the extent to which an image synthesis
+model is ‘making use of its given output resolution’, and in
+fact is the first work to consider the issue at all. We consider this an important contribution, on par with proposing a model that synthesizes images from all 1000 ImageNet classes. We note that the proposed method can be
+applied to any image synthesis model for which a measure
+of ‘sample quality’ can be constructed. In fact, this method
+(broadly defined) can be applied to any type of synthesis
+model, as long as there is an easily computable notion of
+sample quality and some method for ‘reducing resolution’.
+In particular, we expect that a similar procecure can be carried out for audio synthesis.
+
+Conditional Image Synthesis with Auxiliary Classifier GANs
+hot dog
+
+Several methods exist for quantitatively evaluating image
+similarity by attempting to predict human perceptual similarity judgements. The most successful of these is multiscale structural similarity (MS-SSIM) (Wang et al., 2004b;
+Ma et al., 2016). MS-SSIM is a multi-scale variant of
+a well-characterized perceptual similarity metric that attempts to discount aspects of an image that are not important for human perception (Wang et al., 2004a). MS-SSIM
+values range between 0.0 and 1.0; higher MS-SSIM values
+correspond to perceptually more similar images.
+As a proxy for image diversity, we measure the MSSSIM scores between 100 randomly chosen pairs of images
+within a given class. Samples from classes that have higher
+diversity result in lower mean MS-SSIM scores (Figure
+3, left columns); samples from classes with lower diversity have higher mean MS-SSIM scores (Figure 3, right
+columns). Training images from the ImageNet training
+data contain a variety of mean MS-SSIM scores across the
+classes indicating the variability of image diversity in ImageNet classes (Figure 4, x-axis). Note that the highest mean
+MS-SSIM score (indicating the least variability) is 0.25 for
+the training data.
+We calculate the mean MS-SSIM score for all 1000 ImageNet classes generated by the AC-GAN model. We track
+this value during training to identify whether the generator
+has collapsed (Figure 5, red curve). We also employ this
+metric to compare the diversity of the training images to
+the samples from the GAN model after training has completed. Figure 4 plots the mean MS-SSIM values for image
+samples and training data broken up by class. The blue line
+is the line of equality. Out of the 1000 classes, we find that
+847 have mean sample MS-SSIM scores below that of the
+maximum MS-SSIM for the training data. In other words,
+84.7% of classes have sample variability that exceeds that
+of the least variable class from the ImageNet training data.
+There are two points related to the MS-SSIM metric and
+our use of it that merit extra attention. The first point is
+that we are ‘abusing’ the metric: it was originally intended
+
+MS-SSIM = 0.29
+
+MS-SSIM = 0.05
+
+MS-SSIM = 0.15
+
+green apple
+MS-SSIM = 0.41
+
+artichoke
+
+MS-SSIM = 0.90
+
+MS-SSIM = 0.08
+
+MS-SSIM = 0.04
+
+real
+
+An image synthesis model is not very interesting if it only
+outputs one image. Indeed, a well-known failure mode of
+GANs is that the generator will collapse and output a single
+prototype that maximally fools the discriminator (Goodfellow et al., 2014; Salimans et al., 2016). A class-conditional
+model of images is not very interesting if it only outputs
+one image per class. The Inception accuracy can not measure whether a model has collapsed. A model that simply
+memorized one example from each ImageNet class would
+do very well by this metric. Thus, we seek a complementary metric to explicitly evaluate the intra-class perceptual
+diversity of samples generated by the AC-GAN.
+
+promontory
+
+MS-SSIM = 0.11
+
+synthesized
+
+4.2. Measuring the Diversity of Generated Images
+
+Figure 3. Examples of different MS-SSIM scores. The top and
+bottom rows contain AC-GAN samples and training data, respectively.
+
+to be used for measuring the quality of image compression algorithms using a reference ‘original image’. We instead use it on two potentially unrelated images. We believe that this is acceptable for the following reasons: First:
+visual inspection seems to indicate that the metric makes
+sense - pairs with higher MS-SSIM do seem more similar
+than pairs with lower MS-SSIM. Second: we restrict comparisons to images synthesized using the same class label.
+This restricts use of MS-SSIM to situations more similar to
+those in which it is typically used (it is not important which
+image is the reference). Third: the metric is not ‘saturated’
+for our use-case. If most scores were around 0, then we
+would be more concerned about the applicability of MSSSIM. Finally: The fact that training data achieves more
+variability by this metric (as expected) is itself evidence
+that the metric is working as intended.
+The second point is that the MS-SSIM metric is not intended as a proxy for the entropy of the generator distribution in pixel space, but as a measure of perceptual diversity
+of the outputs. The entropy of the generator output distribution is hard to compute and pairwise MS-SSIM scores
+would not be a good proxy. Even if it were easy to compute, we argue that it would still be useful to have a separate
+measure of perceptual diversity. To see why, consider that
+the generator entropy will be sensitive to trivial changes
+in contrast as well as changes in the semantic content of
+the outputs. In many applications, we don’t care about this
+contribution to the entropy, and it is useful to consider measures that attempt to ignore changes to an image that we
+consider ‘perceptually meaningless’, hence the use of MSSSIM.
+4.3. Generated Images are both Diverse and
+Discriminable
+We have presented quantitative metrics demonstrating that
+AC-GAN samples may be diverse and discriminable but
+we have yet to examine how these metrics interact. Figure 6 shows the joint distribution of Inception accuracies
+
+Conditional Image Synthesis with Auxiliary Classifier GANs
+
+Figure 4. Comparison of the mean MS-SSIM scores between
+pairs of images within a given class for ImageNet training data
+and samples from the GAN (blue line is equality). The horizontal
+red line marks the maximum MS-SSIM value (for training data)
+across all ImageNet classes. Each point is an individual class. The
+mean score across the training data and the samples was 0.05 and
+0.18 respectively. The mean standard deviation of scores across
+the training data and the samples was 0.06 and 0.08 respectively.
+Scores below the red line (84.7% of classes) arise from classes
+where GAN training largely succeeded.
+
+and MS-SSIM scores across all classes. Inception accuracy
+and MS-SSIM are anti-correlated (r2 = −0.16). In fact,
+74% of the classes with low diversity (MS-SSIM ≥ 0.25)
+contain Inception accuracies ≤ 1%. Conversely, 78% of
+classes with high diversity (MS-SSIM < 0.25) have Inception accuracies that exceed 1%. In comparison, the
+Inception-v3 model achieves 78.8% accuracy on average
+across all 1000 classes (Szegedy et al., 2015). A fraction
+of the classes AC-GAN samples reach this level of accuracy. This indicates opportunity for future image synthesis
+models.
+These results suggest that GANs that drop modes are most
+likely to produce low quality images. This stands in contrast to a popular hypothesis about GANs, which is that
+they achieve high sample quality at the expense of variability. We hope that these findings can help structure further
+investigation into the reasons for differing sample quality
+between GANs and other image synthesis models.
+4.4. Comparison to Previous Results
+Previous quantitative results for image synthesis models trained on ImageNet are reported in terms of loglikelihood (van den Oord et al., 2016a;b). Log-likelihood is
+a coarse and potentially inaccurate measure of sample quality (Theis et al., 2015). Instead we compare with previous
+state-of-the-art results on CIFAR-10 using a lower spatial
+resolution (32 × 32). Following the procedure in (Salimans
+
+Figure 5. Intra-class MS-SSIM for selected ImageNet classes
+throughout a training run. Classes that successfully train (black
+lines) tend to have decreasing mean MS-SSIM scores. Classes
+for which the generator ‘collapses’ (red line) will have increasing
+mean MS-SSIM scores.
+
+et al., 2016), we compute the Inception score3 for 50000
+samples from an AC-GAN with resolution (32 × 32), split
+into 10 groups at random. We also compute the Inception
+score for 25000 extra samples, split into 5 groups at random. We select the best model based on the first score and
+report the second score. Performing a grid search across
+27 hyperparameter configurations, we are able to achieve a
+score of 8.25 ± 0.07 compared to state of the art 8.09 ±
+0.07 (Salimans et al., 2016). Moreover, we accomplish this
+without employing any of the new techniques introduced
+in that work (i.e. virtual batch normalization, minibatch
+discrimination, and label smoothing).
+This provides additional evidence that AC-GANs are effective even without the benefit of class splitting. See Figure 7
+for a qualitative comparison of samples from an AC-GAN
+and samples from the model in (Salimans et al., 2016).
+4.5. Searching for Signatures of Overfitting
+One possibility that must be investigated is that the ACGAN has overfit on the training data. As a first check that
+the network does not memorize the training data, we identify the nearest neighbors of image samples in the training
+data measured by L1 distance in pixel space (Figure 8).
+The nearest neighbors from the training data do not resemble the corresponding samples. This provides evidence that
+the AC-GAN is not merely memorizing the training data.
+3
+
+The
+Inception
+score
+is
+given
+by
+exp (Ex [DKL (p(y|x) || p(y))]) where x is a particular image, p(y|x) is the conditional output distribution over the classes
+in a pre-trained Inception network (Szegedy et al., 2014) given x,
+and p(y) is the marginal distribution over the classes.
+
+Conditional Image Synthesis with Auxiliary Classifier GANs
+
+Figure 6. Inception accuracy vs MS-SSIM for all 1000 ImageNet
+classes (r2 = −0.16). Each data point represents the mean MSSSIM value for samples from one class. As in Figure 4, the
+red line marks the maximum MS-SSIM value (for training data)
+across all ImageNet classes. Samples from AC-GAN models do
+not achieve variability at the expense of discriminability.
+
+Figure 8. Nearest neighbor analysis. (Top) Samples from a single
+ImageNet class. (Bottom) Corresponding nearest neighbor (L1
+distance) in training data for each sample.
+
+the AC-GAN with z fixed but altering the class label corresponds to generating samples with the same ‘style’ across
+multiple classes (Kingma et al., 2014). Figure 9 (Bottom)
+shows samples from 8 bird classes. Elements of the same
+row have the same z. Although the class changes for each
+column, elements of the global structure (e.g. position, layout, background) are preserved, indicating that AC-GAN
+can represent certain types of ‘compositionality’.
+
+Figure 7. Samples generated from the ImageNet dataset. (Left)
+Samples generated from the model in (Salimans et al., 2016).
+(Right) Randomly chosen samples generated from an AC-GAN.
+AC-GAN samples possess global coherence absent from the samples of the earlier model.
+
+A more sophisticated method for understanding the degree
+of overfitting in a model is to explore that model’s latent
+space by interpolation. In an overfit model one might observe discrete transitions in the interpolated images and regions in latent space that do not correspond to meaningful images (Bengio et al., 2012; Radford et al., 2015; Dinh
+et al., 2016). Figure 9 (Top) highlights interpolations in the
+latent space between several image samples. Notably, the
+generator learned that certain combinations of dimensions
+correspond to semantically meaningful features (e.g. size
+of the arch, length of a bird’s beak) and there are no discrete
+transitions or ‘holes’ in the latent space.
+A second method for exploring the latent space of the ACGAN is to exploit the structure of the model. The ACGAN factorizes its representation into class information
+and a class-independent latent representation z. Sampling
+
+Figure 9. (Top) Latent space interpolations for selected ImageNet
+classes. Left-most and right-columns show three pairs of image
+samples - each pair from a distinct class. Intermediate columns
+highlight linear interpolations in the latent space between these
+three pairs of images. (Bottom) Class-independent information
+contains global structure about the synthesized image. Each column is a distinct bird class while each row corresponds to a fixed
+latent code z.
+
+Conditional Image Synthesis with Auxiliary Classifier GANs
+
+4.6. Measuring the Effect of Class Splits on Image
+Sample Quality.
+Class conditional image synthesis affords the opportunity
+to divide up a dataset based on image label. In our final
+model we divide 1000 ImageNet classes across 100 ACGAN models. In this section we describe experiments that
+highlight the benefit of cutting down the diversity of classes
+for training an AC-GAN. We employed an ordering of the
+labels and divided it into contiguous groups of 10. This
+ordering can be seen in the following section, where we
+display samples from all 1000 classes. Two aspects of the
+split merit discussion: the number of classes per split and
+the intra-split diversity. We find that training a fixed model
+on more classes harms the model’s ability to produce compelling samples (Figure 10). Performance on larger splits
+can be improved by giving the model more parameters.
+However, using a small split is not sufficient to achieve
+good performance. We were unable to train a GAN (Goodfellow et al., 2014) to converge reliably even for a split size
+of 1. This raises the question of whether it is easier to train
+a model on a diverse set of classes than on a similar set of
+classes: We were unable to find conclusive evidence that
+the selection of classes in a split significantly affects sample quality.
+
+tivity to class count that is well-supported experimentally.
+We can only note that, since the failure case that occurs
+when the class count is increased is ‘generator collapse’, it
+seems plausible that general methods for addressing ‘generator collapse’ could also address this sensitivity.
+4.7. Samples from all 1000 ImageNet Classes
+We also generate 10 samples from each of the 1000 ImageNet classes, hosted here. As far as we are aware, no other
+image synthesis work has included a similar analysis.
+
+5. Discussion
+This work introduced the AC-GAN architecture and
+demonstrated that AC-GANs can generate globally coherent ImageNet samples. We provided a new quantitative
+metric for image discriminability as a function of spatial
+resolution. Using this metric we demonstrated that our
+samples are more discriminable than those from a model
+that generates lower resolution images and performs a
+naive resize operation. We also analyzed the diversity of
+our samples with respect to the training data and provided
+some evidence that the image samples from the majority of
+classes are comparable in diversity to ImageNet data.
+Several directions exist for building upon this work. Much
+work needs to be done to improve the visual discriminability of the 128 × 128 resolution model. Although some
+synthesized image classes exhibit high Inception accuracies, the average Inception accuracy of the model (10.1%±
+2.0%) is still far below real training data at 81%. One immediate opportunity for addressing this is to augment the
+discriminator with a pre-trained model to perform additional supervised tasks (e.g. image segmentation, (Ronneberger et al., 2015)).
+
+Figure 10. Mean pairwise MS-SSIM values for 10 ImageNet
+classes plotted against the number of ImageNet classes used during training. We fix everything except the number of classes
+trained on, using values from 10 to 100. We only report the MSSSIM values for the first 10 classes to keep the scores comparable.
+MS-SSIM quickly goes above 0.25 (the red line) as the class count
+increases. These scores were computed using 9 random restarts
+per class count, using the same number of training steps for each
+model. Since we have observed that generators do not recover
+from the collapse phase, the use of a fixed number of training
+steps seems justified in this case.
+
+We don’t have a hypothesis about what causes this sensi-
+
+Improving the reliability of GAN training is an ongoing
+research topic. Only 84.7% of the ImageNet classes exhibited diversity comparable to real training data. Training
+stability was vastly aided by dividing up 1000 ImageNet
+classes across 100 AC-GAN models. Building a single
+model that could generate samples from all 1000 classes
+would be an important step forward.
+Image synthesis models provide a unique opportunity for
+performing semi-supervised learning: these models build
+a rich prior over natural image statistics that can be leveraged by classifiers to improve predictions on datasets for
+which few labels exist. The AC-GAN model can perform
+semi-supervised learning by ignoring the component of the
+loss arising from class labels when a label is unavailable
+for a given training image. Interestingly, prior work suggests that achieving good sample quality might be independent of success in semi-supervised learning (Salimans
+et al., 2016).
+
+Conditional Image Synthesis with Auxiliary Classifier GANs
 
 References
-Bachman, Philip, Alsharif, Ouais, and Precup, Doina.
-Learning with pseudo-ensembles. In NIPS, 2014.
-Berkhin, Pavel. A survey of clustering data mining techniques. In Grouping multidimensional data, pp. 25–71.
-Springer, 2006.
-Bertsekas, Dimitri P. Nonlinear programming. Athena scientific Belmont, 1999.
-Bridle, John S., Heading, Anthony J. R., and MacKay,
-David J. C. Unsupervised classifiers, mutual information
-and ’phantom targets’. In NIPS, pp. 1096–1101, 1991.
-Brown, Gavin. A new perspective for information theoretic
-feature selection. In AISTATS, 2009.
-Coates, Adam, Lee, Honglak, and Ng, Andrew Y. An
-analysis of single-layer networks in unsupervised feature
-learning. Ann Arbor, 1001(48109):2, 2010.
-Cover, Thomas M and Thomas, Joy A. Elements of information theory. John Wiley & Sons, 2012.
-Dilokthanakul, Nat, Mediano, Pedro AM, Garnelo, Marta,
-Lee, Matthew CH, Salimbeni, Hugh, Arulkumaran, Kai,
-and Shanahan, Murray. Deep unsupervised clustering
-with gaussian mixture variational autoencoders. arXiv
-preprint arXiv:1611.02648, 2016.
-Dosovitskiy, Alexey, Springenberg, Jost Tobias, Riedmiller, Martin, and Brox, Thomas. Discriminative unsupervised feature learning with convolutional neural networks. In NIPS, pp. 766–774, 2014.
-Erin Liong, Venice, Lu, Jiwen, Wang, Gang, Moulin,
-Pierre, and Zhou, Jie. Deep hashing for compact binary
-codes learning. In CVPR, 2015.
-
-He, Kaiming, Zhang, Xiangyu, Ren, Shaoqing, and Sun,
-Jian. Delving deep into rectifiers: Surpassing humanlevel performance on imagenet classification. In CVPR,
-2015.
-He, Kaiming, Zhang, Xiangyu, Ren, Shaoqing, and Sun,
-Jian. Deep residual learning for image recognition. In
-CVPR, 2016.
-Hinton, Geoffrey E, Srivastava, Nitish, Krizhevsky, Alex,
-Sutskever, Ilya, and Salakhutdinov, Ruslan R. Improving
-neural networks by preventing co-adaptation of feature
-detectors. arXiv preprint arXiv:1207.0580, 2012.
-Ioffe, Sergey and Szegedy, Christian. Batch normalization:
-Accelerating deep network training by reducing internal
-covariate shift. In ICML, 2015.
-Jarrett,
-Kevin,
-Kavukcuoglu,
-Koray,
-Ranzato,
-Marc’Aurelio, and LeCun, Yann. What is the best
-multi-stage architecture for object recognition?
-In
-ICCV, 2009.
-Kingma, Diederik and Ba, Jimmy. Adam: A method for
-stochastic optimization. In ICLR, 2015.
-Koch, Gregory. Siamese neural networks for one-shot
-image recognition. PhD thesis, University of Toronto,
-2015.
-Kuhn, Harold W. The hungarian method for the assignment
-problem. Naval research logistics quarterly, 2(1-2):83–
-97, 1955.
-Kulis, Brian and Darrell, Trevor. Learning to hash with
-binary reconstructive embeddings. In NIPS, 2009.
-
-Glorot, Xavier, Bordes, Antoine, and Bengio, Yoshua.
-Deep sparse rectifier neural networks. In AISTATS, 2011.
-
-Lai, Hanjiang, Pan, Yan, Liu, Ye, and Yan, Shuicheng. Simultaneous feature learning and hash coding with deep
-neural networks. In CVPR, 2015.
-
-Gomes, Ryan, Krause, Andreas, and Perona, Pietro. Discriminative clustering by regularized information maximization. In NIPS, 2010.
-
-Lake, Brenden M, Salakhutdinov, Ruslan, Gross, Jason,
-and Tenenbaum, Joshua B. One shot learning of simple
-visual concepts. In CogSci, 2011.
-
-Gong, Yunchao, Lazebnik, Svetlana, Gordo, Albert, and
-Perronnin, Florent. Iterative quantization: A procrustean
-approach to learning binary codes for large-scale image
-retrieval. IEEE Transactions on Pattern Analysis and
-Machine Intelligence, 35(12):2916–2929, 2013.
-
-Lang, Ken. Newsweeder: Learning to filter netnews. In
-ICML, pp. 331–339, 1995.
-
-Grandvalet, Yves, Bengio, Yoshua, et al. Semi-supervised
-learning by entropy minimization. In NIPS, 2004.
-
-LeCun, Yann, Bottou, Léon, Bengio, Yoshua, and Haffner,
-Patrick. Gradient-based learning applied to document
-recognition. Proceedings of the IEEE, 86(11):2278–
-2324, 1998.
-
-He, Kaiming, Wen, Fang, and Sun, Jian. K-means hashing:
-An affinity-preserving quantization method for learning
-binary compact codes. In CVPR, 2013.
-
-Leen, Todd K. From data distributions to regularization in
-invariant learning. Neural Computation, 7(5):974–981,
-1995.
-
-Learning Discrete Representations via Information Maximizing Self-Augmented Training
-
-Lewis, David D, Yang, Yiming, Rose, Tony G, and Li, Fan.
-Rcv1: A new benchmark collection for text categorization research. Journal of machine learning research, 5
-(Apr):361–397, 2004.
-Li, Wu-Jun, Wang, Sheng, and Kang, Wang-Cheng. Feature learning based deep supervised hashing with pairwise labels. In IJCAI, 2015.
-McGill, William J. Multivariate information transmission.
-Psychometrika, 19(2):97–116, 1954.
-Miyato, Takeru, Maeda, Shin-ichi, Koyama, Masanori,
-Nakae, Ken, and Ishii, Shin. Distributional smoothing
-with virtual adversarial training. In ICLR, 2016.
-Nair, Vinod and Hinton, Geoffrey E. Rectified linear units
-improve restricted boltzmann machines. In ICML, 2010.
-Netzer, Yuval, Wang, Tao, Coates, Adam, Bissacco,
-Alessandro, Wu, Bo, and Ng, Andrew Y. Reading digits in natural images with unsupervised feature learning.
-In NIPS workshop on deep learning and unsupervised
-feature learning, 2011.
-Ng, Andrew Y, Jordan, Michael I, Weiss, Yair, et al. On
-spectral clustering: Analysis and an algorithm. In NIPS,
-2001.
-Norouzi, Mohammad and Blei, David M. Minimal loss
-hashing for compact binary codes. In ICML, 2011.
-Oliva, Aude and Torralba, Antonio. Modeling the shape
-of the scene: A holistic representation of the spatial envelope. International journal of computer vision, 42(3):
-145–175, 2001.
-Rifai, Salah, Vincent, Pascal, Muller, Xavier, Glorot,
-Xavier, and Bengio, Yoshua. Contractive auto-encoders:
-Explicit invariance during feature extraction. In ICML,
-2011.
-Sajjadi, Mehdi, Javanmardi, Mehran, and Tasdizen, Tolga.
-Regularization with stochastic transformations and perturbations for deep semi-supervised learning. In NIPS,
+Ballé, Johannes, Laparra, Valero, and Simoncelli, Eero P.
+Density modeling of images using a generalized normalization transformation. CoRR, abs/1511.06281, 2015.
+URL http://arxiv.org/abs/1511.06281.
+Bengio, Yoshua, Mesnil, Grégoire, Dauphin, Yann, and
+Rifai, Salah. Better mixing via deep representations.
+CoRR, abs/1207.4404, 2012. URL http://arxiv.
+org/abs/1207.4404.
+Blundell, C., Uria, B., Pritzel, A., Li, Y., Ruderman,
+A., Leibo, J. Z, Rae, J., Wierstra, D., and Hassabis,
+D. Model-Free Episodic Control. ArXiv e-prints, June
 2016.
-Salakhutdinov, Ruslan and Hinton, Geoffrey. Semantic
-hashing. International Journal of Approximate Reasoning, 50(7):969–978, 2009.
-Springenberg, Jost Tobias.
-Unsupervised and semisupervised learning with categorical generative adversarial networks. In ICLR, 2015.
-Tokui, Seiya, Oono, Kenta, Hido, Shohei, and Clayton,
-Justin. Chainer: a next-generation open source framework for deep learning. In Proceedings of workshop on
+Chen, X., Duan, Y., Houthooft, R., Schulman, J.,
+Sutskever, I., and Abbeel, P. InfoGAN: Interpretable
+Representation Learning by Information Maximizing
+Generative Adversarial Nets. ArXiv e-prints, June 2016.
+Denton, Emily L., Chintala, Soumith, Szlam, Arthur, and
+Fergus, Robert. Deep generative image models using
+a laplacian pyramid of adversarial networks. CoRR,
+abs/1506.05751, 2015. URL http://arxiv.org/
+abs/1506.05751.
+Dinh, Laurent, Sohl-Dickstein, Jascha, and Bengio,
+Samy. Density estimation using real NVP. CoRR,
+abs/1605.08803, 2016. URL http://arxiv.org/
+abs/1605.08803.
+Donahue, J., Krähenbühl, P., and Darrell, T. Adversarial
+Feature Learning. ArXiv e-prints, May 2016.
+Dumoulin, V., Belghazi, I., Poole, B., Lamb, A., Arjovsky,
+M., Mastropietro, O., and Courville, A. Adversarially
+Learned Inference. ArXiv e-prints, June 2016.
+Goodfellow, I. J., Pouget-Abadie, J., Mirza, M., Xu, B.,
+Warde-Farley, D., Ozair, S., Courville, A., and Bengio,
+Y. Generative Adversarial Networks. ArXiv e-prints,
+June 2014.
+Kingma, D. P and Welling, M. Auto-Encoding Variational
+Bayes. ArXiv e-prints, December 2013.
 
-machine learning systems (LearningSys) in the twentyninth annual conference on neural information processing systems (NIPS), 2015.
-Torralba, Antonio, Fergus, Rob, and Freeman, William T.
-80 million tiny images: A large data set for nonparametric object and scene recognition. IEEE transactions on
-pattern analysis and machine intelligence, 30(11):1958–
-1970, 2008.
-Vincent, Pascal, Larochelle, Hugo, Bengio, Yoshua, and
-Manzagol, Pierre-Antoine. Extracting and composing
-robust features with denoising autoencoders. In ICML,
-2008.
-Wang, Jun, Liu, Wei, Kumar, Sanjiv, and Chang, Shih-Fu.
-Learning to hash for indexing big data—a survey. Proceedings of the IEEE, 104(1):34–57, 2016.
-Weiss, Yair, Torralba, Antonio, and Fergus, Rob. Spectral
-hashing. In NIPS, 2009.
-Xia, Rongkai, Pan, Yan, Lai, Hanjiang, Liu, Cong, and
-Yan, Shuicheng. Supervised hashing for image retrieval
-via image representation learning. In AAAI, 2014.
-Xie, Junyuan, Girshick, Ross, and Farhadi, Ali. Unsupervised deep embedding for clustering analysis. In ICML,
+Ledig, C., Theis, L., Huszar, F., Caballero, J., Aitken,
+A., Tejani, A., Totz, J., Wang, Z., and Shi, W. PhotoRealistic Single Image Super-Resolution Using a Generative Adversarial Network. ArXiv e-prints, September
 2016.
-Xu, Jiaming, Wang, Peng, Tian, Guanhua, Xu, Bo, Zhao,
-Jun, Wang, Fangyuan, and Hao, Hongwei. Convolutional neural networks for text hashing. In IJCAI, 2015.
-Xu, Linli, Neufeld, James, Larson, Bryce, and Schuurmans, Dale. Maximum margin clustering. In NIPS,
-2004.
-Zelnik-Manor, Lihi and Perona, Pietro. Self-tuning spectral
-clustering. In NIPS, 2004.
-Zhang, Ruimao, Lin, Liang, Zhang, Rui, Zuo, Wangmeng,
-and Zhang, Lei. Bit-scalable deep hashing with regularized similarity learning for image retrieval and person
-re-identification. IEEE Transactions on Image Processing, 24(12):4766–4779, 2015.
-Zheng, Yin, Tan, Huachun, Tang, Bangsheng, Zhou,
-Hanning, et al.
-Variational deep embedding: A
-generative approach to clustering.
+Ma, Kede, Wu, Qingbo, Wang, Zhou, Duanmu, Zhengfang,
+Yong, Hongwei, Li, Hongliang, and Zhang, Lei. Group
+mad competition - a new methodology to compare objective image quality models. In The IEEE Conference on
+Computer Vision and Pattern Recognition (CVPR), June
+2016.
+Maas, Andrew, Hannun, Awni, and Ng, Andrew. Rectifier
+nonlinearities improve neural network acoustic models.
+In Proceedings of The 33rd International Conference on
+Machine Learning, 2013.
+Mirza, Mehdi and Osindero, Simon. Conditional generative adversarial nets. CoRR, abs/1411.1784, 2014. URL
+http://arxiv.org/abs/1411.1784.
+Mohamed, Shakir and Lakshminarayanan, Balaji. Learning in implicit generative models.
 arXiv preprint
-arXiv:1611.05148, 2016.
+arXiv:1610.03483, 2016.
+Nguyen, Anh Mai, Dosovitskiy, Alexey, Yosinski, Jason,
+Brox, Thomas, and Clune, Jeff. Synthesizing the preferred inputs for neurons in neural networks via deep
+generator networks. CoRR, abs/1605.09304, 2016. URL
+http://arxiv.org/abs/1605.09304.
+Odena, A. Semi-Supervised Learning with Generative Adversarial Networks. ArXiv e-prints, June 2016.
+Odena, Augustus, Dumoulin, Vincent, and Olah,
+Chris.
+Deconvolution and checkerboard artifacts.
+http://distill.pub/2016/deconv-checkerboard/, 2016.
+Radford, Alec, Metz, Luke, and Chintala, Soumith.
+Unsupervised representation learning with deep convolutional generative adversarial networks.
+CoRR,
+abs/1511.06434, 2015. URL http://arxiv.org/
+abs/1511.06434.
+
+Kingma, Diederik P., Rezende, Danilo Jimenez, Mohamed,
+Shakir, and Welling, Max. Semi-supervised learning
+with deep generative models. CoRR, abs/1406.5298,
+2014.
+URL http://arxiv.org/abs/1406.
+5298.
+
+Ramsundar, Bharath, Kearnes, Steven, Riley, Patrick, Webster, Dale, Konerding, David, and Pande, Vijay. Massively multitask networks for drug discovery. In Proceedings of The 33rd International Conference on Machine Learning, 2016.
+
+Kingma, Diederik P., Salimans, Tim, and Welling, Max.
+Improving variational inference with inverse autoregressive flow. CoRR, abs/1606.04934, 2016. URL http:
+//arxiv.org/abs/1606.04934.
+
+Reed, Scott, Akata, Zeynep, Mohan, Santosh, Tenka,
+Samuel, Schiele, Bernt, and Lee, Honglak. Learning what and where to draw.
+arXiv preprint
+arXiv:1610.02454, 2016a.
+
+Conditional Image Synthesis with Auxiliary Classifier GANs
+
+Reed, Scott, Akata, Zeynep, Yan, Xinchen, Logeswaran,
+Lajanugen, Schiele, Bernt, and Lee, Honglak. Generative adversarial text-to-image synthesis. In Proceedings of The 33rd International Conference on Machine
+Learning, 2016b.
+
+Toderici, George, Vincent, Damien, Johnston, Nick,
+Hwang, Sung Jin, Minnen, David, Shor, Joel, and Covell, Michele. Full resolution image compression with recurrent neural networks. CoRR, abs/1608.05148, 2016.
+URL http://arxiv.org/abs/1608.05148.
+
+Rezende, D. and Mohamed, S. Variational Inference with
+Normalizing Flows. ArXiv e-prints, May 2015.
+
+Uehara, M., Sato, I., Suzuki, M., Nakayama, K., and Matsuo, Y. Generative Adversarial Nets from a Density
+Ratio Estimation Perspective. ArXiv e-prints, October
+2016.
+
+Rezende, D., Mohamed, S., and Wierstra, D. Stochastic Backpropagation and Approximate Inference in Deep
+Generative Models. ArXiv e-prints, January 2014.
+Ronneberger, Olaf, Fischer, Philipp, and Brox, Thomas. Unet: Convolutional networks for biomedical image segmentation. CoRR, abs/1505.04597, 2015. URL http:
+//arxiv.org/abs/1505.04597.
+Russakovsky, Olga, Deng, Jia, Su, Hao, Krause, Jonathan,
+Satheesh, Sanjeev, Ma, Sean, Huang, Zhiheng, Karpathy, Andrej, Khosla, Aditya, Bernstein, Michael, Berg,
+Alexander C., and Fei-Fei, Li. ImageNet Large Scale
+Visual Recognition Challenge. International Journal of
+Computer Vision (IJCV), 115(3):211–252, 2015. doi:
+10.1007/s11263-015-0816-y.
+Salimans, T., Goodfellow, I., Zaremba, W., Cheung, V.,
+Radford, A., and Chen, X. Improved Techniques for
+Training GANs. ArXiv e-prints, June 2016.
+Simoncelli, Eero and Olshausen, Bruno. Natural image
+statistics and neural representation. Annual Review of
+Neuroscience, 24:1193–1216, 2001.
+Springenberg, J. T. Unsupervised and Semi-supervised
+Learning with Categorical Generative Adversarial Networks. ArXiv e-prints, November 2015.
+Sutskever, Ilya, Vinyals, Oriol, and V., Le Quoc. Sequence
+to sequence learning with neural networks. In Neural
+Information Processing Systems, 2014.
+Szegedy, Christian, Liu, Wei, Jia, Yangqing, Sermanet,
+Pierre, Reed, Scott E., Anguelov, Dragomir, Erhan,
+Dumitru, Vanhoucke, Vincent, and Rabinovich, Andrew.
+Going deeper with convolutions.
+CoRR,
+abs/1409.4842, 2014. URL http://arxiv.org/
+abs/1409.4842.
+Szegedy, Christian, Vanhoucke, Vincent, Ioffe, Sergey,
+Shlens, Jonathon, and Wojna, Zbigniew. Rethinking
+the inception architecture for computer vision. CoRR,
+abs/1512.00567, 2015. URL http://arxiv.org/
+abs/1512.00567.
+Theis, L., van den Oord, A., and Bethge, M. A note on the
+evaluation of generative models. ArXiv e-prints, November 2015.
+
+van den Oord, Aäron, Kalchbrenner, Nal, and
+Kavukcuoglu, Koray.
+Pixel recurrent neural networks.
+CoRR, abs/1601.06759, 2016a.
+URL
+http://arxiv.org/abs/1601.06759.
+van den Oord, Aäron, Kalchbrenner, Nal, Vinyals, Oriol,
+Espeholt, Lasse, Graves, Alex, and Kavukcuoglu, Koray. Conditional image generation with pixelcnn decoders. CoRR, abs/1606.05328, 2016b. URL http:
+//arxiv.org/abs/1606.05328.
+Wang, Zhou, Bovik, Alan C, Sheikh, Hamid R, and Simoncelli, Eero P. Image quality assessment: from error
+visibility to structural similarity. IEEE transactions on
+image processing, 13(4):600–612, 2004a.
+Wang, Zhou, Simoncelli, Eero P, and Bovik, Alan C. Multiscale structural similarity for image quality assessment.
+In Signals, Systems and Computers, 2004. Conference
+Record of the Thirty-Seventh Asilomar Conference on,
+volume 2, pp. 1398–1402. Ieee, 2004b.
 
 

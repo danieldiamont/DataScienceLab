@@ -1,1633 +1,1244 @@
-Differentially Private Submodular Maximization:
-Data Summarization in Disguise
-(Full version)
-Marko Mitrovic, Mark Bun, Andreas Krause, Amin Karbasi
-June 12, 2017
+Identify the Nash Equilibrium in Static Games with Random Payoffs
+
+Yichi Zhou 1 Jialian Li 1 Jun Zhu 1
 
 Abstract
-How can we extract representative features from a dataset containing sensitive personal information, while providing individual-level privacy guarantees? Many data summarization applications are
-captured by the general framework of submodular maximization. As a consequence, a wide range of
-efficient approximation algorithms for submodular maximization have been developed. However, when
-such applications involve sensitive data about individuals, their privacy concerns are not automatically
-addressed by these algorithms.
-To remedy this problem, we propose a general and systematic study of differentially private submodular maximization. We present privacy-preserving algorithms for both monotone and non-monotone
-submodular maximization under cardinality, matroid, and p-extendible system constraints, with guarantees that are competitive with optimal solutions. Along the way, we analyze a new algorithm for
-non-monotone submodular maximization under a cardinality constraint, which is the first (even nonprivately) to achieve a constant approximation ratio with a linear number of function evaluations. We
-additionally provide two concrete experiments to validate the efficacy of these algorithms. In the first
-experiment, we privately solve the facility location problem using a dataset of Uber pickup locations
-in Manhattan. In the second experiment, we perform private submodular maximization of a mutual
-information measure to select features relevant to classifying patients by diabetes status.
+We study the problem on how to learn the pure
+Nash Equilibrium of a two-player zero-sum static
+game with random payoffs under unknown distributions via efficient payoff queries. We introduce a multi-armed bandit model to this problem
+due to its ability to find the best arm efficiently
+among random arms and propose two algorithms
+for this problem—LUCB-G based on the confidence bounds and a racing algorithm based on
+successive action elimination. We provide an
+analysis on the sample complexity lower bound
+when the Nash Equilibrium exists.
+
+1. Introduction
+We consider the static zero-sum game where two players
+are involved with finite pure strategies. From game theory, if both players use only pure strategies and the payoffs
+are distinct from each other, at most one pure Nash Equilibrium (NE) exists (Osborne & Rubinstein, 1994). We
+concentrate on the setting where all payoffs are random
+variables under some unknown distributions. Samples (or
+queries) can be obtained by submitting pure strategies of
+the two players and receiving the associated payoffs. Our
+target is to answer the questions: (1) whether there is a pure
+NE; and 2) how to identify it if exists using as few queries
+as possible.
+Our motivation for this problem comes from the need of
+identifying NE in many practical competitive situations.
+Since NE is a fundamental concept in game theory and
+many other fields, the computational complexity needed for
+NE is of much interest. However, in practice we are often
+given access to the data generated from some practical phenomena, rather than a clear rule for the payoffs of the game.
+Hence, the empirical game-theoretic analysis (Wellman,
+2006; Jordan et al., 2008) has received a lot of attention
+
+to estimate the practical games through simulation. In the
+empirical modeling, pure-strategy profiles of players are
+submitted to the game and we receive the associated payoffs. Fearnley et al. (2015) consider the process managed
+in an online manner by algorithms and analyze the complexity of these payoff-query algorithms. The main focus
+is on whether the query methods can figure out mixed Nash
+Equilibrium with only a fraction of profiles. Extensions
+have been made to obtain query complexity on approximate
+Nash Equilibrium (Babichenko, 2016), correlated equilibrium (Hart & Nisan, 2016), and well-supported approximate correlated equilibrium (Goldberg & Roth, 2016).
+The above work is essentially a revealed-payoff search
+model (Jordan et al., 2008), where payoffs are deterministic
+and every profile only needs to be queried at most once. We
+concentrate on the noisy-payoff model (Jordan et al., 2008),
+where the received payoff of a query is a sample of an underlying distribution. This random payoff setting is more
+realistic in practice, where randomness naturally arises because of incomplete information, noise, or other stochastic
+factors in the world. A simple but well-known example is
+the coin flipping game, where two players throw a coin and
+guess its landing upper side. Since the physical process of
+coin landing can be determined by many noisy factors, the
+payoffs to the two players, which depend on the landing
+results, are random. This notable discrepancy leads to different algorithms and complexity bounds for the two models, since for noisy-payoff models, more queries are needed
+for any profile to get an estimated payoff near its expectation value with high probability and the additional computational cost can take a dominating role in complexity. Previous work has explored different methods for noisy payoff models, such as interleaving the samples (Walsh et al.,
+2003) and using regression for payoffs (Vorobeychik et al.,
+2007). This paper turns to bandit models, a relatively natural direction from the view of online learning, since query
+methods themselves hold a sequential property. Put another
+way, we select a strategy to submit based on previous observations at each round of query methods.
 
 1
 
-Introduction
+Dept. of Comp. Sci. & Tech., TNList Lab, State Key Lab
+for Intell. Tech. & Systems, CBICR Center, Tsinghua University.
+Correspondence to: Jun Zhu <dcszj@tsinghua.edu.cn>.
+Proceedings of the 34 th International Conference on Machine
+Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
+by the author(s).
 
-A set function f : 2V → R is said to be submodular if for all sets S ⊆ T ⊆ V and every element v ∈ V we
-have f (S ∪ {v}) − f (S) ≥ f (T ∪ {v}) − f (T ). That is, the marginal contribution of any element v to the
-value of the function f (S) diminishes as the input set S increases. The theory of submodular maximization
-unifies and generalizes diverse problems in combinatorial optimization, including the Max-Cover, Max-Cut,
-and Facility Location problems. In turn, this theory has recently found numerous applications to problems
-in machine learning, data science, and artificial intelligence. A few such applications include exemplarbased clustering (Krause & Gomes, 2010), feature selection for classification (Krause & Guestrin, 2005),
-document and corpus summarization (Lin & Bilmes, 2011; Kirchhoff & Bilmes, 2014; Sipos et al., 2012),
-crowd teaching (Singla et al., 2014), and influence maximization in social networks (Kempe et al., 2003).
-Some of the most compelling use cases for these applications concern sensitive data about individuals
-(Mirzasoleiman et al., 2016a,b). As a running example, let us consider the specific problem of determining
-which of a collection of features (e.g. age, height, weight, etc.) are most relevant to a binary classification
-task (e.g. predicting whether an individual is likely to have diabetes). In this problem, a sensitive training
+This task can be viewed as a variant of best arm identification (BAI) in the literature of multi-armed bandits
+(Jamieson & Nowak, 2014), where different pure strategy
+profiles are regarded as arms. The classical BAI problem
+is to identify which arm is the one with the highest mean.
+
+Identify the Nash Equilibrium in Static Games with Random Payoffs
+
+There are two basic settings for BAI problem—fixed budget and fixed confidence (Kaufmann et al., 2015). In this
+paper, we focus on the fixed confidence setting, where the
+purpose of an algorithm is to identify the best arm with a
+fixed probability by as few pulls (queries) as possible.
+Contributions: We study both the sample complexity
+lower bound and algorithms in the fixed confidence setting
+for two-player zero-sum static games with random payoffs.
+In Section 3, we discuss the sample complexity lower
+bound for the case NE exists. Previous proofs on the lower
+bound for BAI all rely on changes of distributions (Audibert & Bubeck, 2010; Kaufmann et al., 2015; Mannor &
+Tsitsiklis, 2004)—changes on a single arm can change the
+best arm in the bandit model. For our problem, we prove
+the lower bound for the arms in the same row or same column with the NE by similar techniques. However, this approach does not work for those arms that are in neither the
+same row nor column with the NE, since changing the distribution of such an arm does not change the NE (details
+are in Section 3). To get the lower bound on these arms,
+we rephrase the arm selection as a hypothesis testing problem and use the minimax techniques for hypothesis testing (Tsybakov, 2009) to get the bound.
+There are two types of algorithms for the BAI problem in the fixed confidence setting (Jamieson & Nowak,
+2014)—based on either confidence bound (Kalyanakrishnan et al., 2012) or successive eliminations on suboptimal
+arms (Maron & Moore, 1997). In Section 4, we propose
+two corresponding algorithms to identify NE for our problem in the fixed confidence setting. The first algorithm has
+a provable bound on sample complexity, and we show that
+the second one will stop in a finite number of time steps
+with probability at least 1 − δ.
+Related work: Garivier et al. (2016) also study the twoplayer zero-sum game with random payoffs. They consider
+the case that each player selects her strategy one-by-one,
+while we focus on the case that both players select their
+strategies simultaneously. Our setting is suitable for the
+case that each player chooses actions independently. Many
+games are static, such as the tai sai game where players
+independently guess the range of the outputs of three dices.
+Much work has been done on Nash Equilibrium.
+Daskalakis et al. (2009) shows that it is computationally
+hard to recognize exact Nash Equilibrium, even for the
+simplest two-person game (Chen et al., 2009). As empirical game-theoretical analysis (Wellman, 2006) is proposed, Fearnley et al. (2015) studies the payoff-query algorithms and considers the query complexity as a criterion for
+computational complexity. Following work (Babichenko,
+2016; Goldberg & Roth, 2016) has extended this criterion
+to some other approximate equilibrium. Query bounds for
+
+NE have also been given on specific games such as twostrategy anonymous games (Goldberg & Turchetta, 2015)
+and bimatrix games (Fearnley & Savani, 2016).
+
+2. Preliminaries
+We start by presenting the basic settings, notations and assumptions that will be used in the sequel.
+2.1. Basic settings
+Two-player zero-sum static game with random payoffs:
+A static game is a model in which all players choose their
+strategies once and simultaneously. A two-player zero-sum
+game involves two players 1 and 2, and each player chooses
+her own strategy si from a strategy set Si , i ∈ {1, 2}. After decisions are made, player 1 gets payoff rews1 ,s2 and
+player 2 gets −rews1 ,s2 . Each player tries to maximize her
+payoff. The game can be represented by a m × n-matrix
+where m = |S1 |, n = |S2 |. If rewi,j is a deterministic
+value for any i, j, it is direct to identify the NE (i∗ , j ∗ )
+which has the minimum value in row i∗ and the maximum
+value in column j ∗ . We consider the more practical games
+with random payoffs, whose distributions are unknown.
+This makes the identification of NE difficult and hence we
+employ query methods to learn the NE empirically. In each
+query, the algorithm generates a pure strategy (s1 , s2 ), and
+the environment returns the associated payoff. Our target
+is to determine whether the Nash Equilibrium (NE) exists1
+and what it is if it does exist with as few queries as possible.
+Multi-armed bandits: In a bandit model, an agent is facing a set of actions (or arms), and needs to select one arm
+to pull every time. In our case, an arm is specified by s ∈
+[m] × [n], where [m] denotes the set {1, · · · , m}. Successive pulls of an arm (i, j) yield a sequence of observations
+(or rewards) Y1i,j , Y2i,j , · · · . A policy I = {It : t ∈ N+ }
+denotes a sequence of random variables, where the variable
+It ∈ [m] × [n] indicates which arm to pull at time step t.
+The classical best arm identification (BAI) problem is to
+identify which arm is the one with the highest mean. There
+are two basic settings for the BAI problem—fixed budget
+and fixed confidence (Kaufmann et al., 2015). In this paper,
+we focus on the identification of the NE of a static game or
+detect its absence in the fixed confidence setting. That is,
+we aim to identify the correct NE with probability at least
+1 − δ with efficient sampling, where δ ∈ (0, 1) is the confidence parameter. Algorithms satisfying this requirement
+are known as δ-PAC algorithms (Kaufmann et al., 2015).
+Following Kaufmann et al. (2015), a practical BAI algorithm in the fixed confidence setting typically consists of:
+• Policy: given a sequence of past observations, a
+policy determines which arms to pull.
+• Stopping rule: a stopping rule can be described as
 1
 
-set takes the form D = {(xi , yi )}ni=1 where each individual i’s data consists of features xi,1 , . . . , xi,m
-together with a class label yi . The goal is to identify a small subset S ⊆ [m] of features which can then be
-used to build a good classifier for y. Many techniques exist for feature selection, including one based on
-maximizing a submodular function which captures the mutual information between a subset of features and
-the class label of interest (Krause & Guestrin, 2005). However, for both legal (e.g. compliance with HIPAA
-regulations) and ethical reasons, it is important that the selection of relevant features does not compromise
-the privacy of any individual who has contributed to the training data set. Unfortunately, the theory of
-submodular maximization does not in itself accommodate such privacy concerns.
-To this end, we propose a systematic study of differentially private submodular maximization to enable
-these applications based on submodular maximization, while provably guaranteeing individual-level privacy.
-The notion of differential privacy (Dwork et al., 2006) offers a strong protection of individual-level privacy.
-Nevertheless, differential privacy has been shown to permit useful data analysis and machine learning tasks.
-In a nutshell, the definition formalizes a guarantee that no individual’s data should have too significant an
-effect on the outcome of a computation. We provide the formal definition in Section 2. Such a privacy
-guarantee is obtained through the introduction of random noise, so private submodular maximization is
-conceptually related to the problem of submodular maximization in the presence of noise (Cheraghchi,
-2012; Hassidim & Singer, 2016).
-In this work, we study the following problem under various conditions on the submodular objective
-function f (monotone vs. non-monotone), and various choices of the constraint C (cardinality, matroid, or
-p-extendible system).
-Problem 1.1. Given a sensitive dataset D associated to a submodular function fD : 2V → R: Find a subset
-S ∈ C ⊂ 2V that approximately maximizes fD (S) in a manner that guarantees differential privacy with
-respect to the input dataset D.
-An important special case of this problem was studied in prior work of Gupta et al. (2010). They considered the “combinatorial public projects” problem (Papadimitriou et al.,
-P2008), where given a dataset
-D = (x1 , . . . , xn ), the function fD takes the particular form fD (S) = n1 ni=1 fxi (S) for monotone submodular functions fxi : 2V → [0, 1], and is to be maximized subject to a cardinality constraint |S| ≤ k. We
-call functions of this form decomposable. They presented a simple greedy algorithm, which will be central
-to our work, together with a tailored analysis which achieves strong accuracy guarantees in this special case.
-However, there are many cases of Problem 1.1 which do not fall into the combinatorial public projects
-framework. For some problems, including feature selection via mutual information, the submodular function
-fD of interest depends on the dataset D in ways much more complicated than averaging functions associated
-to each individual. The focus of our work is on understanding Problem 1.1 in circumstances which capture
-a broader class of useful applications and constraints in machine learning. We summarize our specific
-contributions in Section 1.2.
+We focus on the NE of pure strategy. So NE may not exist.
 
-1.1
+Identify the Nash Equilibrium in Static Games with Random Payoffs
 
-The greedy paradigm
+a series of observation sets Ft , t ∈ N+ . When an
+element o ∈ Ft is observed, the policy stops sampling.
+• Recommendation rule: a recommendation rule is
+usually to recommend the best arm.
+As we shall see, in our problem the best arm may not exist,
+when the sampling process stops, the recommendation rule
+determines whether the NE exists or not, and if exists, it
+determines which is the NE.
+2.2. Basic assumptions and notations
+Let Pi,j ∈ P be the underlying distribution of arm (i, j)
+and P is a set of probability measures. For an arm s, we
+use µs to denote the expectation of Ps . And let µ̄s (t) denote the empirical mean of s at time step t, we omit t for
+simplicity when there is no ambiguity . Here, we consider
+pulling an arm once as a time step, that is, time step t means
+that we have pulled arms for t times. We use M̄t to denote
+the empirical matrix with entry (i, j) representing the empirical mean of Pi,j at time step t. For s = (s1 , s2 ), we
+define row(s) = {s0 = (s01 , s02 ) : s01 = s1 }, col(s) =
+{s0 = (s01 , s02 ) : s02 = s2 }, nei(s) = row(s) ∪ col(s), and
+s[1] = s1 , s[2] = s2 .
+Let N E(M) denote the NE of matrix M. Formally,
+N E(M) = s if there is an arm s such that µs =
+mins0 ∈row(s) µs0 and µs = maxs0 ∈col(s) µs0 ; otherwise if
+there is no such arm, we denote N E(M) = none to show
+that no Nash Equilibrium exists. Specifically, we use M
+to denote the matrix whose entry (i, j) is the expectation
+of distribution Pi,j . Our target is to identify N E(M). For
+convenience, let s∗ = N E(M). Let Ri , Cj be the sets of
+the arms corresponding to the i-th row and the j-th column
+of M respectively. Our lower bound mainly focuses on the
+case that the NE exists (i.e., N E(M) 6= none) and our algorithms are δ-PAC. We assume that the expectations of the
+arms are mutually different.
+In the proof of the lower bound, it is natural to make P
+abundant enough to include various continuous distributions while ruling out some extreme situations where distributions are not mutually absolutely continuous. So we
+assume that P consists of parametric distributions continuously parameterized by their means. This assumption has
+been widely used in studying multi-armed bandits (Lai &
+Robbins, 1985; Kaufmann et al., 2015).
+Assumption 1. For all p, q ∈ P such that p 6= q, for all
+α > 0:
+• ∃q1 ∈ P, KL(p, q) < KL(p, q1 ) < KL(p, q) + α,
+Eq1 > Eq > Ep.
+• ∃q2 ∈ P, KL(p, q) < KL(p, q2 ) < KL(p, q) + α,
+Eq2 < Eq < Ep.
+Here KL(q, p) is the KL-divergence. Many distributions
+are included in P, such as the broad class of one-parameter
 
-Even without concern for privacy, the problem of submodular maximization poses computational challenges.
-In particular, exact submodular maximization subject to a cardinality constraint is NP-hard. One of the
-principal approaches to designing efficient approximation algorithms is to use a greedy strategy (Nemhauser
-et al., 1978). Consider the problem of maximizing a set function f (S) subject to the cardinality constraint
-|S| ≤ k. In each of rounds i = 1, . . . , k, the basic greedy algorithm constructs Si from Si−1 by adding the
-element vi ∈ (V \ Si−1 ) which maximizes the marginal gain f (Si−1 ∪ {vi }) − f (Si−1 ). Nemhauser et al.
+exponential family distributions.
 
-2
-
-Comb. Pub. Proj.
-
-1−
-
-1
-e
-
-
-Cardinality
-OPT −O k logn |V | (Gupta et al., 2010)
- 3/2
-
-
-|V |
-1 − 1e OPT −O k log
-
- 3/2n
-
-k
-log |V |
-1
-1
-1
-−
-OPT
-−O
-e
-e
-n
-
-
-
-Monotone
-Non-monotone
-
-Matroid
-
-
-OPT −O k logn |V |
- 3/2
-
-k
-log |V |
-1
-OPT
-−O
-2
-n
-
-p-Extendible
-
-
-OPT −O k logn |V |
- 3/2
-
-k
-log |V |
-1
-OPT
-−O
-p+1
-n
-
-–
-
-–
-
-1
-2
-
-1
-p+1
-
-Table 1: Guarantees of expected solution quality for privately maximizing a sensitivity-(1/n) submodular
-function fD . The parameter k represents either a cardinality constraint, or the size of the set returned (for
-matroid or p-extendible system constraints). Full expressions with explicit dependencies on differential
-privacy parameters ε, δ appear in the body of the paper.
-(1978) famously showed that this algorithm yields a (1 − 1/e)-approximation to the optimal value of f (S)
-whenever f is a monotone submodular function.
-In the combinatorial public projects setting, Gupta et al. (2010) showed how to make the greedy algorithm compatible with differential privacy by randomizing the procedure for selecting each vi . This selection
-procedure is specified by the differentially private exponential mechanism of McSherry & Talwar (2007),
-which (probabilistically) guarantees that the vi selected in each round is almost as good as the true marginal
-gain maximizer. Remarkably, Gupta et al. (2010) show that the cumulative privacy guarantee of the resulting randomized greedy algorithm is not much worse than that of a single run of the exponential mechanism.
-This analysis is highly tailored to the structure of the combinatorial public projects problem. However,
-replacing this tailored analysis with the more generic “advanced composition theorem” for differential privacy (Dwork et al., 2010), one still obtains useful results for the more general class of “low-sensitivity”
-submodular functions.
-
-1.2
-
-Our contributions
-
-Table 1 summarizes the approximation guarantees we obtain for Problem 1.1 under increasingly more general classes of submodular functions fD (read top to bottom), and increasingly more general types of constraints (read left to right). In each entry, OPT denotes the value of the optimal non-private solution. Below
-we draw attention to a few particular contributions, including some that are not expressed in Table 1.
-Non-monotone objective functions. Submodular maximization for non-monotone functions is significantly more challenging than it is for monotone objectives. In particular, the basic greedy algorithm of
-Nemahauser et al. fails, and cannot guarantee any constant-factor approximation. Several works (Feldman
-et al., 2017; Mirzasoleiman et al., 2016a; Buchbinder et al., 2014; Feldman et al., 2011) have identified variations of the greedy algorithm that do yield constant-factor approximations for non-monotone objectives.
-However, it is not clear how to modify any of these algorithms to accommodate differential privacy.
-Our starting point is instead the “stochastic greedy” algorithm of Mirzasoleiman et al. (2015), which
-was originally designed to perform monotone submodular maximization in linear time. Drawing ideas
-from Buchbinder et al. (2014), we give a new analysis of the stochastic greedy algorithm to show that it also
-gives a 1e (1 − 1/e)-approximation for non-monotone submodular functions. To our knowledge, this is the
-first algorithm making exactly |V | function evaluations which achieves a constant-factor approximation for
-either monotone or non-monotone objectives. Moreover, it is immediately clear how to use the exponential
-mechanism to make this algorithm differentially private.
-This phenomenon is analogous to how stochastic variants of gradient descent are more naturally suited to
-
-3
-
-providing differential privacy than their deterministic counterparts (Song et al., 2013; Bassily et al., 2014).
-That is, our results illustrate how techniques for making algorithms fast are also helpful in making them
-privacy-preserving.
-General constraints. While a cardinality constraint is perhaps the most natural to place on a submodular
-maximization problem, some machine learning problems, e.g. personalized data summarization (Mirzasoleiman et al., 2016a), require the use of more general types of constraints. For instance, one may wish
-to maximize a submodular function f (S) subject to S ∈ I for an arbitrary matroid I, or subject to S being contained in an intersection of p matroids (more generally, a p-extendible system). For these types of
-constraints, the greedy algorithm still yields a constant factor approximation for monotone objective functions (Fisher et al., 1978; Jenkyns, 1976; Călinescu et al., 2011). We show in this work that the analysis
-provided by Călinescu et al. (2011) for matroids and p-extendible families can be adapted to handle additional error introduced for differential privacy.
-General selection procedures. For worst-case datasets, the exponential mechanism is optimal within each
-round of private maximization. However, it may be sub-optimal for datasets enjoying additional structural
-properties. Fortunately, the greedy framework we use is flexible with regard to the choice of the selection
-procedure. For instance, one can replace the exponential mechanism in a black-box manner with the “large
-margin mechanism” of Chaudhuri et al. (2014) to obtain error bounds that replace the explicit dependence
-on log |V | in Table 1 with a term that may be significantly smaller for real datasets. We give a slightly
-simplified analysis of the large margin mechanism, and present it in a manner suitable for greedy algorithms
-which access the same data set multiple times. (These guarantees are more complicated, but spelled out in
-Section 5.) For submodular functions exhibiting additional structure, one may also be able to perform each
-maximization step with the “choosing mechanism” of Beimel et al. (2016) and Bun et al. (2015).
-
-2
-
-Preliminaries
-
-Let V be finite set which we will refer to as the ground set and let X be a finite set which we will refer to as
-the data universe. A dataset is an n-tuple D = (x1 , . . . , xn ) ∈ X n . Suppose each dataset D is associated
-to a set function fD : 2V → R. The manner in which fD depends on D will be application-specific, but it is
-assumed that the association between D and fD is public information.
-Definition 2.1. A set function fD : 2V → R is submodular if for all sets S ⊆ T ⊆ V and every element
-v ∈ V , we have fD (S ∪ {v}) − fD (S) ≥ fD (T ∪ {v}) − fD (T ).
-Moreover, If fD (S) ≤ fD (T )P
-whenever S ⊆ T , we say fD is monotone. If for every dataset D =
-(x1 , . . . , xn ), the function fD = n1 ni=1 fxi for monotone submodular functions fxi : 2V → [0, λ], we say
-fD is λ-decomposable. The problem of maximizing a decomposable submodular function was considered
-as the “combinatorial public projects problem” by Papadimitriou et al. (2008).
-We are interested in the problem of approximately maximizing a submodular function subject to differential privacy. The definition of differential privacy relies on the notion of neighboring datasets, which are
-simply tuples D, D0 ∈ X n that differ in at most one entry. If D, D0 are neighboring, we write D ∼ D0 .
-Definition 2.2. A randomized algorithm M : X n → R satisfies (ε, δ)-differential privacy if for all measurable sets T ⊆ R and all neighboring datasets D ∼ D0 ,
-Pr[M (D) ∈ T ] ≤ eε Pr[M (D0 ) ∈ T ] + δ.
-4
-
-Differentially private algorithms must be calibrated to the sensitivity of the function of interest with
-respect to small changes in the input dataset, defined formally as follows.
-Definition 2.3. The sensitivity of a set function fD : 2V → R (depending on a dataset D) with respect to a
-constraint C ⊆ 2V is defined as
-max0 max |fD (S) − fD0 (S)|.
-D∼D S∈C
-
-Composition of Differential Privacy. The analyses of our algorithms rely crucially on composition theorems for differential privacy. For a sequence of privacy parameters {(εi , δi )}ki=1 , we informally refer to the
-k-fold adaptive composition of (εi , δi )-differentially private algorithms as the output of a mechanism M ∗
-that behaves as follows on an input D: In each of rounds i = 1, . . . , k, the algorithm M ∗ selects an (εi , δi )differentially private algorithm Mi possibly depending on the previous outcomes M1 (D), . . . , Mi (D) (but
-not directly on the sensitive dataset D itself), and releases Mi (D). For a formal treatment of adaptive
-composition, see (Dwork et al., 2010; Dwork & Roth, 2014).
-Theorem 2.4. (Dwork & Lei, 2009; Dwork et al., 2010; Bun & Steinke, 2016) The k-fold adaptive composition of (ε0 , δ0 )-differentially private algorithms satisfies (ε, δ)-differential privacy where
-1. ε = kε0 and δ = kδ0 .
-(Basic Composition).
-p
-2. ε = 21 kε20 + 2 log(1/δ 0 )ε0 and δ = δ 0 + kδ, for any δ 0 > 0.
-
-(Advanced Composition)
-
-Exponential Mechanism. The exponential mechanism (McSherry & Talwar, 2007) is a general primitive
-for solving discrete optimization problems. Let q : V × X n → R be a “quality” function measuring how
-good a solution v ∈ V is with respect to a dataset D ∈ X n . We say a quality function q has sensitivity λ if
-for all v ∈ V and all neighboring datasets D ∼ D0 , we have |q(v, D) − q(v, D0 )| ≤ λ.
-Proposition 2.5. Let ε > 0 and let q : V ×X n be a quality function with sensitivity λ. Define the exponential
-mechanism as the algorithm which selects every v ∈ V with probability proportional to exp(εq(v, D)/2λ).
-• The exponential mechanism provides (ε, 0)-differential privacy.
-• For every D ∈ X n ,
-2λ · ln |V |
-,
-ε
-where v̂ is the output of the exponential mechanism on dataset D.
-E[q(v̂, D)] ≥ max q(v, D) −
-v∈V
-
-The privacy guarantee and a “with high probability” utility guarantee of the exponential mechanism are
-due to McSherry & Talwar (2007). A simple proof of the utility guarantee in expectation appears in (Bassily
-et al., 2016).
-
-3
-
-Monotone Submodular Maximization
-
-In this section, we present a variant of the basic greedy algorithm which will enable maximization of monotone submodular functions. This algorithm simply replaces each greedy selection step with a privacypreserving selection algorithm denoted O. The selection function O takes as input a quality function
-q : U × X n → R and a dataset D, as well as privacy parameters ε0 , δ0 , and outputs an element u ∈ U .
-
-5
-
-We begin in the simplest case of monotone submodular maximization with a cardinality constraint (Algorithm 1). The algorithm for more general constraints appears in Section 3.1.
-Algorithm 1 was already studied by Gupta et al. (2010) in the special case where fD is decomposable,
-and O is the exponential mechanism. We generalize their result to the much broader class of low-sensitivity
-monotone submodular functions.
-Algorithm 1 Diff. Private Greedy (Cardinality) G O
-Input: Submodular function fD : 2V → R, dataset D, cardinality constraint k, privacy parameters ε0 , δ0
-Output: Size k subset of V
-1. Initialize S0 = ∅
-2. For i = 1, . . . , k:
-• Define qi : (V \ Si−1 ) × X n → R via qi (v, D̃) = fD̃ (Si−1 ∪ {v}) − fD̃ (Si−1 )
-• Compute vi ←R O(qi , D; ε0 , δ0 )
-• Update Si ← (Si−1 ∪ {vi })
-3. Return Sk
-Theorem 3.1. (Gupta et al., 2010) Suppose fD : 2V → R is λ-decomposable (cf. Definition 2.1). Let δ > 0
-and let ε0 ≥ 0 be such that ε = 2 · ε0 · (e − 1) ln(3e/δ) ≤ 1. Then instantiating Algorithm 1 with O = EM
-and parameter ε0 > 0 provides (ε, δ)-differential privacy.
-Moreover, for every D ∈ X n ,
-
-
-1
-2λk ln |V |
-E [fD (Sk )] ≥ 1 −
-OPT −
-e
-ε0
-where Sk ←R G EM (D).
-Unfortunately, the privacy analysis of Theorem 3.1 makes essential use of the decomposability of fD ,
-and does not directly generalize to arbitrary submodular functions of low-sensitivity. Replacing the privacy
-analysis of Gupta et al. (2010) with the Composition Theorem 2.4 instead gives
-Theorem 3.2. Suppose fD : 2V → R is monotone and has sensitivity λ. Then instantiating Algorithm 1
-with O = EM and parameter ε0 > 0 provides (ε = kε0 , δ =p0)-differential privacy. It also provides
-(ε, δ)-differential privacy for every δ > 0 with ε = kε20 /2 + ε0 · 2k ln(1/δ).
-Moreover, for every D ∈ X n ,
-
-
-1
-2λk ln |V |
-OPT −
-E [fD (Sk )] ≥ 1 −
-e
-ε0
-EM
-where Sk ←R G (D).
-Proof. The privacy guarantee of Theorem 3.2 follows immediately from the (ε, 0)-differential privacy of
-the exponential mechanism, together with Theorem 2.4.
-To simplify notation in the utility proofs in this paper, we suppress the dependence of the submodular
-function of interest on D, i.e. we write f = fD . We also introduce the notation fS (T ) = f (S ∪ T ) − f (S)
-to denote the marginal gain by adding T to the set S.
-
-6
-
-To argue that the algorithm achieves good utility, recall that in each step i, the exponential mechanism
-guarantees a solution vi with
-E[fSi−1 (vi )] ≥ max fSi−1 (v) − α
-(1)
-v∈V \Si−1
-
-where α = 2λ · ln |V |/ε.
-Let S ∗ denote any set of size k with f (S ∗ ) = OPT. Below, let us condition on having obtained some
-set Si−1 of elements after the first i − 1 iterations of our algorithm. Then
-E[fSi (vi )] =
-≥
-≥
-≥
-
-max
-
-v∈V \Si−1
-
-1
-k
-
-fSi−1 (v) − α
-!
-
-(by Condition (1))
-
+3. Lower bound
+Let Nδ (s) denote the number of pulls on an arm s by a δPAC algorithm. For arm s ∈ nei(s∗ ), we provide a lower
+bound of Nδ (s) in Lemma 1, which is obtained by the
+classical technique of changes of distributions (Kaufmann
+et al., 2015; Lai & Robbins, 1985; Audibert & Bubeck,
+2010) and Theorem 1 in Kaufmann et al. (2015).
+Theorem 1. (Kaufmann et al., 2015). Let v and v 0 be two
+bandit models with K arms, such that for all a ∈ [K],
+the distributions Pa and P0a are mutually absolutely continuous. For any almost-surely finite stopping time σ with
+respect to Ft , we have
 X
+E[Nδ (sa )]KL(Pa , P0a ) ≥ sup d(Pv (ε), Pv0 (E)),
+E∈(Ft )
 
-fSi−1 (v) − α
-v∈S ∗
-f (S ∗ ∪ Si−1 ) − f (Si−1 )
-k
+a≤K
 
-−α
-
-(by submodularity of f )
-
-OPT −f (Si−1 )
-−α
-k
-
-(by monotonicity of f )
-
-We now unfix from conditioning on having obtained a specific Si−1 by taking the expectation over all
-choices of such a set. This gives
-E[fSi−1 (vi )] ≥
-
-OPT −E[f (Si−1 )]
-−α
-k
-
-Rearranging yields
+where d(x, y) = x log(x/y) + (1 − x) log[(1 − x)/(1 − y)].
+Lemma 1. Let s0 = arg mins∈nei(s∗ )\s∗ KL(Ps∗ , Ps ),
+then the number of pulls on nei(s∗ ) of any δ-PAC algorithm has a lower bound as follows:
 
-
-1
-OPT −E[f (Si )] ≤ 1 −
-(OPT −E[f (Si−1 )]) + α
-k
-Recursively applying this bound yields
-
-OPT −E[f (Si )] ≤
-
-1
-1−
-k
-
-i
-
-1
-k
-
-i
-
-
-≤
-
-1−
-
-
-i−1 
 X
-1 j
-(OPT −E[f (S0 )]) +
-1−
-·α
-k
-j=0
-
-OPT +α.
-
-Hence, we conclude
-"
-
-
- #
-1 k
-OPT −α
-E[f (Sk )] ≥ 1 − 1 −
-k
-
+1
+E[Nδ (s)] ≥
+KL(P
+s∗ , Ps0 )
+s∈nei(s∗ )
 
-1
-≥ 1−
-OPT −α.
-e
-
-7
-
-3.1
-
-Matroid and p-Extendible System Constraints
-
-We now show how to extend Algorithm 1 to privately maximize monotone submodular functions subject to
-more general constraints. To start, we review the definition of a p-extendible system. Consider a ground set
-V and a non-empty downward-closed family of subsets I ⊆ 2V (i.e. if T ∈ I, then S ∈ I for every S ⊆ T ).
-Such an I is called a family of independent sets. The pair (V, I) is said to be a p-extendible system (Mestre,
-2006) if for all S ⊂ T ∈ I, and v ∈ V such that S ∪ {v} ∈ I, there exists a set Z ⊆ (T \ S) such that
-|Z| ≤ p and (T \ Z) ∪ {v} ∈ I. Let r(I) denote the size of the largest independent set in I.
-The definition of a matroid coincides with that of a 1-extendible system (with rank r(I)). For p ≥
-2, the notion of a p-extendible system strictly generalizes that of an intersection of p matroids. A slight
-modification of Algorithm 1 gives a unified algorithm for privately maximizing a monotone submodular
-function subject to matroid and p-extendible system constraints, presented as Algorithm 2.
-We obtain analogues of the results presented for cardinality constraints.
-Theorem 3.3. Suppose fD : 2V → R is λ-decomposable (cf. Definition 2.1). Let δ > 0 and let ε0 ≥ 0 be
-such that ε = 2 · ε0 · (e − 1) ln(3e/δ) ≤ 1. Then instantiating Algorithm 2 with O = EM and parameter
-ε0 > 0 provides (ε, δ)-differential privacy. Moreover, for every D ∈ X n ,
-
-
-1
-p
-2λr(I) ln |V |
-E [fD (S)] ≥
-· OPT −
-p+1
-p+1
-ε0
-where S ←R G EM (D).
-Algorithm 2 Differentially Private Greedy (p-system) G O
-Input: Submodular function fD : 2V → R, dataset D, p-extendible family (V, I), privacy parameters ε0 , δ0
-Output: Maximal independent subset of V
-1. Initialize S = ∅
-2. While S ∈ I is not maximal:
-• Define q : (V \ S) × X n → R via q(v, D̃) = fD̃ (S ∪ {v}) − fD̃ (S)
-• Compute vi ←R O(q, D; ε0 , δ0 )
-• Update S ← (S ∪ {vi })
-3. Return S
-Proof. The privacy guarantee of Theorem 3.3 follows from Gupta et al. (2010).
-In our proof of utility, we again suppress the dataset D, and use the notation fS (T ) to denote f (S ∪
-T ) − f (S). Our proof applies to any greedy algorithm that, in each round i, selects an item vi with
-
-
-E fSi−1 (vi ) ≥
-max
-fSi−1 (vi ) − α
-(2)
-v:Si−1 ∪{v}∈I
-
-for some error term α > 0.
-We follow the proof outlined by Călinescu et al. (2011). Fix an optimal solution O ∈ I, i.e. f (O) =
-OPT. Let S1 , . . . , Sr be any sequence representing the output of the algorithm, where r = r(I). (If
-
-8
-
-the algorithm terminates in an earlier round k < r, then extend its output by setting Si = Sk for each
-i = k + 1, . . . , r.) To such a sequence, we define a partition O1 , . . . , Or of O via the following algorithm.
-Algorithm 3 Partition construction algorithm
-Input: Optimal solution O, sets S1 , . . . , Sr
-Output: A partition O1 , O2 , . . . , Or of O
-1. Initialize T0 = O
-2. For i = 1, 2, . . . , r:
-(a) If vi ∈ Ti−1 , set Oi = {vi };
-Else, let Oi ⊆ Ti−1 be the smallest subset s.t. ((Si−1 ∪ Ti−1 ) \ Oi ) ∪ {vi } ∈ I
-(b) Set Ti = Ti−1 \Oi
-3. Return O1 , O2 , . . . , Or
-
-To see that O1 , . . . , Or is indeed a partition, observe that Si ∪ Ti ∈ I and Si ∩ Ti = ∅ for every i.
-Therefore, it must be the case that Tr = ∅, since Sr ∪ Tr ∈ I and Sr is maximal when the algorithm
-terminates. Hence, the disjoint sets O1 , . . . , Or do in fact exhaust O.
-
-
-
-
-Lemma 3.4. For every i = 1, . . . , r, we have E fSi−1 (vi ) ≥ p1 E fSi−1 (Oi ) − α.
-Before proving Lemma 3.4, we show how to use it to complete the proof of Threorem 3.3. Recursively
-applying the lemma shows that for every i,
-i
-
-1X 
-E [f (Si )] ≥
-E fSj−1 (Oj ) − iα.
-p
-j=1
-
-Hence, we obtain
-E [f (Sr )] ≥
-≥
-
-r
-
-1X 
-E fSi−1 (Oi ) − rα
-p
-
-1
-p
-
-i=1
-r
 X
-
-E [fSr (Oi )] − rα
-
-(by submodularity)
-
-i=1
-
-1
-≥ E [fSr (O)] − rα
-p
-1
-≥ (f (O) − E [f (Sr )]) − rα.
-p
-Rearranging gives the desired result E [f (Sr )] ≥
-
-1
-p+1 f (O)
-
-(by linearity of expectation and submodularity)
-(by monotonicity)
-−
-
-p
-p+1 rα.
-
-Proof of Lemma 3.4. The partition construction algorithm that every set Oi satisfies |Oi | ≤ p; this follows
-from the definition of p-extendibility and the fact that Si−1 ∪ {vi } ∈ I. Moreover, any element in Oi is a
-candidate for inclusion in Si , since Si−1 ∪ {v} ∈ I for every v ∈ Oi .
-
-9
-
-It is also clear from the partition construction that for each v ∈ Oi , we have Si−1 ∪ {v} ∈ I. Below,
-fix a choice of i and condition on the algorithm’s history up to iteration i − 1. This fixes choices of the sets
-S1 , . . . , Si−1 , as well
- as T1 ,. . . , Ti and O1 , . . . , Oi .
-Then since E fSi−1 (vi ) ≥ fSi−1 (v) − α for every v ∈ Oi , we have
-
-
-1
-E fSi−1 (vi ) ≥
-fS (Oi ) − α
-|Oi | i−1
-1
-≥ fSi−1 (Oi ) − α.
-p
-
-(by submodularity)
-
-Taking the expectation over the conditioned event gives the asserted result.
-Theorem 3.5. Suppose fD : 2V → R has sensitivity λ. Then instantiating Algorithm 2 with O = EM
-and parameter ε0 > 0 provides (ε = r(I)ε0 , δ =p0)-differential privacy. It also provides (ε, δ)-differential
-privacy for every δ > 0 with ε = r(I)ε2 /2 + ε · 2r(I) ln(1/δ).
-Moreover, for every D ∈ X n ,
-
-
-1
-p
-2λr(I) ln |V |
-E [fD (S)] ≥
-· OPT −
-p+1
-p+1
-ε0
-where S ←R G EM (D).
-Proof. The proof of privacy follows from Theorem 2.4. The proof of utility is identical to that of the proof
-of Theorem 3.3.
-
-4
-
-Non-Monotone Submodular Maximization
-
-We now consider the problem of privately maximizing an arbitrary, possibly non-monotone, submodular
-function under a cardinality constraint. In general, the greedy algorithm presented in Section 3 fails to give
-any constant-factor approximation. Instead, our algorithm in this section will be based on the “stochastic
-greedy” algorithm first studied by Mirzasoleiman et al. (2015). In each round, the stochastic greedy algorithm first subsamples a random k1 · ln(1/α) fraction of the ground set for some α > 0, and then greedily
-selects the item from this subsample that maximizes marginal gain. Mirzasoleiman et al. (2015) showed that
-for a monotone objective function f , this algorithm provides a (1 − 1/e − α)-approximation to the optimal
-solution. Their original motivation was to improve the running time of the greedy algorithm: from O(|V |·k)
-evaluations of the objective function to linear O(|V | · ln(1/α)).
-Unfortunately, the stochastic greedy algorithm does not provide any approximation guarantee for nonmonotone submodular functions. Buchbinder et al. (2014) instead proposed a “random greedy” algorithm
-that, in each iteration, randomly selects one of the k elements with the highest marginal gain. Buchbinder
-et al. (2014) showed that the random greedy algorithm achieves a 1/e approximation to the optimal solution
-(in expectation), using k|V | function evaluations. However, it is not clear how to adapt this algorithm to
-accommodate differential privacy, since its analysis has a brittle dependence on the sampling procedure.
-We make two main contributions to the analysis of the stochastic greedy and random greedy algorithms.
-First, we show that running the stochastic greedy algorithm on an exact k1 fraction of the ground set per
-iteration still gives a (0.468)-approximation for monotone objectives, and moreover, gives a 1e (1 − 1/e)approximation even for non-monotone objectives. Note that this algorithm evaluates the objective function on only |V | elements, and still provides a constant factor approximation guarantee. This makes our
-10
-
-“subsample-greedy” algorithm the fastest algorithm for maximizing a general submodular function subject
-to a cardinality constraint (albeit with slightly worse approximation guarantees). Second, we show that the
-guarantees of this algorithm are robust to using a randomized greedy selection procedure (e.g. the exponential or large margin mechanism), and hence it can be adapted to ensure differential privacy.
-We present the subsample-greedy algorithm as Algorithm 4 below. Assume that V is augmented by
-enough “dummy elements” to ensure that |V |/k is an integer; each dummy element u is defined so that
-fD (S ∪ {u}) = fD (S) for every set S. We also explicitly account for an additional set U of k dummy
-elements, and ensure that at least one appears in every subsample.
-Algorithm 4 Diff. Private “Subsample-Greedy” SG O
-Input: Submodular function fD : 2V → R, dataset D, cardinality constraint k, privacy parameters ε0 , δ0
-Output: Size k subset of V
-1. Initialize S0 = ∅, dummy elements U = {u1 , . . . , uk }
-2. For i = 1, . . . , k:
-• Sample Vi ⊂ V a uniformly random subset of size |V |/k and ui a random dummy element
-• Define qi : (Vi ∪ {ui }) × X n → R via qi (v, D̃) = fD̃ (Si−1 ∪ {v}) − fD̃ (Si−1 )
-• Compute vi ←R O(qi , D; ε0 , δ0 )
-• Update Si ← (Si−1 ∪ {vi })
-3. Return Sk with all dummy elements removed
-Theorem 4.1. Suppose fD : 2V → R has sensitivity λ. Then instantiating Algorithm 4 with O = EM
-provides (ε, δ)-differential privacy, and for every D ∈ X n ,
-
-
 1
 1
-2λk ln |V |
-E [fD (S)] ≥
-1−
-OPT −
-e
-e
-ε
-EM
-where S ←R SG (D). Moreover, if fD is monotone, then
-
-
-2λk ln |V |
-E [fD (S)] ≥ 1 − e−(1−1/e) OPT −
-ε
-2λk ln |V |
-≈ 0.468 OPT −
 .
-ε
-The guarantees of Theorem 4.1 are of interest even without privacy. Letting MAX denote the selection
-procedure which simply outputs the true maximizer (equivalently, which runs the exponential mechanism
-with ε0 = +∞), we obtain the following non-private algorithm for maximizing a submodular function fD :
-Corollary 4.2. Let fD : 2V → R be any submodular function. Instantiating Algorithm 4 with O = MAX
-gives
-
-
-1
-1
-1−
-OPT
-E [fD (S)] ≥
-e
-e
-where S ←R SG MAX (D). Moreover, if fD is monotone, then
-
-
-E [fD (S)] ≥ 1 − e−(1−1/e) OPT ≈ 0.468 OPT .
-
-11
-
-4.1
-
-Proof of Theorem 4.1
-
-The analysis below will work generally for any random selection procedure guaranteeing that in every round
-i = 1, . . . , k,
-
-
-E fSi−1 (vi ) ≥ max fSi−1 (v) − α
-v∈(Vi ∪{ui })
-
-for some parameter α > 0. We begin by fixing an optimal solution S ∗ with f (S ∗ ) = OPT.
-Claim 4.3 ((Buchbinder et al., 2014, Observation 3.2)). For every i = 0, . . . , k, we have E [f (S ∗ ∪ Si )] ≥
-(1 − 1/k)i · OPT.
-Proof. For every iteration i = 1, . . . k, the subsampling step ensures that every element in V ∪ U is selected
-for inclusion in Si with probability at most 1/k. Hence, for every i = 0, 1, . . . , k, each element is included
-in Si with probability at most 1 − (1 − 1/k)i . Define g : 2V → R by g(S) = g(S ∗ ∪ S). Then g is a
-submodular function, and
-E [f (S ∗ ∪ Si )] = E [g(Si \ S ∗ )] ≥ (1 − 1/k)i g(∅) = (1 − 1/k)i OPT .
-The inequality here follows from the fact that for any set T and any random subset T 0 ⊆ T that includes
-every element of T with probability p, we have E [g(T 0 )] ≥ (1 − p) · g(∅) + p · g(T ) for any submodular
-function g Feige et al. (2007).
-Claim 4.4.
-
-
- 
-
-1
-E[f (S ∗ ∪ Si−1 )] − E[f (Si−1 )]
-E[fSi−1 (vi )] ≥ 1 −
-·
-− α.
-e
-k
-
-Proof. Begin by conditioning on
-P a fixed choice of the set Si−1 . Let M ⊆ (V ∪ U ) denote a set of k items
-which maximizes the quantity v∈M fSi−1 (v). That is, M consists of the k items in (V ∪ U ) which result
-in the largest marginal gain for fSi−1 .
-Let G denote the event that the subsampled set Vi ∪ {ui } contains at least one element in M . Observe
-that even if G does not occur, we have
-
-
-E fSi−1 (vi )|G ≥ fSi−1 (ui ) − α ≥ −α.
-(3)
-We claim moreover that
-
-
- 1 X
-E fSi−1 (vi )|G ≥
-fSi−1 (v) − α.
-k
-
-(4)
-
-v∈M
-
-as v (1) , . . . , v (m) , v (m+1) , . . . , v (m+k) , where m
-
-To see this, sort the items in V ∪U
-= |V | and fSi−1 (v (j) ) ≥
-fSi−1 (v (j+1) ) for every j = 1, . . . , m + k − 1. Break ties in such a way that M = {v (1) , . . . , v (k) }, and that
-there is some t ∈ {0, . . . , k} such that v (1) , . . . , v (t) ∈ V and v (t+1) , . . . , v (k) ∈ U (that is, real elements
-come before dummy elements).
-Let Aj denote the event that j is the smallest index such that v (j) ∈ Vi ∪ {ui }. Then the events
++
+log
+∗)
+KL(P
+,
 P
-A1 , . . . , Am+k are mutually exclusive and exhaustive. Moreover, by the definition of G, we have kj=1 Pr[Aj ] =
-Pr[G].
+2.4δ
+s
+s
+∗
+∗
+s∈nei(s )\s
 
-12
-
-It is easy to see that
-Pr[A1 ] =
-
+Proof. By Assumption 1, for all arms s ∈ nei(s∗ ), there
+exists an alternative model, in which the only arm modified
+is arm s, and the modified distribution P0s satisfies:
+• KL(Ps , Ps∗ ) < KL(Ps , P0s ) < KL(Ps , Ps∗ ) + α,
+and EP0s < µs∗ for s ∈ row(s∗ )\s∗
+• KL(Ps , Ps∗ ) < KL(Ps , P0s ) < KL(Ps , Ps∗ ) + α,
+and EP0s > µs∗ for s ∈ col(s∗ )\s∗
+• KL(Ps∗ , Ps0 ) < KL(Ps∗ , P0s∗ ) < KL(Ps∗ , Ps0 ) + α,
+and EP0s∗ < µs0 for s0 ∈ col(s∗ )\s∗ or EP0s∗ > µs0
+for s0 ∈ row(s∗ )\s∗ .
+Denote the original bandit model by v and the modified
+one by v 0 . In particular, the NE for v 0 is no longer
+s∗ . Consider the event E : the recommendation rule
+recommends s∗ as NE. Any δ-PAC algorithm satisfies
+Pv (E) > 1 − δ and Pv0 (E) < δ, so by Theorem 1,
 1
-k
-
-Pr[Aj ] =
-Pr[Aj ] =
-
-m−j 
-m/k−1
-
-m
-m/k
-
-m−t
-1
-m/k
-·
-m
-k
-m/k
-
-j = 2, . . . , t,
-
-
-1
-· 1−
-k
-
-j−t−1
-j = t + 1, . . . , k.
-
-Moreover, Pr[Aj ] is a decreasing function j = 1, . . . , k. Hence, Pr[Aj |G] = Pr[Aj ]/ Pr[G] is a decreasing
-function of j = 1, . . . , k as well. Moreover, Pr[A1 |G] ≥ Pr[A1 ] = 1/k. This allows us to calculate
-k
-
- X
-
-
-E fSi−1 (vi )|G =
-E fSi−1 (vi )|Aj · Pr[Aj |G]
-j=1
-k
-
-1 X
-fSi−1 (v (j) ) − α
+.
+E[Nδ (s)]KL(Ps , P0s ) ≥ d(Pv (E), Pv0 (E)) ≥ log 2.4δ
+Hence we have:
+( log 1/(2.4δ)
+∗
+log 1/(2.4δ)
+KL(Ps ,Ps∗ )+α , s 6= s
+E[Nδ (s)] ≥
 ≥
-k
-j=1
+log 1/(2.4δ)
+∗
+KL(Ps , P0s )
+KL(Ps∗ ,Ps0 )+α , s = s
+Let α → 0 and we complete the proof.
+From the proof, we can see that the lower bound relies on the fact that we can change the best arm (i.e.,
+N E(M) in our case) by changing the distribution of a single arm. However, this proof technique is not suitable for
+
+Identify the Nash Equilibrium in Static Games with Random Payoffs
+
+s∈
+/ nei(s∗ ) because the NE will not change no matter what
+the distribution of an arm s ∈
+/ nei(s∗ ) is.
+In theory, we only need to pull s ∈ nei(s∗ ) to identify NE
+because of the same reason (i.e., the distributions of arm
+s∈
+/ nei(s∗ ) won’t change NE). In practice however a policy does not know which arm is in nei(s∗ ) in advance, so
+it may make some pulls on s ∈
+/ nei(s∗ ) before making
+a sufficient number of pulls on nei(s∗ ). So we can consider the arm selection as a hypothesis testing problem, and
+then use the lower bound techniques for the minimax risk
+of hypothesis testing (See Chapter 2 in Tsybakov (2009)).
+Specifically, our proof is based on the following lemma:
+Lemma 2. Let P1 , · · · , PK be probability distributions
+supported on some set X , with Pi absolutely continuous
+w.r.t P1 . For any measurable function ψ : X → [K], we
+have: K
+K
+X
+X
+1
+KL(P1 , Pk )},
+Pk (ψ = k) ≥ exp{−
+e
+
+Ht ≥
+
+where Pk (ψ = k) := Pk ({x : ψ(x) = k}) for clarity.
+
+(1)
+
+Proof. With straight-forward computations, we have:
+
+1
+Ht ≥ Ht (h1,1 ) + Ht (hi,j ) + Ht (h1,j ) + Ht (hi,1 )
+4
 1 X
 =
-fSi−1 (v) − α.
-k
+1[It0 ∈
+/ nei((1, 1)); h1,1 ]
+4 0
+t ≤t
 
-(by Chebyshev’s sum inequality)
-
-v∈M
-
-This establishes the
-(4).
- claimed inequality
-
-To estimate E fSi−1 (vi )|G , it remains to calculate Pr[G]. Suppose M consists of t elements from V
-and k − t dummy elements from U . Then
-Pr[G] = 1 − Pr[M ∩ (Vi ∪ {ui }) = ∅]
-
-m−t
-t
-m/k
-=1− m  ·
-k
-m/k
-(m − (m/k))(m − (m/k) − 1) . . . (m − (m/k) − t + 1) t
-·
-m(m − 1) . . . (m − t + 1)
-k
-
-
++ 1[It0 ∈
+/ nei((i, j)); hi,j ] + 1[It0 ∈
+/ nei((1, j)); h1,j ]
 
-
-
-1
-1
-m
-1
-m
-t
-=1− 1−
-1− ·
-... 1 − ·
-·
-k
-k m−1
-k m−t+1
-k
-
-t
-t
-1
-≥1− 1−
-·
-k
-k
-=1−
-
-te−t/k
-k
-1
-≥1− ,
-e
-≥1−
-
-where the last inequality follows from the fact that the function r(x) = xe−x is maximized at x = 1, where
-it takes the value 1/e.
-
-13
-
-Let M 0 be the set containing S ∗ \ Si−1 together with enough dummy elements to have size exactly k.
-We conclude that
-
-
-
-
-
-
-E fSi−1 (vi ) = Pr[G] · E fSi−1 (vi )|G + (1 − Pr[G]) · E fSi−1 (vi )|Ḡ
-!
-
-
-1 X
-1
-1
-≥ 1−
-fSi−1 (v) − α − · α
-(by (4) and (3))
-e
-k
-e
-v∈M
-!
-
-
-1 X
-1
-≥ 1−
-fSi−1 (v) − α
-(by definition of M )
-e
-k
-v∈M 0
-
-
-
-f (S ∗ ∪ Si−1 ) − f (Si−1 )
-1
-− α.
-(by submodularity)
-≥ 1−
-e
-k
-Unconditioning from Si−1 by taking the expectation over its choice proves the claim.
-Proof of Theorem 4.1. Let f be any (possibly non-monotone) submodular function. We show by induction
-that for every i = 0, . . . , k, we have
-
-
-
-
-1
-i
-1 i−1
-E [f (Si )] ≥ 1 −
-· · 1−
-· OPT −iα.
-(5)
-e
-k
-k
-This clearly holds for the base case of i = 0. Assuming it holds in iteration i − 1, we calculate
-E[f (Si )] = E[f (Si−1 )] + E[fvi (Si−1 )]
-
-
-
-1
-E[f (S ∗ ∪ Si−1 )] − E[f (Si−1 )]
-≥ E[f (Si−1 )] + 1 −
-−α
-(by Claim 4.4)
-e
-k
-!
-
-
-(1 − k1 )i−1 OPT −E[f (Si−1 )]
-1
-≥ E[f (Si−1 )] + 1 −
-−α
-(by Claim 4.3)
-e
-k
-
-
-
- 
-
-1
-1
-1 i−1 1
-= 1−
-E[f (Si−1 )] + 1 −
-· 1−
-· · OPT −α
-k
-e
-k
-k
-
-
-
-
-i−2
-
- 
-
-1
-1
-i−1
-1
-1
-1 i−1 1
-≥ 1−
-1−
-·
-· 1−
-· OPT + 1 −
-· 1−
-· · OPT −iα
-k
-e
-k
-k
-e
-k
-k
-(by the inductive hypothesis)
-
-
-
-
-1
-i
-1 i−1
-= 1−
-· · 1−
-· OPT −iα.
-e
-k
-k
-Hence, in iteration k, we have
-
- 
-
-
-
-1 k−1
-1
-1
-1
-· OPT −kα ≥ 1 −
-E [f (Sk )] ≥ 1 −
-· 1−
-· · OPT −kα
-e
-k
-e
-e
-as we wanted to show.
-Now we consider the special case where f is monotone. In this case, we have
-
-
-
-1
-E[f (S ∗ ∪ Si−1 )] − E[f (Si−1 )]
-E[fvi (Si−1 )] ≥ 1 −
-−α
-e
-k
-
-
-
-1
-OPT −E[f (Si−1 )]
-≥ 1−
-−α
-e
-k
-14
-
-(by Claim 4.4)
-(by monotonicity).
-
-Rearranging gives us
-
-
-(1 − 1/e)
-· (OPT −E [f (Si−1 )]) + α.
-OPT −E [f (Si )] ≤ 1 −
-k
-Recursively applying this bound yields
-
-OPT −E[f (Si )] ≤
-
-(1 − 1/e)
-1−
-k
-
-i
-
-(1 − 1/e)
-k
-
-i
-
-
-≤
-
-1−
-
-
-i−1 
++ 1[It0 ∈
+/ nei((i, 1)); hi,1 ]
+ X
+1X
+1[It0 = (i0 , j 0 ); h1,1 ]
+≥
+4 0
+t ≤t
+i0 ,j 0 ≥2
 X
-1 j
-(OPT −E[f (S0 )]) +
-1−
-α
-k
-j=0
+1[It0 = (1, j 0 ); hi,1 ]
++ 1[It0 = (1, 1); hi,j ] +
+j 0 ≥2
 
-OPT +iα.
+k=2
 
-Hence, we conclude
- #
-(1 − 1/e) k
-E[f (Sk )] ≥ 1 − 1 −
-OPT −kα
-k
-
+k=1
+
+e−∆ (1 − e−t∆ )
+.
+4e(1 − e−∆ )
+
++
+
+X
+
+
+1[It0 = (i , 1); h1,j ] .
+0
+
+i0 ≥2
+
+Proof. This lemma is an extension of Lemma 2.6 in Tsybakov (2009) from two distributions to multiple distributions. We put the proof in Appendix A.
+Now we show what the hypotheses to be tested in our problem are and how to apply Lemma 2. Without loss of generality, consider a game M with N E(M) = (1, 1). Let’s
+consider a set of hypotheses: new games hi,j constructed
+by swapping the i-th row with the first row and the j-th column with the first column of M. Obviously, these games
+are essentially the same game up to permutation. We will
+show the lower bound on the maximum number of pulls
+among these hypotheses by arbitrary policies.
+0
+
+0
+
+00
+
+00
+
+00
+
+0
+
+Formally, define fi,j (i , j ) = (i , j ) where i = i if
+i0 ∈
+/ {1, i} else i00 = 1 + i − i0 and j 00 = j 0 if j 0 ∈
+/ {1, j}
+else j 00 = 1 + j − j 0 . Let hi,j specify a game such that
+the distribution of arm (i0 , j 0 ) is Pfi,j (i0 ,j 0 ) . Let Ht (hi,j )
+be the sum of the expected number of pulls on arms s ∈
+/
+nei((i, j)) until time step t under hypothesis hi,j :
+Ht (hi,j ) :=
+
+X
+
+Define Phta,b as the distribution of observations until time
+step t under the hypothesis ha,b , and define function
+
+
+(1, 1) i0 , j 0 ≥ 2,
+
+
+
+
+(1, j) i0 ≥ 2, j 0 = 1,
+0 0
+g(i , j ) :=
+0
+0
+
+
+(i, 1) j ≥ 2, i = 1,
+
+
+(i, j) i0 = j 0 = 1.
+Let Pit0 ,j 0 = Phtg(i0 ,j0 ) . Consider events ev(t, s): policy
+selects arm s at time step t. We have:
+Ht ≥
+
+1 X X t0
+P 0 0 (ev(t0 , (i0 , j 0 )))
+4 0 0 0 i ,j
+t ≤t i ,j
+
+X
+0
+1 X
+t0
+exp{−
+KL(P1,1
+, Pit0 ,j 0 )}
+≥
+4e 0
+0 0
+t ≤t
+
+i ,j
+
+t
+1 X
+exp{−t∆}
+≥
+4e 0
+t =1
+
+1[It0 ∈
+/ nei((i, j)); hi,j ],
+
+t0 ≤t
+
+and let Ht := maxi,j Ht (hi,j ) be the maximum number
+of pulls under any hypothesis. Then, theorem 2 shows the
+lower bound of Ht .
+Theorem 2. For any i, j
+≥
+2, let ∆
+:=
+(m − 1)(n − 1)(M u(Pi,j , P1,1 ) + M u(Pi,1 , P1,j ) +
+Pj 0 6=j
+Pi0 6=i
+0
+0
+0
+0
+j 0 ≥2 M u(Pi,j , P1,j ) +
+i0 ≥2 M u(Pi ,1 , Pi ,j )) +
+mM u(Pi,1 , Pi,j )
++
+nM u(P1,j , Pi,j )
+where
+M u(P1 , P2 ) := KL(P1 , P2 ) + KL(P2 , P1 ). Then,
+we have the lower bound:
+
+e−∆ (1 − e−t∆ )
+=
+.
+4e(1 − e−∆ )
+The second inequality is proven by Lemma 2. The third
+is by the fact that let Pi,j (a, b) denote the distribution
+of arm (a, b) under hypothesis
+hg(a,b) , then we have
+P
+t
+, Pit0 ,j 0 ) =
+KL(P
+KL(P1,1
+0
+1,1 (It0 ), Pi0 ,j 0 (It0 ));
+t ≤t
+0
+and
+note
+that
+KL(P
+(I
+),
+Pi0 ,j 0 (It0 ))
+≤
+1,1 t
+P
+00 00
+00 00
+0
+0
+KL(P
+(i
+,
+j
+),
+P
+(i
+,
+j
+));
+summing
+over
+all
+00
+00
+1,1
+i ,j
+i ,j
+i0 , j 0 , we get the third inequality.
+We can get a different lower bound by choosing a different
+i, j in Theorem 2, and take the maximum one. Though our
+
+Identify the Nash Equilibrium in Static Games with Random Payoffs
+
+lower bound is not on the expected number of pulls, it intuitively answers why the pulls on s ∈
+/ nei(s∗ ) are unavoide−∆ (1−e−t∆ )
+e−∆
+able. Obviously, 4e(1−e−∆ ) ≤ 4e(1−e
+−∆ ) , which suggests that there is a policy which pulls on s ∈
+/ nei(s∗ ) for a
+bounded number of times. This result inspires us to design
+a policy with a bounded number of pulls on s ∈
+/ nei(s∗ ),
+as shown in Section 4.
+
+4. Algorithms
+We now present two δ-PAC algorithms for our problem.
+The first one is inspired by LUCB (Kalyanakrishnan et al.,
+2012) and UCB1 (Auer et al., 2002), while the second one
+follows another line of BAI algorithms which are based on
+the successive action eliminations (Even-Dar et al., 2006;
+Maron & Moore, 1997).
+4.1. LUCB-G
+We first present and analyze the LUCB-G (i.e., LUCB for
+Game) algorithm, as illustrated in Alg. 1.
+4.1.1. A LGORITHM
+Informally, our problem can be divided into m + n bandit
+tasks—m for identifying s∗r (i) := arg mins∈Ri µs and n
+for s∗c (j) := arg maxs∈Cj µs . So in each round2 , LUCBG can be divided into two stages. In the first stage, it selects
+two bandit tasks—a row and a column. Note that LUCB-G
+tries to identify s∗r and s∗c after each round. If before round
+γ, it identified s̄∗r (i) as the arm with minimum mean in Ri ,
+or identified s̄∗c (j) 3 as the arm with maximum mean in Cj ,
+then LUCB-G will not select row i or column j. That is to
+say, we only select bandit models from the following rows
+and columns at the γ-th round:
+ar(γ) := {i ∈ [m] : s̄∗r (i) not identified until round γ.}
+ac(γ) := {j ∈ [n] : s̄∗c (j) not identified until round γ.}
+We’ll introduce how to identify these arms later in this
+section. In the second stage, we pull arms according
+to past observations and some confidence bound function
+β : N+ × N+ → (0, ∞), which will be presented soon in
+Section 4.1.2. Here we show our first policy in Alg. 1.
+We have a clock for each bandit task, and our confidence
+bounds rely on them. Define τr (i, t) as the set of all the
+time steps t0 that satisfy the two requirements: (1) t0 < t;
+(2) at the round when t0 takes place, row i is chosen, and at
+least one line from 15 to 17 is executed. Similarly, define
+τc (j, t) as the set of all the time steps t0 that satisfy the two
+requirements: (1) t0 < t; (2) at the round when t0 takes
+place, column j is chosen, and at least one line from 21 to
+23 is executed.
+The method of identifying s̄∗r (i) and s̄∗c (j) also relies on
+2
+3
+
+We pull arms for several times in each round.
+With a probability, s̄∗r (i) 6= s∗r (i) or s̄∗c (j) 6= s∗c (j).
+
+the confidence bound function β. For an arm s, define
+L(s, u, t) = µ̄s (t0 )−β(u, t), U (s, u, t) = µ̄s (t0 )+β(u, t)4 .
+And let Ts (τ ) = {t : It = s, t ∈ τ }. Alg. 1 determines
+s̄∗r (i) and s̄∗c (j) at time step t as follows:
+• If ∃s ∈ Ri , for all s0 ∈ Ri \s, we have
+U (s, |Ts (τ )|, |τ |) ≤ L(s0 , |Ts0 (τ )|, |τ |), where
+τ := τr (i, t), then Alg. 1 takes s as s̄∗r (i).
+• If ∃s ∈ Cj , for all s0 ∈ Cj \s, we have
+L(s, |Ts (τ )|, |τ |) ≥ U (s0 , |Ts0 (τ )|, |τ |), where
+τ := τc (j, t), then Alg. 1 takes s as s̄∗c (j).
+Now we introduce the stopping and recommendation rules
+for Alg. 1.
+Stopping and recommendation rules: The policy stops
+and recommends N E as follows:
+• If after round γ, there is an arm s, Alg. 1 takes it
+as s̄∗r (s[1]) and s̄∗c (s[2]). Then Alg. 1 stops and
+recommends s as the NE.
+• Else if after round γ, s̄∗r (i) and s̄∗c (j) have all been
+determined. Then the policy stops and the recommendation rule determines that the underlying game does
+not have a NE.
+4.1.2. δ-PAC
+We now show that Alg. 1 is a δ-PAC algorithm. Lemma
+3 guarantees that if β(u, t) satisfies the requirements in
+InEq. (2), then the probability that there is an arm violating its confidence bounds is less than δ. Our
+q choice of the
+4
+
+log(mnt /4δ) 5
+confidence bound function is β(u, t) =
+,
+2u
+which satisfies this requirement. And Theorem 3 is a simple application of Lemma 3 since if no arm violates its
+confidence bounds, the stopping and recommendation rules
+won’t make mistakes.
+
+Lemma 3. Let β(u, t) : N+ × N+ → (0, ∞) be a function
+such that:
+∞ X
+t
+X
+t=1 u=1
+
+exp{−2uβ(u, t)2 } ≤
+
+δ
+.
+2K
+
+(2)
+
+Consider a bandit model v with K arms, for each arm,
+there is a sequence (t1 , u1 ), (t2 , u2 ), · · · such that ti ≥
+ui , ti+1 ≥ ti , ui+1 ≥ ui , and a sequence u01 , u02 , · · · such
+that u0i ≥ ui , and then the probability that ∃s ∈ v, i such
+that
+u0i
+1 X
+| 0
+Y s − µs | > β(ui , ti )
+ui i=1 i
+is less than δ.
+4
+In this paper, we have t0 ≥ t. Thus in fact L and U are
+functions of t0 , but for convenience we omit the notation of t0 .
+5
+For convenience, let 1/0 = +∞. So if u = 0, β(u, t) =
++∞.
+
+Identify the Nash Equilibrium in Static Games with Random Payoffs
+
+Proof. The proof can be found in Appendix B.
+Theorem 3. The probability of making mistakes by the recommendation and stopping rules of LUCB-G is at most δ.
+Proof. If all arms don’t violate their confidence bounds,
+then it is easy to see that we determine NE correctly. As
+our choice of β(u, t) satisfies the condition in InEq. (2),
+we can use Lemma 3 to get the result.
+4.1.3. S AMPLE COMPLEXITY
+We analyze the sample complexity of Alg. 1 in this section. We provide a proof of the sample complexity when
+N E(M) 6= none here, and the sample complexity when
+N E(M) = none is a straight-forward application of the
+result in LUCB (Kalyanakrishnan et al., 2012).
+P
+1
+For convenience, let Hr (i) =
+s∈Ri \s∗
+)2
+r (i) (µs −µs∗
+r (i)
+P
+1
+. In the second
+and Hc (j) =
+s∈Cj \s∗
+∗ (j) )2
+c (j) (µs −µsc
+stage of each round, LUCB-G pulls arms similarly as
+LUCB and UCB1. When the NE of the underlying game
+exists, the pulls can be divided into three parts:
+• part1: Time steps t such that s∗ is the NE of M̄t .
+• part2: Time steps t such that s 6= s∗ is the NE of M̄t .
+
+Algorithm 1 LUCB-G
+1: Input: distribution matrix M, confidence δ
+2: Pull all arms
+3: Chr(i) = Chc(j) = 0 for i ∈ [m], j ∈ [n], t = m ∗ n
+4: while Not stop do
+5:
+selr (i) = selc (j) = 0 for i ∈ [m], j ∈ [n]
+6:
+if s = N E(M̄t ) 6= none then
+7:
+selr (s[1]) = selc (s[2]) = 1
+8:
+else
+9:
+Let î := arg mini∈ar[γ] Chr(i)
+10:
+Let ĵ := arg minj∈ar[γ] Chc(j)
+11:
+selr (î) = selc (ĵ) = 1
+12:
+end if
+13:
+if ∃î ∈ [m], selr (î) = 1 then
+14:
+Chr(î) = Chr(î) + 1
+15:
+Pull s1 := arg mins∈Rî µ̄s (t), t = t + 1
+r
+|τr (î,t)|/3
+,t = t+1
+16:
+Pull arg mins∈Rî µ̄s − 2 log
+|T (τ (î,t))|
+s
+
+17:
+18:
+19:
+20:
+21:
+
+• part3: Time steps t such that there is no NE of M̄t .
+22:
+
+Therefore, the total sample complexity can be decomposed
+as the summation of the bounds for the three parts.
+We first provide sample complexity bounds for the pulls in
+part2 and part3, which appear because of the algorithm’s
+misjudgments on which arm is N E(M) during training,
+while deferring the bound for part1 to Lemma 6, which is
+relatively standard.
+Obviously, at time step t, if part2 or part3 happens, then s∗ 6= arg mins0 ∈row(s∗ ) µ̄s0 (t) or s∗ 6=
+arg maxs0 ∈col(s∗ ) µ̄s0 (t). Lemma 4 ensures that these
+events will not happen with a high probability if Alg. 1 selects row(s∗ ) and col(s∗ ) for a sufficiently large number
+of times. The key idea is to use the UCB1 policy (line 20,
+26) (Auer et al., 2002): considering column j, when the algorithm chooses it in the first stage, the algorithm pulls an
+arm in Cj by UCB1. This ensures that with a high probability, the policy pulls a sufficiently large number of times
+on s∗c (j), and then by Hoeffding’s inequality, we get the
+bound. A formal statement is in Lemma 4.
+Lemma 4. Without loss of generality, consider column j,
+let φ(γ) := 1[s∗c (j) 6= arg maxs0 ∈Cj µ̄s0 when
+1 sePAlg.
+∞
+lects column j for the γ-th time], let φ =
+φ(γ).
+γ=1
+Then, the expectation of φ satisfies the inequality:
+
+Pull arg mins∈Rî \s1 L(s, |Ts (τr (î, t))|, |τr (î, t)|), t =
+t+1
+end if
+if ∃ĵ ∈ [n], selc (ĵ) = 1 then
+Chc(ĵ) = Chc(ĵ) + 1
+Pull s1 := arg maxs∈Cĵ µ̄s (t), t = t + 1
+r
+|τr (ĵ,t)|/3
+Pull arg maxs∈Cĵ µ̄s + 2 log
+, t = t+1
+|T (τ (ĵ,t))|
+s
+
+E[φ] − c1 Hc (j)(log E[φ]) − c2 Hc (j) − c3 ≤ 0,
+where c1 , c2 , c3 are positive constants.
+
+(3)
+
+r
+
+Pull arg maxs∈Cĵ \s1 U (s, |Ts (τr (ĵ, t)|), |τr (ĵ, t)|), t =
+t+1
+24:
+end if
+25: end while
+23:
+
+Proof. Let tγ denote the time step when Alg. 1 selects column j for the γ-th time and ξγ = arg maxs∈Cj µ̄s (tγ ).
+Let ∆γ = µs∗c (j) − µξγ . If ξγ 6= s∗c (j), then we have
+µ̄s∗c (j) (tγ ) ≤ µs∗c (j) − ∆γ /2 or µ̄ξγ (tγ ) ≥ µξγ + ∆γ /2.
+So let Set1(s) = {γ : ξγ = s}, Set2(s) = {γ ∈
+Set1(s) : µ̄ξγ (tγ ) ≥ µξγ + ∆γ /2} and Set3(s) = {γ ∈
+Set1(s) : µ̄s∗c (j) (tγ ) ≤ µs∗c (j) − ∆γ /2}. With the above
+argument, for s ∈ Cj \s∗c (j), we have E[|Set1(s)|] ≤
+E(|Set2(s)| + |Set3(s)|).
+Due to Alg. 1, the policy pulls s for rounds γ ∈
+Set1(s).
+So by Hoeffding’s inequality, E|Set2(s)| ≤
+P∞
+exp{−2γ((µ
+− µs )/2)2 } ≤ 2/(µs∗c (j) − µs )2 .
+s∗
+γ=1
+c (j)
+Now consider Set3(s), which is computed as:
+
+E|Set3(s)| = E 
+
+X
+
+γ∈Set1(s)
+2
+
+r
+
+
+(µs∗c (j) + µs )
+] .
+1[µ̄s∗c (j) (tγ ) ≤
+2
+
+Let T (t) be the number of pulls on s∗c (j) at line 22 in Alg. 1
+at that time step t. By Hoeffding’s inequality and straight-
+
+Identify the Nash Equilibrium in Static Games with Random Payoffs
+
+forward computations, we have
+h X
+γ
+E|Set3(s)| ≤E
+1[T (tγ ) ≤ ]
+2
+
+Then, the following inequality holds:
+X
+X
+E|Sw | ≤O (
+Λ(Hr (i)) +
+Λ(Hc (j)))
+
+γ∈Set1(s)
+
+i
+
+(µs∗c (j) + µs )
+γ i
+; T (tγ ) ≥ ]
++1[µ̄s∗c (j) (tγ ) ≤
+2
+2
+h X
+γ
+≤E
+1[T (tγ ) ≤ ]
+2
+γ∈Set1(s)
+µs∗ (j) − µs 2 i
++ exp{−γ( c
+) }
+2
+
+
+X
+4
+γ
+.
+≤E 
+1[T (tγ ) ≤ ] +
+2
+(µs∗c (j) − µs )2
+γ∈Set1(s)
+
+Note that Line 22 is the UCB1 policy proposed by Auer
+et al. (2002). So by Theorem 1 in Auer et al. (2002) (A
+slightly modification on this theorem, see Appendix C),
+we have E[γ 0 − T (tγ 0 )] ≤ O(Hc (j) log γ 0 ). Then with
+Markov inequality, we can get P [γ 0 − T (tγ 0 ) ≥ γ 0 /2] ≤
+log γ 0 )
+O(Hc (j) log γ 0 )
+, that is, P [T (tγ 0 ) ≤ γ 0 /2] ≤ O(Hc (j)
+.
+γ0
+γ0
+So let Set3 = ∪s∈Cj \s∗c (j) Set3(s), we have:
+
+
+
+E[|Set3|] ≤O(Hc (j)) + E 
+
+X
+
+1[T (tγ ) ≤
+
+γ∈Set1
+
+
+
+γ 
+]
+2
+
+
+X O(Hc (j) log γ)
+
+γ
+γ∈Set1
+
+
+|Set1|
+X O(Hc (j)logγ)
+
+=O(Hc (j)) + E 
+γ
+γ=1
+
+
+≤O(Hc (j)) + E O(Hc (j)(log |Set1|)2 )
+≤O(Hc (j)) + E 
+
+≤O(Hc (j) + Hc (j)(log E|Set1|)2 )
+where Set1 = ∪s∈Cj \s∗c (j) Set1(s). The third inequality is
+by simple integration, and the last inequality holds because
+f (x) = (log x)2 is a concave function for x > e. Note that
+φ = |Set1|. With E|Set1(s)| ≤ E(|Set2(s)| + |Set3(s)|),
+we complete the proof.
+It is noteworthy that although we do not have an analytical solution of E[φ] from InEq. (3), it is obvious that the
+solution is bounded, that is, it will not diverge as δ → 0.
+Then, we can get the sample complexity on part 2 and 3, as
+in Lemma 5.
+Lemma 5. Suppose s∗ = N E(M) 6= none, let Sw =
+{Rounds γ such that Rs∗ [1] or Cs∗ [2] is not chosen by Alg. 1}.
+Let Λ(a) be the maximum value among all solutions that
+satisfy the following inequality (constants c1 , c2 , c3 are the
+same as in Lemma 4):
+x − c1 a(log x)2 − c2 a − c3 ≤ 0.
+
+j
+
 
-≥ 1 − e−(1−1/e) OPT −kα.
-"
++(m + n)(Λ(Hr (s [1])) + Λ(Hc (s∗ [2]))) .
+∗
+
+Proof. We put the proof in Appendix D.
+The bound on part1 is based on the result of LUCB, as in
+Lemma 6, which has almost the same result on the sample
+complexity as policy LUCB.
+Lemma 6. Without loss of generality, considering column
+j, suppose s̄∗c (j) is identified by Alg. 1 after being selected
+for γc (j) rounds, then
+
+Hc (j)
+) .
+E[γc (j)] = O Hc (j) log(
+δ
+
+
+Proof. The proof is the same as that of Theorem 6 in
+(Kalyanakrishnan et al., 2012), except slightly changes on
+description and constants. See Appendix E.
+With the above results, we are ready to get our major result
+on the sample complexity of LUCB-G, as in Theorem 4.
+Theorem 4. When N E(M) 6= none, the sample complexity of LUCB-G is:
+
+
+O Hr (s∗ [1]) log
+
++ E[|Sw |] ,
+
+Hr (s∗ [1])
+Hc (s∗ [2])
++ Hc (s∗ [2]) log
+δ
+δ
+
+where E[|Sw |] is bounded as in Lemma 5.
+When
+N E(M) = none, the sample complexity of LUCB-G is:
+
+
+X
+X
+H
+(i)
+H
+(j)
+r
+c
+.
+O
+Hr (i) log
++
+Hc (j) log
+δ
+δ
+i
+j
+
+Proof. By Lemma 5 and Lemma 6, with straight-forward
+computations, we get the complexity.
+Note that the sample complexity of LUCB-G is optimal
+within a constant gap if N E(M) 6= none. This is because
+that E[|sw |] is bounded and for some family P, P1 , P2 ∈ P,
+the KL-divergence KL(P1 , P2 ) has the same order as the
+squared mean-difference (EP1 − EP2 )2 (e.g., normal distributions with unit variances). Therefore, we can replace
+the KL-divergence terms in Lemma 1 by the corresponding
+squared mean-difference terms.
+
+Identify the Nash Equilibrium in Static Games with Random Payoffs
+
+Algorithm 2 Racing
+1: Input: distribution matrix M, confidence δ
+2: γ = 1.
+3: while Not stop do
+4:
+Pull all arms except those have been eliminated.
+5:
+For an active arm s, if ∃s0 ∈ row(s) : 2β1 (γ) <
+µ̄s − µ̄s0 and ∃s0 ∈ col(s) : µ̄s0 − µ̄s > 2β1 (γ), then
+we eliminate s.
+6:
+For all sequences of arms S = {s1 , s2 , · · · , s2k }, if
+S satisfies ∀i ∈ N:
+• s2i+1 ∈ row(s2i ), s2i+2 ∈ col(s2i+1 ).
+•
+
+all arms are eliminated in row(s2i ), col(s2i+1 )
+except s ∈ S.
+
+•
+
+µ̄s2i+1 − µ̄s2i > 2β1 (γ).
+
+•
+
+µ̄s2i+1 − µ̄s2i+2 > 2β1 (γ),
+
+where sj := s(j−1)%(2k)+1 , eliminate all arms in S.
+7:
+γ = γ + 1.
+8: end while
+
+Pulls
+
+Pulls
 
 5
 
-
+ALL
+Racing
 
-The Large Margin Mechanism
-
-The accuracy guarantee of the exponential mechanism can be pessimistic on datasets where q(·, D) exhibits
-additional structure. For example, suppose that when the elements of V are sorted so that q(v1 , D) ≥
-q(v2 , D) ≥ · · · ≥ q(v|V | , D), there exists an ` such that q(v1 , D)  q(v`+1 , D). Then only the top `
-ground set items are relevant to the optimization problem, so running the exponential mechanism on these
-should maintain differential privacy, but with error proportional to ln ` rather than to ln |V |. The large
-margin mechanism of Chaudhuri et al. (2014), like the exponential mechanism, generically solves discrete
-optimization problems. However, it automatically leverages this additional margin structure whenever it
-exists. Asymptotically, the error guarantee of the large margin mechanism is always at most that of the
-exponential mechanism, but can be much smaller when the data exhibits a margin for small `.
-Formally, given a quality function q : V × X n → R and parameters ` ∈ N, γ > 0, a dataset D satisfies
-the (`, γ)-margin condition if q(v`+1 , D) < q(v1 , D) − γ.
-For each ` = 1, . . . , |V |, define
-
-
-4 ln(2`/δ)
-g` = λ · 3 +
-ε
-8λ ln(2/δ) 16λ ln(7`2 /δ)
-G` =
-+
-+ g` .
-ε
-ε
-Recall that the Laplace distribution Lap(b) is specified by the density function
-sample Z ∼ Lap(b) obeys the tail bound Pr[Z > t] = 12 exp(−t/b) for all t > 0.
-
-1
-2b
-
-exp(−|x|/b). , and a
-
-Proposition 5.1. Let ε, δ > 0. Consider the large margin mechanism described in Algorithm 5. Then
-• Algorithm LMM is (ε, δ)-differentially private.
-15
-
-Algorithm 5 Large Margin Mechanism (LMM)
-Input: Quality function q : V × X n → R, dataset D, privacy parameters ε, δ > 0
-Output: Item v̂ ∈ V
-1. Sort the elements of V so that q(v1 , D) ≥ · · · ≥ q(v|V | , D)
-2. Let m = q(v1 , D) + Z for Z ∼ Lap(8λ/ε)
-3. For ` = 1, . . . , |V |:
-• Sample Z` ∼ Lap(16λ/ε)
-• If m − q(v`+1 , D) > G` + Z` : Report ` and break
-4. Return v̂ ∈ {v1 , . . . , v` } sampled w.p. ∝ exp(εq(vi , D)/4λ).
-
-• Suppose D ∈ X n satisfies the (`, γ)-margin condition for
-γ=
-
-24λ ln(1/β)
-+ G`
-ε
-
-for some β > 0. Then there exists an event E with Pr[E] ≥ 1 − β such that
-E[q(v̂, D)|E] ≥ OPT −
-
-4λ · ln `
-,
-ε
-
-where v̂ is the output of LMM(D).
-Our presentation of Algorithm 5 differs slightly from that of Chaudhuri et al. (2014). Namely, we
-simplify the choice of the noisy maximum m, and redistribute the algorithm’s use of the privacy budget ε
-with an eye toward better performance in applications. Because of these small changes, we sketch the proof
-of Proposition 5.1 for completeness.
-Privacy Analysis of Proposition 5.1. Algorithm 5 can be thought of as releasing two items in stages: First,
-the margin parameter ` in Step 3, and second, the item v̂ sampled via the exponential mechanism in Step 4.
-We first claim that releasing the margin parameter ` guarantees (ε/2, 0)-differential privacy. This follows
-because Steps 2 and 3 taken together are an instantiation of the “AboveThreshold” algorithm, as presented
-by Dwork and Roth (Dwork & Roth, 2014, Theorem 3.23), with respect to the sensitivity-(2λ) functions
-q(v1 , D) − q(v`+1 , D). Denote the output ` of the algorithm at Step 3 by S(D).
-We now establish that Step 4 provides differential privacy. Following Chaudhuri et al. (2014), we let
-A(`, D) capture the behavior of the algorithm in Step 4, where on receiving ` from Step 3, it samples from
-the exponential mechanism on the top ` elements. They proved the following lemma about A(`, D):
-Lemma 5.2 ((Chaudhuri et al., 2014, Lemma 5)). If D satisfies the (`, γ)-margin condition with
-
-
-2 ln(`/δ 0 )
-γ ≥ 2λ 1 +
-ε
-for some δ 0 > 0, then for every neighbor D0 ∼ D and any T ⊆ V , we have
-Pr[A(`, D) ∈ T ] ≤ eε/2 Pr[A(`, D0 ) ∈ T ] + δ 0 .
-16
-
-Now fix neighboring datasets D ∼ D0 . Let L denote the set of ` for which q(v1 , D) − q(v`+1 , D) ≥ g` .
-By definition, if ` = S(D) ∈ L, then D indeed satisfies the (`, g` )-margin condition. Moreover, by tail
-bounds on the Laplace distribution,
-
-
-Pr[S(D) ∈
-/ L] ≤ Pr Z > 8λ ln(2/δ)/ε ∨ ∃` ∈ {1, . . . , |V |} : Z` < −16λ ln(7`2 /δ)/ε
-|V |
-
-δ X 6δ
-≤ +
 4
-4π 2 `2
-`=1
+
+LUCB-G
+
+5
+
+ALL
+
+4
+
+Racing
+
+3
+3
+−1 −3 −5 −7
 
 δ
-≤ .
+
+LUCB-G
 2
-Hence, we have that for any T ⊆ V ,
-X
-Pr[LMM(D) ∈ T ] ≤
-Pr[LMM(D) ∈ T |S(D) = `] · Pr[S(D) = `] + Pr[S(D) ∈
-/ L]
-`∈L
+δ
+−1 −3 −5 −7
 
-≤
+(a) first-game
 
-X
+(b) first-game
 
-≤
+Pulls
+5
+4.5
 
-X
+ALL
+Racing
+LUCB-G
 
-Pr[LMM(D) ∈ T |S(D) = `] · eε/2 Pr[S(D0 ) = `] +
-
-`∈L
-
-`∈L
-ε
+4
+−1 −3 −5 −7
 
 δ
+
+(c) second-game
+
+4.2. A racing algorithm
+Finally, we present another algorithm, along the line of racing algorithms for BAI (Even-Dar et al., 2006; Maron &
+Moore, 1997). A racing algorithm maintains a set of active
+arms, and during each round it samples all the active arms
+and then eliminates some arms according to certain rules.
+However, we cannot eliminate an arm when the algorithm
+“knows” it cannot be the NE immediately. Consider a 2 × 2
+game. Suppose an algorithm determines (1, 1) 6= s̄r (1),
+and eliminates it immediately. Then we cannot determine
+whether (2, 1) is NE or not. Therefore, our racing algorithm eliminates arm s only if Alg. 2 determines that
+∗
+∗
+∗
+s ∈
+/ {s̄∗r (s[1],
+q s̄c (s[2]))} or s̄r (s[1]) 6= s̄c (s[2]). Let
 2
 
-δ
-δ
-(eε/2 Pr[LMM(D0 ) ∈ T |S(D0 ) = `] + e−ε/2 ) · eε/2 Pr[S(D0 ) = `] +
-2
-2
-
-by Lemma 5.2
-
-≤ e Pr[LMM(D0 ) ∈ T ] + δ
-This completes the privacy proof of Proposition 5.1.
-Utility Analysis of Proposition 5.1. Suppose D satisfies the (`, β)-margin condition with
-γ≥
-
-24λ ln(1/β)
-+ G` ,
-ε
-
-for some β > 0. By the tail bound for the Laplace distribution and a union bound, we have that with
-probability at least 1 − β,
-8 1
-16 1
-Z ≥ ln
-and Z` ≤
-ln .
-λ β
-λ
-β
-Let E be the event where this occurs. If E occurs, then indeed we have
-(q(v1 , D) + Z) − q(v`+1 , D) > G` + Z` ,
-and hence Step 3 terminates outputting some `0 ≤ `. By Proposition 2.5, it follows that
-E[q(v̂, D)|E] ≥ OPT −
-
-4λ · ln `
-.
-ε
-
-Replacing the exponential mechanism with the large margin mechanism gives analogues of our results
-for monotone submodular maximization with a cardinality constraint, monotone submodular maximization
-over a p-extendible system, and non-monotone submodular maximization with a cardinality constraint:
-
-17
-
-Theorem 5.3. Suppose fD : 2V → R is monotone and has sensitivity λ. Then instantiating Algorithm 1
-with O = LMM and parameters ε0 , δ0 = 0 provides (kε0 , kδ0 )-differential
-privacy. It also provides
-p
-(ε, δ 0 + kδ0 )-differential privacy for every δ 0 > 0 with ε = kε2 /2 + ε · 2k ln(1/δ 0 ).
-Moreover, for every D ∈ X n , there exists an event E with Pr[E] ≥ 1 − β such that
-
-
-k
-X
-1
-4λ ln `i
-E [fD (Sk )|E] ≥ 1 −
-OPT −
-e
-ε0
-i=1
-
-where Sk ←R G LMM (D), and D satisfies the (`i , γi )-margin condition with respect to every function of the
-form qi (v, D) = fD (Ŝi−1 ∪ {v}) − fD (Ŝi−1 ), with γi = 24λ ln(k/β)/ε + G`i .
-Theorem 5.4. Instantiating Algorithm 2 with O = LMM under all of the conditions of Theorem 5.3 gives
-the same privacy guarantee (replacing k with r(I)) and gives
-r(I)
-X 4λ ln `i
-1
-E [fD (S)|E] ≥
-.
-· OPT −
-p+1
-ε0
-i=1
-
-Theorem 5.5. Instantiating Algorithm 4 with O = LMM under all of the conditions of Theorem 5.3 gives
-the same privacy guarantee and gives
-
-
-k
-X
-1
-1
-4λ ln `i
-E [fD (Sk )|E] ≥
-1−
-OPT −
-.
-e
-e
-ε0
-i=1
-Moreover, if fD is monotone, then
-k
-X
-4λ ln `i
-E [fD (Sk )|E] ≥ 0.468 OPT −
-.
-ε0
-i=1
-
-6
-
-Experimental Results
-
-In this section we describe two concrete applications of our mechanisms.
-
-6.1
-
-Location Privacy
-
-We analyze a dataset of 10,000 Uber pickups in Manhattan in April 2014 (UberDataset). Each individual
-entry in the dataset consists of the longitude and latitude coordinates of the pickup location. We want to
-use this dataset to select k public locations as waiting spots for idle Uber drivers, while also guaranteeing
-differential privacy for the passengers whose locations appear in this dataset.1 We consider two different
-public sets of locations L:
-• LP opular is a set of 33 popular locations in Manhattan.
-• LGrid is a set of 33 locations spread evenly across Manhattan in a grid-like manner.
-We define a utility function M (i, j) to be the normalized Manhattan distance between a pickup location
-i and the waiting location j. That is, if pickup location i is located at coordinates (i1 , i2 ) and the waiting
-|i1 − j1 | + |i2 − j2 |
-location j is located at coordinates (j1 , j2 ), then M (i, j) =
-, where m = 0.266 is simm
-ply the Manhattan distance between the two furthest spread apart points in Manhattan. This normalization
-1
-
-Under the assumption that each pickup corresponds to a unique individual.
-
-18
-
-(a) LP opular
-
-(e) LP opular :
-greedy
-
-(b) LGrid
-
-Non-private
-
-(c) LP opular
-
-(f) LP opular : EM-based greedy
-
-(d) LGrid
-
-(g) LGrid : Non- (h) LGrid : EMprivate greedy
-based greedy
-
-Figure 1: (a) and (b) show utility for various cardinalities (k). (c) and (d) fix k = 3 and show utility for
-various privacy parameters (). Utility is normalized to be between 0 and 1. (e) - (h) shows a representative
-top 3 set under various settings.
-
-19
-
-ensures that 0 ≤ M (i, j) ≤ 1, for all i, j. In order
-to make sure we have a maximization problem, we define
-X
-the following objective function: fD (S) = n −
-min M (i, j), where n = |D| = 10000.
-i∈D
-
-j∈S
-
-Observation 6.1. The function fD is λ-decomposable for λ = 1 (and hence has sensitivity 1).
-This form of objective function is known to be monotone submodular and so we can use the greedy
-algorithms studied in this paper. We use  = 0.1 and δ = 2−20 . For our settings of parameters, “basic
-composition” outperforms “advanced composition,” so the privacy budget of  = 0.1 is split equally across
-the k iterations, meaning the mechanism at each iteration uses 0 = k . Our figures plot the average utility
-across 100 simulations.
-From Figures 1(a) and (b) we see that the results for both LP opular and LGrid are relatively similar and
-unsurprising. The non-private greedy algorithm achieves the highest utility, but both the exponential mechanism (EM)-based greedy and large margin mechanism (LMM)-based greedy algorithms exhibit comparable
-utility while preserving a high level of privacy. Interestingly, we also see that the utilities of the EM-based
-and LMM-based algorithms are almost identical for both LP opular and LGrid . This indicates that our mechanisms are actually selecting good locations, rather than just getting lucky because there are a lot of good
-locations to choose from.
-
-Diabetes
-
-Insulin
-
-High Blood Pressure
-
-Overweight
-
-Insulin
-
-Blood Transfusion
-
-Overweight
-
-Insulin
-
-Vigorous Exercise
-
-Gender
-
-Non-Private
-Greedy
-
-Exponential
-Mechanism
-
-Asthma
-
-Taking
-Insulin
-
-Vigorous
-Exercise
-
-High
-Blood
-Pressure
-
-(a) Graphical model of Naive Bayes
-
-Large Margin
-Mechanism
-
-(b) Expected mutual information
-
-(c) Representative top 3 features
-
-Figure 2: Privately selecting health features, from national health examination surveys, that correlate most
-with diabetes.
-Figures 1(c) and (d) show how the utility of the EM-based and LMM-based algorithms vary with the
-privacy parameter . We can also think of this as varying the dataset size for a fixed . We fix k = 3 and
-take the average of 100 simulations for each value of . We see that even for very small , our algorithms
-outperform fully random selection. As  increases, so does the utility. It is not shown in this figure, but
-varying δ has very little effect.
-From Figures 1(e) - (h), we see that the both the non-private and private algorithms select public locations that are relatively close to each other. For example, for the LP opular set of locations, the Empire
-State Building is close to the New York Public Library, the Soho Grand Hotel is close to NYU, and the
-Grand Army Plaza is close to the UN Headquarters. As a result, the private mechanisms manage to achieve
-comparable utility, while also masking the users’ exact locations.
-The theory described in Section 5 suggests that, at least asymptotically, the large margin mechanismbased algorithm should outperform the exponential mechanism-based algorithm. However, in our experiments, we find that the large margin mechanism is generally only able to find a margin in the first iteration
-of the greedy algorithm. This is because the threshold for finding a margin depends only on , δ, and n and
-20
-
-thus it stays the same across all k iterations. On the other hand, the marginal gain at each iteration drops very
-quickly, so the mechanism fails to find a margin and thus samples from all remaining locations. However,
-since the large margin mechanism spends half of its privacy budget to try to find a margin, the sampling
-step gives slightly worse guarantees than does the plain exponential mechanism, thus giving us the slightly
-weaker results we see in the figures.
-
-6.2
-
-Feature Selection Privacy
-
-We analyze a dataset created from a combination of National Health Examination Surveys ranging from
-2007 to 2014 (NHANESDataset). There are n = 23, 876 individuals in the dataset with information on
-whether or not they have diabetes, along with m = 23 other potentially related binary health features. Our
-goal is to privately select k of these features that provide as much information about the diabetes class
-variable as possible.
-More specifically, our goal is to maximize the mutual information between Y and XS , where Y is a
-binary random variable indicating whether or not an individual has diabetes and XS is a random variable
-that represents a set S of k binary health features. Mutual information
-takes
-
- the form:
-XX
-p(x, y)
-I(Y ; X) =
-p(x, y) log2
-.
-p(x)p(y)
-y∈Y x∈X
-
-Under the Naive Bayes assumption, we suppose the joint distribution on (Y, X1 , . . . , Xk ) takes the form
-k
-Y
-p(y, x1 , . . . , xk ) = p(y)
-p(xi | y). Therefore, we can easily specify the entire probability distribution by
-i=1
-
-finding each p(xi | y). We estimate each p(xi | y) by counting frequencies in the dataset.
-Our goal is to choose a size k subset S of the features in order to maximize fD (S) = I(Y ; XS ). Mutual
-information (under the Naive Bayes assumption) for feature selection is known to be monotone submodular
-in S (Krause & Guestrin, 2005), and thus we can apply the greedy algorithms described in this paper.
-Claim 6.2. In iteration i of the greedy algorithm, the sensitivity of fD (S) is
-
-(2i+1) log2 (n)
-.
-n
-
-We run 1,000 simulations with  = 1.0 and δ = 2−20 . As we can see from Figure 2(b), our private
-mechanisms maintain a comparable utility relative to the non-private algorithm. We also observe an interesting phenomenon where the expected utility obtained by our mechanism is not necessarily monotonically
-increasing with the number of features selected. This is an artifact of the fact that if we are selecting k
-features, then composition requires us to divide  so that each iteration uses privacy budget k . This is problematic for this particular application because there happens to be one feature (insulin administration) that
-has much higher value than the rest. Therefore, the reduced probability of picking this single best feature
-(as a result of the lower privacy parameter k ) is not compensated for by selecting more features.
-From Figure 2(c), we see that both the private and non-private mechanisms generally select insulin
-administration as the top feature. However, while all three of the top features selected by the non-private
-algorithm are clearly related to diabetes, the non-private mechanisms tend to select one feature (in our case,
-gender or having received a blood transfusion) that may not be quite as relevant.
-
-7
-
-Conclusion
-
-We have presented a general framework for maximizing submodular functions while guaranteeing differential privacy. Our results demonstrate that simple and flexible greedy algorithms can preserve privacy while
-21
-
-achieving competitive guarantees for a variety of submodular maximization problems: for all functions
-under cardinality constraints, as well as for monotone functions under matroid and p-extendible system constraints. Via our motivation to identify algorithms that could be made differentially private, we discovered
-a non-monotone submodular maximization algorithm that achieves guarantees that are novel even without
-concern for privacy. Finally, our experiments show that our algorithms are indeed competitive with their
-non-private counterparts.
-Acknowledgments. This work was supported by DARPA Young Faculty Award (D16AP00046), SimonsBerkeley fellowship, and ERC StG 307036. This work was done in part while Amin Karbasi and Andreas
-Krause were visiting the Simons Institute for the Theory of Computing.
+log(cmnγ /δ)
+. Our racing algorithm is shown
+β1 (γ) =
+2γ
+in Alg. 2, whose stopping and recommendation rules are:
+• If only an arm is not eliminated after round γ, then
+recommend this arm as NE.
+
+• If all arms are eliminated after round γ, then the algorithm determines N E = none.
+As shown in Theorem 5, this algorithm is δ-PAC and it will
+terminate in finite time step with probability at least 1 − δ.
+Theorem 5. Alg. 2 is δ-PAC and will terminate in finite
+time with probability at least 1 − δ.
+Proof. We put the proof in Appendix F.
+
+5. Experiments
+We now empirically verify the sample complexity of our
+algorithms. We choose a simple algorithm as our baseline
+(denoted by ALL), which pulls all arms at each round until stopping. The stopping and recommendation rules are
+
+Figure 1. The results on two simulated games.
+
+the same as LUCB-G, and the confidence bound for this
+baseline is slightly different, see Appendix G for details.
+We evaluate on synthetic 5×5 games, where the payoffs are
+all random Bernoulli variables. The first game has a NE,
+while the second game has no NE. The results are shown
+in Fig. 1, where both axes are in log-scale with base 10.
+The number of pulls needed for both games are shown in
+Fig. 1(a) and Fig. 1(c) separately and our algorithms outperform the baseline (i.e., ALL). Fig. 1(b) shows the number of pulls on s ∈
+/ nei(s∗ ) in the first game and we can see
+that this number is bounded, agreeing with our analysis.
+
+6. Conclusions and Discussions
+We analyze the two-player zero-sum static game with random payoffs via efficient sampling and give a lower bound
+of the sample complexity in the case that the Nash Equilibrium (NE) exists. We then present two δ-PAC algorithms
+to identify the NE. They follow two lines of algorithms for
+the best arm identification problem in the fixed confidence
+setting. The sample complexity of the first algorithm is optimal within a constant gap if NE exists.
+As we cannot give an explicit form for the expectation
+number of pulls wasting on arms in neither the row nor the
+column of the NE, our lower bound can be loose to some
+extent. It is worth of having a further study for tighter lower
+bounds. Moreover, an analysis of the sample complexity in
+the case that NE does not exist is still an open problem, and
+we expect better work on it in the future.
+
+Identify the Nash Equilibrium in Static Games with Random Payoffs
+
+Acknowledgements
+This work is supported by the National Basic Research
+(973) Program of China (No. 2013CB329403), NSFC
+Projects (Nos. 61620106010 and 61621136008), and the
+Youth Top-notch Talent Support Program.
 
 References
-Bassily, Raef, Smith, Adam D., and Thakurta, Abhradeep. Private empirical risk minimization: Efficient
-algorithms and tight error bounds. In FOCS, pp. 464–473, 2014.
-Bassily, Raef, Nissim, Kobbi, Smith, Adam D., Steinke, Thomas, Stemmer, Uri, and Ullman, Jonathan.
-Algorithmic stability for adaptive data analysis. In STOC, pp. 1046–1059, 2016.
-Beimel, Amos, Nissim, Kobbi, and Stemmer, Uri. Private learning and sanitization: Pure vs. approximate
-differential privacy. Theory of Computing, 12(1):1–61, 2016.
-Buchbinder, Niv, Feldman, Moran, Naor, Joseph, and Schwartz, Roy. Submodular maximization with
-cardinality constraints. In SODA, pp. 1433–1452, 2014.
-Bun, Mark and Steinke, Thomas. Concentrated differential privacy: Simplifications, extensions, and lower
-bounds. In TCC, pp. 635–658, 2016.
-Bun, Mark, Nissim, Kobbi, Stemmer, Uri, and Vadhan, Salil P. Differentially private release and learning of
-threshold functions. In FOCS, pp. 634–649, 2015.
-Călinescu, Gruia, Chekuri, Chandra, Pál, Martin, and Vondrák, Jan. Maximizing a monotone submodular
-function subject to a matroid constraint. SIAM Journal on Computing, 2011.
-Chaudhuri, Kamalika, Hsu, Daniel J., and Song, Shuang. The large margin mechanism for differentially
-private maximization. In NIPS, pp. 1287–1295, 2014.
-Cheraghchi, Mahdi, et al. Submodular functions are noise stable. In SODA, 2012.
-Dwork, Cynthia and Lei, Jing. Differential privacy and robust statistics. In STOC, pp. 371–380, 2009.
-Dwork, Cynthia and Roth, Aaron. The algorithmic foundations of differential privacy. Foundations and
-Trends in Theoretical Computer Science, 9(3-4):211–407, 2014.
-Dwork, Cynthia, McSherry, Frank, Nissim, Kobbi, and Smith, Adam D. Calibrating noise to sensitivity in
-private data analysis. In TCC, pp. 265–284, 2006.
-Dwork, Cynthia, Rothblum, Guy N., and Vadhan, Salil P. Boosting and differential privacy. In FOCS, pp.
-51–60, 2010.
-Feige, U., Mirrokni, V., and Vondrak, J. Maximizing non-monotone submodular functions. In FOCS, 2007.
-22
+Audibert, Jean-Yves and Bubeck, Sébastien. Best arm
+identification in multi-armed bandits. In COLT-23th
+Conference on Learning Theory-2010, pp. 13–p, 2010.
+Auer, Peter, Cesa-Bianchi, Nicolo, and Fischer, Paul.
+Finite-time analysis of the multiarmed bandit problem.
+Machine learning, 47(2-3):235–256, 2002.
+Babichenko, Yakov. Query complexity of approximate
+nash equilibria. Journal of the ACM (JACM), 63(4):36,
+2016.
+Chen, Xi, Deng, Xiaotie, and Teng, Shang-Hua. Settling
+the complexity of computing two-player nash equilibria.
+Journal of the ACM (JACM), 56(3):14, 2009.
+Daskalakis, Constantinos, Goldberg, Paul W, and Papadimitriou, Christos H. The complexity of computing a nash
+equilibrium. SIAM Journal on Computing, 39(1):195–
+259, 2009.
+Even-Dar, Eyal, Mannor, Shie, and Mansour, Yishay.
+Action elimination and stopping conditions for the
+multi-armed bandit and reinforcement learning problems. Journal of machine learning research, 7(Jun):
+1079–1105, 2006.
+Fearnley, John and Savani, Rahul. Finding approximate
+nash equilibria of bimatrix games via payoff queries.
+ACM Transactions on Economics and Computation
+(TEAC), 4(4):25, 2016.
+Fearnley, John, Gairing, Martin, Goldberg, Paul W, and
+Savani, Rahul. Learning equilibria of games via payoff queries. Journal of Machine Learning Research, 16:
+1305–1344, 2015.
+Garivier, Aurélien, Kaufmann, Emilie, and Koolen,
+Wouter M. Maximin action identification: A new bandit framework for games. In 29th Annual Conference on
+Learning Theory, pp. 1028–1050, 2016.
+Goldberg, Paul W and Roth, Aaron. Bounds for the query
+complexity of approximate equilibria. ACM Transactions on Economics and Computation (TEAC), 4(4):24,
+2016.
 
-Feldman, Moran, Naor, Joseph, and Schwartz, Roy. A unified continuous greedy algorithm for submodular
-maximization. In FOCS, 2011.
-Feldman, Moran, Harshaw, Christopher, and Karbasi, Amin. Greed is good: Near-optimal submodular
-maximization via greedy optimization. In COLT, 2017.
-Fisher, Marshall L., Nemhauser, George L., and Wolsey, Laurence A. An analysis of approximations for
-maximizing submodular set functions - II. Mathematical Programming Study, (8), 1978.
-Gupta, Anupam, Ligett, Katrina, McSherry, Frank, Roth, Aaron, and Talwar, Kunal. Differentially private
-combinatorial optimization. In SODA, pp. 1106–1125, 2010.
-Hassidim, Avinatan and Singer, Yaron. Submodular optimization under noise. CoRR, abs/1601.03095,
-2016. URL http://arxiv.org/abs/1601.03095.
-Jenkyns, T. A. The efficacy of the “greedy” algorithm. In South Eastern Conference on Combinatorics,
-Graph Theory and Computing, 1976.
-Kempe, David, Kleinberg, Jon, and Tardos, Éva. Maximizing the spread of influence through a social
-network. In KDD, 2003.
-Kirchhoff, Katrin and Bilmes, Jeff. Submodularity for data selection in statistical machine translation. In
-EMNLP, 2014.
-Krause, A. and Guestrin, C. Near-optimal nonmyopic value of information in graphical models. In UAI,
-2005.
-Krause, Andreas and Gomes, Ryan G. Budgeted nonparametric learning from data streams. In ICML, 2010.
-Lin, Hui and Bilmes, Jeff. A class of submodular functions for document summarization. In ACL, 2011.
-McSherry, Frank and Talwar, Kunal. Mechanism design via differential privacy. In FOCS, pp. 94–103,
-2007.
-Mestre, Julián. Greedy in approximation algorithms. In ESA, pp. 528–539, 2006.
-Mirzasoleiman, Baharan, Badanidiyuru, Ashwinkumar, Karbasi, Amin, Vondrak, Jan, and Krause, Andreas.
-Lazier than lazy greedy. In AAAI, 2015.
-Mirzasoleiman, Baharan, Badanidiyuru, Ashwinkumar, and Karbasi, Amin. Fast constrained submodular
-maximization: Personalized data summarization. In ICML, 2016a.
-Mirzasoleiman, Baharan, Zadimoghaddam, Morteza, and Karbasi, Amin. Fast distributed submodular cover:
-Public-private data summarization. In NIPS, 2016b.
-Nemhauser, George L., Wolsey, Laurence A., and Fisher, Marshall L. An analysis of approximations for
-maximizing submodular set functions - I. Mathematical Programming, 1978.
-NHANESDataset. National health and nutrition examination survey (2007 - 2014). URL https://wwwn.
-cdc.gov/nchs/nhanes/default.aspx.
+Goldberg, Paul W and Turchetta, Stefano. Query complexity of approximate equilibria in anonymous games. In International Conference on Web and Internet Economics,
+pp. 357–369. Springer, 2015.
+Hart, Sergiu and Nisan, Noam. The query complexity of
+correlated equilibria. Games and Economic Behavior,
+2016.
+Jamieson, Kevin and Nowak, Robert. Best-arm identification algorithms for multi-armed bandits in the fixed
+confidence setting. In Information Sciences and Systems
+(CISS), 2014 48th Annual Conference on, pp. 1–6. IEEE,
+2014.
+Jordan, Patrick R, Vorobeychik, Yevgeniy, and Wellman,
+Michael P. Searching for approximate equilibria in empirical games. In Proceedings of the 7th international
+joint conference on Autonomous agents and multiagent
+systems-Volume 2, pp. 1063–1070. International Foundation for Autonomous Agents and Multiagent Systems,
+2008.
+Kalyanakrishnan, Shivaram, Tewari, Ambuj, Auer, Peter,
+and Stone, Peter. Pac subset selection in stochastic multiarmed bandits. In Proceedings of the 29th International
+Conference on Machine Learning (ICML-12), pp. 655–
+662, 2012.
+Kaufmann, Emilie, Cappé, Olivier, and Garivier, Aurélien.
+On the complexity of best arm identification in multiarmed bandit models. The Journal of Machine Learning
+Research, 2015.
+Lai, Tze Leung and Robbins, Herbert. Asymptotically efficient adaptive allocation rules. Advances in applied
+mathematics, 6(1):4–22, 1985.
+Mannor, Shie and Tsitsiklis, John N. The sample complexity of exploration in the multi-armed bandit problem. Journal of Machine Learning Research, 5(Jun):
+623–648, 2004.
+Maron, Oded and Moore, Andrew W. The racing algorithm: Model selection for lazy learners. In Lazy learning, pp. 193–225. Springer, 1997.
+Osborne, Martin J and Rubinstein, Ariel. A course in game
+theory. MIT press, 1994.
+Tsybakov, Alexandre B. Introduction to nonparametric estimation. Springer, 2009.
+Vorobeychik, Yevgeniy, Wellman, Michael P, and Singh,
+Satinder. Learning payoff functions in infinite games.
+Machine Learning, 67(1-2):145–168, 2007.
 
-23
+Identify the Nash Equilibrium in Static Games with Random Payoffs
 
-Papadimitriou, Christos H., Schapira, Michael, and Singer, Yaron. On the hardness of being truthful. In
-FOCS, pp. 250–259, 2008.
-Singla, Adish, Bogunovic, Ilija, Bartók, Gábor, Karbasi, Amin, and Krause, Andreas. Near-optimally teaching the crowd to classify. In ICML, 2014.
-Sipos, Ruben, Swaminathan, Adith, Shivaswamy, Pannaga, and Joachims, Thorsten. Temporal corpus summarization using submodular word coverage. In CIKM, 2012.
-Song, Shuang, Chaudhuri, Kamalika, and Sarwate, Anand D. Stochastic gradient descent with differentially
-private updates. In GlobalSIP, pp. 245–248, 2013.
-UberDataset.
-Uber pickups in new york city.
-URL https://www.kaggle.com/
-fivethirtyeight/uber-pickups-in-new-york-city.
-
-24
+Walsh, William E, Parkes, David C, and Das, Rajarshi.
+Choosing samples to compute heuristic-strategy nash
+equilibrium. In International Workshop on AgentMediated Electronic Commerce, pp. 109–123. Springer,
+2003.
+Wellman, Michael P. Methods for empirical game-theoretic
+analysis. In Proceedings of the National Conference on
+Artificial Intelligence, volume 21, pp. 1552. Menlo Park,
+CA; Cambridge, MA; London; AAAI Press; MIT Press;
+1999, 2006.
 
 

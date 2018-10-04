@@ -1,1123 +1,830 @@
-Maximum Selection and Ranking under Noisy Comparisons
-Moein Falahatgar 1 Alon Orlitsky 1 Venkatadheeraj Pichapati 1 Ananda Theertha Suresh 2
+Understanding Black-box Predictions via Influence Functions
+Pang Wei Koh 1 Percy Liang 1
 
 Abstract
-We consider (✏, )-PAC maximum-selection and
-ranking using pairwise comparisons for general
-probabilistic models whose comparison probabilities satisfy strong stochastic transitivity and
-stochastic triangle inequality. Modifying the
-popular knockout tournament, we propose a
-simple maximum-selection algorithm that uses
-O ✏n2 1 + log 1 comparisons, optimal up to a
-constant factor. We then derive a general framework that uses noisy binary search to speed up
-many ranking algorithms, and combine it with
-merge sort to obtain a ranking algorithm that uses
-O ✏n2 log n(log log n)3 comparisons for = n1 ,
-optimal up to a (log log n)3 factor.
+How can we explain the predictions of a blackbox model? In this paper, we use influence functions — a classic technique from robust statistics — to trace a model’s prediction through the
+learning algorithm and back to its training data,
+thereby identifying training points most responsible for a given prediction. To scale up influence
+functions to modern machine learning settings,
+we develop a simple, efficient implementation
+that requires only oracle access to gradients and
+Hessian-vector products. We show that even on
+non-convex and non-differentiable models where
+the theory breaks down, approximations to influence functions can still provide valuable information. On linear models and convolutional neural networks, we demonstrate that influence functions are useful for multiple purposes: understanding model behavior, debugging models, detecting dataset errors, and even creating visuallyindistinguishable training-set attacks.
 
 1. Introduction
-1.1. Background
-Maximum selection and sorting using pairwise comparisons are computer-science staples taught in most introductory classes and used in many applications. In fact, sorting,
-also known as ranking, was once claimed to utilize 25% of
-all computer cycles, e.g., (Mukherjee, 2011).
-In many applications, the pairwise comparisons produce
-only random outcomes. In sports, tournaments rank teams
-based on pairwise matches whose outcomes are probabilistic in nature. For example, Microsoft’s TrueSkill (Herbrich
-et al., 2006) software matches and ranks thousands of Xbox
-gamers based on individual game results. And in online advertising, out of a myriad of possible ads, each web page
-may display only a few, and a user will typically select at
-most one. Based on these random comparisons, ad companies such as Google, Microsoft, or Yahoo, rank the ads’ appeal (Radlinski & Joachims, 2007; Radlinski et al., 2008).
-These and related applications have brought about a resur1
+A key question often asked of machine learning systems
+is “Why did the system make this prediction?” We want
+models that are not just high-performing but also explainable. By understanding why a model does what it does, we
+can hope to improve the model (Amershi et al., 2015), discover new science (Shrikumar et al., 2016), and provide
+end-users with explanations of actions that impact them
+(Goodman & Flaxman, 2016).
+However, the best-performing models in many domains —
+e.g., deep neural networks for image and speech recognition (Krizhevsky et al., 2012) — are complicated, blackbox models whose predictions seem hard to explain. Work
+on interpreting these black-box models has focused on understanding how a fixed model leads to particular predictions, e.g., by locally fitting a simpler model around the test
+1
 
-University of California, San Diego 2 Google Research.
-Correspondence to:
-Venkatadheeraj Pichapati <dheerajpv7@ucsd.edu>.
-th
-
-Proceedings of the 34 International Conference on Machine
+Stanford University, Stanford, CA. Correspondence to:
+Pang Wei Koh <pangwei@cs.stanford.edu>, Percy Liang <pliang@cs.stanford.edu>.
+Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-gence of interest in maximum selection and ranking using noisy comparisons. Several probabilistic models
-were considered, including the popular Bradley-TerryLuce (Bradley & Terry, 1952) and its Plackett-Luce (PL)
-generalization (Plackett, 1975; Luce, 2005). Yet even for
-such specific models, the number of pairwise comparisons
-needed, or sample complexity, of maximum selection and
-ranking was known only to within a log n factor. We consider a significantly broader class of models and yet propose algorithms that are optimal up to a constant factor for
-maximum selection and up to (log log n)3 for ranking.
-1.2. Notation
-Noiseless comparison assumes an unknown underlying
-ranking r(1), . . . ,r(n) of the elements in {1, . . . ,n} such
-that if two elements are compared, the higher-ranked one
-is selected. Similarly for noisy comparisons, we assume
-an unknown ranking of the elements, but now if two elements i and j are compared, i is chosen with some unknown probability p(i, j) and j is chosen with probability p(j, i) = 1 p(i, j), where if i is higher-ranked, then
-1
-p(i, j)
-2 . Repeated comparisons are independent of
-each other.
-Let p̃(i, j) = p(i, j) 12 reflect the additional probability
-by which i is preferable to j. Note that p̃(j, i) = p̃(i, j)
-and p̃(i, j) 0 if r(i) > r(j). |p̃(i, j)| can also be seen as
-a measure of dissimilarity between i and j. Following (Yue
-& Joachims, 2011), we assume that two natural properties, satisfied for example by the PL model, hold whenever
-r(i) > r(j) > r(k): Strong Stochastic Transitivity (SST),
-p̃(i, k) max(p̃(i, j), p̃(j, k)), and Stochastic Triangle Inequality (STI), p̃(i, k)  p̃(i, j) + p̃(j, k).
-Two types of algorithms have been proposed for maximum selection and ranking under noisy comparisons: nonadaptive or offline (Rajkumar & Agarwal, 2014; Negahban
-et al., 2012; 2016; Jang et al., 2016) where the comparison pairs are chosen in advance, and adaptive or online
-where the comparison pairs are selected sequentially based
-on previous comparison results. We focus on the latter.
+point (Ribeiro et al., 2016) or by perturbing the test point to
+see how the prediction changes (Simonyan et al., 2013; Li
+et al., 2016b; Datta et al., 2016; Adler et al., 2016). These
+works explain the predictions in terms of the model, but
+how can we explain where the model came from?
+In this paper, we tackle this question by tracing a model’s
+predictions through its learning algorithm and back to the
+training data, where the model parameters ultimately derive from. To formalize the impact of a training point on a
+prediction, we ask the counterfactual: what would happen
+if we did not have this training point, or if the values of this
+training point were changed slightly?
+Answering this question by perturbing the data and retraining the model can be prohibitively expensive. To overcome
+this problem, we use influence functions, a classic technique from robust statistics (Cook & Weisberg, 1980) that
+tells us how the model parameters change as we upweight
+a training point by an infinitesimal amount. This allows us
+to “differentiate through the training” to estimate in closedform the effect of a variety of training perturbations.
+Despite their rich history in statistics, influence functions
+have not seen widespread use in machine learning; to the
+best of our knowledge, the work closest to ours is Wojnowicz et al. (2016), which introduced a method for approximating a quantity related to influence in generalized
+linear models. One obstacle to adoption is that influence functions require expensive second derivative calculations and assume model differentiability and convexity,
+which limits their applicability in modern contexts where
+models are often non-differentiable, non-convex, and highdimensional. We address these challenges by showing that
+we can efficiently approximate influence functions using
+second-order optimization techniques (Pearlmutter, 1994;
+Martens, 2010; Agarwal et al., 2016), and that they remain
+accurate even as the underlying assumptions of differentiability and convexity degrade.
+Influence functions capture the core idea of studying models through the lens of their training data. We show that
+they are a versatile tool that can be applied to a wide variety
+of seemingly disparate tasks: understanding model behavior, debugging models, detecting dataset errors, and creating visually-indistinguishable adversarial training examples that can flip neural network test predictions, the training set analogue of Goodfellow et al. (2015).
 
-We specify the desired output via the (✏, )-PAC
-paradigm (Yue & Joachims, 2011; Szörényi et al., 2015)
-that requires the output to likely closely approximate the
-intended outcome. Specifically, given ✏, > 0, with prob-
+Understanding Black-box Predictions via Influence Functions
 
-Maximum Selection and Ranking under Noisy Comparisons
+2. Approach
 
-ability
-1
-, maximum selection must output an ✏1
-maximum element i such that for all j, p(i, j)
-✏.
-2
-Similarly, with probability 1
-, the ranking algorithm
-must output an ✏-ranking r0 (1), . . . ,r0 (n) such that whenever r0 (i) > r0 (j), p(i, j) 12 ✏.
-1.3. Outline
-In Section 2 we review past work and summarize our
-contributions. In Section 3 we describe and analyze our
-maximum-selection algorithm. In Section 4 we propose
-and evaluate the ranking algorithm. In Section 5 we experimentally compare our algorithms with existing ones. In
-Section 6 we mention some future directions.
+2.2. Perturbing a training input
 
-2. Old and new results
-2.1. Related work
-Several researchers studied algorithms that with probability 1
-find the exact maximum and ranking. (Feige
-et al., 1994) considered a simple model where the elements are ranked, and p̃(i, j) = ✏ whenever r(i) > r(j).
-(Busa-Fekete et al., 2014a) considered comparison probabilities p(i, j) satisfying the Mallows model (Mallows,
-1957). And (Urvoy et al., 2013; Busa-Fekete et al., 2014b;
-Heckel et al., 2016) considered general comparison probabilities, without an underlying ranking assumption, and derived rankings based on Copeland- and Borda-counts, and
-random-walk procedures. As expected, when the comparison probabilities approach half, the above algorithms require arbitrarily many comparisons.
-To achieve finite complexity even with near-half comparison probabilities, researchers adopted the PAC paradigm.
-For the PAC model with SST and STI constraints, (Yue &
-Joachims, 2011) derived a maximum-selection algorithm
-with sample complexity O ✏n2 log ✏n and used it to bound
-the regret of the problem’s dueling-bandits variant. Related
-results appeared in (Syrgkanis et al., 2016). For the PL
-model, (Szörényi et al., 2015) derived a PAC ranking algorithm with sample complexity O( ✏n2 log n log ✏n ).
-Deterministic adversarial versions of the problem were
-considered by (Ajtai et al., 2015), and by (Acharya et al.,
-2014a; 2016) who were motivated by density estimation (Acharya et al., 2014b).
-2.2. New results
-We consider (✏, )-PAC adaptive maximum selection and
-ranking using pairwise comparisons under SST and STI
-1
-constraints. Note that when ✏
-1 1/n for
-2 or
-maximum selection and
-1 1/n2 for ranking, any
-output is correct. We show for ✏ < 1/4, < 12 and any n:
-
-• Maximum-selection algorithm with sample complexity O ✏n2 1 + log 1 , optimal up to a constant factor.
-• Ranking algorithm with O
-complexity.
-
+Consider a prediction problem from some input space X
+(e.g., images) to an output space Y (e.g., labels). We are
+given training points z1 , . . . , zn , where zi = (xi , yi ) ∈
+X × Y. For a point z and P
+parameters θ ∈ Θ, let
 n
+L(z, θ) be the loss, and let n1 i=1 L(zi , θ) be the empirical risk. The empirical risk minimizer is given by
+Pn
+def
+θ̂ = arg minθ∈Θ n1 i=1 L(zi , θ).1 Assume that the empirical risk is twice-differentiable and strictly convex in θ;
+in Section 4 we explore relaxing these assumptions.
+
+Let us develop a finer-grained notion of influence by studying a different counterfactual: how would the model’s predictions change if a training input were modified?
+
+2.1. Upweighting a training point
+Our goal is to understand the effect of training points on a
+model’s predictions. We formalize this goal by asking the
+counterfactual: how would the model’s predictions change
+if we did not have this training point?
+Let us begin by studying the change in model parameters due to removing a point z from the training set. Formally, this change is θ̂−z − θ̂, where
+P
+def
+θ̂−z = arg minθ∈Θ zi 6=z L(zi , θ). However, retraining
+the model for each removed z is prohibitively slow.
+Fortunately, influence functions give us an efficient approximation. The idea is to compute the parameter change if z
+were upweighted by some small , giving us new paramPn
+def
+eters θ̂,z = arg minθ∈Θ n1 i=1 L(zi , θ) + L(z, θ). A
+classic result (Cook & Weisberg, 1982) tells us that the influence of upweighting z on the parameters θ̂ is given by
+dθ̂,z 
+(1)
+= −Hθ̂−1 ∇θ L(z, θ̂),
+
+d =0
+Pn
+def
+where Hθ̂ = n1 i=1 ∇2θ L(zi , θ̂) is the Hessian and is
+positive definite (PD) by assumption. In essence, we form
+a quadratic approximation to the empirical risk around θ̂
+and take a single Newton step; see appendix A for a derivation. Since removing a point z is the same as upweighting
+it by  = − n1 , we can linearly approximate the parameter change due to removing z by computing θ̂−z − θ̂ ≈
+− n1 Iup,params (z), without retraining the model.
+def
+
+Iup,params (z) =
+
+Next, we apply the chain rule to measure how upweighting
+z changes functions of θ̂. In particular, the influence of
+upweighting z on the loss at a test point ztest again has a
+closed-form expression:
+dL(ztest , θ̂,z ) 
+(2)
+
+d
+=0
+dθ̂,z 
+= ∇θ L(ztest , θ̂)>
+
+d =0
+= −∇θ L(ztest , θ̂)> Hθ̂−1 ∇θ L(z, θ̂).
+def
+
+Iup,loss (z, ztest ) =
+
+1
+
+We fold in any regularization terms into L.
+
+def
+
+For a training point z = (x, y), define zδ = (x + δ, y).
+Consider the perturbation z 7→ zδ , and let θ̂zδ ,−z be the
+empirical risk minimizer on the training points with zδ in
+place of z. To approximate its effects, define the parameters
+def
+resulting from P
+moving  mass from z onto zδ : θ̂,zδ ,−z =
+n
+1
+arg minθ∈Θ n i=1 L(zi , θ) + L(zδ , θ) − L(z, θ). An
+analogous calculation to (1) yields:
+dθ̂,zδ ,−z 
+= Iup,params (zδ ) − Iup,params (z)
+
+d
+=0
+
+= −Hθ̂−1 ∇θ L(zδ , θ̂) − ∇θ L(z, θ̂) . (3)
+As before, we can make the linear approximation θ̂zδ ,−z −
+θ̂ ≈ − n1 (Iup,params (zδ ) − Iup,params (z)), giving us a closedform estimate of the effect of z 7→ zδ on the model. Analogous equations also apply for changes in y. While influence functions might appear to only work for infinitesimal (therefore continuous) perturbations, it is important to
+note that this approximation holds for arbitrary δ: the upweighting scheme allows us to smoothly interpolate between z and zδ . This is particularly useful for working with
+discrete data (e.g., in NLP) or with discrete label changes.
+If x is continuous and δ is small, we can further approximate (3). Assume that the input domain X ⊆ Rd , the parameter space Θ ⊆ Rp , and L is differentiable in θ and x.
+As kδk → 0, ∇θ L(zδ , θ̂) − ∇θ L(z, θ̂) ≈ [∇x ∇θ L(z, θ̂)]δ,
+where ∇x ∇θ L(z, θ̂) ∈ Rp×d . Substituting into (3),
+dθ̂,zδ ,−z 
+≈ −Hθ̂−1 [∇x ∇θ L(z, θ̂)]δ.
+
+d
+=0
+
+(4)
+
+We thus have θ̂zδ ,−z − θ̂ ≈ − n1 Hθ̂−1 [∇x ∇θ L(z, θ̂)]δ. Differentiating w.r.t. δ and applying the chain rule gives us
+
+def
+
+Ipert,loss (z, ztest )> = ∇δ L(ztest , θ̂zδ ,−z )> 
+(5)
+δ=0
+
+= −∇θ L(ztest , θ̂)> Hθ̂−1 ∇x ∇θ L(z, θ̂).
+Ipert,loss (z, ztest )> δ tells us the approximate effect that z 7→
+z + δ has on the loss at ztest . By setting δ in the direction of
+Ipert,loss (z, ztest ), we can construct local perturbations of z
+that maximally increase the loss at ztest . In Section 5.2, we
+will use this to construct training-set attacks. Finally, we
+note that Ipert,loss (z, ztest ) can help us identify the features
+of z that are most responsible for the prediction on ztest .
+2.3. Relation to Euclidean distance
+To find the training points most relevant to a test point, it
+is common to look at its nearest neighbors in Euclidean
+
+Understanding Black-box Predictions via Influence Functions
+
+Figure 1. Components of influence. (a) What is the effect of the training loss and Hθ̂−1 terms in Iup,loss ? Here, we plot Iup,loss against
+variants that are missing these terms and show that they are necessary for picking up the truly influential training points. For these
+calculations, we use logistic regression to distinguish 1’s from 7’s in MNIST (LeCun et al., 1998), picking an arbitrary test point ztest ;
+similar trends hold across other test points. Green dots are train images of the same label as the test image (7) while red dots are 1’s.
+Left: Without the train loss term, we overestimate the influence of many training points: the points near the y=0 line should have
+Iup,loss close to 0, but instead have high influence when we remove the train loss term. Mid: Without Hθ̂−1 , all green training points are
+helpful (removing each point increases test loss) and all red points are harmful (removing each point decreases test loss). This is because
+∀x, x  0 (all pixel values are positive), so x · xtest ≥ 0, but it is incorrect: many harmful training points actually share the same label as
+ztest . See panel (b). Right: Without training loss or Hθ̂−1 , what is left is the scaled Euclidean inner product ytest y · σ(−ytest θ> xtest ) · x>
+test x,
+which fails to accurately capture influence; the scatter plot deviates quite far from the diagonal. (b) The test image and a harmful training
+image with the same label. To the model, they look very different, so the presence of the training image makes the model think that the
+test image is less likely to be a 7. The Euclidean inner product does not pick up on these less intuitive, but important, harmful influences.
+
+space (e.g., Ribeiro et al. (2016)); if all points have the
+same norm, this is equivalent to choosing x with the largest
+x · xtest . For intuition, we compare this to Iup,loss (z, ztest ) on
+a logistic regression model and show that influence is much
+more accurate at accounting for the effect of training.
+Let p(y | x) = σ(yθ> x), with y ∈ {−1, 1} and σ(t) =
+1
+1+exp(−t) . We seek to maximize the probability of the
+training set. For a training point z = (x, y), L(z, θ) =
+>
+>
+log(1 + exp(−yθ
+x)yx,
+Pn x)), >∇θ L(z, θ)> = −σ(−yθ
+1
+>
+and Hθ = n i=1 σ(θ xi )σ(−θ xi )xi xi . From (2),
+Iup,loss (z, ztest ) is:
+−1
+−ytest y · σ(−ytest θ> xtest ) · σ(−yθ> x) · x>
+test Hθ̂ x.
+
+We highlight two key differences from x · xtest . First,
+σ(−yθ> x) gives points with high training loss more influence, revealing that outliers can dominate the model parameters. Second, the weighted covariance matrix Hθ̂−1
+measures the “resistance” of the other training points to the
+removal of z; if ∇θ L(z, θ̂) points in a direction of little
+variation, its influence will be higher since moving in that
+direction will not significantly increase the loss on other
+training points. As we show in Fig 1, these differences
+mean that influence functions capture the effect of model
+training much more accurately than nearest neighbors.
+
+is too expensive for models like deep neural networks with
+millions of parameters. Second, we often want to calculate
+Iup,loss (zi , ztest ) across all training points zi .
+The first problem is well-studied in second-order optimization. The idea is to avoid explicitly computing Hθ̂−1 ; instead, we use implicit Hessian-vector products (HVPs) to
+def
+efficiently approximate stest = Hθ̂−1 ∇θ L(ztest , θ̂) and then
+compute Iup,loss (z, ztest ) = −stest · ∇θ L(z, θ̂). This also
+solves the second problem: for each test point of interest, we can precompute stest and then efficiently compute
+−stest · ∇θ L(zi , θ̂) for each training point zi .
+We discuss two techniques for approximating stest , both
+relying on the fact that the HVP of a single term in Hθ̂ ,
+[∇2θ L(zi , θ̂)]v, can be computed for arbitrary v in the same
+time that ∇θ L(zi , θ̂) would take, which is typically O(p)
+(Pearlmutter, 1994).
+
+3. Efficiently Calculating Influence
+
+Conjugate gradients (CG). The first technique is a standard transformation of matrix inversion into an optimization problem. Since Hθ̂  0 by assumption, Hθ̂−1 v ≡
+arg mint { 21 t> Hθ̂ t − v > t}. We can solve this with CG
+approaches that only require the evaluation of Hθ̂ t, which
+takes O(np) time, without explicitly forming Hθ̂ . While an
+exact solution takes p CG iterations, in practice we can get
+a good approximation with fewer iterations; see Martens
+(2010) for more details.
+
+There are two computational challenges to using
+Iup,loss (z, ztest ) = −∇θ L(ztest , θ̂)> Hθ̂−1 ∇θ L(z, θ̂). First, it
+Pn
+requires forming and inverting Hθ̂ = n1 i=1 ∇2θ L(zi , θ̂),
+the Hessian of the empirical risk. With n training points
+and θ ∈ Rp , this requires O(np2 + p3 ) operations, which
+
+Stochastic estimation. With large datasets, standard CG
+can be slow; each iteration still goes through all n training points. We use a method developed by Agarwal et al.
+(2016) to get an estimator that only samples a single point
+per iteration, which results in significant speedups.
+
+Understanding Black-box Predictions via Influence Functions
+def Pj
+Dropping the θ̂ subscript for clarity, let Hj−1 = i=0 (I −
+H)i , the first j terms in the Taylor expansion of H −1 .
+−1
+Rewrite this recursively as Hj−1 = I + (I − H)Hj−1
+.
+−1
+−1
+From the validity of the Taylor expansion, Hj → H as
+j → ∞.2 The key is that at each iteration, we can substitute the full H with a draw from any unbiased (and fasterto-compute) estimator of H to form H̃j . Since E[H̃j−1 ] =
+Hj−1 , we still have E[H̃j−1 ] → H −1 .
+
+In particular, we can uniformly sample zi and use
+∇2θ L(zi , θ̂) as an unbiased estimator of H. This gives
+us the following procedure: uniformly sample t points
+zs1 , . . . , zst from the training data; define H̃0−1 v =
+v; and recursively compute H̃j−1 v = v + I −
+ −1
+∇2θ L(zsj , θ̂) H̃j−1
+v, taking H̃t−1 v as our final unbiased estimate of H −1 v. We pick t to be large enough such that H̃t
+stabilizes, and to reduce variance we repeat this procedure
+r times and average results. Empirically, we found this significantly faster than CG.
+We note that the original method of Agarwal et al. (2016)
+dealt only with generalized linear models, for which
+[∇2θ L(zi , θ̂)]v can be efficiently computed in O(p) time.
+In our case, we rely on Pearlmutter (1994)’s more general
+algorithm for fast HVPs, described above, to achieve the
+same time complexity.3
+With these techniques, we can compute Iup,loss (zi , ztest )
+on all training points zi in O(np + rtp) time; we show in
+Section 4.1 that empirically, choosing rt = O(n) gives accurate results. Similarly, we compute Ipert,loss (zi , ztest )> =
+with
+two
+− n1 ∇θ L(ztest , θ̂)> Hθ̂−1 ∇x ∇θ L(zi , θ̂)
+matrix-vector products: we first compute stest , then
+s>
+These
+test ∇x ∇θ L(zi , θ̂), with the same HVP trick.
+computations are easy to implement in auto-grad systems
+like TensorFlow (Abadi et al., 2015) and Theano (Theano
+D. Team, 2016), as users need only specify L; the rest is
+automatically handled.
+
+4. Validation and Extensions
+Recall that influence functions are asymptotic approximations of leave-one-out retraining under the assumptions that
+(i) the model parameters θ̂ minimize the empirical risk,
+and that (ii) the empirical risk is twice-differentiable and
+2
+
+∀i, ∇2θ L(zi , θ̂)
+
+We assume w.l.o.g. that
+4 I; if this is not
+true, we can scale the loss down without affecting the parameters.
+In some cases, we can get an upper bound on ∇2θ L(zi , θ̂) (e.g., for
+linear models and bounded input), which makes this easy. Otherwise, we treat the scaling as a separate hyperparameter and tune
+it such that the Taylor expansion converges.
 3
-✏2 (log n)
-
-log
-
-n
-
-sample
-
-• General framework that converts any ranking algorithm with sample complexity O ✏n2 (log n)x log n
-1
-into a ranking algorithm that for
-n has sample
-n
-x
-complexity O ✏2 log n(log log n) .
-• Using the above framework, a ranking algorithm with
-sample complexity O ✏n2 log n(log log n)3 for = n1 .
-• An ⌦ ✏n2 log n lower bound on the sample complexity of any PAC ranking algorithm, matching our algorithm’s sample complexity up to a (log log n)3 factor.
-
-3. Maximum selection
-3.1. Algorithm outline
-We propose a simple maximum-selection algorithm based
-on Knockout tournaments. Knockout tournaments are used
-to find a maximum element under non-noisy comparisons.
-Knockout tournament of n elements runs in dlog ne rounds
-where in each round it randomly pairs the remaining elements and proceeds the winners to next round.
-Our
-algorithm,
-given
-in
-K NOCKOUT
-uses
-O ✏n2 1 + log 1
-comparisons and O(n) memory
-to find an ✏-maximum. (Yue & Joachims, 2011) uses
-O ✏n2 log ✏n comparisons and O(n2 ) memory to find an
-✏-maximum. Hence we get log n-factor improvement in
-the number of comparisons and also we use linear memory
-compared to quadratic memory. From (Zhou & Chen,
-2014) it can be inferred that the best PAC maximum selection algorithm requires ⌦ ✏n2 1 + log 1
-comparisons,
-hence up to constant factor, K NOCKOUT is optimal.
-(Yue & Joachims, 2011; Szörényi et al., 2015) eliminate elements one by one until only ✏-maximums are remaining.
-Since they potentially need n 1 eliminations, in order
-to appply union bound they had to ensure that each eliminated element is not an ✏-maximum w.p. 1 /n, requiring
-O(log(n/ )) comparisons for each eliminated element and
-hence a superlinear sample complexity O(n log(n/ )).
-
-In contrast, K NOCKOUT eliminates elements in log n
-rounds. Since in Knockout tournaments, number of elements decrease exponentially with each round, we afford
-to endure more error in the initial rounds and less error
-in the latter rounds by repeating comparison between each
-pair more times in latter rounds. Specifically, let bi be the
-highest-ranked element (according to the unobserved underlying ranking) at the beginning of round i. K NOCKOUT
-makes sure that w.p. 1 2i , p̃(bi , bi+1 )  ✏i by repeating
-
-Maximum Selection and Ranking under Noisy Comparisons
-
-comparison between each pair in round i for O
-
-⇣
-
-1
-✏2i
-
-log
-
-2i
-
-⌘
-
-times. Choosing ✏i =
-with c = 2
-1, we make sure
-n
-that comparison complexity is O ✏2 1 + log 1 and by
-union bound and STI, w.p.
-1
-, p̃(b1 , bdlog ne+1 ) 
-Pdlog ne+1 c✏
-
-✏.
-i=1
-2i/3
-c✏
-2i/3
-
-1/3
-
-For
-1, a relaxed notion of SST, called -stochastic
-transitivity (Yue & Joachims, 2011), requires that if r(i) >
-r(j) > r(k), then max(p̃(i, j), p̃(j, k))  · p̃(i, k). Our
-results apply to this general notion of -stochastic transitivity and the analysis of K NOCKOUT
-⇣ 4 is presented⌘ under
-this model. K NOCKOUT uses O n✏2 1 + log 1
-comparisons.
-Remark 1. (Yue & Joachims, 2011) considered a different definition of ✏-maximum as an element i that is at most
-✏ dissimilar to true maximum i.e., for j with r(j) = n,
-p̃(j, i)  ✏. Note that this definition is less restrictive than
-ours, hence requires fewer comparisons.
-this
-⇣ Under
-⌘ defin 6
-n
-nition, (Yue & Joachims, 2011) used O ✏2 log ✏ comparisons to find an ✏-maximum whereas
-⇣ 2 a simple modifica⌘
-tion of K NOCKOUT shows that O n✏2 1 + log 1 comparisons suffice. Hence we also get a significant improvement in the exponent of .
-To simplify the analysis, we assume that n is a power of
-2, otherwise we can add 2dlog ne n dummy elements that
-lose to every original element with probability 1. Note that
-all ✏-maximums will still be from the original set.
-3.2. Algorithm
-We start with a subroutine C OMPARE that compares two
-elements. It compares two elements i, j and maintains empirical probability p̂i , a proxy for p(i, j). It also maintains a
-confidence value ĉ s.t., w.h.p., p̂i 2 (p(i, j) ĉ, p(i, j)+ ĉ).
-C OMPARE stops if it is confident about the winner or if it
-reaches its comparison budget m. It outputs the element
-with more wins breaking ties randomly.
-Algorithm 1 C OMPRARE
-Input: element i, element j, bias ✏, confidence .
-Initialize: pˆi = 12 , ĉ = 12 , m = 2✏12 log 2 , r = 0, wi = 0.
-1. while (|pˆi
-
-1
-2|
-
- ĉ
-
-✏ and r  m)
-
-(a) Compare i and j. if i wins wi = wi + 1.
-q
-2
-1
-(b) r = r + 1, pˆi = wri , ĉ = 2r
-log 4r .
-
-if pˆi 
-
-1
-2
-
-Output: j. else Output: i.
-
-We show that C OMPARE w.h.p., outputs the correct winner
-if the elements are well seperated.
-
-Lemma 2. If p̃(i, j)
-
-✏, then
-
-P r(C OMPARE(i, j, ✏, ) 6= i)  .
-Note that instead of using fixed number of comparisons,
-C OMPARE stops the comparisons adaptively if it is confident about the winner. If |p̃(i, j)|
-✏, C OMPARE stops
-much before comparison budget 2✏12 log 2 and hence works
-better in practice.
-Now we present the subroutine K NOCKOUT-ROUND that
-we use in main algorithm K NOCKOUT.
-3.2.1. K NOCKOUT-ROUND
-K NOCKOUT-ROUND takes a set S and outputs a set of size
-|S|/2. It randomly pairs elements, compares each pair using C OMPARE, and returns the set of winners. We will later
-show that maximum element in the output set will be comparable to maximum element in the input set.
-Algorithm 2 K NOCKOUT-ROUND
-Input: Set S, bias ✏, confidence .
-Initialize: Set O = ;.
-1. Pair elements in S randomly.
-2. for every pair (i, j):
-Add C OMPARE(i, j, ✏, ) to O.
-Output: O
-Note that comparisons between each pair can be handled
-by a different processor and hence this algorithm can be
-easily parallelized.
-S can have several maximum elements. Comparison probabilities corresponding to all maximum elements will be
-essentially same because of STI. We define max(S) to be
-the maximum element with the least index, namely,
-⇣
-⌘
-def
-max(S) = S min{i : p̃(S(i), S(j)) 0 8j} .
-Lemma 3. K NOCKOUT-ROUND(S, ✏, ) uses
-comparisons and with probability 1
-,
-⇣
-
-p̃ max(S), max K NOCKOUT-ROUND(S, ✏, )
-
-⌘
-
-|S|
-4✏2
-
-!
-
-log
-
-2
-
- ✏.
-
-3.2.2. K NOCKOUT
-Now we present the main algorithm K NOCKOUT. K NOCK OUT takes an input set S and runs log n rounds of
-K NOCKOUT-ROUND halving the size of S at the end of
-each round. Recall that K NOCKOUT-ROUND makes sure
-that maximum element in the output set is comparable to
-
-Maximum Selection and Ranking under Noisy Comparisons
-
-maximum element in the input set. Using this, K NOCK OUT makes sure that the output element is comparable to
-maximum element in the input set.
-Since the size of S gets halved after each round, K NOCK OUT compares each pair more times in the latter rounds.
-Hence the bias between maximum element in input set and
-maximum element in output set is small in latter rounds.
-Algorithm 3 K NOCKOUT
-Input: Set S, bias ✏, confidence , stochasticity .
-Initialize: i = 1, S = set of all elements, c = 21/3
-while |S| > 1
-⇣
-⌘
-1. S = K NOCKOUT-ROUND S, 2c✏
-,
-i
-i/3
-2 .
-2
-
-1.
-
-2. i = i + 1.
-
-Output: the unique element in S.
-Note that K NOCKOUT uses only memory of set S and
-hence O(n) memory suffices.
-
-Theorem 4 shows that K NOCKOUT outputs an ✏-maximum
-with probability
-1
-. It also bounds the number of
-comparisons used by the algorithm.
-Theorem
-4. ⌘ K NOCKOUT(S, ✏, )
-uses
-⇣ 4
-|S|
-1
-O ✏2 1 + log
-comparisons and with probability at least 1
-, outputs an ✏-maximum.
-
-4. Ranking
-We propose a ranking
-algorithm that
-⇣
-⌘ with probability at
-n log n(log log n)3
-1
-least 1 n uses O
-comparisons and out✏2
-puts an ✏-ranking.
-⇣
-⌘
-n
-Notice that we use only Õ n log
-comparisons for = n1
-✏2
-
-where as (Szörényi et al., 2015) uses O n(log n)2 /✏2
-comparisons even for constant error probability . Furthermore (Szörényi et al., 2015) provided these guarantees
-only under Plackett-Luce model which is more restrictive
-compared to ours. Also, their algorithm uses O(n2 ) memory compared to O(n) memory requirement of ours.
-
-Our main algorithm B INARY-S EARCH -R ANKING assumes
-the existence of a ranking algorithm R ANK -x that with
-probability at least 1
-uses O ✏n2 (log n)x log n comparisons and outputs an ✏-ranking for any > 0, ✏ > 0 and
-some x > 1. We also present a R ANK -x algorithm with
-x = 3.
-Observe that we need R ANK -x algorithm to work for any
-model that satisfies SST and STI. (Szörényi et al., 2015)
-showed that their algorithm works for Plackett-Luce model
-but not for more general model. So we present a R ANK -x
-
-algorithm that works for general model.
-The main algorithm B INARY-S EARCH -R ANKING randomly selects (lognn)x elements (anchors) and rank them
-using R ANK -x . The algorithm has then effectively created (lognn)x bins, each between two successively ranked
-anchors. Then for each element, the algorithm identifies
-the bin it belongs to using a noisy binary search algorithm.
-The algorithm then ranks the elements within each bin using R ANK -x .
-We first present M ERGE -R ANK, a R ANK -3 algorithm.
-4.1. Merge Ranking
-We present
-ranking
-algorithm M ERGE -R ANK that
-⇣ a simple
-⌘
-n(log n)3
-n
-uses O
-log
-comparisons, O(n) memory and
-✏2
-with probability
-1
-outputs an ✏-ranking. Thus
-M ERGE -R ANK is a R ANK -x algorithm for x = 3.
-Similar to Merge Sort, M ERGE -R ANK divides the elements
-into two sets of equal size, ranks them separately and combines the sorted sets. Due to the noisy nature of comparisons, M ERGE -R ANK compares two elements i, j sufficient times, so that the comparison output is correct with
-✏
-high probability when |p̃(i, j)|
-log n . Put differently,
-M ERGE -R ANK is same as the typical Merge Sort, except it
-uses C OMPARE as the comparison function. Due to lack of
-space, M ERGE -R ANK is presented in Appendix A.
-Let’s define the error of an ordered set S as the maximum
-distance between two wrongly ordered items in S, namely,
-def
-
-err(S) =
-
-max
-
-1ij|S|
-
-p̃(S(i), S(j)).
-
-We show that when we merge two ordered sets, the error of
-the resulting ordered set will be at most log✏ n more than the
-maximum of errors of individual ordered sets.
-Observe that M ERGE -R ANK is a recursive algorithm and
-the error of a singleton set is 0. Two singleton sets each
-containing a unique element from the input set merge to
-2✏
-form a set with two elements with an error at most log
-n,
-then two sets with two elements merge to form a set with
-3✏
-four elements with an error of at most log
-n and henceforth.
-Thus the error of the output ordered set is bounded by ✏.
-Lemma 5 shows that M ERGE -R ANK can output an ✏ranking of S with probability 1
-. It also bounds the
-number of comparisons used by the algorithm.
-⇣
-⌘
-Lemma
-5. M ERGE -R ANK S, log✏|S| , |S|2
-takes
-⇣
-⌘
-|S|(log |S|)3
-|S|
-O
-log
-comparisons and with probability
-✏2
-1
-, outputs an ✏-ranking. Hence, M ERGE -R ANK is a
-R ANK -3 algorithm.
-Now we present our main ranking algorithm.
-
-Maximum Selection and Ranking under Noisy Comparisons
-
-4.2. B INARY-S EARCH -R ANKING
-We first sketch the algorithm outline below. We then provide a proof outline.
-4.2.1. A LGORITHM OUTLINE
-Our algorithm is stated in B INARY-S EARCH -R ANKING. It
-can be summarized in three major parts.
-
-Algorithm 4 B INARY-S EARCH -R ANKING
-Input: Set S, bias ✏.
-o
-Initialize: ✏0 = ✏/16, ✏00 = ✏/15,
-j and S k = ;. Sj = ;,
-Cj = ; and Bj = ;, for 1  j 
-
-n
-(log n)x
-
-+ 2.
-
-j
-k
-1. Form a set S 0 with (lognn)x random elements from
-S. Remove these elements from S.
-
-Creating anchors: (Steps 1 to 3) B INARY-S EARCH R ANKING first selects a set S 0 of (lognn)x random elements
-(anchors) and ranks them using R ANK -x . At the end of
-this part, there are (lognn)x ranked anchors. Equivalently,
-1 bins, each bin between
-the algorithm creates (lognn)x
-two successively ranked anchors.
-
-2. Rank S 0 using R ANK -x S 0 , ✏0 , n16 .
-
-Coarse ranking: (Step 4) After forming the bins, the algorithm uses a random walk on a binary search tree, to find
-which bin each element belongs to. I NTERVAL -B INARYS EARCH is similar to the noisy binary search algorithm
-in (Feige et al., 1994). It builds a binary search tree with the
-bins as the leaves and it does a random walk over this tree.
-Due to lack of space the algorithm I NTERVAL -B INARYS EARCH is presented in Appendix B but more intuition is
-given later in this section.
-
-(a) k = I NTERVAL -B INARY-S EARCH(S 0 , e, ✏00 ).
-(b) Insert e in Sk .
-j
-k
-5. for j = 1 to (lognn)x + 2:
-
-Ranking within each bin: (Step 5) For each bin, we
-show that the number of elements far from both anchors
-is bounded. The algorithm checks elements inside a bin
-whether they are close to any of the bin’s anchors. For
-the elements that are close to anchors, the algorithm ranks
-them close to the anchor. And for the elements that are
-away from both anchors the algorithm ranks them using
-R ANK -x and outputs the resulting ranking.
-4.2.2. A NALYSIS OF B INARY-S EARCH -R ANKING
-Creating anchors In Step 1 of the algorithm we select
-n/(log n)x random elements. Since these are chosen uniformly random, they lie nearly uniformly in the set S. This
-intuition is formalized in the next lemma.
-Lemma 6. Consider a set S of n elements. If we select
-n
-(log n)x elements uniformly randomly from S and build an
-ordered set S 0 s.t. p̃(S 0 (i), S 0 (j))
-0 8i > j , then with
-probability 1 n14 , for any ✏ > 0 and all k,
-
-3. Add dummy element S
-a at the beginning of S 0 such that
-p(a, e) = 0 8e 2 S S 0 . Add dummy element
-b at
-S
-the end of S 0 such that p(b, e) = 1 8e 2 S S 0 .
-4. for e 2 S:
-
-(a) for e 2 Sj :
-i. if
-2(e,⇤S 0 (j), 10✏00 2 log n) 2
-⇥ 1 C OMPARE
-00 1
-6✏ , 2 + 6✏00 , insert e in Cj .
-2
-0
-ii. else
-if
-C OMPARE
-+
-⇥ 1 2(e,00S 1(j
-⇤
-00 2
-00
-1), 10✏
-log n) 2
-6✏
-,
-+
-6✏
-,
-2
-2
-then insert e in Cj+1 .
-iii. else insert e in Bj .
-(b) Rank Bj using R ANK -x Bj , ✏00 , n14 .
-(c) Append S 0 (j), Cj , Bj in order at the end of S o .
-
-Output: S o
-
-anchor and a right anchor . We say that an element belongs
-to a bin if it wins over the bin’s left anchor with probability
-1
-2 and wins over the bin’s right anchor with probability  12 . Notice that some elements might win over S 0 (1)
-with probability < 12 and thus not belong to any bin. So in
-0
-Step 3, we add a dummy element a at
-Sthe0 beginning of S
-where a loses to every element in S S with probability
-1. For similar reasons we add a dummy
-S element b to the
-end of S 0 where every element in S S 0 loses to b with
-probability 1.
-
-Coarse Ranking Note that S 0 (i) and S 0 (i + 1) are respec|{e 2 S : p̃(e, S 0 (k)) > ✏, p̃(S 0 (k+1), e) > ✏}|  5(log n)x+1 .
-tively the left and right anchors of the bin Si .
-In Step 2, we use R ANK -x to rank S 0 . Lemma 7 shows the
-guarantee of ranking S 0 .
-Lemma 7. After Step 2 of the B INARY-S EARCH R ANKING with probability 1 n16 , S 0 is ✏0 -ranked.
-At the end of Step 2, we have (lognn)x 1 bins, each between two successively ranked anchors. Each bin has a left
-
-Algorithm 5 C OMPARE 2
-Input: element i, element j, number of comparisons m.
-1. Compare i and j for m times and return the fraction
-of times i wins over j.
-
-Maximum Selection and Ranking under Noisy Comparisons
-
-Since S 0 is ✏0 -ranked and the comparisons are noisy, it is
-hard to find a bin Si for an element e such that p(e, S 0 (i))
-1
-1
-0
-00
-nearly
-2 and p(S (i + 1), e)
-2 . We call a bin Si a ✏
-1
-00
-0
-correct bin for an element e if p(e, S (i))
-✏
-and
-2
-1
-0
-00
-00
-0
-p(S (i + 1), e) 2 ✏ for some ✏ > ✏ .
-
-S EARCH ran for at most 30 log n steps, Q can have at most
-60 log n elements and hence B INARY-S EARCH can search
-effectively by repeating each comparison O(log n) times
-to maintain high confidence. Next paragraph explains how
-B INARY-S EARCH finds such an element f .
-
-In Step 4, for each element we find an ✏00 -nearly correct bin
-using I NTERVAL -B INARY-S EARCH . Next we describe an
-outline of I NTERVAL -B INARY-S EARCH.
-
-B INARY-S EARCH first compares e with the middle element m of Q for O(log n) times. If the fraction of
-wins for e is between 12
-3✏00 and 12 + 3✏00 , then w.h.p.
-00
-|p̃(e, m)|  4✏ and hence B INARY-S EARCH outputs m.
-If the fraction of wins for e is less than 12 3✏00 , then w.h.p.
-p̃(e, m)  2✏00 and hence it eliminates all elements to the
-right of m in Q. If the fraction of wins for e is more than
-1
-00
-2✏00 and hence it eliminates
-2 + 3✏ , then w.h.p. p̃(e, m)
-all elements to the left of m in Q. It continues this process
-until it finds an element f such that the fraction of wins for
-e is between 12 3✏00 and 12 + 3✏00 .
-
-I NTERVAL -B INARY-S EARCH first builds a binary search
-tree of intervals (see Appendix B) as follows: the root node
-is the entire interval between the first and the last elements
-in S 0 . Each non-leaf node interval I has two children corresponding to the left and right halves of I. The leaves of the
-tree are the bins between two successively ranked anchors.
-To find an ✏00 -nearly correct bin for an element e, the algorithm starts at the root of the binary search tree and at every
-non-leaf node corresponding to interval I, it checks if e belongs to I or not by comparing e with I’s left and right
-anchors. If e loses to left anchor or wins against the right
-anchor, the algorithm backtracks to current node’s parent.
-If e wins against I’s left anchor and loses to its right one,
-the algorithm checks if e belongs to the left or right child
-by comparing e with the middle element of I and moves
-accordingly.
-When at a leaf node, the algorithm checks if e belongs to
-the bin by maintaining a counter. If e wins against the bin’s
-left anchor and loses to the bin’s right anchor, it increases
-the counter by one or otherwise it decreases the counter by
-one. If the counter is less than 0 the algorithm backtracks
-to the bin’s parent. By repeating each comparison several
-times, the algorithm makes a correct decision with probability 19
-20 .
-Note that there could be several ✏00 -nearly correct bins for
-e and even though at each step the algorithm moves in the
-direction of one of them, it could end up moving in a loop
-and never reaching one of them. We thus run the algorithm
-for 30 log n steps and terminate.
-If the algorithm is at a leaf node by 30 log n steps and the
-counter is more than 10 log n we show that the leaf node bin
-is a ✏00 -nearly correct bin for e and the algorithm outputs
-the leaf node. If not, the algorithm puts in a set Q all the
-anchors visited so far and orders Q according to S 0 .
-We select 30 log n steps to ensure that if there is only one
-nearly correct bin, then the algorithm outputs that bin w.p.
-1 n16 . Also we do not want too many steps so as to
-bound the size of Q.
-By doing a simple binary search in Q using B INARYS EARCH (see Appendix B) we find an anchor f 2 Q
-such that |p̃(e, f )|  4✏00 . Since I NTERVAL -B INARY-
-
-In next Lemma, we show that I NTERVAL -B INARYS EARCH achieves to find a 5✏00 -nearly correct bin for every
-element.
-Lemma 8. For any element e 2 S, Step 4 of
-B INARY-S EARCH -R ANKING places e in bin Sl such that
-p̃(e, S 0 (l)) > 5✏00 and p̃(S 0 (l + 1), e) > 5✏00 with probability 1 n15 .
-Ranking within each bin Once we have identified the bins,
-we rank the elements inside each bin. By Lemma 6, inside
-each bin all elements are close to the bin’s anchors except
-at most 5(log n)x+1 of them.
-The algorithm finds the elements close to anchors in Step
-5a by comparing each element in the bin with the bin’s
-anchors. If an element in bin Sj is close to bin’s anchors
-S 0 (j) or S 0 (j + 1) , the algorithm moves it to the set Cj
-or Cj+1 accordingly and if it is far away from both, the algorithm moves it to the set Bj . The following two lemmas
-state that this separating process happens accurately with
-high probability. The proofs of these results follow from
-the Chernoff bound and hence omitted.
-Lemma 9. At the end of Step 5a, for all j, 8e 2 Cj ,
-|p̃(e, S 0 (j))| < 7✏00 with probability 1 n13 .
-Lemma 10. At the end of Step 5a, for all j, 8e 2 Bj ,
-min(p̃(e, S 0 (j)), p̃(S 0 (j + 1), e)) > 5✏00 with probability
-1 n13 .
-Combining Lemmas 6, 7 and 10 next lemma shows that the
-size of Bj is bounded for all j.
-Lemma 11. At the end of Step 5a, |Bj |  5(log n)x+1 for
-all j, with probability 1 n33 .
-Since all the elements in Cj are already close to an anchor, they need not be ranked. By Lemma 11 with probability
-1 n33 the number of elements in Bj is at most
-x+1
-5(log n)
-. We use R ANK -x to rank each Bj and output
-the final ranking.
-
-Maximum Selection and Ranking under Noisy Comparisons
-
-Lemma 12 shows that all Bj ’s are ✏00 -ranked at the end of
-Step 5b. Proof follows from properties of R ANK -x and
-union bound.
-
-Combining the above set of results yields our main result.
-Theorem 13. Given access to R ANK -x, B INARY1
-S EARCH
--R ANKING⌘ with probability
-1
-n , uses
-⇣
-log n)
-O n log n(log
-✏2
-ranking.
-
-x
-
-KNOCKOUT
-MalllowsMPI
-AR
-BTM-PAC
-
-Sample complexity
-
-Lemma 12. At the end of Step 5b, all Bj s are ✏00 -ranked
-with probability 1 n13 .
-
-10 6
-
-comparisons and outputs an ✏-
-
-Using M ERGE -R ANK as a R ANK -x algorithm with x = 3
-leads to the following corollary.
-
-1
-
-Using PALPAC-AMPRR (Szörényi et al., 2015) as a
-R ANK -x algorithm with x = 1 leads to the following corollary over PL model.
-Corollary 15. Over PL model, B INARY-S EARCH 1
-R ANKING
-with⌘ probability
-1
-uses
-n
-⇣
-n log n log log n
-O
-comparisons and outputs an ✏-ranking.
-✏2
-
-It is well known that to rank a set of n values under the
-noiseless setting, ⌦(n log n) comparisons are necessary.
-We show that under the noisy model, ⌦ ✏n2 log n samples
-are necessary to output an ✏-ranking and hence our algorithm is near-optimal.
-Theorem 16. For ✏ 
- there exists a noisy model
-that satisfies SST and STI such that to output an ✏-ranking
-with probability
-1
-, ⌦ ✏n2 log n comparisons are
-necessary.
-1
-4,
-
-1
-2,
-
-5. Experiments
-We compare the performance of our algorithms with that
-of others over simulated data. Similar to (Yue & Joachims,
-2011), we consider the stochastic model where p(i, j) =
-0.6 8i < j. Note that this model satisfies both SST and STI.
-We find 0.05-maximum with error probability = 0.1. Observe that i = 1 is the only 0.05-maximum. We compare
-the sample complexity of K NOCKOUT with that of BTMPAC (Yue & Joachims, 2011), MallowsMPI (Busa-Fekete
-et al., 2014a), and AR (Heckel et al., 2016). BTM-PAC is
-an (✏, )-PAC algorithm for the same model considered in
-this paper. MallowsMPI finds a Condorcet winner which
-exists under our general model. AR finds the maximum according to Borda scores. We also tried PLPAC (Szörényi
-et al., 2015), developed originally for PL model but the algorithm could not meet guarantees of = 0.1 under this
-
-n=7
-
-n=10
-
-n=15
-
-Number of elements
-
-Figure 1. Comparison of sample complexity for small input sizes,
-with ✏ = 0.05, and = 0.1
-10 9
-KNOCKOUT
-10
-
-Sample complexity
-
-ranking with probability
-
-10 4
-
-10 3
-
-Corollary
-14. ⌘B INARY-S EARCH -R ANKING
-uses
-⇣
-log n)3
-O n log n(log
-comparisons
-and
-outputs
-an
-✏✏2
-1
-n.
-
-10 5
-
-8
-
-MallowsMPI
-AR
-
-10 7
-
-10
-
-6
-
-10 5
-
-10
-
+To increase stability, especially with non-convex models (see
+Section 4.2), we can also sample a mini-batch of training points
+at each iteration, instead of relying on a single training point.
+
+Figure 2. Influence matches leave-one-out retraining. We arbitrarily picked a wrongly-classified test point ztest , but this trend
+held more broadly. These results are from 10-class
+ MNIST. Left:
+
+For each of the 500 training points z with largest Iup,loss (z, ztest ),
+we plotted − n1 · Iup,loss (z, ztest ) against the actual change in test
+loss after removing that point and retraining. The inverse HVP
+was solved exactly with CG. Mid: Same, but with the stochastic
+approximation. Right: The same plot for a CNN, computed on
+the 100 most influential points with CG. For the actual difference
+in loss, we removed each point and retrained from θ̃ for 30k steps.
+
+strictly convex. Here, we empirically show that influence
+functions are accurate approximations (Section 4.1) that
+provide useful information even when these assumptions
+are violated (Sections 4.2, 4.3).
+4.1. Influence functions vs. leave-one-out retraining
+Influence functions assume that the weight on a training
+point is changed by an infinitesimally small . To investigate the accuracy of using influence functions to approximate the effect of removing a training point and retraining, we compared − n1 Iup,loss (z, ztest ) with L(ztest , θ̂−z ) −
+L(ztest , θ̂) (i.e., actually doing leave-one-out retraining).
+With a logistic regression model on 10-class MNIST,4 the
+predicted and actual changes matched closely (Fig 2-Left).
+The stochastic approximation from Agarwal et al. (2016)
+was also accurate with r = 10 repeats and t = 5, 000 iterations (Fig 2-Mid). Since each iteration only requires one
+HVP [∇2θ L(zi , θ̂)]v, this runs quickly: in fact, we accurately estimated H −1 v without even looking at every data
+point, since n = 55, 000 > rt. Surprisingly, even r = 1
+worked; while results were noisier, it was still able to identify the most influential points.
+4.2. Non-convexity and non-convergence
+In Section 2, we took θ̂ as the global minimum. In practice,
+if we obtain our parameters θ̃ by running SGD with early
+stopping or on non-convex objectives, θ̃ 6= θ̂. As a result,
+Hθ̃ could have negative eigenvalues. We show that influence functions on θ̃ still give meaningful results in practice.
+Our approach is to form a convex quadratic approximation of the loss around θ̃, i.e., L̃(z, θ) = L(z, θ̃) +
 4
+We trained with L-BFGS (Liu & Nocedal, 1989), with L2
+regularization of 0.01, n = 55, 000, and p = 7, 840 parameters.
 
-n = 50
+Understanding Black-box Predictions via Influence Functions
 
-n = 100
+Figure 3. Smooth approximations to the hinge loss. (a) By varying t, we can approximate the hinge loss with arbitrary accuracy: the
+green and blue lines are overlaid on top of each other. (b) Using a random, wrongly-classified test point, we compared the predicted
+vs. actual differences in loss after leave-one-out retraining onP
+the 100 most influential training points. A similar trend held for other test
+points. The SVM objective is to minimize 0.005 kwk22 + n1 i Hinge(yi w> xi ). Left: Influence functions were unable to accurately
+predict the change, overestimating its magnitude considerably. Mid: Using SmoothHinge(·, 0.001) let us accurately predict the change
+in the hinge loss after retraining. Right: Correlation remained high over a wide range of t, though it degrades when t is too large. When
+t = 0.001, Pearson’s R = 0.95; when t = 0.1, Pearson’s R = 0.91.
 
-n = 200
+∇L(z, θ̃)> (θ − θ̃)+ 12 (θ − θ̃)> (Hθ̃ +λI)(θ − θ̃). Here, λ is
+a damping term that we add if Hθ̃ has negative eigenvalues;
+this corresponds to adding L2 regularization on θ. We then
+calculate Iup,loss using L̃. If θ̃ is close to a local minimum,
+this is correlated with the result of taking a Newton step
+from θ̃ after removing  weight from z (see appendix B).
+We checked the behavior of Iup,loss in a non-convergent,
+non-convex setting by training a convolutional neural network for 500k iterations.5 The model had not converged
+and Hθ̃ was not PD, so we added a damping term with
+λ = 0.01. Even in this difficult setting, the predicted and
+actual changes in loss were highly correlated (Pearson’s R
+= 0.86, Fig 2-Right).
+4.3. Non-differentiable losses
+What happens when the derivatives of the loss, ∇θ L and
+∇2θ L, do not exist? In this section, we show that influence functions computed on smooth approximations to
+non-differentiable losses can predict the behavior of the
+original, non-differentiable loss under leave-one-out retraining. The robustness of this approximation suggests
+that we can train non-differentiable models and swap out
+non-differentiable components for smoothed versions for
+the purposes of calculating influence.
+To see this, we trained a linear SVM on the same 1s
+vs. 7s MNIST task in Section 2.3. This involves min5
 
-n = 500
+The network had 7 sets of convolutional layers with tanh(·)
+non-linearities, modeled after the all-convolutional network from
+(Springenberg et al., 2014). For speed, we used 10% of the
+MNIST training set and only 2,616 parameters, since repeatedly
+retraining the network was expensive. Training was done with
+mini-batches of 500 examples and the Adam optimizer (Kingma
+& Ba, 2014). The model had not converged after 500k iterations;
+training it for another 500k iterations, using a full training pass
+for each iteration, reduced train loss from 0.14 to 0.12.
 
-Number of elements
+imizing Hinge(s) = max(0, 1 − s); this simple piecewise linear function is similar to ReLUs, which cause nondifferentiability in neural networks. We set the derivatives at the hinge to 0 and calculated Iup,loss . As one
+might expect, this was inaccurate (Fig 3b-Left): the second derivative carries no information about how close a
+support vector z is to the hinge, so the quadratic approximation of L(z, θ̂) is linear (up to regularization), which
+leads to Iup,loss (z, ztest ) overestimating the influence of z.
+For the purposes of calculating influence, we approximated
+Hinge(s) with SmoothHinge(s, t) = t log(1+exp( 1−s
+t )),
+which approaches the hinge loss as t → 0 (Fig 3a). Using
+the same SVM weights as before, we found that calculating Iup,loss using SmoothHinge(s, 0.001) closely matched
+the actual change due to retraining in the original Hinge(s)
+(Pearson’s R = 0.95; Fig 3b-Mid) and remained accurate
+over a wide range of t (Fig 3b-Right).
 
-Figure 2. Comparison of sample complexity for large input size,
-with ✏ = 0.05, and = 0.1
+5. Use Cases of Influence Functions
+5.1. Understanding model behavior
+By telling us the training points “responsible” for a given
+prediction, influence functions reveal insights about how
+models rely on and extrapolate from the training data. In
+this section, we show that two models can make the same
+correct predictions but get there in very different ways.
+We compared (a) the state-of-the-art Inception v3 network
+(Szegedy et al., 2016) with all but the top layer frozen6 to
+(b) an SVM with an RBF kernel on a dog vs. fish image
+classification dataset we extracted from ImageNet (Russakovsky et al., 2015), with 900 training examples for each
+class. Freezing neural networks in this way is not uncom6
 
-model and hence omitted. Note that in all the experiments
-the reported numbers are averaged over 100 runs.
-In Figure 1, we compare the sample complexity of algorithms when there are 7, 10 and 15 elements. Our algorithm outperforms all the others. BTM-PAC performs
-much worse in comparison to others because of high constants in the algorithm. Further BTM-PAC allows comparing an element with itself since the main objective in
-(Yue & Joachims, 2011) is to reduce the regret. We exclude
-BTM-PAC for further experiments with higher number of
-elements.
-In Figure 2, we compare the algorithms when there are 50,
-100, 200 and 500 elements. Our algorithm outperforms
-others for higher number of elements too. Performance of
-AR gets worse as the number of elements increases since
-Borda scores of the elements get closer to each other and
-hence AR takes more comparisons to eliminate an element.
-Notice that number of comparisons is in logarithmic scale
-and hence the performance of MallowsMPI appears to be
-close to that of ours.
-As noted in (Szörényi et al., 2015), sample complexity of
-MallowsMPI gets worse as p̃(i, j) gets close to 0. To
+We used pre-trained weights from Keras (Chollet, 2015).
 
-Maximum Selection and Ranking under Noisy Comparisons
+Understanding Black-box Predictions via Influence Functions
 
-KNOCKOUT
+mon in computer vision and is equivalent to training a logistic regression model on the bottleneck features (Donahue et al., 2014). We picked a test image both models
+got correct (Fig 4-Top) and used SmoothHinge(·, 0.001)
+to compute the influence for the SVM.
+As expected, Iup,loss in the RBF SVM varied inversely with
+raw pixel distance, with training images far from the test
+image in pixel space having almost no influence. The Inception influences were much less correlated with distance
+in pixel space (Fig 4-Left). Looking at the two most helpful images (most positive −Iup,loss ) for each model in Fig
+4-Right, we see that the Inception network picked up on the
+distinctive characteristics of clownfish, whereas the RBF
+SVM pattern-matched training images superficially.
+Moreover, in the RBF SVM, fish (green points) close to
+the test image were mostly helpful, while dogs (red) were
+mostly harmful, with the RBF acting as a soft nearest
+neighbor function (Fig 4-Left). In contrast, in the Inception network, fish and dogs could be helpful or harmful for
+correctly classifying the test image as a fish; in fact, some
+of the most helpful training images were dogs that, to the
+model, looked very different from the test fish (Fig 4-Top).
 
-0.09
-0.05
-0.01
-0.001
-0.0001
-0.00001
+Figure 4. Inception vs.
+RBF SVM. Bottom left:
+−Iup,loss (z, ztest ) vs. kz − ztest k22 . Green dots are fish and
+red dots are dogs. Bottom right: The two most helpful training
+images, for each model, on the test. Top right: An image of a
+dog in the training set that helped the Inception model correctly
+classify the test image as a fish.
 
-12
+5.2. Adversarial training examples
+In this section, we show that models that place a lot of influence on a small number of points can be vulnerable to
+training input perturbations, posing a serious security risk
+in real-world ML systems where attackers can influence the
+training data (Huang et al., 2011). Recent work has generated adversarial test images that are visually indistinguish-
 
-Sample complexity
+able from real test images but completely fool a classifier
+(Goodfellow et al., 2015; Moosavi-Dezfooli et al., 2016).
+We demonstrate that influence functions can be used to
+craft adversarial training images that are similarly visuallyindistinguishable and can flip a model’s prediction on a separate test image. To the best of our knowledge, this is the
+first proof-of-concept that visually-indistinguishable training attacks can be executed on otherwise highly-accurate
+neural networks.
+The key idea is that Ipert,loss (z, ztest ) tells us how to modify training point z to most increase the loss on ztest .
+Concretely, for a target test image ztest , we can construct
+z̃i , an adversarial version of a training image zi , by initializing z̃i := zi and then iterating z̃i := Π(z̃i +
+α sign(Ipert,loss (z̃i , ztest ))), where α is the step size and Π
+projects onto the set of valid images that share the same 8bit representation with zi . After each iteration, we retrain
+the model. This is an iterated, training-set analogue of the
+methods used by, e.g., Goodfellow et al. (2015); MoosaviDezfooli et al. (2016) for test-set attacks.
+We tested these training attacks on the same Inception network on dogs vs. fish from Section 5.1, choosing this pair
+of animals to provide a stark contrast between the classes.
+We set α = 0.02 and ran the attack for 100 iterations
+on each test image. As before, we froze all but the top
+layer for training; note that computing Ipert,loss still involves
+differentiating through the entire network. Originally, the
+model correctly classified 591 / 600 test images. For each
+of these 591 test images, considered separately, we tried to
+find a visually-indistinguishable perturbation (i.e., same 8bit representation) to a single training image, out of 1,800
+total training images, that would flip the model’s prediction. We were able to do this on 335 (57%) of the 591
+test images. By perturbing 2 training images for each test
+image, we could flip predictions on 77% of the 591 test images; and if we perturbed 10 training images, we could flip
+all but 1 of the 591. The above results are from attacking
+each test image separately, i.e., using a different training set
+to attack each test image. We also tried to attack multiple
+test images simultaneously by increasing their average loss,
+and found that single training image perturbations could simultaneously flip multiple test predictions as well (Fig 5).
+We make three observations about these attacks. First,
+though the change in pixel values is small, the change in
+the final Inception feature layer is significantly larger: using L2 distance in pixel space, the training values change
+by less than 1% of the mean distance of a training point to
+its class centroid, whereas in Inception feature space, the
+change is on the same order as the mean distance. This
+leaves open the possibility that our attacks, while visuallyimperceptible, can be detected by examining the feature
+space. Second, the attack tries to perturb the training ex-
 
-MallowsMPI
+Understanding Black-box Predictions via Influence Functions
+Figure 5. Training-set attacks.
+We targeted a
+set of 30 test images featuring the first author’s
+dog in a variety of poses
+and backgrounds.
+By
+maximizing the average
+loss over these 30 images, we created a visuallyimperceptible change to
+the particular training image (shown on top) that
+flipped predictions on 16
+test images.
 
-Sample complexity
+ample in a direction of low variance, causing the model to
+overfit in that direction and consequently incorrectly classify the test images; we expect attacking to be harder as
+the number of training examples grows. Third, ambiguous
+or mislabeled training images are effective points to attack:
+the model has low confidence and thus high loss on them,
+making them highly influential (recall Section 2.3). For example, the image in Fig 5 contains both a dog and a fish and
+is highly ambiguous; as a result, it is the training example
+that the model is least confident on (with a confidence of
+77%, compared to the next lowest confidence of 90%).
+This attack is mathematically equivalent to the gradientbased training set attacks explored by Biggio et al. (2012);
+Mei & Zhu (2015b) and others in the context of different
+models. Biggio et al. (2012) constructed a dataset poisoning attack against a linear SVM on a two-class MNIST task,
+but had to modify the training points in an obviously distinguishable way to be effective. Measuring the magnitude of
+Ipert,loss gives model developers a way of quantifying how
+vulnerable their models are to training-set attacks.
+5.3. Debugging domain mismatch
+Domain mismatch — where the training distribution does
+not match the test distribution — can cause models with
+high training accuracy to do poorly on test data (Ben-David
+et al., 2010). We show that influence functions can identify
+the training examples most responsible for the errors, helping model developers identify domain mismatch.
 
-10 6
+3 out of the 24 children under age 10 in this dataset were
+re-admitted. To induce a domain mismatch, we filtered out
+20 children who were not re-admitted, leaving 3 out of 4 readmitted. This caused the model to wrongly classify many
+children in the test set. Our aim is to identify the 4 children
+in the training set as being “responsible” for these errors.
+As a baseline, we tried the common practice of looking at
+the learned parameters θ̂ to see if the indicator variable for
+being a child was obviously different. However, this did
+not work: 14/127 features had a larger coefficient.
+Picking a random child ztest that the model got wrong, we
+calculated −Iup,loss (zi , ztest ) for each training point zi . This
+clearly highlighted the 4 training children, each of whom
+were 30-40 times as influential as the next most influential
+examples. The 1 child in the training set who was not readmitted had a very positive influence, while the other 3 had
+very negative influences. Moreover, calculating Ipert,loss on
+these 4 children showed that the ‘child’ indicator variable
+contributed significantly to the magnitude of Iup,loss .
+5.4. Fixing mislabeled examples
+Labels in the real world are often noisy, especially if crowdsourced (Frénay & Verleysen, 2014), and can even be adversarially corrupted. Even if a human expert could recognize wrongly labeled examples, it is impossible in many
+applications to manually review all of the training data. We
+show that influence functions can help human experts prioritize their attention, allowing them to inspect only the examples that actually matter.
 
-14
+As a case study, we predicted whether a patient would be
+readmitted to hospital. Domain mismatches are common
+in biomedical data, e.g., different hospitals serve different
+populations, and models trained on one population can do
+poorly on another (Kansagara et al., 2011). We used logistic regression to predict readmission with a balanced training dataset of 20K diabetic patients from 100+ US hospitals, each represented by 127 features (Strack et al., 2014).7
 
-10 8
+The key idea is to flag the training points that exert the
+most influence on the model. Because we do not have access to the test set, we measure the influence of zi with
+Iup,loss (zi , zi ), which approximates the error incurred on zi
+if we remove zi from the training set.
 
-10 7
+7
+Hospital readmission was defined as whether a patient would
+be readmitted within the next 30 days. Features were demo-
 
-10 6
+graphic (e.g., age, race, gender), administrative (e.g., length of
+hospital stay), or medical (e.g., test results).
 
-10
-8
-6
-4
-2
+Our case study is email spam classification, which relies
 
-10
+Understanding Black-box Predictions via Influence Functions
 
-5
+on user-provided labels and is also vulnerable to adversarial attack (Biggio et al., 2011). We flipped the labels of a
+random 10% of the training data and then simulated manually inspecting a fraction of the training points, correcting
+them if they had been flipped. Using influence functions
+to prioritize the training points to inspect allowed us to repair the dataset (Fig 6, blue) without checking too many
+points, outperforming the baselines of checking points with
+the highest train loss (Fig 6, green) or at random (Fig 6,
+red). No method had access to the test data.
 
-0.01
+Figure 6. Fixing mislabeled examples. Plots of how test accuracy (left) and the fraction of flipped data detected (right) change
+with the fraction of train data checked, using different algorithms
+for picking points to check. Error bars show the std. dev. across
+40 repeats of this experiment, with a different subset of labels
+flipped in each; error bars on the right are too small to be seen.
+These results are on the Enron1 spam dataset (Metsis et al., 2006),
+with 4,147 training and 1,035 test examples; we trained logistic
+regression on a bag-of-words representation of the emails.
 
-0.005
+6. Related Work
+The use of influence-based diagnostics originated in statistics in the 70s and 80s, driven by seminal papers by Cook
+and others (Cook, 1977; Cook & Weisberg, 1980; 1982),
+though similar ideas appeared even earlier in other forms,
+e.g., the infinitesimal jackknife (Jaeckel, 1972). Earlier
+work focused on removing training points from linear models, with later work extending this to more general models
+and a wider variety of perturbations (Cook, 1986; Thomas
+& Cook, 1990; Chatterjee & Hadi, 1986; Wei et al., 1998).
+Most of this prior work focused on experiments with small
+datasets, e.g., n = 24 and p = 10 in Cook & Weisberg
+(1980), with special attention therefore paid to exact solutions, or if not possible, characterizations of the error terms.
+Influence functions have not been used much in the ML
+literature, with some exceptions. Christmann & Steinwart (2004); Debruyne et al. (2008); Liu et al. (2014) use
+influence functions to study model robustness and to do
+fast cross-validation in kernel methods. Wojnowicz et al.
+(2016) uses matrix sketching to estimate Cook’s distance,
+which is closely related to influence; they focus on prioritizing training points for human attention and derive meth-
 
-0
+ods specific to generalized linear models.
+As noted in Section 5.2, our training-set attack is mathematically equivalent to an approach first explored by Biggio et al. (2012) in the context of SVMs, with follow-up
+work extending the framework and applying it to linear
+and logistic regression (Mei & Zhu, 2015b), topic modeling (Mei & Zhu, 2015a), and collaborative filtering (Li
+et al., 2016a). These papers derived the attack directly from
+the KKT conditions without considering influence, though
+for continuous data, the end result is equivalent. Influence functions additionally let us consider attacks on discrete data (Section 2.2), but we have not tested this empirically. Our work connects the literature on trainingset attacks with work on “adversarial examples” (Goodfellow et al., 2015; Moosavi-Dezfooli et al., 2016), visuallyimperceptible perturbations on test inputs.
+In contrast to training-set attacks, Cadamuro et al. (2016)
+consider the task of taking an incorrect test prediction and
+finding a small subset of training data such that changing
+the labels on this subset makes the prediction correct. They
+provide a solution for OLS and Gaussian process models
+when the labels are continuous. Our work with influence
+functions allow us to solve this problem in a much larger
+range of models and in datasets with discrete labels.
 
-0.001
+7. Discussion
+We have discussed a variety of applications, from creating training-set attacks to debugging models and fixing
+datasets. Underlying each of these applications is a common tool, the influence function, which is based on a simple idea — we can better understand model behavior by
+looking at how it was derived from its training data.
+At their core, influence functions measure the effect of local changes: what happens when we upweight a point by
+an infinitesimally-small ? This locality allows us to derive efficient closed-form estimates, and as we show, they
+can be surprisingly effective. However, we might want to
+ask about more global changes, e.g., how does a subpopulation of patients from this hospital affect the model? Since
+influence functions depend on the model not changing too
+much, how to tackle this is an open question.
+It seems inevitable that high-performing, complex, blackbox models will become increasingly prevalent and important. We hope that the approach presented here — of looking at the model through the lens of the training data —
+will become a standard part of the toolkit of developing,
+understanding, and diagnosing machine learning.
+The code and data for replicating our experiments is available on GitHub http://bit.ly/gt-influence
+and Codalab http://bit.ly/cl-influence.
 
-0
+Understanding Black-box Predictions via Influence Functions
 
-200
+Acknowledgements
 
-400
+Chollet, F. Keras, 2015.
 
-600
+We thank Jacob Steinhardt, Zhenghao Chen, and Hongseok
+Namkoong for helpful discussions and comments. This
+work was supported by a Future of Life Research Award
+and a Microsoft Research Faculty Fellowship.
 
-800
-
-1000
-
-Number of elements
-
-Figure 3. Sample complexity of K NOCKOUT and MallowsMPI
-for different values of q̃, with ✏ = 0.05 and = 0.1
-10 8
-
-Sample complexity
-
-MallowsMPI
-KNOCKOUT
-
-10 6
-
-10 4
-
-10 2
-0
-
-0.2
-
-0.4
-
-0.6
-
-0.8
-
-1
-
-Figure 4. Sample complexity of K NOCKOUT and MallowsMPI
-under Mallows model for various values of
-
-show the pronounced effect, we use the stochastic model
-p(1, j) = 0.6 8j > 1, p(i, j) = 0.5 + q̃ 8j > i, i > 1
-where q̃ < 0.1, and the number of elements is 15. Here too
-we find 0.05-maximum with = 0.1. Note that i = 1 is
-the only 0.05-maximum in this stochastic model. In Figure 3, we compare the algorithms for different values of
-q̃: 0.01, 0.005 and 0.001. As discussed above, the performance of MallowsMPI gets much worse whereas our
-algorithm’s performance stays unchanged. The reason is
-that MallowsMPI finds the Condorcet winner using successive elimination technique and as q̃ gets closer to 0,
-MallowsMPI takes more comparisons for each elimination. Our algorithm tries to find an alternative which defeats Condorcet winner with probability 0.5 0.05 and
-hence for alternatives that are very close to each other, our
-algorithm declares either one of them as winner after comparing them for certain number of times.
-Next we evaluate K NOCKOUT on Mallows model which
-does not satisfy STI. Mallows is a parametric model which
-is specified by single parameter . As in (Busa-Fekete
-et al., 2014a), we consider n = 10 elements and various
-values for : 0.03, 0.1, 0.3, 0.5, 0.7, 0.8, 0.9, 0.95 and 0.99.
-Here again we seek to find 0.05-maximum with = 0.05.
-
-Figure 5. Sample complexity of M ERGE -R ANK for different ✏
-
-As we can see in Figure 4, sample complexity of K NOCK OUT and MallowsMPI is essentially same under small values of but K NOCKOUT outperforms MallowsMPI as
-gets close to 1 since comparison probabilities grow closer
-to 1/2. Surprisingly, for all values of except for 0.99,
-K NOCKOUT returned Condorcet winner in all runs. For
-= 0.99, K NOCKOUT returned second best element in 10
-runs out of 100. Note that p̃(1, 2) = 0.0025 and hence
-K NOCKOUT still outputed a 0.05-maximum. Even though
-we could not show theoretical guarantees of K NOCKOUT
-under Mallows model, our simulations suggest that it can
-perform well even under this model.
-For the stochastic model p(i, j) = 0.6 8i < j, we run
-our M ERGE -R ANK algorithm to find an ✏-ranking with
-= 0.1. Figure 5 shows that sample complexity does not
-increase a lot with decreasing ✏. We attribute this to the
-subroutine C OMPARE that finds the winner faster when the
-elements are more dissimilar.
-Some more experiments are provided in Appendix G.
-
-6. Conclusion
-We studied maximum selection and ranking using noisy
-comparisons for broad comparison models satisfying SST
-and STI. For maximum selection we presented a simple
-algorithm with linear, hence optimal, sample complexity.
-For ranking we presented a framework that improves the
-performance of many ranking algorithms and applied it to
-merge ranking to derive a near-optimal algorithm.
-We conducted several experiments showing that our algorithms perform well and out-perform existing algorithms
-on simulated data.
-The maximum-selection experiments suggest that our algorithm performs well even without STI. It would be of interest to extend our theoretical guarantees to this case. For
-ranking, it would be interesting to close the (log log n)3 ratio between the upper- and lower- complexity bounds.
-
-Maximum Selection and Ranking under Noisy Comparisons
-
-7. Acknowledgements
-We thank Yi Hao and Vaishakh Ravindrakumar for very
-helpful discussions and suggestions, and NSF for supporting this work through grants CIF-1564355 and CIF1619448.
+Christmann, A. and Steinwart, I. On robustness properties
+of convex risk minimization methods for pattern recognition. Journal of Machine Learning Research (JMLR),
+5(0):1007–1034, 2004.
 
 References
-Acharya, Jayadev, Jafarpour, Ashkan, Orlitsky, Alon, and Suresh,
-Ananda Theertha. Sorting with adversarial comparators and
-application to density estimation. In ISIT, pp. 1682–1686.
-IEEE, 2014a.
-Acharya, Jayadev, Jafarpour, Ashkan, Orlitsky, Alon, and Suresh,
-Ananda Theertha. Near-optimal-sample estimators for spherical gaussian mixtures. NIPS, 2014b.
-Acharya, Jayadev, Falahatgar, Moein, Jafarpour, Ashkan, Orlitsky, Alon, and Suresh, Ananda Theertha. Maximum selection
-and sorting with adversarial comparators and an application to
-density estimation. arXiv preprint arXiv:1606.02786, 2016.
-Ajtai, Miklós, Feldman, Vitaly, Hassidim, Avinatan, and Nelson, Jelani. Sorting and selection with imprecise comparisons.
-ACM Transactions on Algorithms (TALG), 12(2):19, 2015.
-Bradley, Ralph Allan and Terry, Milton E. Rank analysis of incomplete block designs: I. the method of paired comparisons.
-Biometrika, 39(3/4):324–345, 1952.
-Busa-Fekete, Róbert, Hüllermeier, Eyke, and Szörényi, Balázs.
-Preference-based rank elicitation using statistical models: The
-case of mallows. In Proc. of the ICML, pp. 1071–1079, 2014a.
-Busa-Fekete, Róbert, Szörényi, Balázs, and Hüllermeier, Eyke.
-Pac rank elicitation through adaptive sampling of stochastic
-pairwise preferences. In AAAI, 2014b.
-Feige, Uriel, Raghavan, Prabhakar, Peleg, David, and Upfal, Eli.
-Computing with noisy information. SIAM Journal on Computing, 23(5):1001–1018, 1994.
-Heckel, Reinhard, Shah, Nihar B, Ramchandran, Kannan, and
-Wainwright, Martin J. Active ranking from pairwise comparisons and when parametric assumptions don’t help. arXiv
-preprint arXiv:1606.08842, 2016.
-Herbrich, Ralf, Minka, Tom, and Graepel, Thore. Trueskill: a
-bayesian skill rating system. In Proceedings of the 19th International Conference on Neural Information Processing Systems, pp. 569–576. MIT Press, 2006.
-Jang, Minje, Kim, Sunghyun, Suh, Changho, and Oh, Sewoong.
-Top-k ranking from pairwise comparisons: When spectral
-ranking is optimal. arXiv preprint arXiv:1603.04153, 2016.
-Luce, R Duncan. Individual choice behavior: A theoretical analysis. Courier Corporation, 2005.
-Mallows, Colin L. Non-null ranking models. i. Biometrika, 44
-(1/2):114–130, 1957.
-Mukherjee, Sudipta. Data structures using C: 1000 problems and
-solutions. McGraw Hill Education, 2011.
 
-Negahban, Sahand, Oh, Sewoong, and Shah, Devavrat. Iterative
-ranking from pair-wise comparisons. In NIPS, pp. 2474–2482,
+Cook, R. D. Detection of influential observation in linear
+regression. Technometrics, 19:15–18, 1977.
+
+Abadi, M., Agarwal, A., Barham, P., Brevdo, E., Chen, Z.,
+Citro, C., Corrado, G. S., Davis, A., Dean, J., Devin, M.,
+Ghemawat, S., Goodfellow, I. J., Harp, A., Irving, G.,
+Isard, M., Jia, Y., Józefowicz, R., Kaiser, L., Kudlur, M.,
+Levenberg, J., Mané, D., Monga, R., Moore, S., Murray, D. G., Olah, C., Schuster, M., Shlens, J., Steiner,
+B., Sutskever, I., Talwar, K., Tucker, P. A., Vanhoucke,
+V., Vasudevan, V., Viégas, F. B., Vinyals, O., Warden, P.,
+Wattenberg, M., Wicke, M., Yu, Y., and Zheng, X. Tensorflow: Large-scale machine learning on heterogeneous
+distributed systems. arXiv preprint arXiv:1603.04467,
+2015.
+Adler, P., Falk, C., Friedler, S. A., Rybeck, G., Scheidegger, C., Smith, B., and Venkatasubramanian, S. Auditing
+black-box models for indirect influence. arXiv preprint
+arXiv:1602.07043, 2016.
+
+Cook, R. D. Assessment of local influence. Journal of the
+Royal Statistical Society. Series B (Methodological), pp.
+133–169, 1986.
+Cook, R. D. and Weisberg, S. Characterizations of an empirical influence function for detecting influential cases
+in regression. Technometrics, 22:495–508, 1980.
+Cook, R. D. and Weisberg, S. Residuals and influence in
+regression. New York: Chapman and Hall, 1982.
+Datta, A., Sen, S., and Zick, Y. Algorithmic transparency
+via quantitative input influence: Theory and experiments
+with learning systems. In Security and Privacy (SP),
+2016 IEEE Symposium on, pp. 598–617, 2016.
+
+Agarwal, N., Bullins, B., and Hazan, E. Second order
+stochastic optimization in linear time. arXiv preprint
+arXiv:1602.03943, 2016.
+
+Debruyne, M., Hubert, M., and Suykens, J. A. Model selection in kernel based regression using the influence function. Journal of Machine Learning Research (JMLR), 9
+(0):2377–2400, 2008.
+
+Amershi, S., Chickering, M., Drucker, S. M., Lee, B.,
+Simard, P., and Suh, J. Modeltracker: Redesigning performance analysis tools for machine learning. In Conference on Human Factors in Computing Systems (CHI),
+pp. 337–346, 2015.
+
+Donahue, J., Jia, Y., Vinyals, O., Hoffman, J., Zhang, N.,
+Tzeng, E., and Darrell, T. Decaf: A deep convolutional
+activation feature for generic visual recognition. In International Conference on Machine Learning (ICML), volume 32, pp. 647–655, 2014.
+
+Ben-David, S., Blitzer, J., Crammer, K., Kulesza, A.,
+Pereira, F., and Vaughan, J. W. A theory of learning
+from different domains. Machine Learning, 79(1):151–
+175, 2010.
+
+Frénay, B. and Verleysen, M. Classification in the presence
+of label noise: a survey. IEEE Transactions on Neural
+Networks and Learning Systems, 25:845–869, 2014.
+
+Biggio, B., Nelson, B., and Laskov, P. Support vector machines under adversarial label noise. ACML, 20:97–112,
+2011.
+Biggio, B., Nelson, B., and Laskov, P. Poisoning attacks
+against support vector machines. In International Conference on Machine Learning (ICML), pp. 1467–1474,
 2012.
-Negahban, Sahand, Oh, Sewoong, and Shah, Devavrat. Rank centrality: Ranking from pairwise comparisons. Operations Research, 2016.
-Plackett, Robin L. The analysis of permutations. Applied Statistics, pp. 193–202, 1975.
-Radlinski, Filip and Joachims, Thorsten. Active exploration for
-learning rankings from clickthrough data. In Proceedings of
-the 13th ACM SIGKDD, pp. 570–579. ACM, 2007.
-Radlinski, Filip, Kurup, Madhu, and Joachims, Thorsten. How
-does clickthrough data reflect retrieval quality? In Proceedings of the 17th ACM conference on Information and knowledge management, pp. 43–52. ACM, 2008.
-Rajkumar, Arun and Agarwal, Shivani. A statistical convergence
-perspective of algorithms for rank aggregation from pairwise
-data. In Proc. of the ICML, pp. 118–126, 2014.
-Syrgkanis, Vasilis, Krishnamurthy, Akshay, and Schapire,
-Robert E. Efficient algorithms for adversarial contextual learning. arXiv preprint arXiv:1602.02454, 2016.
-Szörényi, Balázs, Busa-Fekete, Róbert, Paul, Adil, and
-Hüllermeier, Eyke. Online rank elicitation for plackett-luce:
-A dueling bandits approach. In NIPS, pp. 604–612, 2015.
-Urvoy, Tanguy, Clerot, Fabrice, Féraud, Raphael, and Naamane,
-Sami. Generic exploration and k-armed voting bandits. In
-Proc. of the ICML, pp. 91–99, 2013.
-Yue, Yisong and Joachims, Thorsten. Beat the mean bandit. In
-Proc. of the ICML, pp. 241–248, 2011.
-Zhou, Yuan and Chen, Xi. Optimal pac multiple arm identification
-with applications to crowdsourcing. 2014.
+
+Goodfellow, I. J., Shlens, J., and Szegedy, C. Explaining
+and harnessing adversarial examples. In International
+Conference on Learning Representations (ICLR), 2015.
+Goodman, B. and Flaxman, S. European union regulations
+on algorithmic decision-making and a “right to explanation”. arXiv preprint arXiv:1606.08813, 2016.
+
+Cadamuro, G., Gilad-Bachrach, R., and Zhu, X. Debugging machine learning models. In ICML Workshop on
+Reliable Machine Learning in the Wild, 2016.
+
+Huang, L., Joseph, A. D., Nelson, B., Rubinstein, B. I., and
+Tygar, J. Adversarial machine learning. In Proceedings
+of the 4th ACM workshop on Security and artificial intelligence, pp. 43–58, 2011.
+
+Chatterjee, S. and Hadi, A. S. Influential observations, high
+leverage points, and outliers in linear regression. Statistical Science, pp. 379–393, 1986.
+
+Jaeckel, L. A. The infinitesimal jackknife. Unpublished memorandum, Bell Telephone Laboratories, Murray Hill, NJ, 1972.
+
+Understanding Black-box Predictions via Influence Functions
+
+Kansagara, D., Englander, H., Salanitro, A., Kagen, D.,
+Theobald, C., Freeman, M., and Kripalani, S. Risk prediction models for hospital readmission: a systematic review. JAMA, 306(15):1688–1698, 2011.
+
+Ribeiro, M. T., Singh, S., and Guestrin, C. ”why should
+I trust you?”: Explaining the predictions of any classifier. In International Conference on Knowledge Discovery and Data Mining (KDD), 2016.
+
+Kingma, D. and Ba, J. Adam: A method for stochastic
+optimization. arXiv preprint arXiv:1412.6980, 2014.
+
+Russakovsky, O., Deng, J., Su, H., Krause, J., Satheesh, S.,
+Ma, S., Huang, Z., Karpathy, A., Khosla, A., Bernstein,
+M., et al. ImageNet large scale visual recognition challenge. International Journal of Computer Vision, 115(3):
+211–252, 2015.
+
+Krizhevsky, A., Sutskever, I., and Hinton, G. E. Imagenet
+classification with deep convolutional neural networks.
+In Advances in Neural Information Processing Systems
+(NIPS), pp. 1097–1105, 2012.
+LeCun, Y., Bottou, L., Bengio, Y., and Haffner, P. Gradientbased learning applied to document recognition. Proceedings of the IEEE, 86(11):2278–2324, 1998.
+Li, B., Wang, Y., Singh, A., and Vorobeychik, Y. Data poisoning attacks on factorization-based collaborative filtering. In Advances in Neural Information Processing Systems (NIPS), 2016a.
+Li, J., Monroe, W., and Jurafsky, D. Understanding neural
+networks through representation erasure. arXiv preprint
+arXiv:1612.08220, 2016b.
+Liu, D. C. and Nocedal, J. On the limited memory BFGS
+method for large scale optimization. Mathematical Programming, 45(1):503–528, 1989.
+Liu, Y., Jiang, S., and Liao, S. Efficient approximation
+of cross-validation for kernel methods using Bouligand
+influence function. In International Conference on Machine Learning (ICML), pp. 324–332, 2014.
+Martens, J. Deep learning via hessian-free optimization. In
+International Conference on Machine Learning (ICML),
+pp. 735–742, 2010.
+Mei, S. and Zhu, X. The security of latent Dirichlet allocation. In Artificial Intelligence and Statistics (AISTATS),
+2015a.
+Mei, S. and Zhu, X. Using machine teaching to identify
+optimal training-set attacks on machine learners. In Association for the Advancement of Artificial Intelligence
+(AAAI), 2015b.
+Metsis, V., Androutsopoulos, I., and Paliouras, G. Spam filtering with naive Bayes – which naive Bayes? In CEAS,
+volume 17, pp. 28–69, 2006.
+Moosavi-Dezfooli, S., Fawzi, A., and Frossard, P. Deepfool: a simple and accurate method to fool deep neural
+networks. In Computer Vision and Pattern Recognition
+(CVPR), pp. 2574–2582, 2016.
+Pearlmutter, B. A. Fast exact multiplication by the hessian.
+Neural Computation, 6(1):147–160, 1994.
+
+Shrikumar, A., Greenside, P., Shcherbina, A., and Kundaje, A. Not just a black box: Learning important features through propagating activation differences. arXiv
+preprint arXiv:1605.01713, 2016.
+Simonyan, K., Vedaldi, A., and Zisserman, A. Deep inside convolutional networks: Visualising image classification models and saliency maps. arXiv preprint
+arXiv:1312.6034, 2013.
+Springenberg, J. T., Dosovitskiy, A., Brox, T., and Riedmiller, M. Striving for simplicity: The all convolutional
+net. arXiv preprint arXiv:1412.6806, 2014.
+Strack, B., DeShazo, J. P., Gennings, C., Olmo, J. L., Ventura, S., Cios, K. J., and Clore, J. N. Impact of HbA1c
+measurement on hospital readmission rates: analysis of
+70,000 clinical database patient records. BioMed Research International, 2014, 2014.
+Szegedy, C., Vanhoucke, V., Ioffe, S., Shlens, J., and Wojna, Z. Rethinking the Inception architecture for computer vision. In Computer Vision and Pattern Recognition (CVPR), pp. 2818–2826, 2016.
+Theano D. Team. Theano: A Python framework for
+fast computation of mathematical expressions. arXiv
+preprint arXiv:1605.02688, 2016.
+Thomas, W. and Cook, R. D. Assessing influence on predictions from generalized linear models. Technometrics,
+32(1):59–65, 1990.
+Wei, B., Hu, Y., and Fung, W. Generalized leverage and
+its applications. Scandinavian Journal of Statistics, 25:
+25–37, 1998.
+Wojnowicz, M., Cruz, B., Zhao, X., Wallace, B., Wolff, M.,
+Luan, J., and Crable, C. “Influence sketching”: Finding influential samples in large-scale regressions. arXiv
+preprint arXiv:1611.05923, 2016.
 
 

@@ -1,1015 +1,739 @@
-Learning the Structure of Generative Models without Labeled Data
-Stephen H. Bach 1 Bryan He 1 Alexander Ratner 1 Christopher Ré 1
+Learning Texture Manifolds with the Periodic Spatial GAN
+
+Urs Bergmann * 1 Nikolay Jetchev * 1 Roland Vollgraf 1
 
 Abstract
-Curating labeled training data has become the
-primary bottleneck in machine learning. Recent frameworks address this bottleneck with
-generative models to synthesize labels at scale
-from weak supervision sources. The generative
-model’s dependency structure directly affects the
-quality of the estimated labels, but selecting a
-structure automatically without any labeled data
-is a distinct challenge. We propose a structure estimation method that maximizes the `1 regularized marginal pseudolikelihood of the observed data. Our analysis shows that the amount
-of unlabeled data required to identify the true
-structure scales sublinearly in the number of possible dependencies for a broad class of models. Simulations show that our method is 100⇥
-faster than a maximum likelihood approach and
-selects 1/4 as many extraneous dependencies.
-We also show that our method provides an average of 1.5 F1 points of improvement over existing, user-developed information extraction applications on real-world data such as PubMed journal abstracts.
+This paper introduces a novel approach to texture synthesis based on generative adversarial
+networks (GAN) (Goodfellow et al., 2014), and
+call this technique Periodic Spatial GAN (PSGAN). The PSGAN has several novel abilities
+which surpass the current state of the art in texture synthesis. First, we can learn multiple textures, periodic or non-periodic, from datasets of
+one or more complex large images. Second,
+we show that the image generation with PSGANs has properties of a texture manifold: we
+can smoothly interpolate between samples in the
+structured noise space and generate novel samples, which lie perceptually between the textures
+of the original dataset. We make multiple experiments which show that PSGANs can flexibly
+handle diverse texture and image data sources,
+and the method is highly scalable and can generate output images of arbitrary large size.
 
 1. Introduction
-Supervised machine learning traditionally depends on access to labeled training data, a major bottleneck in developing new methods and applications. In particular, deep
-learning methods require tens of thousands or more labeled
-data points for each specific task. Collecting these labels is
-often prohibitively expensive, especially when specialized
-domain expertise is required, and major technology companies are investing heavily in hand-curating labeled training
-data (Metz, 2016; Eadicicco, 2017). Aiming to overcome
-this bottleneck, there is growing interest in using generative models to synthesize training data from weak super1
+1.1. Textures and Texture Synthesis
+Textures are important perceptual elements, both in the
+real world and in the visual arts. Many textures have random noise characteristics, formally defined as stationary,
+ergodic, stochastic processes (Georgiadis et al., 2013).
+There are many natural image examples with such properties, e.g. rice randomly spread on the ground. However,
+more complex textures also exist in nature, e.g. those that
+exhibit periodicity like a honeycomb or fish scales.
+The goal of texture synthesis is to learn from a given example image a generating process, which allows to create
+many images with similar properties. Classical texture synthesis methods include instance based approaches (Efros
+*
+Equal contribution 1 Zalando Research, Berlin. Correspondence to: Urs Bergmann <urs.bergmann@zalando.de>, Nikolay Jetchev <nikolay.jetchev@zalando.de>, Roland Vollgraf
+<roland.vollgraf@zalando.de>.
 
-Stanford University, Stanford, California. Correspondence
-to: Stephen Bach <bach@cs.stanford.edu>.
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-vision sources such as heuristics, knowledge bases, and
-weak classifiers trained directly on noisy sources. Rather
-than treating training labels as gold-standard inputs, such
-methods model training set creation as a process in order to
-generate training labels at scale. The true class label for a
-data point is modeled as a latent variable that generates the
-observed, noisy labels. After fitting the parameters of this
-generative model on unlabeled data, a distribution over the
-latent, true labels can be inferred.
-The structure of such generative models directly affects the
-inferred labels, and prior work assumes that the structure
-is user-specified (Alfonseca et al., 2012; Takamatsu et al.,
-2012; Roth & Klakow, 2013b; Ratner et al., 2016). One
-option is to assume that the supervision sources are conditionally independent given the latent class label. However,
-statistical dependencies are common in practice, and not
-taking them into account leads to misjudging the accuracy
-of the supervision. We cannot rely in general on users to
-specify the structure of the generative model, because supervising heuristics and classifiers might be independent
-for some data sets but not others. We therefore seek an efficient method for automatically learning the structure of the
-generative model from weak supervision sources alone.
-While structure learning in the supervised setting is wellstudied (e.g., Meinshausen & Bühlmann, 2006; Zhao & Yu,
-2006; Ravikumar et al., 2010, see also Section 6), learning the structure of generative models for weak supervision is challenging because the true class labels are latent.
-Although we can learn the parameters of generative models for a given structure using stochastic gradient descent
-and Gibbs sampling, modeling all possible dependencies
-does not scale as an alternative to model selection. For
-example, estimating all possible correlations for a modestly sized problem of 100 weak supervision sources takes
-over 40 minutes. (For comparison, our proposed approach
-solves the same problem in 15 seconds.) As users develop
-their supervision heuristics, rerunning parameter learning
-to identify dependencies becomes a prohibitive bottleneck.
-We propose an estimator to learn the dependency structure
-of a generative model without using any labeled training
-data. Our method maximizes the `1 -regularized marginal
-pseudolikelihood of each supervision source’s output independently, selecting those dependencies that have nonzero
+& Leung, 1999; Efros & Freeman, 2001), where pixels or
+patches of the source image are resampled and copied next
+to similar image regions, so that a seamless bigger texture
+image is obtained. Such methods have good visual quality
+and can deal with periodic images, but have a high runtime complexity when generating big images. In addition,
+since they do not learn an explicit model of images but just
+copy patches from the original pixels, they cannot be used
+to generate novel textures from multiple examples.
+Parametric methods define an explicit model of a “good”
+texture by specifying some statistical properties; new texture images that are optimal w.r.t. the specified criteria are
+synthesized by optimization. The method of (Portilla &
+Simoncelli, 2000) yields good results in creating various
+textures, including periodic ones (the parametric statistics
+include phase variables of pre-specified periodicity). However, the run-time complexity is high, even for small output
+images. The authors also tried blending of textures, but
+the results were not satisfactory: patch-wise mixtures were
+obtained, rather than a new homogeneous texture that perceptually interpolates the originals.
+More recently, deep learning methods were shown to be
+a powerful, fast and data-driven, parametric approach to
+texture synthesis. The work of (Gatys et al., 2015a) is
+a milestone: they showed that filters from a discriminatively trained deep neural network can be used as effective
+parametric image descriptors. Texture synthesis is modeled as an optimization problem. (Gatys et al., 2015b) also
+showed the interesting application of painting a target content photo in the style of a given input image: “neural
+art style transfer”. Related works speed-up texture synthesis and style transfer by approximating the optimization
+process by feed-forward convolutional networks (Ulyanov
+et al., 2016; Johnson et al., 2016).
+However, the choice of descriptor in all of these related
+works – the Gram matrix of learned filters – is a specific
+prior on the learnable textures for the method. It generalizes to many, but not all textures – e.g. periodic textures are
+reproduced inaccurately. Another limitation is that texture
+synthesis is performed from a single example image only,
+lacking the ability to represent and morph textures defined
+by several different images. In a related work, (Dumoulin
+et al., 2016) explored the blending of multiple styles by
 
-Learning the Structure of Generative Models without Labeled Data
+Learning Texture Manifolds
 
-weights. This estimator is analogous to maximum likelihood for logistic regression, except that we marginalize
-out our uncertainty about the latent class label. Since the
-pseudolikelihood is a function of one free variable and
-marginalizes over one other variable, we compute the gradient of the marginal pseudolikelihood exactly, avoiding
-the need for approximating the gradient with Gibbs sampling, as is done for maximum likelihood estimation.
-Our analysis shows that the amount of data required to
-identify the true structure scales sublinearly in the number
-of possible dependencies for a broad class of models. Intuitively, this follows from the fact that learning the generative model’s parameters is possible when there are a sufficient number of better-than-random supervision sources
-available. With enough signal to estimate the latent class
-labels better than random guessing, those estimates can be
-refined until the model is identified.
-We run experiments to confirm these predictions. We also
-compare against the alternative approach of considering all
-possible dependencies during parameter learning. We find
-that our method is 100⇥ faster. In addition, our method
-returns 1/4 as many extraneous correlations on synthetic
-data when tuned for comparable recall. Finally, we demonstrate that on real-world applications of weak supervision,
-using generative models with automatically learned dependencies improves performance. We find that our method
-provides on average 1.5 F1 points of improvement over existing, user-developed information extraction applications
-on PubMed abstracts and hardware specification sheets.
+Figure 1. PSGANs can extract textures from complex datasets of natural images, here the Oxford Describable Textures Dataset (Cimpoi
+et al., 2014) – category “scaly”. The image shows a quilt of 3x4 different tiles, each containing a novel synthesized texture, not originally
+in the dataset. Methodologically, the image is created by setting the global dimensions of the noise tensor Z (spatial dimensions 60x80)
+to be identical for local regions of 20x20 spatial dimensions, resulting in a generated image of a total size 1920x2560 in pixels.
 
-2. Background
-When developing machine learning systems, the primary
-bottleneck is often curating a sufficient amount of labeled
-training data. Hand labeling training data is expensive, time
-consuming, and often requires specialized knowledge. Recently researchers have proposed methods for synthesizing
-labels from noisy label sources using generative models.
-(See Section 6 for a summary.) We ground our work in one
-framework, data programming (Ratner et al., 2016), that
-generalizes many approaches in the literature.
-In data programming, weak supervision sources are encoded as labeling functions, heuristics that label data points
-(or abstain). A generative probabilistic model is fit to estimate the accuracy of the labeling functions and the strength
-of any user-specified statistical dependencies among their
-outputs. In this model, the true class label for a data point
-is a latent variable that generates the labeling function outputs. After fitting the parameters of the generative model,
-a distribution over the latent, true labels can be estimated
-and be used to train a discriminative model by minimizing
-the expected loss with respect to that distribution.
+parametrically mixing their statistical descriptors. The results are interesting in terms of image stylization, but the
+synthesis of novel blended textures has not been shown.
+1.2. GANs
+Purely data driven generative models are an alternative
+deep learning approach to texture synthesis. Introduced
+in (Goodfellow et al., 2014), generative adversarial networks (GAN) train a model G that learns a data distribution from example data, and a discriminator D that attempts to distinguish generated from training data. The
+GAN architecture was further improved (Radford et al.,
+2015) by using deep convolutional layers with (fractional)
+stride. GANs have successfully created “natural” images
+of great perceptual quality that can fool even human observers. However, pixel resolution is usually low, and the
+output image size is pre-specified and fixed at training time.
+For the texture synthesis use case, fully convolutional
+layers, which can scale to any image size, are advantageous. (Li & Wand, 2016) presented an interesting architecture, that combines ideas from GANs and the pre-trained
+descriptor of (Gatys et al., 2015a) in order to generate small
+patches with the statistics of layer activations from the
+VGG network. This method allows fast texture synthesis
+and style transfer.
+Spatial GAN (SGAN) (Jetchev et al., 2016) applied for
 
-We formally describe this setup by first specifying for each
-data point xi a latent random variable yi 2 { 1, 1} that
-is its true label. For example, in an information extraction
-task, xi might be a span of text. Then, yi can represent
-whether it is a mention of a company or not (entity tagging). Alternatively, xi might be a more complex structure,
-such as a tuple of canonical identifiers along with associated mentions in a document, and then yi can represent
-whether a relation of interest over that tuple is expressed
-in the document (relation extraction).
-We do not have access to yi (even at training time), but
-we do have n user-provided labeling functions 1 , . . . , n
-that can be applied to xi to produce outputs ⇤i1 , . . . , ⇤in .
-For example, for the company-tagging task mentioned
-above, a labeling function might apply the regular expression .+\sInc\. to a span of text and return whether it
-matched. The domain of each ⇤ij is { 1, 0, 1}, corresponding to false, abstaining, and true. Generalizing to
-the multiclass case is straightforward.
-Our goal is to estimate a probabilistic model that generates the labeling-function outputs ⇤ 2 { 1, 0, 1}m⇥n . A
-common assumption is that the outputs are conditionally
-independent given the true label, and that the relationship
-between ⇤ and y is governed by n accuracy dependencies
-Acc
-j (⇤i , yi )
+the first time fully unsupervised GANs for texture synthesis. SGANs had properties like good scalability w.r.t. speed
+and memory, and showed excellent results on certain texture classes, surpassing the results of (Gatys et al., 2015a).
+However, some classes of textures cannot be handled, and
+no plausible texture morphing is possible.
+The current contribution, PSGAN, makes a great step forward with respect to the types of images a neural texture synthesis method can create – both periodic and nonperiodic images are learned in an unsupervised way from
+single images or large datasets of images. Afterwards, flexible sampling in the noise space allows to create novel textures of potentially infinite output size, and smoothly transition between them. Figure 1 shows a few example textures generated with a PSGAN. In the next section we describe in detail the architecture of the PSGAN, and then
+proceed to illustrate its abilities with a number of experiments.
 
-:= yi ⇤ij
+2. Methods: Periodic GAN
+In GANs, the generative model G(z) maps a noise vector
+z to the input data space. As in SGANs (Jetchev et al.,
+2016), we generalize the generator G(Z) to map a noise
+Our source code is available at https://github.com/
+ubergmann/psgan
 
-with a parameter ✓jAcc modeling how accurate each labeling
-function j is. We refer to this structure as the conditionally independent model, and specify it as
-0
+Learning Texture Manifolds
+
+dl
+
+dg
+
 1
-m X
-n
-X
-A ,
-p✓ (⇤, Y ) / exp @
-✓jAcc Acc
-(1)
-j (⇤i , yi )
-i=1 j=1
 
-where Y := y1 , . . . , ym .
+dp
 
-We estimate the parameters ✓ by minimizing the negative
-¯ for an observed matrix of
-log marginal likelihood p✓ (⇤)
-¯
-labeling function outputs ⇤:
-X
-¯ Y).
-arg min
-log
-p✓ (⇤,
-(2)
-✓
-
-Y
-
-Optimizing the likelihood is straightforward using stochastic gradient descent. The gradient of objective (2) with respect to parameter ✓jAcc is
-m
-X
-i=1
-
-E⇤,Y ⇠✓
-
-⇥
-
-Acc
-j (⇤i , yi )
-
-⇤
-
-EY ⇠✓|⇤¯
-
-⇥
-
-Acc ¯
-j (⇤i , yi )
-
-⇤
-
-,
-
-the difference between the corresponding sufficient statistic
-of the joint distribution p✓ and the same distribution con¯ In practice, we can interleave samples to
-ditioned on ⇤.
-estimate the gradient and gradient steps very tightly, taking
-
-Learning the Structure of Generative Models without Labeled Data
-
-a small step after each sample of each variable ⇤ij or yi ,
-similarly to contrastive divergence (Hinton, 2002).
-The conditionally independent model is a common assumption, and using a more sophisticated generative model
-currently requires users to specify its structure. In the rest
-of the paper, we address the question of automatically iden¯
-tifying the dependency structure from the observations ⇤
-without observing Y .
-
-3. Structure Learning without Labels
-Statistical dependencies arise naturally among weak supervision sources. In data programming, users often write labeling functions with directly correlated outputs or even
-labeling functions deliberately designed to reinforce others with narrow, more precise heuristics. To address this
-issue, we generalize the conditionally independent model
-as a factor graph with additional dependencies, including
-higher-order factors that connect multiple labeling function
-outputs for each data point xi and label yi . We specify the
-general model as
-!
-m X X
-X
-t t
-p✓ (⇤, Y ) / exp
-✓s s (⇤i , yi ) .
-(3)
-
-marginal pseudolikelihood of the outputs of a single labeling function j , i.e., conditioned on the outputs of the
-others \j , using `1 regularization to induce sparsity. The
-objective is
-✓
-
-Cor
-jk (⇤i , yi )
-
-:=
-
-{⇤ij = ⇤ik } .
-
-We refer to such dependencies as pairwise among labeling
-functions because they depend only on two labeling function outputs. We can also consider higher-order dependencies that involve more variables, such as conjunction dependencies of the form
-And
-jk (⇤i , yi )
-
-:=
-
-{⇤ij = yi ^ ⇤ik = yi } .
-
-m
-X
-
-= arg min
-✓
-
-i=1
-
-log
-
-X
-yi
-
-(4)
-
-¯ ij , yi | ⇤
-¯ i\j ) + ✏k✓k1 ,
-p✓ ( ⇤
-
-where ✏ > 0 is a hyperparameter.
-By conditioning
-on all other labeling functions in each term
-P
-¯ ij , yi | ⇤
-¯ i\j ), we ensure that the gradient can
-log yi p✓ (⇤
-be computed in polynomial time with respect to the number
-of labeling functions, data points, and possible dependencies; without requiring any sampling or variational approximations. The gradient of the log marginal pseudolikelihood
-is the difference between two expectations: the sufficient
-statistics conditioned on all labeling functions but j , and
-conditioned on all labeling functions:
-¯j | ⇤
-¯ \j )
-@ log p(⇤
-=↵
-t
-@✓s
-
-,
-
-(5)
-
-where
-
-i=1 t2T s2St
-
-Here T is the set of dependency types of interest, and St is
-a set of index tuples, indicating the labeling functions that
-participate in each dependency of type t 2 T . We start by
-defining standard correlation dependencies of the form
-
-¯j | ⇤
-¯ \j ) + ✏k✓k1
-log p✓ (⇤
-
-arg min
-
-↵ :=
-
-m X
-X
-
-i=1 ⇤ij ,yi
-
-:=
-
-m X
-X
-i=1 yi
-
-¯ i\j )
-p✓ (⇤ij , yi | ⇤
-
-¯ i)
-p(yi | ⇤
-
-t
-¯
-s ((⇤ij , ⇤i\j ), yi )
-
-t ¯
-s (⇤i , yi ).
-
-Note that in the definition of ↵, ts operates on the value of
-¯ i\j .
-⇤ij set in the summation and the observed values of ⇤
-We optimize for each labeling function j in turn, selecting
-those dependencies with parameters that have a sufficiently
-large magnitude and adding them to the estimated structure.
-3.2. Implementation
-
-3.1. Learning Objective
-
-We implement our method as Algorithm 1, a stochastic gradient descent (SGD) routine. At each step of the descent,
-the gradient (5) is estimated for a single data point, which
-can be computed in closed form. Using SGD has two advantages. First, it requires only first-order gradient information. Other methods for `1 -regularized regression like
-interior-point methods (Koh et al., 2007) usually require
-computing second-order information. Second, the obser¯ can be processed incrementally. Since data provations ⇤
-gramming operates on unlabeled data, which is often abundant, scalability is crucial. To implement `1 regularization
-as part of SGD, we use an online truncated gradient method
-(Langford et al., 2009).
-
-We can scale up learning over many potentially irrelevant
-dependencies by optimizing a different objective: the log
-
-In practice, we find that the only parameter that requires
-tuning is ✏, which controls the threshold and regularization
-
-Estimating the structure of the distribution p✓ (⇤, Y ) is
-challenging because Y is latent; we never observe its value,
-even during training. We must therefore work with the
-marginal likelihood p✓ (⇤). Learning the parameters of the
-generative model jointly requires Gibbs sampling to estimate gradients. As the number of possible dependencies
-increases at least quadratically in the number of labeling
-functions, this heavyweight approach to learning does not
-scale (see Section 5.2).
-
-Learning the Structure of Generative Models without Labeled Data
-
-Algorithm 1 Structure Learning for Data Programming
-¯ 2 { 1, 0, 1}m⇥n , threshold ✏,
-Input: Observations ⇤
-distribution p with parameters ✓, initial parameters ✓0 ,
-step size ⌘, epoch count T , truncation frequency K
-D
-;
-for j = 1 to n do
-✓
-✓0
-for ⌧ = 1 to T do
-for i = 1 to m do
-for
-↵
-
-✓st
-
-✓st
-
-in ✓ do
-P
-
-¯ i\j ) ts ((⇤ij , ⇤
-¯ i\j ), yi )
-p(⇤ij , yi |⇤
-P⇤ij ,yi ¯ t ¯
-yi p(yi | ⇤i ) s (⇤i , yi )
-✓st ⌘(↵
-)
-
-if ⌧ m + i mod K is 0 then
-for ✓st in ✓ where ✓st > 0 do
-✓st
-max{0, ✓st K⌘✏}
-t
-for ✓s in ✓ where ✓st < 0 do
-✓st
-min{0, ✓st + K⌘✏}
-for ✓st in ✓ where j 2 s do
-if |✓st | > ✏ then
-D
-D [ {(s, t)}
-return D
-
-proach the true model.
-We now state the conditions necessary for our guarantees.
-First are two standard conditions that are needed to guarantee that the dependency structure can be recovered with any
-number of samples. One, we must have some set ⇥ ⇢ RM
-of feasible parameters. Two, the true model is in ⇥, i.e.,
-there exists some choice of ✓⇤ 2 ⇥ such that
-⇡ ⇤ (⇤, Y ) = p✓⇤ (⇤, Y ),
-
-8⇤ 2 { 1, 0, 1}m⇥n , Y 2 { 1, 1}m
-
-(6)
-
-where ⇡ ⇤ is the true distribution.
-Next, let j denote the set of dependencies that involve
-either labeling function j or the true label y. For any feasible parameter ✓ 2 ⇥ and j 2 {1, . . . , n}, there must exist
-c > 0 such that
-cI +
-
-m
-X
-
-i=1
-m
-X
-i=1
-
-Cov(⇤,Y )⇠p✓ (
-Cov(⇤,Y )⇠p✓ (
-
-j (⇤, Y
-
-j (⇤, Y
-
-¯ i)
-) | ⇤i = ⇤
-) | ⇤i\j
-
-(7)
-
-¯ i\j ).
-=⇤
-
-This means that for each labeling function, we have a better estimate of the dependencies with the labeling function
-than without. It is analogous to assumptions made to analyze parameter learning in data programming.
-
-strength. Higher values induce more sparsity in the selected
-structure. For the other parameters, we use the same values
-in all of our experiments: step size ⌘ = m 1 , epoch count
-T = 10, and truncation frequency K = 10.
-
-Finally, we require that all non-zero parameters be bounded
-away from zero. That is, for all ✓i 6= 0, and some  > 0,
-we have that
-|✓i | .
-(8)
-
-4. Analysis
-
-Under these conditions, we are able to provide guarantees
-on the probability of finding the correct dependency structure. First, we present guarantees for all types of possible
-dependencies in Theorem 1, proved in Appendix A.2. For
-this theorem, we define dj to be the number of possible dependencies involving either ⇤j or y, and we define d as the
-largest of d1 , . . . , dn .
-
-We provide guarantees on the probability that Algorithm 1
-successfully recovers the exact dependency structure. We
-first provide a general recovery guarantee for all types of
-possible dependencies, including both pairwise and higherorder dependencies. However, in many cases, higher-order
-dependencies are not necessary to model the behavior of
-the labeling functions. In fact, as we demonstrate in Section 5.3, in many useful models there are only accuracy
-dependencies and pairwise correlations. In this case, we
-show as a corollary to our general result that the number
-of samples required is sublinear in the number of possible
-dependencies, specifically O(n log n).
-Previous analyses for the supervised case do not carry
-over to the unsupervised setting because the problem is
-no longer convex. For example, analysis of an analogous method for supervised Ising models (Ravikumar et al.,
-2010) relies on Lagrangian duality and a tight duality gap,
-which does not hold for our estimation problem. Instead,
-we reason about a region of the parameter space in which
-we can estimate Y well enough that we can eventually ap-
-
-Theorem 1. Suppose we run Algorithm 1 on a problem
-where conditions (6), (7), and (8) are satisfied. Then, for
-any > 0, an unlabeled input dataset of size
-✓
-◆
-32d
-2nd
-m
-log
-c 2 2
-is sufficient to recover the exact dependency structure with
-a probability of at least 1
-.
-For general dependencies, d can be as large as the number
-of possible dependencies due to the fact that higher-order
-dependencies can connect the true label and many labeling
-functions. The rate of Theorem 1 rate is therefore not directly comparable to that of Ravikumar et al. (2010), which
-applies to Ising models with pairwise dependencies.
-
-Learning the Structure of Generative Models without Labeled Data
-
-As we demonstrate in Section 5.3, however, real-world applications can be improved by modeling just pairwise correlations among labeling functions. If only considering
-these dependencies, then d will only be 2n
-1, rather
-than the number of potential dependencies. In Corollary
-2, we show that a number of samples needed in this case is
-O(n log n). Notice that this is sublinear in the number of
-possible dependencies, which is O(n2 ).
-Corollary 2. Suppose we run Algorithm 1 on a problem
-where conditions (6), (7), and (8) are satisfied. Additionally, assume that the only potential dependencies are accuracy and correlation dependencies. Then, for any > 0,
-an unlabeled input dataset of size
-✓ ◆
-64n
-4n
-m
-log
-c 2 2
-is sufficient to recover the exact dependency structure with
-a probability of at least 1
-.
-In this case, we see the difference in analyses between the
-unsupervised and supervised settings. Whereas the rate of
-Corollary 2 depends on the maximum number of dependencies that could affect a variable in the model class, the
-rate of Ravikumar et al. (2010) depends cubically on the
-maximum number of dependencies that actually affect any
-variable in the true model and only logarithmically in the
-maximum possible degree. In the supervised setting, the
-guaranteed rate is therefore tighter for very sparse models.
-However, as we show in Section 5.1, the guaranteed rates
-in both settings are pessimistic, and in practice they appear
-to scale at the same rate.
-
-5. Experiments
-We implement our method as part of the open source framework Snorkel1 and evaluate it in three ways. First, we measure how the probability of returning the exact correlation
-structure is affected by the problem parameters using synthetic data, confirming our analysis that its sample complexity is sublinear in the number of possible dependencies.
-In fact, we find that in practice the sample complexity is
-lower than the theoretically guaranteed rate, matching the
-rate seen in practice for fully supervised structure learning.
-Second, we compare our method to estimating structures
-via parameter learning over all possible dependencies. We
-demonstrate using synthetic data that our method is 100⇥
-faster and more accurate, selecting 1/4 as many extraneous correlations on average. Third, we apply our method to
-real-world applications built using data programming, such
-as information extraction from PubMed journal abstracts
-and hardware specification sheets. In these applications,
-users did not specify any dependencies between the label1
-
-snorkel.stanford.edu
-
-Figure 1. Algorithm 1 returns the true structure consistently when
-the control parameter reaches 1.0 for the number of samples
-defined by (9). The number of samples required to identify a
-model in practice scales logarithmically in n, the number of labeling functions.
-
-ing functions they authored; however, as we detail in Section 5.3, these dependencies naturally arise, for example
-due to explicit composing, relaxing, or tightening of labeling function heuristics; related distant supervision sources;
-or multiple concurrent developers writing labeling functions. We show that learning this structure improves performance over the conditionally independent model, giving
-an average 1.5 F1 point boost.
-5.1. Sample Complexity
-We test how the probability that Algorithm 1 returns the
-correct correlation structure depends on the true distribution. Our analysis in Section 4 guarantees that the sample
-complexity grows at worst on the order O(n log n) for n
-labeling functions. In practice, we find that structure learning performs better than this guaranteed rate, depending
-linearly on the number of true correlations and logarithmically on the number of possible correlations. This matches
-the observed behavior for fully supervised structure learning for Ising models (Ravikumar et al., 2010), which is also
-tighter than the best known theoretical guarantees.
-To demonstrate this behavior, we attempt to recover the true
-dependency structure using a number of samples defined as
-m := 750 ·
-
-· d⇤ · log n
-
-(9)
-
-where d⇤ is the maximum number of dependencies that affect any one labeling function. For example, in the conditionally independent model d⇤ = 1 and in a model with one
-correlation d⇤ = 2. We vary the control parameter from
-0.1 to 2.0 to determine the point at which m is sufficiently
-large for Algorithm 1 to recover the true dependency structure. (The constant 750 was selected so that it succeeds
-with high probability around = 1.0.)
-We first test the effect of varying n, the number of labeling
-functions. For n 2 {25, 50, 75, 100}, we set two pairs of
-
-Learning the Structure of Generative Models without Labeled Data
-
-Figure 2. Algorithm 1 returns the true structure consistently when
-the control parameter reaches 1.0 for the number of samples defined by (9). The number of samples required to identify a model
-in practice scales linearly in d⇤ , the maximum number of dependencies affecting any labeling function.
-
-Cor
-labeling functions to be correlated with ✓jk
-= 0.25. We set
-Acc
-✓j = 1.0 for all j. We then generate m samples for each
-setting of over 100 trials. Figure 1 shows the fraction of
-times Algorithm 1 returns the correct correlation structure
-as a function of the control parameter . That the curves
-are aligned for different values of n shows that the sample
-complexity in practice scales logarithmically in n.
-
-We next test the effect of varying d⇤ , the maximum number of dependencies that affect a labeling function in the
-true distribution. For 25 labeling functions, we add correlations to the true model to form cliques of increasing degree.
-All parameters are the same as in the previous experiment.
-Figure 2 shows that for increasing values of d⇤ , (9) again
-predicts the number of samples for Algorithm 1 to succeed.
-That the curves are aligned for different values of d⇤ shows
-that the sample complexity in practice scales linearly in d⇤ .
-5.2. Comparison with Maximum Likelihood
-We next compare Algorithm 1 with an alternative approach.
-Without an efficient structure learning method, one could
-¯
-maximize the marginal likelihood of the observations ⇤
-while considering all possible dependencies. To measure
-the benefits of maximizing the marginal pseudolikelihood,
-we compare its performance against an analogous maximum likelihood estimation routine that also uses stochastic
-gradient descent, but instead uses Gibbs sampling to estimate the intractable gradient of the objective.
-We create different distributions over n labeling functions
-by selecting with probability 0.05 pairs of labeling functions to make correlated. Again, the strength of correlation
-Cor
-is set at ✓jk
-= 0.25 and accuracy is set at ✓jAcc = 1.0. We
-generate 100 distributions for n 2 {25, 30, 35, . . . , 100}.
-For each distribution we generate 10,000 samples and attempt to recover the true correlation structure.
-
-Figure 3. Comparison of structure learning with using maximum
-likelihood parameter estimation to select a model structure. Structure learning is two orders of magnitude faster.
-
-We first compare running time between the two methods.
-Our implementation of maximum likelihood estimation is
-designed for speed: for every sample taken to estimate the
-gradient, a small update to the parameters is performed.
-This approach is state-of-the-art for high-speed learning for
-factor graphs (Zhang & Ré, 2014). However, the need for
-sampling the variables ⇤ and Y is still computationally expensive. Figure 3 shows that by avoiding variable sampling, using pseudolikelihood is 100⇥ faster.
-We next compare the accuracy of the two methods, which
-depends on the regularization ✏. The ideal is to maximize
-the probability of perfect recall with few extraneous correlations, because subsequent parameter estimation can reduce the influence of an extraneous correlation but cannot
-discover a missing correlation. We tune ✏ independently for
-each method. Figure 4 (top) shows that maximum pseudolikelihood is able to maintain higher levels of recall than
-maximum likelihood as the problem size increases. Figure 4 (bottom) shows that even tuned for better recall, maximum pseudolikelihood is more precise, returning 1/4 as
-many extraneous correlations. We interpret this improved
-accuracy as a benefit of computing the gradient for a data
-point exactly, as opposed to using Gibbs sampling to estimate it as in maximum likelihood estimation.
-5.3. Real-World Applications
-We evaluate our method on several real-world information
-extraction applications, comparing the performance of data
-programming using dependencies selected by our method
-with the conditionally independent model (Table 1). In the
-data programming method, users express a variety of weak
-supervision rules and sources such as regular expression
-patterns, distant supervision from dictionaries and existing
-knowledge bases, and other heuristics as labeling functions.
-Due to the noisy and overlapping nature of these labeling functions, correlations arise. Learning this correlation
-structure gives an average improvement of 1.5 F1 points.
-
-Learning the Structure of Generative Models without Labeled Data
-
-functions, the majority of which check for membership in
-specific subtrees of a reference disease ontology using different matching heuristics. There is overlap in the labeling
-functions which check identical subtrees of the ontology,
-and we see that our method increases end performance by
-a significant 2.6 F1 points by modeling this structure.
-Examining the Chemical-Disease task, we see that our
-method identifies correlations that are both obviously true
-and ones that are more subtle. For example, our method
-learns dependencies between labeling functions that are
-compositions of one another, such as one labeling function
-checking for the pattern [CHEM] induc.* [DIS], and
-a second labeling function checking for this pattern plus
-membership in an external knowledge base of known
-chemical-disease relations. Our method also learns more
-subtle correlations: for example, it selected a correlation
-between a labeling function that checks for the presence
-of a chemical mention in between the chemical and disease
-mentions comprising the candidate, and one that checks for
-the pattern .*-induced appearing in between.
-Figure 4. Comparison of structure learning with using maximum
-likelihood parameter estimation to select a model structure. Even
-when tuned for better recall (top), structure learning is also more
-precise, returning 1/4 as many extraneous correlations (bottom).
-
-Extracting structured information from unstructured text by
-identifying mentioned entities and relations is a challenging task that is well studied in the context of weak supervision (Bunescu & Mooney, 2007; Alfonseca et al., 2012;
-Ratner et al., 2016). We consider three tasks: extracting mentions of specific diseases from the scientific literature (Disease Tagging); extracting mentions of chemicals
-inducing diseases from the scientific literature (ChemicalDisease); and extracting mentions of electronic device polarity from PDF parts sheet tables (Device Polarity). In the
-first two applications, we consider a training set of 500 unlabeled abstracts from PubMed, and in the third case 100
-PDF parts sheets consisting of mixed text and tabular data.
-We use hand-labeled test sets to evaluate on the candidatemention-level performance, which is the accuracy of the
-classifier in identifying correct mentions of specific entities or relations, given a set of candidate mentions. For
-example, in Chemical-Disease, we consider as candidates
-all pairs of co-occurring chemical-disease mention pairs as
-identified by standard preprocessing tools2 .
-We see that modeling the correlations between labeling
-functions gives gains in performance which appear to be
-correlated with the total number of sources. For example,
-in the disease tagging application, we have 233 labeling
 2
+3
 
-ncbi.nlm.nih.gov/CBBresearch/Lu/Demo/PubTator/index.cgi
+dp
 
-5.4. Accelerating Application Development
-Our method is in large part motivated by the new programming model introduced by weak supervision, and the novel
-hurdles that developers face. For example in the Disease
-Tagging application above, we observed developers significantly slowed down in trying to to leverage the rich disease ontologies and matching heuristics they had available
-without introducing too many dependencies between their
-labeling functions. In addition to being slowed down, we
-also observed developers running into significant pitfalls
-due to unnoticed correlations between their weak supervision sources. In one collaborator’s application, for every
-labeling function that referenced the words in a sentence,
-a corresponding labeling function referenced the lemmas,
-which were often identical, and this significantly degraded
-performance. By automatically learning dependencies, we
-were able to significantly mitigate the effects of such correlations. We therefore envision an accelerated development
-process enabled by our method.
-To further explore the way in which our method can protect
-against such types of failure modes, we consider adding
-correlated, random labeling functions to those used in the
-Chemical-Disease task. Figure 5 shows the average estimated accuracy of copies of a random labeling function.
-An independent model grows more confident that the random noise is accurate. However, with structure learning,
-we identify that the noisy sources are not independent and
-they therefore do not outvote the real labeling functions. In
-this way, structure learning can protect against failures as
-users experiment with sources of weak supervision.
+3
 
-Learning the Structure of Generative Models without Labeled Data
-Table 1. Candidate-mention scores of information extraction applications trained with data programming using generative models with
-no dependency structure (Independent) and learned dependency structure (Structure).
-A PPLICATION
+MLP
+1
 
-I NDEPENDENT
-P
-R
-F1
+dl
 
-P
+dg
 
-S TRUCTURE
-R
-F1
+Figure 2. Illustration of the PSGAN model. A The fully convolutional generator network G(Z) maps a spatial tensor Zλµi , λ and µ
+being the spatial indices, to an input image X. Every subvector at a spatial location in Z, e.g. the blue or green columns in the Figure,
+map to a limited area in X. To alleviate the independence property of distant areas in X we construct the Z tensor out of three parts:
+a local part Z l , a global part Z g and a periodic part Z p – see text. As usual in GAN training, the discriminator gets either a generated
+image X or, as in B, an image patch X 0 from the real data distribution.
 
-F1 D IFF .
+tensor Z ∈ RL×M ×d to an image X ∈ RH×W ×3 , see
+Figure 2. The first two dimensions, L and M , are spatial
+dimensions, and are blown up by the generator G(Z) to the
+respective input spatial dimensions H > L and W > M .
+The final dimension of Z, d, is the channel dimension.
+In analogy to the extension of the generator G, we extend
+the discriminator D to map from an input image X to a
+two-dimensional field of spatial size L × M . Each position of the resulting discriminator Dλµ (X), 1 ≤ λ ≤
+L and 1 ≤ µ ≤ M , responds only to a local part X, which
+we call Dλµ ’s effective receptive field. The response of
+Dλµ (X) represents the estimated probability that the respective part of X is real instead of being generated by G.
+As the discriminator outputs a field, we extend the standard
+GAN cost function V (D, G) to marginalize spatially:
+V (D, G) =
 
-# LF S
+L M
+1 XX
+EZ∼pZ (Z) [log (1 − Dλµ (G(Z)))]
+LM
+µ=1
+λ=1
 
-# C OR .
++
 
-% C ORR .
-1.17%
+L M
+1 XX
+EX 0 ∼pdata (X) [log Dλµ (X 0 )]
+LM
+µ=1
+λ=1
 
-D ISEASE TAGGING
+(1)
+This function is then minimized in G and maximized in D,
+minG maxD V (D, G). Maximizing the first line of eq. 1
+in D leads the discriminator to return values close to 0 (i.e.
+“fake”) for generated images – and, vice versa, minimiza-
 
-60.4
+tion in G aims at the discriminator taking large output values close to 1 (i.e. “real”). On the other hand, maximizing
+D in the second line of eq. 1 anchors the discriminator on
+real data X 0 ∼ pdata (X) to return values close to 1. As
+we want the model to be able to learn from a single image, the input image data is augmented by selecting patches
+X 0 from the image(s) at random positions. To speed-up
+convergence, in particular in the beginning of the learning process, we employ the standard GAN trick and substitute log(1−D(G(Z))) with − log(D(G(Z))) (Goodfellow
+et al., 2014).
+We base the design of the generator network G and the
+discriminator network D on the DCGAN model (Radford
+et al., 2015). Empirically, choosing G and D to be symmetric in their architecture (i.e. depth and channel dimensions)
+turned out to stabilize the learning dynamics. In particular, we chose equal sizes for the image patches X 0 and the
+generated data X = G(Z). As a deviation from this symmetry rule, we found that removing batch normalization in
+the discriminator yields better results, especially on training with single images.
+In contrast to the DCGAN architecture, our model contains
+exclusively convolutional layers. Due to the convolutional
+weight sharing, this allows that a network G trained on
+small image patches X can be rolled out to synthesize arbitrary large output images after training. Upon successful
+training, the sampled images then match the local image
 
-73.3
+Learning Texture Manifolds
 
-66.3
+statistics of the training data. Hence, the model implements
+a spatial stochastic process. Further, if components of Z are
+sampled independently, the limited receptive fields of the
+generator G imply that the generator implements a stationary, ergodic and strongly mixing stochastic process. This
+means that sampling of different textures is not possible
+– this would require a non-ergodic process. For independent Z sampling, learning from a set of textures results in
+the generation of textures combining elements of the whole
+set. Another limitation of independent sampling is the impossibility to align far away regions in the generated image
+– alignment violates translation invariance, stationarity and
+mixing. However, periodic textures depend on long-range
+correlations.
+To get rid of these limitations, we extend Z to be composed of three distinct parts: a local independent part Z l ,
+a spatially global part Z g , and a periodic part Z p . Each
+part has the same spatial dimensions L, M , but may vary
+in their respective channel dimensions dl , dg , and dp . Let
+Z = [Z l , Z g , Z p ] be their concatenation with total channel
+dimension d = dl + dg + dp . We proceed with a discussion
+on Z’s three parts.
+2.1. Local Dimensions
+Conceptually, the simplest approach is to sample each slice
+l
+l
+of Z l at position λ and µ, i.e zλµ
+∈ Rd , independently
+from the uniform distribution p(z), where λ, µ ∈ N with
+l
+1 ≤ λ ≤ L and 1 ≤ µ ≤ M . As each zλµ
+affects a
+finite region in the image, we speak of local dimensions.
+Intuitively, local dimensions allow the generative process
+to produce spatial variance and diversity by sampling from
+its statistical model.
+2.2. Global Dimensions
+For the global dimensions, a unique vector z g of dimensionality dg is sampled from p(z), which is then repeated
+g
+along all L × M spatial dimensions of Z g , or Zλµi
+= zig ,
+g
+where 1 ≤ λ ≤ L, 1 ≤ µ ≤ M , and 1 ≤ i ≤ d . Thus,
+z g has global impact on the whole image, and allows for
+the selection of the type of structure to be generated – employing global dimensions, the generative stochastic process becomes non-ergodic. Consider the task of learning
+from two texture images: the generator then only needs to
+g
+“learn” a splitting of Rd in two half-spaces (e.g. by learning a hyperplane), where vectors z g from each half-space
+generate samples in the style of one of the two textures.
+Besides the scenario of learning from a set of texture
+images, combination with random patch selection from
+a larger image (see Section 2) is particularly interesting:
+here, the converged generator G samples textures that are
+consistent with the local statistics of an image. Notably,
 
-68.0
+the source image does not necessarily have to be a texture,
+but the method will extract a texture generating stochastic
+process from the image, nevertheless (see Figure 5).
+After learning, each vector z g represents a texture from the
+manifold of learned textures of the PSGAN, where z g corresponds to a generating stochastic process of a texture, not
+just a static image. For the purpose of image generation, Z g
+does not need to be composed of a single vector, but can be
+a smooth function in λ and µ. As long as neighboring vectors in Z g don’t vary too rapidly, the statistics of Z g is close
+to the statistics during training. Hence, smoothness in Z g
+implies a smooth texture change in X (see Figure 7).
+2.3. Spatially Periodic Dimensions
+The third part of Z, Z p , contains spatial periodic functions,
+or plane waves in each channel i:
+  
+
+λ
+p
+Zλµi
+= ζλµi (K) = sin kiT
++ φi ,
+(2)
+µ
+where 1 ≤ λ ≤ L, 1 ≤ µ ≤ M , 1 ≤ i ≤ dp , and K
+is a 2 × dp matrix which contains the wave vectors ki as
+its column vectors. These vectors parametrize the direction and the number of radians per spatial Z unit distance
+in the periodic channel i. φi is a random phase offset uniformly sampled from [0, 2π), and mimics the random positional extraction of patches from the real images. Adding
+this periodic global tensor breaks translation invariance and
+stationarity of the generating process. However, it is still
+cyclostationary.
+While wave numbers K could be set to a fixed basis, we
+note that a specific texture has associated wave vectors, i.e.
+different textures will have different axes of periodicities
+and scales. Hence, we make K dependent on the global
+dimensions z g through a multi-layer perceptron (MLP),
+when more than one texture is learned. When only one
+texture is learned, i.e. dg = 0, the wave numbers K are direct parameters to the system. In Figure 2, we indicate this
+alternative dependency on z g with a dotted arrow between
+the MLP and K. All parameters of the MLP are learned
+end-to-end alongside the parameters of the generator G and
+the discriminator D.
 
-69.8
+3. Experiments
+3.1. Experimental Setup
+We base our system on the DCGAN architecture (Radford
+et al., 2015) with a stride of 21 for the generator and 2 for
+the discriminator. Local and global noise dimensions are
+sampled from a uniform distribution. As in DCGAN, filters have 64 channels at the highest spatial resolution, and
+are doubled after every layer, which halves the spatial resolution. E.g. the 4 layer architecture has 64 − 128 − 256
 
-68.9
+Learning Texture Manifolds
 
-2.6
+channels between the noise input and output RGB image.
+Training was done with ADAM (Kingma & Ba, 2014) with
+the settings of (Radford et al., 2015) – learning rate 0.0002,
+minibatch size of 25. The typical image patch size was
+160x160 pixels. We usually used 5 layers in G and D
+(see Table 1), kernels of size 5x5 with zero padding, and
+batch normalization. Such a generator upsamples the spaW
+tial noise by a factor of H
+L = M = 32 and has a receptive
+field size of 125. Receptive field and image patch size can
+both affect learning (Jetchev et al., 2016). On our hardware
+(Theano and Nvidia Tesla K80 GPU) we measured 0.006
+seconds for the generation of a 256x256 pixels image and
+0.26 seconds for a 2048x2048 pixels image.
 
-233
+image
+text, P6
+single honeycomb
+Merrigum
+DTD
+Facades
+Sydney
 
-315
+dg
+0
+0
+10
+40
+40
+30
 
-C HEMICAL -D ISEASE
+dl
+10
+10
+30
+20
+20
+20
 
-45.1
+dp
+2
+2
+2
+4
+6
+4
 
-69.2
+layer depth
+4
+5
+5
+5
+5
+5
 
-54.6
+Table 1. The dimension cardinality we used for different experiments. Note that when dg = 0, dp > 0 the MLP for wave number
+learning simplifies to just learning the bias values b1 , b2 .
 
-46.8
+The MLP for the spatially periodic dimensions has one hidden layer of dimensionality dh :
+!
+T
+(W1 f (W z g + b) + b1 )
+g
+,
+K = ξ(z ) =
+T
+(W2 f (W z g + b) + b2 )
 
-69.0
+erties of a source image. In order to illustrate this, we will
+demonstrate how we can learn complex periodic images
+and texture manifolds, which allow texture blending.
 
-55.9
+where f is the point-wise rectified-linear unit function, and
+h
+g
+h
+p
+h
+we have W ∈ Rd ×d , b ∈ Rd , W1 and W2 ∈ Rd ×d ,
+dp
+h
+b1 and b2 ∈ R . We used d = 60 for the experiments.
+All parameters are initialized from an independent random
+Gaussian distribution N (0, 0.02), except b1 and b2 , which
+have a non-zero mean N (c, 0.02c). The constant vector
+p
+c ∈ Rd is chosen with entries spread in the interval (0, π]1 .
+p
+For simplicity, we write ϕλµi (z g ) := ζλµi (ξ(z g )) = Zλµi
+,
+p
+g
+or briefly Z = ϕ(z ), to summarize the way the periodic dimensions arise from the global ones. Alternatively, for Z g not being composed of a single vector z g ,
+we write for simplicity Z p = ϕ(Z g ) and understand this as
+p
+g
+g
+g
+Zλµi
+= ϕλµi (Zλµi
+) = ζλµi (ξ(Zλµ
+)), where Zλµ
+denotes
+g
+the vector slice in Z along its last (i.e. i) dimension.
 
-1.3
+First, we demonstrate learning a single periodic texture
+image. Figure 3 illustrates the results of PSGAN compared with SGAN (Jetchev et al., 2016), and the methods
+of (Gatys et al., 2015a; Efros & Freeman, 2001; Portilla
+& Simoncelli, 2000). The text example in the top row has
+a periodic and stochastic dimension. The PSGAN learns
+this and arranges “text” in regular lines, while varying their
+content horizontally. The methods of (Efros & Freeman,
+2001; Portilla & Simoncelli, 2000) also manage to do this.
+SGAN (equivalent to a PSGAN without periodic dimensions) and Gatys’ method fail to capture the periodic structure.
 
-33
+The following image sources were used for the experiments
+in this paper: the Oxford Describable Textures Dataset
+(DTD) (Cimpoi et al., 2014), which is composed of various categories, each containing 120 images; the Facades
+dataset (Radim Tyleček, 2013), which contains 500 facades
+of different houses in Prague. Both datasets comprise objects of different scales and sizes. We also used satellite
+images of Sydney from Google Maps. The P6 and Merrigum house are from Wikimedia Commons.
+3.2. Learning and Sampling Textures
+What are criteria for good texture synthesis? The way
+humans perceive a texture is not easily quantifiable with
+a statistic or metric. Still, one can qualitatively assess
+whether a texture synthesis method captures the right prop1
 
-21
+Ideally, the wave numbers Kji , with j ∈ {1, 2}, should
+be within the valid interval between the negative and positive
+Nyquist wave numbers (here [−π, π]). However, wave numbers
+of single sinusoids are projected back into this interval. Hence,
+no constraint is necessary.
 
-3.98%
+3.2.1. P ERIODIC TEXTURES
 
-D EVICE P OLARITY
+The second row in Figure 3 demonstrates learning a honeycomb texture – a basic hexagonal pattern – where our
+method captures both the underlying periodicity and the
+random coloring effects inside the cells. The method of
+(Efros & Freeman, 2001) was inaccurate for that texture –
+the borders between the copied patches (60x60 pixels large)
+were inaccurately aligned. The other 3 methods fail to produce a hexagonal structure even locally. The last row of
+Figure 3 shows the autocorrelation plots of the honeycomb
+textures, where the periodicity reveals itself as a regular
+grid superimposed onto the background, a feature only PSGAN is able to reproduce.
+While dp = 2 periodic dimensions are enough to learn
+the above patterns, we noticed that training convergence
+is faster when setting dp > 2. However, for dp > 2 beating of sinusoids with close wave numbers can occur, which
+rarely happens also for dp ≤ 2 due to sub-Nyquist artefacts (Amidror, 2015), i.e. when the texture periodicity is
+close to an integer fractional of the Nyquist wavenumber.
+Figure 4 shows a larger slice of the learned periodic textures. In particular, Figure 4B shows that learning works
+for more complex patterns, here a pattern with a P6 wallpa-
 
-78.9
+Learning Texture Manifolds
 
-99.6
+Input
 
-88.1
+PSGAN
 
-80.5
+SGAN
 
-98.6
+Gatys et al. Efros at al. Portilla et al.
 
-88.7
+Figure 3. Comparing the results of 5 texture synthesis methods on
+2 input images, text (168x336 pixels) in the top row and honeycomb (427x427 pixels) in the middle row. The green boxes show
+the receptive fields of the generator, 61x61 pixels for the text and
+125x125 for the honeycomb example. In both cases, PSGAN best
+captures the underlying data periodicity. The autocorrelation plot
+of the honeycomb, shown in the bottom row, reveals periodicity
+as a grid of intensity peaks. The red arrows are the periodicity
+(inverse wave numbers) of the PSGAN, which neatly align with
+the autocorrelation structure (best seen zoomed).
 
-0.6
+A Honeycomb
 
-12
+B P6 wallpaper group
+Figure 4. Accurate wave number learning by PSGAN allows correct generation of periodic textures, even for very large images.
+A the honeycomb can be repeated in large images (300x2400 pixels), with no aliasing. B the non-orthogonal bases of the periodicities and complicated symmetries and rotations present in the P6
+pattern are faithfully reproduced.
 
-32
+per group symmetry2 , with non-orthogonal symmetry axes.
+3.2.2. T EXTURE MANIFOLDS
+Next, we extract multiple textures from a single large image, or a set of images. The chosen images (e.g. landscape
+photography or satellite images) have a global structure,
+but also exhibit characteristics of many textures in a single
+image (e.g. various vegetation and houses). The structured
+PSGAN generator noise with global dimensions allows to
+extract textures, corresponding to different image regions.
 
-48.49%
+Figure 7. PSGAN learns a whole texture manifold from DTD
+“scaly”, allowing smooth texture morphing, here illustrated in a
+single image of size 1600x1600 pixels. All regions of that image are plausible textures. The generator has as input a tensor
+Z g (L = M = 50 spatial dimensions), calculated by bi-linear
+interpolation between 4 randomly sampled z g in the 4 corners.
 
-networks with latent variables (Elidan & Friedman, 2005).
+eral spatial elements of Z g , the borders between tiles look
+partially aligned. For example, in Figure 1 the borders of
+the tiles have scaly elements across them, rather than being
+sharply separated (as the input Z g per construction).
+Figure 5 shows results when trained on a single large image. PSGAN extracts diverse bricks, grass and leaf textures. In contrast, SGAN forces the output to be a single
+mixing process, rather than a multitude of different visual
+textures. Gatys’ method also learns a single texture-like
+process with statistics from the whole image. 3
+Figure 6A shows texture learning from city satellite images, a challenging image domain due to fine details of the
+images. Figures 6B and C show results from training on a
+set of multiple texture-like images from DTD.
+In order to show that textures vary smoothly, we sample
+4 different z g values in the four corners of a target image
+and then interpolate bi-linearly between them to construct
+the Z g tensor. Figure 7 shows that all z g values lying between the original 4 points generate proper textures as well.
+Hence, we speak of a learned texture manifold.
+3.2.3. D ISENTANGLING FREQUENCIES AND GLOBAL
+DIMENSIONS
 
-Figure 5. Structure learning identifies and corrects correlated, random labeling functions added to the Chemical-Disease task.
+In order to visualize the texture diversity of a model, we define a quilt array that can generate different textures from
+a trained PSGAN model by setting rectangular spatial reg
+gions (tiles) Zλ:λ+∆,µ:µ+∆
+of size ∆ × ∆ to the same vector, randomly sampled from the prior. Since the generator
+is a convolutional network with receptive fields over sev2
 
-6. Related Work
-Structure learning is a well-studied problem, but most work
-has assumed access to hand-labeled training data. Some of
-the earliest work has focused on generalized linear models. The lasso (Tibshirani, 1996), linear regression with `1
-regularization, is a classic technique. Zhao & Yu (2006)
-showed that the lasso is a consistent structure estimator.
-The Dantzig selector (Candes & Tao, 2007) is another
-structure estimator for linear models that uses `1 , which can
-learn in the high-dimensional setting where there are more
-possible dependencies than samples. Ng (2004) showed
-that `1 -regularized logistic regression has sample complexity logarithmic in the number of features. `1 regularization
-has also been used as a prior for compressed sensing (e.g.,
-Donoho & Elad, 2003; Tropp, 2006; Wainwright, 2009).
-Regularized estimators have also been used to select structures for graphical models. Meinshausen & Bühlmann
-(2006) showed that parameter learning with `1 regularization for Gaussian graphical models under similar assumptions also consistently selects the correct structure. Most
-similar to our proposed estimator, Ravikumar et al. (2010)
-propose a fully supervised pseudolikelihood estimator for
-Ising models. Also related is the work of Chandrasekaran
-et al. (2012), which considers learning the structure of
-Gaussian graphical models with latent variables. Other
-techniques for learning the structure of graphical models
-include grafting (Perkins et al., 2003; Zhu et al., 2010) and
-the information bottleneck approach for learning Bayesian
+en.wikipedia.org/wiki/Wallpaper_group.
+Note that only translational symmetries are represented in
+PSGANs, no rotation and reflection symmetries.
 
-Using heuristic sources of labels is increasingly common.
-Treating labels from a single heuristic source as gold labels is called distant supervision (Craven & Kumlien, 1999;
-Mintz et al., 2009). Some methods use multi-instance
-learning to reduce the noise in a distant supervision source
-(Riedel et al., 2010; Hoffmann et al., 2011). Others use hierarchical topic models to generate additional training data
-for weak supervision, but they do not support user-provided
-heuristics (Alfonseca et al., 2012; Takamatsu et al., 2012;
-Roth & Klakow, 2013a;b). Previous methods that support
-heuristics for weak supervision (e.g., Bunescu & Mooney,
-2007; Shin et al., 2015) do not model the noise inherent
-in these sources. Also, Downey & Etzioni (2008) showed
-that PAC learning is possible without hand-labeled data if
-the features monotonically order data by class probability.
-Estimating the accuracy of multiple label sources without a
-gold standard is a classic problem (Dawid & Skene, 1979),
-and many proposed approaches are generalized in the data
-programming framework. Parisi et al. (2014) proposed a
-spectral approach to estimating the accuracy of members
-of classifier ensembles. Many methods for crowdsourcing
-estimate the accuracy of workers without hand-labeled data
-(e.g., Dalvi et al., 2013; Joglekar et al., 2015; Zhang et al.,
-2016). In data programming, the scaling of data to label
-sources is different from crowdsourcing; a relatively small
-number of sources label all the data. We can therefore learn
-rich dependency structures among the sources.
+In this section, we explore how Z g and Z p = ϕ(Z g ) –
+the global and periodic dimensions – influence the output
+G([Z l , Z g , Z p ]) generated from the noise tensor. Take a
+Z g array with quilt structure. We define as Ẑ g an array of
+g
+the same size as Z g , where all Ẑλ,µ
+are set to the same z g .
+We calculate two different periodic tensors, Z p = ϕ(Z g ):
+3
+As a technical note, the whole image did not fit in memory
+for Gatys’ method, so we trained it only on a 1920x1920 clip-out.
 
-7. Conclusion and Future Directions
-We showed that learning the structure of a generative model
-enables higher quality data programming results. Our
-method for structure learning is also 100⇥ faster than a
-maximum likelihood approach. If data programming and
-other forms of weak supervision are to make machine
-learning tools easier to develop, selecting accurate structures for generative models with minimal user intervention
-is a necessary capability. Interesting questions remain. Can
-the guarantee of Theorem 1 be tightened for higher-order
-dependencies to match the pairwise case of Corollary 2?
-Preliminary experiments show that they converge at similar rates in practice.
+Learning Texture Manifolds
 
-Learning the Structure of Generative Models without Labeled Data
+Input
+
+PSGAN
+
+SGAN
+
+Gatys et al.
+
+Figure 5. Learning from a single large photo (the Merrigum House, 3872x2592 pixels). A 1920x1920 clip-out is shown in order to have
+the same scale as the generated textures. PSGAN can extract multiple varied textures (bricks, grass and bushes), samples from which
+are shown in a 4x4 quilt, where each tile has size ∆ = 15, for a total of 1920x1920 pixels in the generated image. Both Gatys’ method
+and the SGAN mix the whole image instead.
+
+A Sydney
+
+B DTD “braided”
+
+C DTD “honeycomb”
+
+Figure 6. More examples of learned textures, using rich and variable input image information. A uses 5 satellite images (1300x700
+pixels) of Sydney. B,C use 120 small texture images. The outputs show 4x4 different textures on the quilt (∆ = 15) sampled from the
+model, total image size 1920x1920 pixels, best seen when maximally zoomed-in.
+
+facades dataset has strong vertical and horizontal periodicity which is easily interpretable – the height of floors and
+window placement directly depends on these frequencies.
+
+Figure 8. Morphing of house textures by linearly interpolating between two different textures. The disentangling properties of PSGAN allows to morph in a controlled manner: the house window
+periodicity stays the same, but the facade type and appearance
+change significantly due to the changing global dimensions.
+
+the first tensor with wave numbers varying as a function of
+the different elements of the quilt, and the second tensor,
+Ẑ p = ϕ(Zˆg ), with the same wave numbers everywhere.
+The PSGAN is trained with minibatches for which it holds
+that Z p = ϕ(Z g ), but the model is flexible and produces
+meaningful outputs even when setting Z g and Z p to different values. Figure 9 shows that the global and periodic
+dimensions encode complementary aspects of the image
+generation process: texture identity and periodicity. The
+
+This disentangling leads to instructive visualizations. Figure 8 shows the generation from a tensor Z g , which is
+constructed as a linear interpolation between two sampled
+zg at the left and right border. However, the wave numbers of the periodic dimensions are fixed, independently of
+the changing global dimensions. The figure clearly shows
+a change in visual appearance of the texture (controlled
+by the global dimensions), while preserving a consistent
+periodic structure (fixed by the constant wave numbers).
+This PSGAN disentangling property is reminiscent of the
+way (Chen et al., 2016) construct categorical and continuous noise variables, which explain factors of variation such
+as object identity and spatial transformation.
+
+4. Discussion
+Texture synthesis from large unlabeled image datasets requires novel data-driven methods, going beyond older tech-
+
+Learning Texture Manifolds
+
+A different global and periodic
+
+B same periodic dimensions
+
+C same global dimensions
+
+Figure 9. The influence of global and periodic dimensions of the noise tensor on texture appearance. A shows the generation of the
+image quilt X = G([Z l , Z g , Z p ]), resulting in houses with different material and window periodicity; B shows X = G([Z l , Z g , Ẑ p ])
+– houses with different material and color, but the same aligned periodical structure (7 windows fit horizontally in each tile); C shows
+X = G([Z l , Ẑ g , Z p ]) – same color but different window periodicity. The local dimensions Z l are fixed.
+
+niques that learn from single textures and rely on prespecified statistical descriptors. Previous methods like
+SGAN are limited to stationary, ergodic and stochastic textures – even if trained on many images, SGAN fuses them
+and outputs a single mixing process for them. Our experiments suggest that Gatys’ method exhibits similar limitations. In contrast, PSGAN models non-ergodic cyclostationary processes, and can learn a whole texture manifold
+from sets of images, or from a single large image.
+CGANs (Mirza & Osindero, 2014) use additional label information as input to the GAN generator and discriminator,
+which allows for class conditional generation. In comparison, the PSGAN also uses additional information in the
+generator input (the specifically designed periodic dimensions Z p ), but not in the discriminator. Our method remains fully unsupervised and uses only sampled noise, unlike CGANs which require specific label information.
+Concerning the model architecture, the SGAN (Jetchev
+et al., 2016) model is similar – it can be seen as an ablated
+PSGAN instance with dg = 0, dp = 0. This architecture
+allows great scalability (linear memory and runtime complexity w.r.t. output image pixel size) of the PSGAN when
+generating outputs. High resolution images can be created
+by splitting parts of the arrays and rendering them sequentially, thus having a constant GPU memory footprint. Another nice property of our architecture is the ability to stitch
+seamlessly output texture images and get tileable textures,
+potentially increasing the output image size even more.
+To summarize, these are the key abilities of the PSGAN:
+• learn textures of great variability from large images
+• learn periodical textures
+• learn whole manifolds of textures and smoothly blend
+between their elements, thus creating novel textures
+• generate images of any desired size with a fast forward
+pass of a convolutional neural network
+
+• linear scalability in memory and speed w.r.t. output
+image size.
+
+Our method has a few limitations: convergence can be
+sometimes tricky, as noted for other GAN models (Radford et al., 2015); like GANs, the PSGAN can suffer from
+“mode dropping” – given a large set of textures it may learn
+only some of them, especially if the data varies in scale and
+periodicity. Finally, PSGANs can represent arbitrary probability distributions that extend in spatial scale to the largest
+periods in Z p , and can generalize to periodic structures beyond that. However, images that have larger structures or
+more general non-periodic features are not representable:
+e.g. images with a global trend, or with a perspective projection, or aperiodic images, like Penrose tilings.
+4.1. Future work
+The PSGAN has a great potential to be adapted to further
+use cases. In-painting is a possible application - our method
+can fill random missing image regions with fitting textures.
+Texture style transfer – painting a target image with textures – can be done similar to the way the quilts in this paper were constructed. Further, explicit modeling with periodic dimensions in the PSGAN could be a great fit in other
+modalities, in particular time-series and audio data. Here,
+we’d expect the model to extract “sound textures”, which
+might be useful in synthesizing completely novel sounds
+by interpolating on the manifold.
+On the theoretical side, to capture more symmetries of texture images, one could extend the Z tensor even further, by
+adding dimensions with reflection or rotation symmetries.
+In terms of model stability and convergence, we’ll investigate alternative GAN training criteria (Metz et al., 2016;
+Arjovsky et al., 2017), which may alleviate the mode dropping problem.
+
+Learning Texture Manifolds
 
 Acknowledgements
-Thanks to Christopher De Sa for helpful discussions, and
-Henry Ehrenberg and Sen Wu for assistance with experiments. We gratefully acknowledge the support of the
-Defense Advanced Research Projects Agency (DARPA)
-SIMPLEX program under No. N66001-15-C-4043, the
-DARPA D3M program under No. FA8750-17-2-0095,
-the National Science Foundation (NSF) CAREER Award
-under No. IIS- 1353606, the Office of Naval Research
-(ONR) under awards No. N000141210041 and No.
-N000141310129, a Sloan Research Fellowship, the Moore
-Foundation, an Okawa Research Grant, Toshiba, and Intel.
-Any opinions, findings, and conclusions or recommendations expressed in this material are those of the authors and
-do not necessarily reflect the views of DARPA, NSF, ONR,
-or the U.S. government.
+We would like to thank Christian Bracher for his valuable
+feedback on the manuscript, and Sebastian Heinz, Calvin
+Seward and other colleagues at Zalando Research for fruitful and inspiring discussions. We are also thankful to the
+anonymous reviewers for their constructive feedback.
 
 References
-Alfonseca, E., Filippova, K., Delort, J.-Y., and Garrido, G.
-Pattern learning for relation extraction with a hierarchical topic model. In Annual Meeting of the Association
-for Computational Linguistics (ACL), 2012.
-Bunescu, R. C. and Mooney, R. J. Learning to extract relations from the Web using minimal supervision. In Annual Meeting of the Association for Computational Linguistics (ACL), 2007.
-Candes, E. and Tao, T. The Dantzig selector: Statistical
-estimation when p is much larger than n. The Annals of
-Statistics, 35(6):2313–2351, 2007.
-Chandrasekaran, V., Parrilo, P. A., and Willsky, A. S. Latent variable graphical model selection via convex optimization. The Annals of Statistics, 40(4):1935–1967,
-2012.
+Amidror, Isaac. Sub-nyquist artefacts and sampling moiré
+effects. Royal Society open science, 2(3):140550, 2015.
+Arjovsky, Martin, Chintala, Soumith, and Bottou, Léon.
+Wasserstein GAN. 2017. URL http://arxiv.org/
+abs/1701.07875.
+Chen, Xi, Duan, Yan, Houthooft, Rein, Schulman,
+John, Sutskever, Ilya, and Abbeel, Pieter.
+Infogan: Interpretable representation learning by information maximizing generative adversarial nets. CoRR,
+abs/1606.03657, 2016. URL http://arxiv.org/
+abs/1606.03657.
+Cimpoi, M., Maji, S., Kokkinos, I., Mohamed, S., and
+Vedaldi, A. Describing textures in the wild. In Proceedings of the IEEE Conf. on Computer Vision and Pattern
+Recognition (CVPR), 2014.
+Dumoulin, Vincent, Shlens, Jonathon, and Kudlur, Manjunath. A learned representation for artistic style. CoRR,
+abs/1610.07629, 2016. URL http://arxiv.org/
+abs/1610.07629.
+Efros, Alexei A. and Freeman, William T.
+Image
+quilting for texture synthesis and transfer. In Proceedings of the 28th Annual Conference on Computer
+Graphics and Interactive Techniques, SIGGRAPH,
+2001. ISBN 1-58113-374-X. doi: 10.1145/383259.
+383296. URL http://doi.acm.org/10.1145/
+383259.383296.
+Efros, Alexei A. and Leung, Thomas K. Texture synthesis by non-parametric sampling. In Proceedings of
+the International Conference on Computer Vision, 1999.
+ISBN 0-7695-0164-8. URL http://dl.acm.org/
+citation.cfm?id=850924.851569.
+Gatys, Leon, Ecker, Alexander, and Bethge, Matthias.
+Texture synthesis using convolutional neural networks.
+In Advances in Neural Information Processing Systems
+28, 2015a. URL http://arxiv.org/abs/1505.
+07376.
+Gatys, Leon A., Ecker, Alexander S., and Bethge,
+Matthias. A neural algorithm of artistic style. CoRR,
+abs/1508.06576, 2015b. URL http://arxiv.org/
+abs/1508.06576.
 
-Downey, D. and Etzioni, O. Look ma, no hands: Analyzing
-the monotonic feature abstraction for text classification.
-In Neural Information Processing Systems (NIPS), 2008.
-Eadicicco, L. Baidu’s Andrew Ng on the future of artificial
-intelligence, 2017. Time [Online; posted 11-January2017].
-Elidan, G. and Friedman, N. Learning hidden variable networks: The information bottleneck approach. Journal of
-Machine Learning Research, 6:81–127, 2005.
-Hinton, G. E. Training products of experts by minimizing contrastive divergence. Neural Computation, 14(8):
-1771–1800, 2002.
-Hoffmann, R., Zhang, C., Ling, X., Zettlemoyer, L., and
-Weld, D. S. Knowledge-based weak supervision for information extraction of overlapping relations. In Annual
-Meeting of the Association for Computational Linguistics (ACL), 2011.
-Joglekar, M., Garcia-Molina, H., and Parameswaran, A.
-Comprehensive and reliable crowd assessment algorithms. In International Conference on Data Engineering (ICDE), 2015.
-Koh, K., Kim, S. J., and Boyd, S. An interior-point method
-for large-scale `1 -regularized logistic regression. Journal of Machine Learning Research, 3:1519–1555, 2007.
-Langford, J., Li, L., and Zhang, T. Sparse online learning via truncated gradient. Journal of Machine Learning
-Research, 10:777–801, 2009.
-Meinshausen, N. and Bühlmann, P. High-dimensional
-graphs and variable selection with the lasso. The Annals
-of Statistics, 34(3):1436–1462, 2006.
-
-Craven, M. and Kumlien, J. Constructing biological knowledge bases by extracting information from text sources.
-In International Conference on Intelligent Systems for
-Molecular Biology (ISMB), 1999.
-
-Metz, C. Google’s hand-fed AI now gives answers, not
-just search results, 2016. Wired [Online; posted 29November-2016].
-
-Dalvi, N., Dasgupta, A., Kumar, R., and Rastogi, V. Aggregating crowdsourced binary ratings. In International
-World Wide Web Conference (WWW), 2013.
-
-Mintz, M., Bills, S., Snow, R., and Jurafsky, D. Distant
-supervision for relation extraction without labeled data.
-In Annual Meeting of the Association for Computational
-Linguistics (ACL), 2009.
-
-Dawid, A. P. and Skene, A. M. Maximum likelihood estimation of observer error-rates using the EM algorithm.
-Journal of the Royal Statistical Society C, 28(1):20–28,
-1979.
-
-Ng, A. Y. Feature selection, l1 vs. l2 regularization, and rotational invariance. In International Conference on Machine Learning (ICML), 2004.
-
-Donoho, D. and Elad, M. Optimally sparse representation
-in general (nonorthogonal) dictionaries via `1 minimization. Proceedings of the National Academy of Sciences
-of the USA, 100(5):2197–2202, 2003.
-
-Parisi, F., Strino, F., Nadler, B., and Kluger, Y. Ranking
-and combining multiple predictors without labeled data.
-Proceedings of the National Academy of Sciences of the
-USA, 111(4):1253–1258, 2014.
-
-Learning the Structure of Generative Models without Labeled Data
-
-Perkins, S., Lacker, K., and Theiler, J. Grafting: Fast, incremental feature selection by gradient descent in function space. Journal of Machine Learning Research, 3:
-1333–1356, 2003.
-Ratner, A., De Sa, C., Wu, S., Selsam, D., and Ré, C. Data
-programming: Creating large training sets, quickly. In
-Neural Information Processing Systems (NIPS), 2016.
-Ravikumar, P., Wainwright, M. J., and Lafferty, J. D. Highdimensional Ising model selection using `1 -regularized
-logistic regression. The Annals of Statistics, 38(3):1287–
-1319, 2010.
-Riedel, S., Yao, L., and McCallum, A. Modeling relations
-and their mentions without labeled text. In European
-Conference on Machine Learning and Knowledge Discovery in Databases (ECML PKDD), 2010.
-Roth, B. and Klakow, D. Feature-based models for improving the quality of noisy training data for relation extraction. In Conference on Information and Knowledge
-Management (CIKM), 2013a.
-Roth, B. and Klakow, D. Combining generative and discriminative model scores for distant supervision. In
-Conference on Empirical Methods on Natural Language
-Processing (EMNLP), 2013b.
-Shin, J., Wu, S., Wang, F., De Sa, C., Zhang, C., and
-Ré, C. Incremental knowledge base construction using
-DeepDive. Proceedings of the VLDB Endowment, 8(11):
-1310–1321, 2015.
-Takamatsu, S., Sato, I., and Nakagawa, H. Reducing wrong
-labels in distant supervision for relation extraction. In
-Annual Meeting of the Association for Computational
-Linguistics (ACL), 2012.
-Tibshirani, R. Regression shrinkage and selection via the
-lasso. Journal of the Royal Statistical Society B, 58(1):
-267–288, 1996.
-Tropp, J. Just relax: Convex programming methods for
-identifying sparse signals in noise. IEEE Transactions
-on Information Theory, 52(3):1030–1051, 2006.
-Wainwright, M. J. Sharp thresholds for high-dimensional
-and noisy sparsity recovery using `1 -constrained
-quadratic programming (lasso). IEEE Transactions on
-Information Theory, 55(5):2183–2202, 2009.
-Zhang, C. and Ré, C. DimmWitted: A study of mainmemory statistical analytics. Proceedings of the VLDB
-Endowment, 7(12):1283–1294, 2014.
-Zhang, Y., Chen, X., Zhou, D., and Jordan, M. I. Spectral methods meet EM: A provably optimal algorithm for
-
-crowdsourcing. Journal of Machine Learning Research,
-17:1–44, 2016.
-Zhao, P. and Yu, B. On model selection consistency of
-lasso. Journal of Machine Learning Research, 7:2541–
-2563, 2006.
-Zhu, J., Lao, N., and Xing, E. P. Grafting-Light: Fast,
-incremental feature selection and structure learning of
-Markov random fields. In International Conference on
-Knowledge Discovery and Data Mining (KDD), 2010.
+Georgiadis, G., Chiuso, A., and Soatto, S. Texture compression. In Data Compression Conference, March
+2013.
+Goodfellow, Ian J., Pouget-Abadie, Jean, Mirza, Mehdi,
+Xu, Bing, Warde-Farley, David, Ozair, Sherjil,
+Courville, Aaron C., and Bengio, Yoshua. Generative
+adversarial nets. In Advances in Neural Information Processing Systems 27, 2014.
+Jetchev, Nikolay, Bergmann, Urs, and Vollgraf, Roland.
+Texture synthesis with spatial generative adversarial networks. CoRR, abs/1611.08207, 2016. URL http:
+//arxiv.org/abs/1611.08207.
+Johnson, Justin, Alahi, Alexandre, and Fei-Fei, Li. Perceptual losses for real-time style transfer and superresolution. In European Conference on Computer Vision,
+2016.
+Kingma, Diederik P. and Ba, Jimmy. Adam: A method
+for stochastic optimization. CoRR, abs/1412.6980, 2014.
+URL http://arxiv.org/abs/1412.6980.
+Li, Chuan and Wand, Michael. Precomputed real-time
+texture synthesis with Markovian generative adversarial
+networks. CoRR, abs/1604.04382, 2016.
+Metz, Luke, Poole, Ben, Pfau, David, and Sohl-Dickstein,
+Jascha. Unrolled generative adversarial networks. CoRR,
+abs/1611.02163, 2016. URL http://arxiv.org/
+abs/1611.02163.
+Mirza, Mehdi and Osindero, Simon. Conditional generative adversarial nets. CoRR, abs/1411.1784, 2014. URL
+http://arxiv.org/abs/1411.1784.
+Portilla, Javier and Simoncelli, Eero P. A parametric texture model based on joint statistics of complex wavelet
+coefficients. Int. J. Comput. Vision, 40(1), October 2000.
+doi: 10.1023/A:1026553619983. URL http://dx.
+doi.org/10.1023/A:1026553619983.
+Radford, Alec, Metz, Luke, and Chintala, Soumith.
+Unsupervised representation learning with deep convolutional generative adversarial networks.
+CoRR,
+abs/1511.06434, 2015. URL http://arxiv.org/
+abs/1511.06434.
+Radim Tyleček, Radim Šára. Spatial pattern templates for
+recognition of objects with regular structure. In Proc.
+GCPR, Saarbrücken, Germany, 2013.
+Ulyanov, Dmitry, Lebedev, Vadim, Vedaldi, Andrea, and
+Lempitsky, Victor. Texture networks: Feed-forward synthesis of textures and stylized images. In International
+Conference on Machine Learning, 2016.
 
 

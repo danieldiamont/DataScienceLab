@@ -1,3675 +1,1648 @@
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization
-with Strong Correlations
-
-Yuanzhi Li 1 Yingyu Liang 1
+Automatic Discovery of the Statistical Types of Variables in a Dataset
+Isabel Valera 1 Zoubin Ghahramani 1 2
 
 Abstract
-Non-negative matrix factorization is a basic tool
-for decomposing data into the feature and weight
-matrices under non-negativity constraints, and in
-practice is often solved in the alternating minimization framework. However, it is unclear
-whether such algorithms can recover the groundtruth feature matrix when the weights for different features are highly correlated, which is common in applications. This paper proposes a simple and natural alternating gradient descent based
-algorithm, and shows that with a mild initialization it provably recovers the ground-truth in the
-presence of strong correlations. In most interesting cases, the correlation can be in the same order
-as the highest possible. Our analysis also reveals
-its several favorable features including robustness to noise. We complement our theoretical
-results with empirical studies on semi-synthetic
-datasets, demonstrating its advantage over several popular methods in recovering the groundtruth.
+A common practice in statistics and machine
+learning is to assume that the statistical data types
+(e.g., ordinal, categorical or real-valued) of variables, and usually also the likelihood model, is
+known. However, as the availability of realworld data increases, this assumption becomes
+too restrictive. Data are often heterogeneous,
+complex, and improperly or incompletely documented. Surprisingly, despite their practical
+importance, there is still a lack of tools to automatically discover the statistical types of, as
+well as appropriate likelihood (noise) models for,
+the variables in a dataset. In this paper, we fill
+this gap by proposing a Bayesian method, which
+accurately discovers the statistical data types in
+both synthetic and real data.
 
 1. Introduction
-Non-negative matrix factorization (NMF) is an important
-tool in data analysis and is widely used in image processing, text mining, and hyperspectral imaging (e.g., (Lee &
-Seung, 1997; Blei et al., 2003; Yang & Leskovec, 2013)).
-Given a set of observations Y = {y (1) , y (2) , . . . , y (n) },
-the goal of NMF is to find a feature matrix A =
-{a1 , a2 , . . . , aD } and a non-negative weight matrix X =
-{x(1) , x(2) , . . . , x(n) } such that y (i) ≈ Ax(i) for any i, or
-Y ≈ AX for short. The intuition of NMF is to write each
-data point as a non-negative combination of the features.
-1
-Authors listed in alphabetic order.
-Princeton University,
-Princeton,
-NJ, USA. Correspondence to:
-Yuanzhi Li <yuanzhil@cs.princeton.edu>, Yingyu Liang
-<yingyul@cs.princeton.edu>.
+Data analysis problems often involve pre-processing raw
+data, which is a tedious and time-demanding task due to
+several reasons: i) raw data is often unstructured and largescale; ii) it contains errors and missing values; and iii)
+documentation may be incomplete or not available. As a
+consequence, as the availability of data increases, so does
+the interest of the data science community to automate this
+process. In particular, there are a growing body of work
+which focuses on automating the different stages of data
+pre-processing, including data cleaning (Hellerstein, 2008),
+data wrangling (Kandel et al., 2011) and data integration
+and fusion (Dong & Srivastava, 2013).
+The outcome of data pre-processing is commonly a structured dataset, in which the objects are described by a set of
+attributes. However, before being able to proceed with the
+predictive analytics step of the data analysis process, the
+data scientist often needs to identify which kind of variables (i.e., real-values, categorical, ordinal, etc.) these attributes represent. This labeling of the data is necessary
+to select the appropriate machine learning approach to ex1
+
+University of Cambridge, Cambridge, United Kingdom;
+Uber AI Labs, San Francisco, California, USA. Correspondence
+to: Isabel Valera <miv24@cam.ac.uk>.
+2
 
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-By doing so, one can avoid cancellation of different features and improve interpretability by thinking of each x(i)
-as a (unnormalized) probability distribution over the features. It is also observed empirically that the non-negativity
-constraint on the coefficients can lead to better features and
-improved downstream performance of the learned features.
-Unlike the counterpart which factorizes Y ≈ AX without assuming non-negativity of X, NMF is usually much
-harder to solve, and can even by NP-hard in the worse
-case (Arora et al., 2012b). This explains why, despite all
-the practical success, NMF largely remains a mystery in
-theory. Moreover, many of the theoretical results for NMF
-were based on very technical tools such has algebraic geometry (e.g., (Arora et al., 2012b)) or tensor decomposition (e.g. (Anandkumar et al., 2012)), which undermine
-their applicability in practice. Arguably, the most widely
-used algorithms for NMF use the alternative minimization
-scheme: In each iteration, the algorithm alternatively keeps
-A or X as fixed and tries to minimize some distance between Y and AX. Algorithms in this framework, such
-as multiplicative update (Lee & Seung, 2001) and alternative non-negative least square (Kim & Park, 2008), usually
-perform well on real world data. However, alternative minimization algorithms are usually notoriously difficult to analyze. This problem is poorly understood, with only a few
-provable guarantees known (Awasthi & Risteski, 2015; Li
-et al., 2016). Most importantly, these results are only for
-the case when the coordinates of the weights are from essentially independent distributions, while in practice they
-are known to be correlated, for example, in correlated topic
-models (Blei & Lafferty, 2006). As far as we know, there
-exists no rigorous analysis of practical algorithms for the
-case with strong correlations.
-In this paper, we provide a theoretical analysis of a natural algorithm AND (Alternative Non-negative gradient
-Descent) that belongs to the practical framework, and show
-that it probably recovers the ground-truth given a mild initialization. It works under general conditions on the feature
-matrix and the weights, in particular, allowing strong correlations. It also has multiple favorable features that are
-unique to its success. We further complement our theoretical analysis by experiments on semi-synthetic data, demon-
+plore, find patterns or make predictions on the data. As an
+example, a prediction task is solved differently depending
+on the kind of data to be predicted—e.g., while prediction
+on categorical variables is usually formulated as a classification task, in the case of ordinal variables it is formulated
+as an ordinal regression problem (Agresti, 2010). Moreover, different data types should be pre-processed and input
+differently in the predictive tool—e.g., categorical inputs
+are often transformed into as many binary inputs (which
+state whether the object belongs to a category or not) as
+number of categories; positive real inputs might be logtransformed, etc.
+Information on the statistical data types in a dataset becomes particularly important in the context of statistical
+machine learning (Breiman, 2001), where the choice of a
+likelihood model appears as a main assumption. Although
+extensive work has focused on model selection (Ando,
+2010; Burnham & Anderson, 2003), the likelihood model
+is usually assumed to be known and fixed. As an example,
+a common approach is to model continuous data as Gaussian variables, and discrete data as categorical variables.
+However, while extensive work has shown the advantages
+of capturing the statistical properties of the observed data in
+the likelihood model (Chu & Ghahramani, 2005a; Schmidt
+et al., 2009; Hilbe, 2011; Valera & Ghahramani, 2014),
+there still exists a lack of tools to automatically perform
+likelihood model selection, or equivalently to discover the
+most plausible statistical type of the variables in the data,
+directly from the data.
+In this work, we aim to fill this gap by proposing a general and scalable Bayesian method to solve this task. The
+proposed method exploits the latent structure in the data to
+automatically distinguish among real-valued, positive realvalued and interval data as types of continuous variables,
+and among categorical, ordinal and count data as types of
+discrete variables. The proposed method is based on probabilistic modeling and exploits the following key ideas:
+i) There exists a latent structure in the data that capture
+the statistical dependencies among the different objects and attributes in the dataset. Here, as in standard
+latent feature modeling, we assume that we can capture this structure by a low-rank representation, such
+that conditioning on it, the likelihood model factorizes
+for both number of objects and attributes.
+ii) The observation model for each attribute can be ex-
 
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization with Strong Correlations
+Automatic Discovery of the Statistical Types of Variables in a Dataset
 
-strating that the algorithm converges faster to the groundtruth than several existing practical algorithms, and providing positive support for some of the unique features of our
-algorithm. Our contributions are detailed below.
-1.1. Contributions
-In this paper, we assume a generative model of the data
-points, given the ground-truth feature matrix A∗ . In each
-round, we are given y = A∗ x,1 where x is sampled i.i.d.
-from some unknown distribution µ and the goal is to recover the ground-truth feature matrix A∗ . We give an algorithm named AND that starts from a mild initialization
-matrix and provably converges to A∗ in polynomial time.
-We also justify the convergence through a sequence of experiments. Our algorithm has the following favorable characteristics.
-1.1.1. S IMPLE G RADIENT D ESCENT A LGORITHM
-The algorithm AND runs in stages and keeps a working
-matrix A(t) in each stage. At the t-th iteration in a stage,
-after getting one sample y, it performs the following:
-
-
-(Decode) z = φα (A(0) )† y ,
-
-
-(Update) A(t+1) = A(t) + η yz > − A(t) zz > ,
-where α is a threshold parameter,
-
-x if x ≥ α,
-φα (x) =
-0 otherwise,
-(0) †
+pressed as a mixture of likelihood models, one per
+each considered data type, where the inferred weight
+associated to a likelihood model captures the probability of the attribute belonging to the corresponding
+data type.
+We derive an efficient MCMC inference algorithm to
+jointly infer both the low-rank representation and the
+weight of each likelihood model for each attribute in the
+observed data. Our experimental results show that the proposed method accurately discovers the true data type of the
+variables in a dataset, and by doing so, it fits the data substantially better than modeling continuous data as Gaussian
+variables and discrete data as categorical variables.
 
-(0)
+2. Problem Statement
+As stated above, the outcome of the pre-processing step
+of data analysis is a structured dataset, in which a set of
+objects are defined by a set of attributes, and our objective is to automatically discover which type of variables
+these attributes correspond to. In order to distinguish between discrete and continuous variables, we can apply simple logic rules, e.g.. count the number of unique values that
+the attribute takes and how many times we observe these attributes. Moreover, binary variables are invariant to the labeling of the categories, and therefore, both categorical and
+ordinal models are equivalent in this case. However, distinguishing among different types of discrete and continuous
+variables cannot be easily solved using simple heuristics.
+In the context of continuous variables, given the finite size
+of observed datasets, it is complicated to identify whether
+a variable may take values in the entire real line, or only on
+an interval of it, e.g., (0, ∞) or (θL , θH ). In other words,
+due to the finite observation sample, we cannot distinguish
+whether the data distribution has an infinite tail that we
+have not observed, or its support is limited to an interval.
+As an illustrative example, Figures 2(d)&(f) in Section 4
+show two data distributions that, although at a first sight
+look similar, correspond respectively to a Beta variable,
+which therefore takes values in the interval (0, 1), and a
+gamma variable, which takes values in (0, ∞).
+In the context of discrete data, it is impossible to tell the difference between categorical and ordinal variables in isolation. The presence of an order in the data only makes sense
+given a context. As an example, while colors in M&Ms
+usually do not present an order, colors in a traffic light
+clearly do. Similarly, we cannot easily distinguish between
+ordinal data (which take values in a finite ordered set) and
+count data (which take values in an infinite ordered set with
+equidistant values) due to two main reasons. First, similarly
+to continuous variables, since datasets contain a finite number of examples, it is difficult to tell whether we have observed the finite set of possible values of a variable, or simply a finite subsample of an infinite set. Second, we would
 
-(A ) is the Moore-Penrose pesudo-inverse of A , and
-η is the update step size. The decode step aims at recovering the corresponding weight for the data point, and the
-update step uses the decoded weight to update the feature
-matrix. The final working matrix at one stage will be used
-as the A(0) in the next stage. See Algorithm 1 for the details.
-At a high level, our update step to the feature matrix can be
-thought of as a gradient descent version of alternative nonnegative least square (Kim & Park, 2008), which at each
-iteration alternatively minimizes L(A, Z) = kY − AZk2F
-by fixing A or Z. Our algorithm, instead of performing an complete minimization, performs only a stochastic gradient descent step on the feature matrix. To see
-this, consider one data point y and consider minimizing
-L(A, z) = ky − Azk2F with z fixed. Then the gradient
-of A is just −∇L(A) = (y − Az)z > , which is exactly the
-update of our feature matrix in each iteration.
-As to the decode step, when α = 0, our decoding can be
-regarded as a one-shot approach minimizing kY − AZk2F
-1
+need access to exact information on whether its consecutive values are equidistant or not, however, this information
+depends on how the data have been gathered. For example, an attribute that collects information on “frequency of
+an action” will correspond to an ordinal variable if its categories belong to, e.g., {“never”, “sometimes”, “usually”,
+“often”}, and to a count variable if it takes values in {‘‘0
+times per week”, “1 time per week”, . . . }.
+Previous work (Hernandez-Lobato et al., 2014) proposed to
+distinguish between categorical and ordinal data by comparing the model evidence and the predictive test loglikelihood of ordinal and categorical models. However, this
+approach can be only used to distinguish between ordinal
+and categorical data, and it does so by assuming that it has
+access to a real-valued variable that contains information
+about the presence of an ordering in the observed discrete
+(ordinal or categorical) variable. As a consequence, it cannot be easily generalizable to label the data type of all the
+variables (or attributes) in a dataset. In contrast, in this paper we proposed a general method that allows us to distinguish among real-valued, positive real-valued and interval
+data as types of continuous variables, and among categorical, ordinal and count data as types of discrete variables.
+Moreover, the general framework we present can be readily
+extended to other data types as needed.
 
-We also consider the noisy case; see 1.1.5.
-
-restricted to Z ≥ 0. Indeed, if for example projected gradient descent is used to minimize kY − AZk2F , then the
-projection step is exactly applying φα to Z with α = 0. A
-key ingredient of our algorithm is choosing α to be larger
-than zero and then decreasing it, which allows us to outperform the standard algorithms.
-Perhaps worth noting, our decoding only uses A(0) . Ideally, we would like to use (A(t) )† as the decoding matrix
-in each iteration. However, such decoding method requires
-computing the pseudo-inverse of A(t) at every step, which
-is extremely slow. Instead, we divide the algorithm into
-stages and in each stage, we only use the starting matrix
-in the decoding, thus the pseudo-inverse only needs to be
-computed once per stage and can be used across all iterations inside. We can show that our algorithm converges in
-polylogarithmic many stages, thus gives us to a much better running time. These are made clear when we formally
-present the algorithm in Section 4 and the theorems in Section 5 and 6.
-1.1.2. H ANDLING STRONG CORRELATIONS
-The most notable property of AND is that it can provably
-deal with highly correlated distribution µ on the weight x,
-meaning that the coordinates of x can have very strong
-correlations with each other. This is important since such
-correlated x naturally shows up in practice. For example,
-when a document contains the topic “machine learning”, it
-is more likely to contain the topic “computer science” than
-“geography” (Blei & Lafferty, 2006).
-Most of the previous theoretical approaches for analyzing alternating between decoding and encoding, such
-as (Awasthi & Risteski, 2015; Li et al., 2016; Arora
-et al., 2015), require the coordinates of x to be pairwiseindependent, or almost pairwise-independent (meaning
-Eµ [xi xj ] ≈ Eµ [xi ]Eµ [xj ]). In this paper, we show that algorithm AND can recover A∗ even when the coordinates
-are highly correlated. As one implication of our result,
-when the sparsity of x is O(1) and each entry of x is in
-{0, 1}, AND can recover A∗ even if each Eµ [xi xj ] =
-Ω(min{Eµ [xi ], Eµ [xj ]}), matching (up to constant) the
-highest correlation possible. Moreover, we do not assume
-any prior knowledge about the distribution µ, and the result
-also extends to general sparsities as well.
-1.1.3. P SEUDO - INVERSE DECODING
-One of the feature of our algorithm is to use Moore-Penrose
-pesudo-inverse in decoding. Inverse decoding was also
-used in (Li et al., 2016; Arora et al., 2015; 2016). However, their algorithms require carefully finding an inverse
-such that certain norm is minimized, which is not as efficient as the vanilla Moore-Penrose pesudo-inverse. It was
-also observed in (Arora et al., 2016) that Moore-Penrose
-
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization with Strong Correlations
-
-pesudo-inverse works equally well in practice, but the experiment was done only when A = A∗ . In this paper, we
-show that Moore-Penrose pesudo-inverse also works well
-when A 6= A∗ , both theoretically and empirically.
-1.1.4. T HRESHOLDING AT DIFFERENT α
-Thresholding at a value α > 0 is a common trick used in
-many algorithms. However, many of them still only consider a fixed α throughout the entire algorithm. Our contribution is a new method of thresholding that first sets α to
-be high, and gradually decreases α as the algorithm goes.
-Our analysis naturally provides the explicit rate at which
-we decrease α, and shows that our algorithm, following this
-scheme, can provably converge to the ground-truth A∗ in
-polynomial time. Moreover, we also provide experimental
-support for these choices.
-1.1.5. ROBUSTNESS TO NOISE
-We further show that the algorithm is robust to noise. In
-particular, we consider the model y = A∗ x + ζ, where ζ
-is the noise. The algorithm can tolerate a general family of
-noise with bounded moments; we present in the main body
-the result for a simplified case with Gaussian noise and provide the general result in the appendix. The algorithm can
-recover the ground-truth matrix up to a small blow-up factor times the noise level in each example, when the groundtruth has a good condition number. This robustness is also
-supported by our experiments.
-
-2. Related Work
-Practical algorithms. Non-negative matrix factorization
-has a rich empirical history, starting with the practical algorithms of (Lee & Seung, 1997; 1999; 2001). It has been
-widely used in applications and there exist various methods
-for NMF, e.g., (Kim & Park, 2008; Lee & Seung, 2001; Cichocki et al., 2007; Ding et al., 2013; 2014). However, they
-do not have provable recovery guarantees.
-Theoretical analysis. For theoretical analysis, (Arora
-et al., 2012b) provided a fixed-parameter tractable algorithm for NMF using algebraic equations. They also provided matching hardness results: namely they show there is
-no algorithm running in time (mW )o(D) unless there is a
-sub-exponential running time algorithm for 3-SAT. (Arora
-et al., 2012b) also studied NMF under separability assumptions about the features, and (Bhattacharyya et al., 2016)
-studied NMF under related assumptions. The most related work is (Li et al., 2016), which analyzed an alternating minimization type algorithm. However, the result
-only holds with strong assumptions about the distribution
-of the weight x, in particular, with the assumption that the
-coordinates of x are independent.
-
-Topic modeling. Topic modeling is a popular generative
-model for text data (Blei et al., 2003; Blei, 2012). Usually, the model results in NMF type optimization problems
-with kxk1 = 1, and a popular heuristic is variational inference, which can be regarded as alternating minimization in KL-divergence. Recently, there is a line of theoretical work analyzing tensor decomposition (Arora et al.,
-2012a; 2013; Anandkumar et al., 2013) or combinatorial
-methods (Awasthi & Risteski, 2015). These either need
-strong structural assumptions on the word-topic matrix A∗ ,
-or need to know the distribution of the weight x, which is
-usually infeasible in applications.
-
-3. Problem and Definitions
-We use kMk2 to denote the 2-norm of a matrix M. kxk1
-is the 1-norm of a vector x. We use [M]i to denote the ith row and [M]i to denote the i-th column of a matrix M.
-σmax (M)(σmin (M)) stands for the maximum (minimal)
-singular value of M, respectively. We consider a generative
-model for non-negative matrix factorization, where the data
-y is generated from2
-y = A∗ x,
-
-A∗ ∈ RW ×D
-
-where A∗ is the ground-truth feature matrix, and x is a nonnegative random vector drawn from an unknown distribution µ. The goal is to recover the ground-truth A∗ from
-i.i.d. samples of the observation y.
-Since the general non-negative matrix factorization is NPhard (Arora et al., 2012b), some assumptions on the distribution of x need to be made. In this paper, we would like to
-allow distributions as general as possible, especially those
-with strong correlations. Therefore, we introduce the following notion called (r, k, m, λ)-general correlation conditions (GCC) for the distribution of x.
-Definition 1 (General Correlation Conditions, GCC). Let
-∆ := E[xx> ] denote the second moment matrix.
-1. kxk1 ≤ r and xi ∈ [0, 1], ∀i ∈ [D].
-2. ∆i,i ≤
-
-2k
-D , ∀i
-
-3. ∆i,j ≤
-
-m
-D 2 , ∀i
-
-4. ∆ 
-
-∈ [D].
-6= j ∈ [D].
-
-k
-D λI.
-
-The first condition regularizes the sparsity of x.3 The second condition regularizes each coordinate of xi so that
-there is no xi being large too often. The third condition
-2
-
-Section 6.2 considers the noisy case.
-Throughout this paper, the sparsity of x refers to the `1 norm,
-which is much weaker than the `0 norm (the support sparsity). For
-example, in LDA, the `1 norm of x is always 1.
-3
-
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization with Strong Correlations
-
-regularizes the maximum pairwise correlation between xi
-and xj . The fourth condition always holds for λ = 0 since
-E[xx> ] is a PSD matrix. Later we will assume this condition holds for some λ > 0 to avoid degenerate cases. Note
-that we put the weight k/D before λ such that λ defined
-in this way will be a positive constant in many interesting
-examples discussed below.
-To get a sense of what are the ranges of k, m, and λ given
-sparsity r, we consider the following most commonly studied non-negative random variables.
-Proposition 1 (Examples of GCC).
-1. If x is chosen uniformly over s-sparse random vectors
-with {0, 1} entries, then k = r = s, m = s2 and
-λ = 1 − 1s .
-2. If x is uniformly chosen from Dirichlet distribution
-1
-s
-, then r = k = 1 and m = sD
-with parameter αi = D
-1
-with λ = 1 − s .
-For these examples, the result in this paper shows that we
-can recover A∗ for aforementioned random variables x as
-long as s = O(D1/6 ). In general, there is a wide range
-of parameters (r, k, m, λ) such that learning A∗ is doable
-with polynomially many samples of y and in polynomial
-time.
-However, just the GCC condition is not enough for recovering A∗ . We will also need a mild initialization.
-Definition 2 (`-initialization). The initial matrix A0 satisfies for some ` ∈ [0, 1),
-1. A0 = A∗ (Σ + E), for some diagonal matrix Σ and
-off-diagonal matrix E.
-2. kEk2 ≤ `, kΣ − Ik2 ≤ 14 .
-The condition means that the initialization is not too far
-away from the ground-truth A∗ . P
-For any i ∈ [D], the ith column [A0 ]i = Σi,i [A∗ ]i + j6=i Ej,i [A∗ ]j . So the
-condition means that each feature [A0 ]i has a large fraction of the ground-truth feature [A∗ ]i and a small fraction
-of the other features. Σ can be regarded as the magnitude
-of the component from the ground-truth in the initialization, while E can be regarded as the magnitude of the error
-terms. In particular, when Σ = I and E = 0, we have
-A0 = A∗ . The initialization allows Σ to be a constant
-away from I, and the error term E to be ` (in our theorems
-` can be as large as a constant).
-In practice, such an initialization is typically achieved by
-setting the columns of A0 to reasonable “pure” data points
-that contain one major feature and a small fraction of some
-others (e.g. (lda, 2016; Awasthi & Risteski, 2015)).
-
-Algorithm 1 Alternating Non-negative gradient Descent
-(AND)
-Input: Threshold values {α0 , α1 , . . . , αs }, T , A0
-1: A(0) ← A0
-2: for j = 0, 1, . . . , s do
-3:
-for t = 0, 1, . . . , T do
-4:
-On getting sample y (t) , do:
-
-5:
-z (t) ← φαj (A(0) )† y (t)
-
-6:
-A(t+1) ← A(t) + η y (t) − A(t) z (t) (z (t) )>
-7:
-end for
-8:
-A(0) ← A(T +1)
-9: end for
-Output: A ← A(T +1)
-
-4. Algorithm
-The algorithm is formally describe in Algorithm 1. It runs
-in s stages, and in the j-th stage, uses the same threshold
-αj and the same matrix A(0) for decoding, where A(0) is
-either the input initialization matrix or the working matrix
-obtained at the end of the last stage. Each stage consists
-of T iterations, and each iteration decodes one data point
-and uses the decoded result to update the working matrix.
-It can use a batch of data points instead of one data point,
-and our analysis still holds.
-By running in stages, we save most of the cost of computing (A(0) )† , as our results show that only polylogarithmic
-stages are needed. For the simple case where x ∈ {0, 1}D ,
-the algorithm can use the same threshold value α = 1/4
-for all stages (see Theorem 1), while for the general case,
-it needs decreasing threshold values across the stages (see
-Theorem 4). Our analysis provides the hint for setting the
-threshold; see the discussion after Theorem 4, and Section 7 for how to set the threshold in practice.
-
-5. Result for A Simplified Case
-In this section, we consider the following simplified case:
-y = A∗ x, x ∈ {0, 1}D .
-
-(5.1)
-
-That is, the weight coordinates xi ’s are binary.
-Theorem 1 (Main, binary). For the generative model (5.1),
-there exists ` = Ω(1) such that for every (r, k, m, λ)GCC x and every  > 0, Algorithm AND with T =
-1
-1 s
-s
-poly(D, 1 ), η = poly(D,
-1 , {αi }i=1 = { 4 }i=1 for s =
-)
-
-
-polylog(D, 1 ) and an ` initialization matrix A0 , outputs a
-matrix A such that there exists a diagonal matrix Σ  12 I
-with kA − A∗ Σk2 ≤  using poly(D, 1 ) samples and iterations, as long as
-
-
-kDλ4
-m=O
-.
-r5
-
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization with Strong Correlations
-
-Therefore, our algorithm recovers the ground-truth A∗ up
-to scaling. The scaling in unavoidable since there is no assumption on A∗ , so we cannot, for example, distinguish
-A∗ from 2A∗ . Indeed, if we in addition assume each column of A∗ has norm 1 as typical in applications, then
-we can recover A∗ directly. In particular, by normalizing
-each column of A to have norm 1, we can guarantee that
-kA − A∗ k2 ≤ O().
-In many interesting applications (for example, those in
-Proposition 1), k, r, λ are constants. The theorem implies
-that the algorithm can recover A∗ even when m = O(D).
-In this case, Eµ [xi xj ] can be as large as O(1/D), the same
-order as min{Eµ [xi ], Eµ [xj ]}, which is the highest possible correlation.
-5.1. Intuition
-The intuition comes from assuming that we have the “correct decoding”, that is, suppose magically for every y (t) ,
-our decoding z (t) = φαj (A† y (t) ) = x(t) . Here and in this
-subsection, A is a shorthand for A(0) . The gradient descent is then A(t+1) = A(t) + η(y (t) − A(t) x(t) )(x(t) )> .
-Subtracting A∗ on both side, we will get
-(A(t+1) − A∗ ) = (A(t) − A∗ )(I − ηx(t) (x(t) )> )
-Since x(t) (x(t) )> is positive semidefinite, as long as
-E[x(t) (x(t) )> ]  0 and η is sufficiently small, A(t) will
-converge to A∗ eventually.
-However, this simple argument does not work when A 6=
-A∗ and thus we do not have the correct decoding. For example, if we just let the decoding be z̃ (t) = A† y (t) , we will
-have y (t) − Az̃ (t) = y (t) − A† Ay (t) = (I − A† A)A∗ x(t) .
-Thus, using this decoding, the algorithm can never make
-any progress once A and A∗ are in the same subspace.
-The most important piece of our proof is to show that after thresholding, z (t) = φα (A† y (t) ) is much closer to x(t)
-than z̃ (t) . Since A and A∗ are in the same subspace, inspired by (Li et al., 2016) we can write A∗ as A(Σ + E)
-for a diagonal matrix Σ and an off-diagonal matrix E, and
-thus the decoding becomes z (t) = φα (Σx(t) + Ex(t) ).
-(t)
-Let us focus on one coordinate of z (t) , that is, zi =
-(t)
-φα (Σi,i xi + Ei x(t) ), where Ei is the i-th row of Ei . The
-(t)
-term Σi,i xi is a nice term since it is just a rescaling of
-(t)
-xi , while Ei x(t) mixes different coordinates of x(t) . For
-(t)
-simplicity, we just assume for now that xi ∈ {0, 1} and
-Σi,i = 1. In our proof, we will show that the threshold will
-(t)
-remove a large fraction of Ei x(t) when xi = 0, and keep a
-(t)
-(t)
-large fraction of Σi,i xi when xi = 1. Thus, our decoding is much more accurate than without thresholding. To
-show this, we maintain a crucial property that for our decoding matrix, we always have kEi k2 = O(1). Assuming
-
-this, we first consider two extreme cases of Ei .
-1. Ultra dense: all coordinates of Ei are in the order of
-√1 . Since the sparsity of x(t) is r, as long as r =
-d
-√
-(t)
-o( d)α, Ei x(t) will not pass α and thus zi will be
-(t)
-decoded to zero when xi = 0.
-2. Ultra sparse: Ei only has few coordinate equal to Ω(1)
-and the rest are zero. Unless x(t) has those exact coordinates equal to 1 (which happens not so often), then
-(t)
-(t)
-zi will still be zero when xi = 0.
-Of course, the real Ei can be anywhere in between these
-two extremes, and thus we need more delicate decoding
-lemmas, as shown in the complete proof.
-(t)
-
-Furthermore, more complication arises when each xi is
-not just in {0, 1} but can take fractional values. To handle this case, we will set our threshold α to be large at the
-beginning and then keep shrinking after each stage. The intuition here is that we first decode the coordinates that we
-(t)
-are most confident in, so we do not decode zi to be non(t)
-zero when xi = 0. Thus, we will still be able to remove a
-large fraction of error caused by Ei x(t) . However, by setting the threshold α so high, we may introduce more errors
-(t)
-(t)
-to the nice term Σi,i xi as well, since Σi,i xi might not
-(t)
-be larger than α when xi 6= 0. Our main contribution is to
-show that there is a nice trade-off between the errors in Ei
-terms and those in Σi,i terms such that as we gradually decreases α, the algorithm can converge to the ground-truth.
-5.2. Proof Sketch
-For simplicity, we only focus on one stage and the expected
-update. The expected update of A(t) is given by
-A(t+1) = A(t) + η(E[yz > ] − A(t) E[zz > ]).
-Let us write A(0) = A∗ (Σ0 + E0 ) where Σ0 is diagonal
-and E0 is off-diagonal. Then the decoding is given by
-z = φα ((A(0) )† y) = φα ((Σ0 + E0 )−1 x).
-Let Σ, E be the diagonal part and the off-diagonal part of
-(Σ0 + E0 )−1 .
-The key lemma for decoding says that under suitable conditions, z will be close to Σx in the following sense.
-Lemma 2 (Decoding, informal). Suppose E is small and
-Σ ≈ I. Then with a proper threshold value α, we have
-E[Σxx> ] ≈ E[zx> ], E[Σxz > ] ≈ E[zz > ].
-Now, let us write A(t) = A∗ (Σt + Et ). Then applying the
-above decoding lemma, the expected update of Σt + Et is
-Σt+1 +Et+1 = (Σt +Et )(I−Σ∆Σ)+Σ−1 (Σ∆Σ)+Rt
-
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization with Strong Correlations
-
-where ∆ = E[xx> ] and Rt is a small error term.
-Our second key lemma is about this update.
-Lemma 3 (Update, informal). Suppose the update rule is
-Σt+1 + Et+1 = (Σt + Et )(1 − ηΛ) + ηQΛ + ηRt
-for some PSD matrix Λ and kRt k2 ≤ C 00 . Then
-kΣt + Et − Qk2 ≤ kΣ0 + E0 − Qk2 (1 − ηλmin (Λ))t
-+
-
-C 00
-.
-λmin (Λ)
-
-Applying this on our update rule with Q = Σ−1 and
-Λ = Σ∆Σ, we know that when the error term is sufficiently small, we can make progress on kΣt +Et −Σ−1 k2 .
-Furthermore, by using the fact that Σ0 ≈ I and E0 is small,
-and the fact that Σ is the diagonal part of (Σ0 + E0 )−1 , we
-can show that after sufficiently many iterations, kΣt − Ik2
-blows up slightly, while kEt k2 is reduced significantly. Repeating this for multiple stages completes the proof.
-We note that most technical details are hidden, especially
-for the proofs of the decoding lemma, which need to show
-that the error term Rt is small. This crucially relies on
-the choice of α, and relies on bounding the effect of the
-correlation. These then give the setting of α and the bound
-on the parameter m in the final theorem.
-
-6. More General Results
-6.1. Result for General x
-This subsection considers the general case where x ∈
-[0, 1]D . Then the GCC condition is not enough for recovery, even for k, r, m = O(1) and λ = Ω(1). For example,
-GCC does not rule out the case that x is drawn uniformly
-1
-over (r − 1)-sparse random vectors with { D
-, 1} entries,
-when one cannot recover even a reasonable
-approximation
-P ∗i
-1
-of A∗ since a common vector D
-i [A ] shows up in all
-the samples. This example shows that the difficulty arises
-if each xi constantly shows up with a small value. To avoid
-this, a general and natural way is to assume that each xi ,
-once being non-zero, has to take a large value with sufficient probability. This is formalized as follows.
-Definition 3 (Decay condition). A distribution of x satisfies
-the order-q decay condition for some constant q ≥ 1, if for
-all i ∈ [D], xi satisfies that for every α > 0,
-Pr[xi ≤ α | xi 6= 0] ≤ αq .
-When q = 1, each xi , once being non-zero, is uniformly
-distributed in the interval [0, 1]. When q gets larger, each
-xi , once being non-zero, will be more likely to take larger
-
-values. We will show that our algorithm has a better guarantee for larger q. In the extreme case when q = ∞, xi will
-only take {0, 1} values, which reduces to the binary case.
-In this paper, we show that this simple decay condition,
-combined with the GCC conditions and an initialization
-with constant error, is sufficient for recovering A∗ .
-Theorem 4 (Main). There exists ` = Ω(1) such that for
-every (r, k, m, λ)-GCC x satisfying the order-q condition,
-every  > 0, there exists T, η and a sequence of {αi } 4
-such that Algorithm AND, with `-initialization matrix A0 ,
-outputs a matrix A such that there exists a diagonal matrix
-Σ  21 I with kA − A∗ Σk2 ≤  with poly(D, 1 ) samples
-and iterations, as long as
-!
-1
-4
-kD1− q λ4+ q
-m=O
-.
-6
-r5+ q+1
-As mentioned, in many interesting applications, k = r =
-λ = Θ(1), where our algorithm can recover A∗ as long as
-1
-1
-m = O(D1− q+1 ). This means Eµ [xi xj ] = O(D−1− q+1 ),
-1
-a factor of D− q+1 away from the highest possible correlation min{Eµ [xi ], Eµ [xj ]} = O(1/D). Then, the larger q,
-the higher correlation it can tolerate. As q goes to infinity,
-we recover the result for the case x ∈ {0, 1}D , allowing
-the highest order correlation.
-The analysis also shows that the decoding threshold should
-2
-
- q+1
-be α = λkEr0 k2
-where E0 is the error matrix at the
-beginning of the stage. Since the error decreases exponentially with stages, this suggests to decrease α exponentially
-with stages. This is crucial for AND to recover the groundtruth; see Section 7 for the experimental results.
-6.2. Robustness to Noise
-We now consider the case when the data is generated from
-y = A∗ x + ζ, where ζ is the noise. For the sake of demonstration, we will just focus on the case when xi ∈ {0, 1}
-1
-I . 5 A
-and ζ is random Gaussian noise ζ ∼ γN 0, W
-more general theorem can be found in the appendix.
-Definition 4 ((`, ρ)-initialization). The initial matrix A0
-satisfies for some `, ρ ∈ [0, 1),
-1. A0 = A∗ (Σ + E) + N, for some diagonal matrix Σ
-and off-diagonal matrix E.
-2. kEk2 ≤ `, kΣ − Ik2 ≤ 41 , kNk2 ≤ ρ.
-Theorem 5 (Noise, binary). Suppose each xi ∈ {0, 1}.
-There exists ` = Ω(1) such that for every (r, k, m, λ)-GCC
-x, every  > 0, Algorithm AND with T = poly(D, 1 ), η =
-4
-5
-
-In fact, we will make the choice explicit in the proof.
-we make this scaling so kζk2 ≈ γ.
-
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization with Strong Correlations
-
-{αi }si=1 = { 41 }4i=1 and an (`, ρ)-initialization
-A0 for ρ = O(σmin (A∗ )), outputs A such that there exists
-a diagonal matrix Σ  12 I with
-
-
-σmax (A∗ )
-kA − A∗ Σk2 ≤ O  + r
-γ
-σmin (A∗ )λ
-
-
-4
-.
-using poly(D, 1 ) iterations, as long as m = O kDλ
-5
-r
-1
-,
-poly(D, 1 )
-
-The theorem implies that the algorithm can recover the
-∗
-max (A )
-ground-truth up to r σσmin
-(A∗ )λ times γ, the noise level in
-each sample. Although stated here for Gaussian noise for
-simplicity, the analysis applies to a much larger class of
-noises, including adversarial ones. In particular, we only
-need to the noise ζ have sufficiently bounded kE[ζζ > ]k2 ;
-see the appendix for the details. For the special case of
-Gaussian noise, by exploiting its properties, it is possible
-to improve the error term with a more careful calculation,
-though not done here.
-
-7. Experiments
-To demonstrate the advantage of AND, we complement the
-theoretical analysis with empirical study on semi-synthetic
-datasets, where we have ground-truth feature matrices and
-can thus verify the convergence. We then provide support
-for the benefit of using decreasing thresholds, and test its
-robustness to noise. In the appendix, we further test its
-robust to initialization and sparsity of x, and provide qualitative results in some real world applications. 6
-Setup. Our work focuses on convergence of the solution to the ground-truth feature matrix. However, realworld datasets in general do not have ground-truth. So we
-construct semi-synthetic datasets in topic modeling: first
-take the word-topic matrix learned by some topic modeling method as the ground-truth A∗ , and then draw x from
-some specific distribution µ. For fair comparison, we use
-one not learned by any algorithm evaluated here. In particular, we used the matrix with 100 topics computed by the
-algorithm in (Arora et al., 2013) on the NIPS papers dataset
-(about 1500 documents, average length about 1000). Based
-on this we build two semi-synthetic datasets:
-1. DIR. Construct a 100 × 5000 matrix X, whose
-columns are from a Dirichlet distribution with parameters (0.05, 0.05, . . . , 0.05). Then the dataset is
-Y = A∗ X.
-2. CTM. The matrix X is of the same size as above,
-while each column is drawn from the logistic normal
-prior in the correlated topic model (Blei & Lafferty,
-2006). This leads to a dataset with strong correlations.
-6
-The code is public on
-PrincetonML/AND4NMF.
-
-https://github.com/
-
-Note that the word-topic matrix is non-negative. While
-some competitor algorithms require a non-negative feature
-matrix, AND does not need such a condition. To demonstrate this, we generate the following synthetic data:
-3. NEG. The entries of the matrix A∗ are i.i.d. samples
-from the uniform distribution on [−0.5, 0.5). The matrix X is the same as in CTM.
-Finally, the following dataset is for testing the robustness
-of AND to the noise:
-4. NOISE. A∗ and X are the same as in CTM, but Y =
-A∗ X + N where N is the
- noise matrix with columns
-1
-I with the noise level γ.
-drawn from γN 0, W
-Competitors. We compare the algorithm AND to the following popular methods: Alternating Non-negative Least
-Square (ANLS (Kim & Park, 2008)), multiplicative update
-(MU (Lee & Seung, 2001)), LDA (online version (Hoffman
-et al., 2010)),7 and Hierarchical Alternating Least Square
-(HALS (Cichocki et al., 2007)).
-Evaluation criterion. Given the output matrix A and the
-ground truth matrix A∗ , the correlation error of the i-th
-column is given by
-εi (A, A∗ ) =
-
-min
-j∈[D],σ∈R
-
-{k[A∗ ]i − σ[A]j k2 }.
-
-Thus, the error measures how well the i-th column of A∗
-is covered by the best column of A up to scaling. We find
-the best column since in some competitor algorithms, the
-columns of the solution A may only correspond to a permutation of the columns of A∗ .8
-We also define the total correlation error as
-ε(A, A∗ ) =
+3. Methodology
+In this section, we introduce a Bayesian method to determine the statistical type of variable that corresponds to each
+of the attributes describing the objects in an observation
+matrix X. In particular, we propose a probabilistic model,
+in which we assume that there exists a low-rank representation of the data that captures its latent structure, and therefore, the statistical dependencies among its objects and attributes. In detail, we consider that each observation xdn
+can be explained by a K-length vector of latent variables
+zn = [zn1 , . . . , znK ] associated to the n-th object and a
+weighting vector bd = [bd1 , . . . , bdK ] (with K being the
+number of latent variables), whose elements bdk weight the
+contribution of k-th the latent feature to the d-th attribute
+in X. Then, given the latent low-rank representation of the
+data, the attributes describing the objects in a dataset are
+assumed to be independent, i.e.,
+p(X|Z, {bd }D
+d=1 ) =
 
 D
+Y
+d=1
+
+p(xd |Z, bd ),
+
+where we gather the latent feature vectors zn in a N × K
+matrix Z. For convenience, here zn is a K-length row vector, while bd is a K-length column vector. The above model
+resembles standard latent feature models (Salakhutdinov &
+Mnih, 2007; Griffiths & Ghahramani, 2011), which assume
+known and fixed likelihood models p(xd |Z, bd ). In contrast, in this paper we aim to infer the statistical data type
+
+Automatic Discovery of the Statistical Types of Variables in a Dataset
+
+(or equivalently, the likelihood model) that better captures
+the distribution of each attribute in X. To this end, here we
+assume that the likelihood model of the d-th attribute in X
+is a mixture of likelihood functions such that
 X
+w`d p` (xd |Z, bd` ),
+p(xd |Z, {bd` }`∈Ld ) =
+`∈Ld
 
-εi (A, A∗ ).
+where Ld is the set of possible types of variables (or equivalently, likelihood models) to be considered for this attribute, and the weight w`d captures the probability of the
+likelihood function ` in the d-th attribute of the observation matrix X. Note that, the P
+above expression is a valid
+d
+likelihood model as long as
+`∈Ld w` = 1 and each
+d
+d
+d
+p` (x |Z, b` , Ψ` ) is a normalized probability density function or probability mass function for, respectively, continuous and discrete variables. Hence, under the proposed
+model, which is is illustrated in Figure 1a, the likelihood
+factorizes as
+D X
+Y
+w`d p` (xd |Z, bd` ).
+p(X|Z, {bd` }) =
+(1)
+d=1 `∈Ld
 
-i=1
+We place a Dirichlet prior distribution on the likelihood
+weights wd = [w`d ]`∈Ld , and similarly to (Salakhutdinov
+& Mnih, 2007), assume that both the latent feature vectors
+zn and the weighting vectors bdj are Gaussian distributed
+with zero mean and covariance matrices σz2 I and σb2 I, respectively. Here, I denotes the identity matrix of size equal
+to the number of latent features K.
+Moreover, we consider the following types of data for, respectively, continuous and discrete variables:
+• Continuous variables:
+1. Real-valued data, which takes values in the real
+line, i.e., xdn ∈ <.
+2. Positive real-valued data, which takes values in
+the positive real line, i.e., xdn ∈ <+ .
+3. Interval data, which takes values in an interval of
+the real line, i.e., xdn ∈ (θL , θH ), where θL , θH ∈
+< and θL ≤ θH .
+• Discrete variables:
+1. Categorical data, which takes values in a finite
+unordered set, e.g., xdn ∈ {‘blue’, ‘red’, ‘black’}.
+2. Ordinal data, which takes values in a finite ordered set, e.g., xdn ∈ {‘never’, ‘sometimes’, ‘often’, ‘usually’, ‘always’}.
+3. Count data, which takes values in the natural
+numbers, i.e., xdn ∈ {0, . . . , ∞}.
+We remark that the main goal of this paper is to determine
+the types of variables that better capture each attribute in
+the observed matrix X, which in our method translates to
+inferring the likelihood weights wd . However, solving this
+inference problem in an efficient way is a challenging task
+for several reasons. First, we need to jointly infer all the latent variables in the model, i.e., the low-rank representation
 
-We report the total correlation error in all the experiments.
-Initialization. In all the experiments, the initialization
-matrix A0 is set to A0 = A∗ (I + U) where I is the
-identity matrix and U is a matrix whose entries are i.i.d.
-samples from the uniform distribution on [−0.05, 0.05).
-Note that this is a very
-since [A0 ]i =
-P weak initialization,
-∗ i
-∗ j
-(1 + Ui,i )[A ] + j6=i Uj,i [A ] and the magnitude of
+` 2 Ld
+Z
+
+x
+
+d
+
+w
+
+wd
+
+bd`
+
+sdn
+
+d
+yn`
+
+xdn
+
+d
+
+zn
+Bd
+d = 1, . . . , D
+
+d = 1, . . . , D
+n = 1, . . . , N
+
+(a) Proposed model
+(b) Alternative representation
+Figure 1. Model illustration.
+
+of the data (which includes the latent feature matrix Z and
+the corresponding weighting vectors {bd` }{`∈Ld |d=1,...,D} )
+and the likelihood weights {wd }D
+d=1 . Second, we need to
+do so given a heterogeneous (and non-conjugate) observation model, which combines D different likelihood models, corresponding each of them to a mixture of likelihood
+functions and coupled through the latent feature matrix Z.
+Additionally, these likelihood functions do not only correspond to either a probability density function or a probability mass function depending on whether we are dealing with a continuous or a discrete variable, but also each
+mixture combines likelihood functions with different supports. For example, while real-valued data lead to a likelihood function with the real line as support, interval data
+only accounts for a segment of the real line. Similarly, both
+categorical and ordinal data assume a finite support, while
+count data requires an infinite-support likelihood function.
+In order to allow for efficient inference, we exploit the key
+idea in (Valera & Ghahramani, 2014) to propose an alternative and equivalent model representation (shown in Figure 1b), which efficiently deal with heterogeneous likelihood functions. In this alternative model representation,
+we include for each observation xdn as many Gaussian varid
+ables (or pseudo-observations) yn`
+∼ N (zn bd` , σy2 ) as the
+number of likelihood functions in Ld , and assume that
+d
+there exists a transformation function over the variables yn`
+which maps the real line < into the support of the likelihood
+function `, Ω` , i.e.,
+f` : <
+y
+
+7→ Ω`
+.
+→ x
+
+(2)
+
+Note that, if we condition on the pseudo-observations the
+latent variable model behaves as a conjugate Gaussian
+model, allowing for efficient inference of the latent feature matrix Z and the weighting vectors {bd` }. Additionally, we include a latent multinomial variable sdn ∼
+M ultinomial(wd ) which indicates the type of variable
+(or likelihood function) that the observation xdn belongs to.
+Then, given sdn , we can obtain the observation xdn as
+d
+d
+xdn = fsdn (yns
+d + un ),
+n
+
+(3)
+
+where udn ∼ N (0, σu2 ) is a noise variable. We gather the
+likelihood assignments sdn in a N × D matrix S.
+
+Automatic Discovery of the Statistical Types of Variables in a Dataset
+
+3.1. Likelihood functions
+In this section, we provide the set of transformations to map
+d
+from the Gaussian pseudo-observations yn`
+into the types
+of data defined above, specifying also the six likelihood
+functions that our method will account for.
+3.1.1. C ONTINUOUS VARIABLES
+In the case of continuous variables, we assume that the
+mapping functions f` are continuous invertible and differentiable functions, such that we can obtain corresponding likelihood function (after integrating out the pseudod
+observation yn`
+) as
+
+
+ d −1 d 
+1
+
+
+f
+(x
+)
+p` (xdn |zn , bd` , sdn = `) = q
+n 
+ d `
+2π(σy2 + σu2 ) dxn
+
+
+1
+−1 d
+d 2
+× exp −
+(f
+(x
+)
+−
+z
+b
+)
+,
+n `
+n
+2(σy2 + σu2 ) `
+where f`−1 is the inverse function of the transformation
+f` (·), i.e., f`−1 (f` (v)) = v. Next, we provide examples of
+mapping functions that allow us to account for real-valued,
+positive real-valued, and interval data.
+1. Real-valued Data. In order to obtain real-valued observations, i.e., xdn ∈ <, we need a transformation over
+ynd that maps from the real numbers to the real numbers,
+i.e., f< : < → <. The simplest case is to assume that
+x = f< (y + u) = y + u, and therefore, each observation
+is distributed as xdn ∼ N (zn bd< , σy2 + σu2 ). Nevertheless,
+other mapping functions can be used, e.g., we will use in
+our experiments the transformation
+x = f< (y + u) = w(y + u) + µ,
+where w and µ are parameters allowing attribute rescaling,
+and tuneable by the user.
+2. Positive Real-valued Data. As an example of a function that maps from the real numbers to the positive real
+numbers, i.e., f<+ : < 7→ <+ , we consider
+x = f<+ (y + u) = log(1 + exp(w(y + u))).
+where w allows attribute rescaling.
+3. Interval Data. As an example of a function the maps
+from the real numbers into the interval (θL , θH ), i.e., f<+ :
+< 7→ (θL , θH ), we consider the transformation
+x = fInt (y + u) =
+
+θH − θL
++ θL ,
+1 + exp(−w(y + u))
+
+where w, θL and θH are user hyperparameters.1
+In our experiments, we assume θL = arg minn (xdn ) −  and
+θH = arg maxn (xdn )+, where  → 0 is a user hyper-parameter.
+We set the rescaling parameter w = 2/ max(xd ) for the three
+continuous data types.
+1
+
+3.1.2. D ISCRETE VARIABLES
+1. Categorical Data. Now we account for categorical observations, i.e., each observation xdn can take values in the
+unordered index set {1, . . . , Rd }. Hence, assuming a multinomial probit model, we can write
+x = fcat (y) = arg max y(r),
+r∈{1,...,Rd }
+
+where in this case there are as many pseudo-observations as
+number of categories and each pseudo-observation can be
+d
+sampled as yncat
+(r) ∼ N (zn bdcat (r), σy2 ) where bdcat (r)
+denotes the K-length weighting vector, which weights the
+influence the latent features for a categorical observation
+xdn taking value r. Note that, under this likelihood model,
+d
+we need one pseudo-observation yncat
+(r) and a weighting
+d
+vector bcat (r) for each possible value of the observation
+r ∈ {1, . . . , Rd }.
+Under the multinomial probit model, we can obtain the
+probability of xdn taking value r ∈ {1, . . . , Rd } as (Girolami & Rogers, 2005)
+pcat (x = r|zn , bdcat , sdn = cat)
+" R
+#
+d
+
+
+Y
+= Ep(u)
+Φ u + zn (bdcat (r) − bdcat (r0 )) ,
+r 0 =1
+r 0 6=r
+
+where Φ(·) denotes the cumulative density function of the
+standard normal distribution and Ep(u) [·] denotes expectation with respect to the distribution p(u) = N (0, σy2 ).
+2. Ordinal Data. Consider ordinal data, in which each element xdn takes values in the ordered index set {1, . . . , Rd }.
+Then, assuming an ordered probit model, we can write
+
+d
+1
+if ynord
+≤ θ1d
+
+
+
+d
+ 2
+if θ1d < ynord
+≤ θ2d
+d
+xdn = ford (ynord
+)=
+..
+
+.
+
+
+
+d
+d
+< ynord
+Rd
+if θR
+d −1
+d
+where again ynord
+is Gaussian distributed with mean
+d
+zn bord and variance σy2 , and θrd for r ∈ {1, . . . , Rd − 1}
+are the thresholds that divide the real line into Rd regions. We assume the thresholds θrd are sequentially
+generated from the truncated Gaussian distribution θrd ∼
+d
+d
+T N (0, σθ2 , θr−1
+, ∞), where θ0d = −∞ and θR
+= +∞.
+d
+As opposed to the categorical case, now we have a unique
+d
+weighting vector bdord and a unique Gaussian variable ynord
+for each observation xdn , and the value of xdn is determined
+d
+by the region in which ynord
+falls.
+
+Under the ordered probit model (Chu & Ghahramani,
+2005b), the probability of each element xdn taking value
+r ∈ {1, . . . , Rd } can be written as
+pord (xdn = r|zn , bdord , sdn = ord)
+!
+!
+d
+θr−1
+− zn bdord
+θrd − zn bdord
+=Φ
+−Φ
+.
+σy
+σy
+
+Automatic Discovery of the Statistical Types of Variables in a Dataset
+
+3. Count Data. In count data each observation xdn takes
+non-negative integer values, i.e., xdn ∈ {0, . . . , ∞}. Then,
+we assume
+xdn = fcount (ynd ) = bg(ynd )c,
+
+Algorithm 1 Inference Algorithm.
+
+Input: X
+d
+Initialize: S, {bd` } and {yn`
+}
+1: for each iteration do
+d
+2:
+Update Z given {bd` } and {yn`
+}.
+where bvc returns the floor of v, that is the largest integer
+3: for d = 1, . . . , D do
+that does not exceed v, and g : < → <+ is a monotonic
+4:
+for ` ∈ Ld do
+5:
+for n = 1, . . . , N do
+differentiable function, in our experiments g(y) = log(1 +
+d
+6:
+Sample {yn`
+} given xdn , Z, {bd` } and sdn .
+exp(wy)). We can thus write the likelihood function as
+7:
+end for
+d
+pcount (xdn |zn , bdord , sdn = count) =
+8:
+Sample {bd` } given Z and {yn`
+}.
+!
+! 9:
+for
+n
+=
+1,
+.
+.
+.
+,
+N
+do
+−1 d
+d
+−1 d
+d
+g (xn ) − zn bcount
+g (xn + 1) − zn bcount
+10:
+Sample sdn given xdn , Z and {bd` }.
+−Φ
+Φ
+11:
+end
+for
+σy
+σy
+12:
+end for
+13:
+Sample wd given S.
+where g −1 : <+ → < is the inverse function of the trans14:
+end for
+formation g(·).
+15: end for
+Output: Likelihood weights wd .
+3.2. Inference Algorithm
+
+Here, we exploit the model representation in Figure 1b to
+derive an efficient inference algorithm that allows us to infer all the latent variables in the model, providing as output
+the likelihood weights wd , which determine the probability of the d-th attribute in X belonging to each of the above
+data types. Algorithm 1 summarizes the inference.
+Sampling low-rank decomposition.
+In order to
+sample the latent feature matrix Z and the associated weighting vectors {bd` }, we condition on the
+pseudo-observations such that we can efficiently
+ sample the feature vectors as zn ∼ N µdz , Σz , where
+−1
+P
 P
-the noise component j6=i Uj,i [A∗ ]j can be larger than
-the signal part (1 + Ui,i )[A∗ ]i .
-7
-We use the implementation in the sklearn package (http:
-//scikit-learn.org/)
-8
-In the Algorithm AND, the columns of A correspond to the
-columns of A∗ without permutation.
+d
+d d >
+−2
+I
+and µz =
+Σz =
+b
+(b
+)
++
+σ
+d
+z
+` `
+P P d=1 `∈L 
+N
+d d
+Σz
+n
+`∈Ld b` yn` . Note that this step involves a
+matrix inversion of size K (the number of latent features)
+per iteration of the algorithm. Similarly, the weighting vecd
+tors can be sampled as bd` ∼ N µ
+Σb =
+` , Σb , where
+
+PN > d 
+−2 −1
+d
+−2 >
+and µ` = Σb
+σy Z Z + σb I
+n zn yn` . Since
+Σb is shared for all {bd` } with ` ∈ Ld and d = 1 . . . , D,
+this step also involves one matrix inversions of size K per
+iteration of the algorithm.
+Sampling pseudo-observations. Given the low-rank decomposition and the likelihood assignments S, we can samd
+from its prior distribution
+ple each pseudo-observation yn`
+d
+if sn 6= `, and from its posterior distribution if sdn = `.
+In the case of continuous variables, the posterior distribution of the pseudo-observation can be obtained as
+ 
+
+
+d
+d
+d d
+d
+2
+p(yn` |xn , zn , b` , sn = `) = N yn µ̂y , σ̂y ,
+where µ̂y =
+
+−1
+1
+1
++
+.
+σ2
+σ2
+y
 
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization with Strong Correlations
+
 
-10
+(zn bd
+`)
+σy2
 
-10
++
 
-0
+f`−1 (xd
+n)
+2
+σu
 
-0
+
 
-−10
+σ̂y2 , and σ̂y2
 
-−10
+=
 
-10
+u
 
-0
+In the case of discrete variables, the posterior distribution
+of the pseudo-observation can be computed as follows.
 
-−20
+1. For categorical observations:
+d
+p(yncat
+(r)|xdn = T, zn , bdcat , sdn = cat)
+
+d
+(j)), ∞), r = T
+T N (zn bdcat (r), σy2 , maxj6=r (yncat
+=
+d
+2
+d
+T N (zn bcat (r), σy , −∞, yncat (T )), r 6= T
+d
+In words, if xdn = T = r we sample ynr
+from a truncated Normal distribution with mean
+zn bdcat (r), variance σy2 and truncated on the left by
+d
+(j)). Otherwise, we sample from a
+maxj6=r (yncat
+truncated Gaussian (with same mean and variance)
+d
+truncated on the right by yncat
+(r) with r = xdn . Note
+d
+that sampling from the variables yncat
+(r) corresponds
+to solve a multinomial probit regression problem.
+Hence, to achieve identifiability we assume, without
+loss of generality, that the regression function fRd (zn )
+is identically zero, and thus, we fix bd` (Rd ) = 0.
+2. For ordinal observations:
+d
+p(ynord
+|xdn = r, zn , bdord , sdn = ord)
+d
+d
+= T N (ynord
+|zn bdord , σy2 , θr−1
+, θrd ).
 
-−20
+Note that in this case, we also need to sample the values for the thresholds θrd with r = 1, . . . , Rd − 1 as
+d
+p(θrd |ynord
+) = T N (θrd |0, σθ2 , θmin , θmax ),
 
-−20
+d
+d
+where θmin = max(θr−1
+, maxn (ynord
+|xdn = r)) and
+d
+d
+d
+θmax = min(θr , minn (ynord |xn = r + 1)). In words,
+d
+d
+each θrd is constrained to be between θr−1
+and θr+1
+,
+d
+as well as to ensure that the pseudo-observations ynord
+associated to the observations xdn = r and xdn = r + 1
+fall respectively at the left and at the right side of θrd .
+Since in this ordinal regression problem the thresholds
+d
+{θr }R
+r=1 are unknown, we set θ1 to a fixed value in
+order to achieve identifiability.
+3. For count observations:
+d
+p(yncount
+|xdn , zn , bdcount , sdn = count)
 
-AND
-ANLS
-MU
-LDA
-HALS
+d
+= T N (yncount
+|zn bdcount , σy2 , g −1 (xdn ), g −1 (xdn + 1)),
 
-−30
+Weights w
 
-−40
+d
 
-log(Error)
+Automatic Discovery of the Statistical Types of Variables in a Dataset
+1
 
-log(Error)
-
-log(Error)
-
-−10
-
-0
-
-500
-
-1000
-
-1500
-2000
-2500
-Time in seconds
-
-3000
-
-3500
-
-−40
-
-4000
-
-−30
-
-AND
-ANLS
-MU
-LDA
-HALS
-
-−30
-
-0
-
-500
-
-(a) on DIR dataset
-
-AND
-ANLS
-MU
-LDA
-HALS
-
-−40
-
-1000
-
-1500
-2000
-2500
-Time in seconds
-
-3000
-
-3500
-
-−50
-
-4000
-
-0
-
-(b) on CTM dataset
-
-200
+250
 
 400
 
-600
-800
-1000
-Time in seconds
+0.8
 
-1200
+200
 
-1400
+300
 
-(c) on NEG dataset
+0.6
+0.4
 
-Figure 1. The performance of different algorithms on the three datasets. The x-axis is the running time (in seconds), the y-axis is the
-logarithm of the total correlation error.
+Real
+Positive
+Interval
 
-10
+200
+100
 
-10
+Beta(0.5,0.5) Beta(0.5,1)
+
+Beta(0.5,3)
 
 0
 
 0
 
-−10
+d
 
-−10
+Weights w
 
-noise
-noise
-noise
-noise
-noise
-noise
+0.6
 
-4
+0.8
+
+1
+
+Real
+Positive
+Interval
+
+0.4
+
+400
+
+!(3,1)
+
+!(5,1)
+
+Real
+Positive
+Interval
+
+1
+0.8
+
+0
+
+0.2
+
+0.4
+
+0.6
+
+0.8
+
+1
+
+0
+
+400
+
+250
+
+300
+
+200
+
+0
+
+0
 
 2
 
-−20
+4
 
-log(Error)
+6
 
-log(Error)
-
-log(Error)
+8
 
 0
 
-−20
+(f) Γ(1, 1)
 
-level
-level
-level
-level
-level
-level
+5
 
-0.1
-0.05
-0.01
-0.005
-0.001
-0.0005
+10
 
-−2
-
-−4
-
-−6
-−30
-
-−40
-
-−30
-
-Decreasing threshold
-Constant threshold 0.0001
-Constant threshold 0.1
-0
-
-500
-
-1000
-
-1500
-2000
-2500
-Time in seconds
-
-3000
-
-3500
-
-4000
-
-(a) different thresholds on DIR
-
-−40
-
-Decreasing threshold
-Constant threshold 0.0001
-Constant threshold 0.1
-0
-
-500
-
-1000
-
-−8
-
-1500
-2000
-2500
-Time in seconds
-
-3000
-
-3500
-
-4000
-
-−10
+15
 
 0
 
-(b) different thresholds on CTM
+1
+
+250
+200
+150
+
+0.4
+
+100
+
+100
+
+100
+
+0.2
 
 50
 
+50
+
+50
+
+-20
+
+0
+
+20
+
+40
+
+(j) N (0, 10)
+
+0
+-20
+
+0
+
+5
+
+10
+
+15
+
+(h) Γ(5, 1)
+
+250
+
+0
+-40
+
+0
+
+(g) Γ(3, 1)
+
+250
+
+150
+
+(i) Real-valued Data
+
+0.8
+
+50
+0
+
+200
+
+N(0,100)
+
+0.6
+
 100
-Time in seconds
+100
+
+150
+
+N(10,10)
+
+0.4
 
 150
 
 200
 
-(c) robustness to noise
+N(0,10)
 
-Figure 2. The performance of the algorithm AND with different thresholding schemes, and its robustness to noise. The x-axis is the
-running time (in seconds), the y-axis is the logarithm of the total correlation error. (a)(b) Using different thresholding schemes on the
-DIR/CTM dataset. “Decreasing thresold” refers to the scheme used in the original AND, “Constant threshold c” refers to using the
-threshold value c throughout all iterations. (c) The performance in the presence of noises of various levels.
+0.2
 
-Hyperparameters and Implementations. For most experiments of AND, we used T = 50 iterations for each
-stage, and thresholds αi = 0.1/(1.1)i−1 . For experiments
-on the robustness to noise, we found T = 100 leads to
-better performance. Furthermore, for all the experiments,
-instead of using one data point at each step, we used the
-whole dataset for update.
-7.1. Convergence to the Ground-Truth
-Figure 1 shows the convergence rate of the algorithms on
-the three datasets. AND converges in linear rate on all three
-datasets (note that the y-axis is in log-scale). HALS converges on the DIR and CTM datasets, but the convergence
-is in slower rates. Also, on CTM, the error oscillates. Furthermore, it doesn’t converge on NEG where the groundtruth matrix has negative entries. ANLS converges on DIR
-and CTM at a very slow speed due to the non-negative least
-square computation in each iteration. 9 All the other algo9
+(d) Beta(0.5, 3)
 
-We also note that even the thresholding of HALS and ALNS
-designed for non-negative feature matrices is removed, they still
+0.6
 
-rithms do not converge to the ground-truth, suggesting that
-they do not have recovery guarantees.
-7.2. The Threshold Schemes
-Figure 2(a) shows the results of using different thresholding
-schemes on DIR, while Figure 2(b) shows that those on
-CTM. When using a constant threshold for all iterations,
-the error only decreases for the first few steps and then stop
-decreasing. This aligns with our analysis and is in strong
-contrast to the case with decreasing thresholds.
-7.3. Robustness to Noise
-Figure 2(c) shows the performance of AND on the NOISE
-dataset with various noise levels γ. The error drops at the
-first few steps, but then stabilizes around a constant related
-to the noise level, as predicted by our analysis. This shows
-that it can recover the ground-truth to good accuracy, even
-when the data have a significant amount of noise.
-do not converge on NEG.
+0
 
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization with Strong Correlations
+0
 
-Acknowledgements
-This work was supported in part by NSF grants CCF1527371, DMS-1317308, Simons Investigator Award, Simons Collaboration Grant, and ONR-N00014-16-1-2329.
-This work was done when Yingyu Liang was visiting the
-Simons Institute.
+200
+200
 
-References
-Lda-c software. https://github.com/blei-lab/
-lda-c/blob/master/readme.txt, 2016. Accessed: 2016-05-19.
-Anandkumar, A., Kakade, S., Foster, D., Liu, Y., and Hsu,
-D. Two svds suffice: Spectral decompositions for probabilistic topic modeling and latent dirichlet allocation.
-Technical report, 2012.
-Anandkumar, A., Hsu, D., Javanmard, A., and Kakade, S.
-Learning latent bayesian networks and topic models under expansion constraints. In ICML, 2013.
+0.2
+!(1,1)
 
-Blei, David M, Ng, Andrew Y, and Jordan, Michael I. Latent dirichlet allocation. JMLR, 3:993–1022, 2003.
-Cichocki, Andrzej, Zdunek, Rafal, and Amari, Shun-ichi.
-Hierarchical als algorithms for nonnegative matrix and
-3d tensor factorization. In International Conference on
-Independent Component Analysis and Signal Separation, pp. 169–176. Springer, 2007.
-Ding, W., Rohban, M.H., Ishwar, P., and Saligrama, V.
-Topic discovery through data dependent and random
-projections. arXiv preprint arXiv:1303.3664, 2013.
-Ding, W., Rohban, M.H., Ishwar, P., and Saligrama, V. Efficient distributed topic modeling with provable guarantees. In AISTAT, pp. 167–175, 2014.
-Hoffman, Matthew, Bach, Francis R, and Blei, David M.
-Online learning for latent dirichlet allocation. In advances in neural information processing systems, pp.
-856–864, 2010.
+0
 
-Arora, S., Ge, R., and Moitra, A. Learning topic models –
-going beyond svd. In FOCS, 2012a.
+(c) Beta(0.5, 1)
 
-Kim, Hyunsoo and Park, Haesun. Nonnegative matrix factorization based on alternating nonnegativity constrained
-least squares and active set method. SIAM journal on
-matrix analysis and applications, 30(2):713–730, 2008.
+600
 
-Arora, S., Ge, R., Halpern, Y., Mimno, D., Moitra, A.,
-Sontag, D., Wu, Y., and Zhu, M. A practical algorithm
-for topic modeling with provable guarantees. In ICML,
-2013.
+(e) Positive Real-valued Data
+d
 
-Lee, Daniel D and Seung, H Sebastian. Unsupervised
-learning by convex and conic coding. NIPS, pp. 515–
-521, 1997.
+0.4
 
-Arora, S., Ge, R., Ma, T., and Moitra, A. Simple, efficient,
-and neural algorithms for sparse coding. In COLT, 2015.
-
-Lee, Daniel D and Seung, H Sebastian. Learning the parts
-of objects by non-negative matrix factorization. Nature,
-401(6755):788–791, 1999.
-
-Arora, Sanjeev, Ge, Rong, Kannan, Ravindran, and Moitra,
-Ankur. Computing a nonnegative matrix factorization–
-provably. In STOC, pp. 145–162. ACM, 2012b.
-Arora, Sanjeev, Ge, Rong, Koehler, Frederic, Ma, Tengyu,
-and Moitra, Ankur. Provable algorithms for inference in
-topic models. In Proceedings of The 33rd International
-Conference on Machine Learning, pp. 2859–2867, 2016.
-Awasthi, Pranjal and Risteski, Andrej. On some provably
-correct cases of variational inference for topic models.
-In NIPS, pp. 2089–2097, 2015.
-Bhattacharyya, Chiranjib, Goyal, Navin, Kannan, Ravindran, and Pani, Jagdeep. Non-negative matrix factorization under heavy noise. In Proceedings of the 33nd
-International Conference on Machine Learning, 2016.
-Blei, David and Lafferty, John. Correlated topic models.
-Advances in neural information processing systems, 18:
-147, 2006.
-Blei, David M. Probabilistic topic models. Communications of the ACM, 2012.
-
-Lee, Daniel D and Seung, H Sebastian. Algorithms for
-non-negative matrix factorization. In NIPS, pp. 556–562,
-2001.
-Li, Yuanzhi, Liang, Yingyu, and Risteski, Andrej. Recovery guarantee of non-negative matrix factorization via alternating updates. Advances in neural information processing systems, 2016.
-Yang, Jaewon and Leskovec, Jure. Overlapping community
-detection at scale: a nonnegative matrix factorization approach. In Proceedings of the sixth ACM international
-conference on Web search and data mining, pp. 587–596.
-ACM, 2013.
-
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization with Strong Correlations
-
-A. Complete Proofs
-We now recall the proof sketch.
-For simplicity, we only focus on one stage and the expected update. The expected update of A(t) is given by
-A(t+1) = A(t) + η(E[yz > ] − A(t) E[zz > ]).
-Let us write A = A∗ (Σ0 + E0 ) where Σ0 is diagonal and E0 is off-diagonal. Then the decoding is given by
-z = φα (A† x) = φα ((Σ0 + E0 )−1 x).
-Let Σ, E be the diagonal part and the off-diagonal part of (Σ0 + E0 )−1 .
-The first step of our analysis is a key lemma for decoding. It says that under suitable conditions, z will be close to Σx in
-the following sense:
-E[Σxx> ] ≈ E[zx> ], E[Σxz > ] ≈ E[zz > ].
-This key decoding lemma is formally stated in Lemma 6 (for the simplified case where x ∈ {0, 1}D ) and Lemma 8 (for
-the general case where x ∈ [0, 1]D ).
-Now, let us write A(t) = A∗ (Σt + Et ). Then applying the above decoding lemma, the expected update of Σt + Et is
-Σt+1 + Et+1 = (Σt + Et )(I − Σ∆Σ) + Σ−1 (Σ∆Σ) + Rt
-where Rt is a small error term.
-The second step is a key lemma for updating the feature matrix: for the update rule
-Σt+1 + Et+1 = (Σt + Et )(1 − ηΛ) + ηQΛ + ηRt
-where Λ is a PSD matrix and kRt k2 ≤ C 00 , we have
-kΣt + Et − Qk2 ≤ kΣ0 + E0 − Qk2 (1 − ηλmin (Λ))t +
-
-C 00
-.
-λmin (Λ)
-
-This key updating lemma is formally stated in Lemma 10.
-Applying this on our update rule with Q = Σ−1 and Λ = Σ∆Σ, we know that when the error term is sufficiently small,
-we can make progress on kΣt + Et − Σ−1 k2 . Then, by using the fact that Σ0 ≈ I and E0 is small, and the fact that Σ is
-the diagonal part of (Σ0 + E0 )−1 , we can show that after sufficiently many iterations, kΣt − Ik2 blows up slightly, while
-kEt k2 is reduced significantly (See Lemma 11 for the formal statement). Repeating this for multiple stages completes the
-proof.
-Organization. Following the proof sketch, we first present the decoding lemmas in Section A.1, and then the update
-lemmas in Section A.2. Section A.3 then uses these lemmas to prove the main theorems (Theorem 1 and Theorem 4).
-Proving the decoding lemmas is highly non-trivial, and we collect the lemmas needed in Section A.4.
-Finally, the analysis for the robustness to noise follows a similar proof sketch. It is presented in Section A.5.
-A.1. Decoding
-A.1.1. xi ∈ {0, 1}
-Here we present the following decoding Lemma when xi ∈ {0, 1}.
-Lemma 6 (Decoding). For every ` ∈ [0, 1), every off-diagonal matrix E0 such that kE0 k2 ≤ ` and every diagonal matrix
-Σ0 such that kΣ0 − Ik2 ≤ 12 , let z = φα ((Σ0 + E0 )x) for α ≤ 41 . Then for every β ∈ (0, 1/2],
-kE[(Σ0 x − z)x> ]k2 , kE[(Σ0 x − z)z > ]k2 = O(C1 )
-where
-C1 =
-
-√
-kr m`4 r2
-`2 kmr1.5
-`4 r3 m `5 r2.5 m
-+ 3 2 +
-+ 2 2 + 2 2 .
-1.5
-D
-α D
-D β
-β D
-D α β
-
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization with Strong Correlations
-
-Proof of Lemma 6. We will prove the bound on kE[(Σ0 x − z)z > ]k2 , and a simlar argument holds for that on kE[(Σ0 x −
-z)x> ]k2 .
-First consider the term |Σ0i,i xi − zi | for a fixed i ∈ [D]. Due to the decoding, we have zi = φα ([(Σ0 + E0 )]i x) =
-φα (Σ0i,i xi + hei , xi) where ei is the i-th row of E0 .
-Claim 7.
-Σ0i,i xi − zi = ax,1 φα (−hei , xi) + ax,2 φα (hei , xi) − hei , xixi
-
-(A.1)
-
-where ax,1 , ax,2 ∈ [−1, 1] that depends on x.
-Proof. To see this, we split into two cases:
-1. When xi = 0, then |Σ0i,i xi − zi | = |zi | ≤ φα (hei , xi).
-2. When xi = 1, then zi = 0 only when −hei , xi ≥ 21 − α ≥ α, which implies that |Σ0i,i xi − zi + hei , xi| ≤ α ≤
-φα (−hei , xi). When Σ0i,i xi − zi + hei , xi =
-6 0, then Σ0i,i xi − zi = −hei , xi.
-Putting everything together, we always have:
-|Σ0i,i xi − zi + hei , xixi | ≤ φα (|hei , xi|)
-which means that there exists ax,1 , ax,2 ∈ [−1, 1] that depend on x such that
-Σ0i,i xi − zi = ax,1 φα (−hei , xi) + ax,2 φα (hei , xi) − hei , xixi .
-
-Consider the term hei , xixi , we know that for every β ≥ 0,
-|hei , xi − φβ (hei , xi) + φβ (−hei , xi)| ≤ β.
-Therefore, there exists bx ∈ [−β, β] that depends on x such that
-hei , xixi = φβ (hei , xi) − φβ (−hei , xi) − bx xi .
-Putting into (A.1), we get:
-Σ0i,i xi − zi = ax,1 φα (−hei , xi) + ax,2 φα (hei , xi) − φβ (hei , xi)xi + φβ (−hei , xi)xi + bx xi .
-For notation simplicity, let us now write
-zi = (Σ0i,i − bx )xi + ai + bi
-where
-ai = −ax,1 φα (−hei , xi) − ax,2 φα (hei , xi),
-
-bi = φβ (hei , xi)xi − φβ (−hei , xi)xi .
-
-We then have
-(Σ0i,i xi − zi )zj = (bx xi − ai − bi )((Σ0j,j − bx )xj + aj + bj ).
-Let us now construct matrix M1 , · · · M9 , whose entries are given by
-1. (M1 )i,j = bx xi (Σ0j,j − bx )xj
-2. (M2 )i,j = bx xi aj
-
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization with Strong Correlations
-
-3. (M3 )i,j = bx xi bj
-4. (M4 )i,j = −ai (Σ0j,j − bx )xj
-5. (M5 )i,j = −ai aj
-6. (M6 )i,j = −ai bj
-7. (M7 )i,j = −bi (Σ0j,j − bx )xj
-8. (M8 )i,j = −bi aj
-9. (M9 )i,j = −bi bj
-Thus, we know that E[(Σ0 x−z)z > ] =
-as we discuss below.
-
-P9
-
-i=1
-
-E[Mi ]. It is sufficient to bound the spectral norm of each matrices separately,
-
-1. M2 , M4 : these matrices can be bounded by Lemma 14, term 1.
-2. M5 : this matrix can be bounded by Lemma 14, term 2.
-3. M6 , M8 : these matrices can be bounded by Lemma 15, term 3.
-4. M3 , M7 : these matrices can be bounded by Lemma 15, term 2.
-5. M9 : this matrix can be bounded by Lemma 15, term 1.
-6. E[M1 ]: this matrix is of the form E[bx x(x  dx )> ], where dx is a vector whose j-th entry is (Σ0j,j − bx ).
-To bound the this term, we have that for any u, v such that kuk2 = kvk2 = 1,
-u> E[bx x(x  dx )> ]v
-
-=
-
-E[bx hu, xihv, x  dx i].
-
-When β ≤ 21 , since x is non-negative, we know that the maximum of E[bx hu, xihv, x  dx i] is obtained when bx = β,
-dx = (2, · · · , 2) and u, v are all non-negative, which gives us
-q
-E[bx hu, xihv, x  dx i] ≤ 2βkE[xx> ]k2 ≤ kE[xx> ]k1 kE[xx> ]k∞ = kE[xx> ]k1 .
-Now, for each row of kE[xx> ]k1 , we know that [E[xx> ]]i ≤ E[xi
-kE[M1 ]k2 ≤
-
-P
-
-j
-
-xj ] ≤
-
-2rk
-D ,
-
-which gives us
-
-4βrk
-.
-D
-
-Putting everything together gives the bound on kE[(Σ0 x − z)z > ]k2 . A similar proof holds for the bound on kE[(Σ0 x −
-z)x> ]k2 .
-A.1.2. G ENERAL xi
-We have the following decoding lemma for the general case when xi ∈ [0, 1] and the distribution of x satisfies the order-q
-decay condition.
-Lemma 8 (Decoding II). For every ` ∈ [0, 1), every off-diagonal matrix E0 such that kE0 k2 ≤ ` and every diagonal matrix
-Σ0 such that kΣ0 − Ik2 ≤ 21 , let z = φα ((Σ0 + E0 )x) for α ≤ 41 . Then for every β ∈ (0, α],
-kE[(Σ0 x − z)x> ]k2 , kE[(Σ0 x − z)z > ]k2 = O(C2 )
-where
-C2 =
-
-√
-q
- r  2q+1
-`4 r3 m
-`5 r2.5 m
-`2 kr  m  2q+2
-`3 r2 km `6 r4 m
-kr q+1
-2q+2
-+
-+
-+
-+
-+
-kβ
-+ α 2 .
-2
-2
-2
-2.5
-1.5
-2
-4
-2
-αβ D
-D α β
-Dβ Dk
-D α
-α D
-D
-D
-
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization with Strong Correlations
-
-Proof of Lemma 8. We consider the bound on kE[(Σ0 x − z)z > ]k2 , and that on E[(Σ0 x − z)x> ]k2 can be proved by a
-similar argument.
-Again, we still have
-zi = φα ([(Σ0 + E0 )]i x) = φα (Σ0i,i xi + hei , xi).
-However, this time even when xi 6= 0, xi can be smaller than α. Therefore, we need the following inequality.
-Claim 9.
-|Σ0i,i xi − zi + hei , xi1xi ≥4α | ≤ φα/2 (|hei , xi|) + 2xi 1xi ∈(0,4α) .
-Proof. To see this, we can consider the following four events:
-1. xi = 0, then |Σ0i,i xi − zi + hei , xi1xi ≥2α | = |zi | ≤ φα (hei , xi)
-2. xi ≥ 4α. |Σ0i,i xi − zi + hei , xi1xi ≥4α | = |Σ0i,i xi + hei , xi − φα (Σ0i,i xi + hei , xi)|. Since Σ0i,i xi ≥ 2α, we can get
-the same bound.
-3. xi ∈ (α/4, 4α): then if zi 6= 0, |Σ0i,i xi − zi + hei , xi| = 0. Which implies that
-|Σ0i,i xi − zi | ≤ |hei , xi| ≤ φα/2 (|hei , xi|) +
-If zi = 0, then
-
-α
-≤ φα/2 (|hei , xi|) + 2xi 1xi ∈(0,4α)
-2
-
-|Σ0i,i xi − zi | = Σ0i,i xi ≤ 2xi 1xi ∈(0,2α)
-
-4. xi ∈ (0, α/4), then Σ0i,i xi ≤
-
-α
-2,
-
-therefore, zi 6= 0 only when hei , xi ≥
-
-α
-2.
-
-We still have: |Σ0i,i xi −zi | ≤ φα/2 (hei , xi)
-
-If z0 = 0, then |Σ0i,i xi − zi | ≤ 2xi 1xi ∈(0,4α) as before.
-Putting everything together, we have the claim.
-Following the exact same calculation as in Lemma 6, we can obtain
-Σ0i,i xi − zi = ax,1 φα/2 (−hei , xi) + ax,2 φα/2 (hei , xi)
-− φβ (hei , xi)1xi ≥4α + φβ (−hei , xi)1xi ≥4α
-+ bx 1xi ≥4α + cx 2xi 1xi ∈(0,4α)
-for ax,1 , ax,1 , cx ∈ [−1, 1] and bx ∈ [−β, β].
-Therefore, consider a matrix M whose (i, j)-th entry is (Σ0i,i xi − zi )zj . This entry can be written as the summation of the
-following terms.
-1. Terms that can be bounded by Lemma 14. These include
-ax,1 φα/2 (−hei , xi)xj ,
-
-ax,u ax,v φα/2 ((−1)u hei , xi)φα/2 ((−1)v hej , xi)
-
-ax,2 φα/2 (hei , xi)xj ,
-
-for u, v ∈ {1, 2}, and
-ax,u bx φα/2 ((−1)u hei , xi)1xi ≥4α ,
-by using 0 ≤ 1xj ≥4α ≤
-
-xj
-4α
-
-2ax,u cx φα/2 ((−1)u hei , xi)xj 1xj ∈(0,4α)
-
-and 0 ≤ xj 1xj ∈(0,4α) ≤ xj .
-
-2. Terms that can be bounded by Lemma 21. These include
-−φβ (hei , xi)1xi ≥4α xj ,
-
-φβ (−hei , xi)1xi ≥4α xj ,
-
-(−1)u ax,v φβ ((−1)1+u hei , xi)1xi ≥4α φα/2 ((−1)v hej , xi),
-
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization with Strong Correlations
-
-(−1)u+v φβ ((−1)1+u hei , xi)1xi ≥4α 1xj ≥4α φβ ((−1)1+v hej , xi)
-for u, v ∈ {1, 2}. Also include
-2(−1)u cx φβ ((−1)1+u hei , xi)1xi ≥4α xj 1xj ∈(0,4α)
-by using0 ≤ xj 1xj ∈(0,4α) ≤ xj . Also include
-2(−1)u bx φβ ((−1)1+u hei , xi)1xi ≥4α 1xj ≥4α
-by using 0 ≤ 1xj ≥4α ≤
-
-xj
-4α .
-
-3. Terms that can be bounded by Lemma 18. These include
-b2x 1xi ≥4α 1xj ≥4α ,
-
-bx 1xi ≥4α xj ,
-
-Where agin we use the fact that 0 ≤ 1xi ≥4α ≤
-
-xj
-4α
-
-2bx cx 1xi ≥4α xi 1xj ∈(0,4α) xj .
-
-and 0 ≤ xi , 1xj ∈(0,4α) ≤ 1
-
-4. Terms that can be bounded by Lemma 17. These include
-cx 2xi 1xi ∈(0,4α) xj ,
-
-4c2x xi 1xi ∈(0,4α) xj 1xj ∈(0,4α) .
-
-Where we use the fact that 0 ≤ 1xj ∈(0,4α) ≤ 1.
-Putting everything together, when 0 < β ≤ α,
-kE[(Σ0 x − z)z > ]k2 = O (C2 )
-where
-√
-q
- r  2q+1
-`4 r3 m
-`3 r2 km `6 r4 m
-kr q+1
-`5 r2.5 m
-`2 kr  m  2q+2
-2q+2
-+
-+
-+
-+
-kβ
-C2 =
-+
-+ α 2 .
-2
-2
-2
-2.5
-1.5
-2
-4
-2
-αβ D
-D α β
-Dβ Dk
-D α
-α D
-D
-D
-This gives the bound on E[(Σ0 x − z)z > ]k2 . The bound on E[(Σ0 x − z)x> ]k2 can be proved by a similar argument.
-
-A.2. Update
-A.2.1. G ENERAL U PDATE L EMMA
-Lemma 10 (Update). Suppose Σt is diagonal and Et is off-diagonal for all t. Suppose we have an update rule that is
-given by
-Σt+1 + Et+1 = (Σt + Et )(1 − η∆) + ηΣ∆ + ηRt
-for some positive semidefinite matrix ∆ and some Rt such that kRt k2 ≤ C 00 . Then for every t ≥ 0,
-kΣt + Et − Σk2 ≤ kΣ0 + E0 − Σk2 (1 − ηλmin (∆))t +
-
-C 00
-.
-λmin (∆)
-
-Proof of Lemma 10. We know that the update is given by
-Σt+1 + Et+1 − Σ = (Σt + Et − Σ)(1 − η∆) + ηRt .
-If we let
-Σt + Et − Σ = (Σ0 + E0 − Σ)(1 − η∆)t + Ct .
-
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization with Strong Correlations
-
-Then we can see that the update rule of Ct is given by
-C0 = 0,
-Ct+1 = Ct (1 − η∆) + ηRt
-which implies that ∀t ≥ 0, kCt k2 ≤
-
-C 00
-λmin (∆) .
-
-Putting everything together completes the proof.
-Lemma 11 (Stage). In the same setting as Lemma 10, suppose initially for `1 , `2 ∈ [0, 18 ) we have
-kΣ0 − Ik2 ≤ `1 , kE0 k ≤ `2 , Σ = (Diag[(Σ0 + E0 )−1 ])−1 .
-Moreover, suppose in each iteration, the error Rt satisfies that kRt k2 ≤
-Then after t =
-
-log 400
-`2
-ηλmin (∆)
-
-λmin (∆)
-160 `2 .
-
-iterations, we have
-
-1. kΣt − Ik2 ≤ `1 + 4`2 ,
-2. kEt k2 ≤
+(b) Beta(0.5, 0.5)
 
 1
-40 `2 .
 
-Proof of Lemma 11. Using Taylor expansion, we know that
-Diag[(Σ0 + E0 )−1 ] = Σ−1
-0 +
+Weights w
 
-∞
-X
+0.2
 
-−1/2
+0.8
+0.6
 
-Σ0
+200
 
-−1/2
+100
 
-Diag[(−Σ0
+50
 
-−1/2 i
+(a) Interval Data
 
-E0 Σ0
+0
 
-−1/2
+400
 
-) ]Σ0
+150
 
-.
+0.2
+0
 
-i=1
+600
 
-Since kDiag(M)k2 ≤ kMk2 for any matrix M,
-kDiag[(Σ0 + E0 )−1 ] − Σ−1
-0 k2 = k
-≤k
+20
 
-∞
-X
-i=1
-∞
-X
+(k) N (10, 10)
 
-−1/2
-
-Σ0
-
-−1/2
-
-Σ0
-
-−1/2
-
-Diag[(−Σ0
-−1/2
-
-(−Σ0
-
-−1/2 i
-
-E0 Σ0
-
-−1/2 i
-
-E0 Σ0
-
-−1/2
-
-) ]Σ0
-
-−1/2
-
-) Σ0
-
-k2
-
-i=1
-
-= k[(Σ0 + E0 )−1 ](−E0 Σ−1
-0 )k2
-`2
-32
-≤
-`2 .
-≤
-(1 − `1 )(1 − `1 − `2 )
-21
-Therefore,
-kDiag[(Σ0 + E0 )−1 ]Σ0 − Ik2 ≤
-
-`2 (1 + `1 )
-12
-≤ ` :=
-`2 .
-(1 − `1 )(1 − `1 − `2 )
-7
-
-which gives us
-kDiag[(Σ0 + E0 )−1 ]−1 Σ−1
-0 − Ik2 ≤
-
-`
-24
-≤
-`2 .
-1−`
-11
-
-This then leads to
-kΣ − Σ0 k2 ≤ kDiag[(Σ0 + E0 )−1 ]−1 − Σ0 k2 ≤
-Now since kΣ0 + E0 − Σk2 ≤ 4`2 ≤ 1, after t =
-
-log 400
-`2
-ηλmin (∆)
-
-(1 + `1 )`
-≤ 3`2 .
-1−`
-
-iterations, we have
-
-kΣt + Et − Σk2 ≤
-
-1
-`2 .
-80
-
-k2
-
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization with Strong Correlations
-
-Then since Σt − Σ = Diag[Σt + Et − Σ], we have
-kΣt − Σk2 ≤ kΣt + Et − Σk2 ≤
-
-1
-`2 .
-80
-
-This implies that
-kEt k2 ≤ kΣt − Σk2 + kΣt + Et − Σk2 ≤
-and
-kΣt − Ik2 ≤ kΣt − Σk2 + kΣ − Σ0 k2 + kΣ0 − Ik2 ≤
-
-1
-`2
 40
 
-1
-`2 + 3`2 + `1 ≤ `1 + 4`2 .
-80
+0
+-400
 
-Corollary 12 (Corollary of Lemma 11). Under the same setting as Lemma 11, suppose initially `1 ≤
-1. `1 ≤
+-200
 
-1
-17 ,
+0
 
-then
+200
 
-1
-8
+400
 
-holds true through all stages,
-
-1 t
-2. `2 ≤ 40
-after t stages.
-Proof of Corollary 12. The second claim is trivial. For the first claim, we have
-(`1 )stage s+1 ≤ (`1 )stage s + 4(`2 )stage s ≤ · · · ≤
+(l) N (10, 100)
 
-1X
-1
-1
-+
-(1/40)i ≤ .
-17 8 i
-8
+Figure 2. [Synthetic Continuous Data] The first column shows the distribution of the inferred likelihood weights wd when the ground
+truth data is (a) interval, (e) positive real-valued, and (i) real-valued. The remaining columns show example histograms of the datasets.
 
-A.3. Proof of the Main Theorems
-With the update lemmas, we are ready to prove the main theorems.
-Proof of Theorem 1. For simplicity, we only focus on the expected update. The on-line version can be proved directly from
-this by noting that the variance of the update is polynomial bounded and setting accordingly a polynomially small η. The
-expected update of A(t) is given by
-A(t+1) = A(t) + η(E[yz > ] − A(t) E[zz > ])
-Let us pick α = 41 , focus on one stage and write A = A∗ (Σ0 + E0 ). Then the decoding is given by
-z = φα (A† x) = φα ((Σ0 + E0 )−1 x).
-Let Σ, E be the diagonal part and the off diagonal part of (Σ0 + E0 )−1 . By Lemma 6,
-kE[(Σx − z)x> Σ]k2 , kE[(Σx − z)z > k2 = O(C1 ).
-Now, if we write A(t) = A∗ (Σt + Et ), then the expected update of Σt + Et is given by
-Σt+1 + Et+1 = (Σt + Et )(I − Σ∆Σ) + Σ−1 (Σ∆Σ) + Rt
-where kRt k2 = O(C1 ).
-
-By Lemma 11, as long as C1 = O(σmin (∆)kE0 k2 ) = O kλ
-D kE0 k2 , we can make progress. Putting in the expression of
-C1 with ` ≥ kE0 k2 , we can see that as long as
-√
-
-
-βkr m`4 r2
-`2 kmr1.5
-`4 r3 m `5 r2.5 m
-kλ
-+ 3 2 +
-+ 2 2 + 2 2 =O
-` ,
-D
-α D
-D1.5 β
-β D
-D α β
-D
-we can make progress. By setting β = O
+where g −1 : <+ → < is the inverse function of g, i.e.,
+d
+g −1 (g(y)) = y. Therefore, yncount
+is sampled from a
+Gaussian truncated on the left by g −1 (xdn ) and on the
+right by g −1 (xdn + 1).
+Sampling likelihood assignments. In order to improve
+the mixing properties of the sampler, when sampling {sdn }
+d
+we integrate out the pseudo-observations {yn`
+}. Then, the
+posterior probability of each observation being assigned to
+the likelihood model ` can be obtained as
+w`d p` (xdn |zn , bd` )
+p(sdn = `|wd , Z, {bd` }) = P
+.
+d
+d
+d
+0
+`0 ∈Ld w`0 p` (xn |zn , b`0 )
+Sampling likelihood weights. We assume the prior distribution on the vector wd to be a Dirichlet distribution with
+parameters {α` }`∈Ld . Then, by conjugacy, we can sample wd given the likelihood assignments
+P S from a Dirichlet
+distribution with parameters {α` + n δ(sdn == `)}`∈Ld .
+Scalability. The overall complexity of Algorithm 1 is
+O(N DLmax + K 3 ) per iteration, where N is the number
+of objects, D the number of attributes, Lmax the maximum
+number of considered data types (or likelihood models) and
+K the size of the low-rank representation. In all of our experiments, we ran the MCMC for 5000 iterations, which
+lasted 10-100 minutes depending on the dataset.
 
-λ`
-r
+4. Evaluation
+4.1. Experiments on synthetic data
+In this section, we show that the proposed method is able
+to accurately discover the true statistical type of variables
+in synthetic datasets, where we have perfect knowledge of
+the distribution from which the data have been generated.
 
-
-
-, with Corollary 12 we completes the proof.
-
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization with Strong Correlations
-
-Proof of Theorem 4. For simplicity, we only focus on the expected update. The on-line version can be proved directly from
-this by setting a polynomially small η. The expected update of A(t) is given by
-A(t+1) = A(t) + η(E[yz > ] − A(t) E[zz > ]).
-Let us focus on one stage and write A = A∗ (Σ0 + E0 ). Then the decoding is given by
-z = φα (A† x) = φα ((Σ0 + E0 )−1 x).
-Let Σ, E be the diagonal part and the off diagonal part of (Σ0 + E0 )−1 . By Lemma 8,
-kE[(Σx − z)x> Σ]k2 , kE[(Σx − z)z > k2 = O(C2 ).
-Now, if we write A(t) = A∗ (Σt + Et ), then the expected update of Σt + Et is given by
-Σt+1 + Et+1 = (Σt + Et )(I − Σ∆Σ) + Σ−1 (Σ∆Σ) + Rt
-where kRt k2 = O(C2 ).
-kλ
-D kE0 k2
-
-By Lemma 11, as long as C2 = O(σmin (∆)kE0 k2 ) = O
-C2 with ` ≥ kE0 k2 , we can see that as long as
-
-
-
-, we can make progress. Putting in the expression of
-
-√
-
-
-q
- r  2q+1
-kλ
-`5 r2.5 m
-`2 kr  m  2q+2
-`3 r2 km `6 r4 m
-kr q+1
-`4 r3 m
-2q+2
+First, we focus on continuous variables by generating univariate datasets with 1, 000 observations sampled from a
+known probability density function, which corresponds to
+i) a Gaussian distribution when considering real-valued
+data; ii) a Gamma distribution for positive real-valued data;
+and iii) a (scaled) Beta distribution for interval data lying
+in the interval (0, θL ) where θL takes values 0.1, 1 or 100.
+Figure 2 shows the distribution, by means of a boxplot,2 of
+the inferred likelihood weights wd for 10 independent simulations of Algorithm 1 with 500 iterations on 10 independent datasets generated with the parameters detailed in the
+figure. Reassuringly we observe that the proposed method
+identifies interval data as the most likely type of data for the
+three considered Beta distributions; moreover, as the tail of
+the Beta distribution increases, so does the weight given to
+the positive real-valued variables. This effect can be explained by the finite size of the dataset, since it is hard to
+determine whether the variable is limited to values smaller
+than θL , or we simply have not observed them in the finite
+set of observations. A similar effect occurs when applying
+our method to data sampled from Gamma (Figure 2(e)-(h))
+and Gaussian (Figure 2(i)-(l)) distributions. Here, we observe that in addition to, respectively, positive real-valued
+and real-valued data types, our model finds that the variable
+may also be of interval data type. This effect is larger for
+Gaussian variables, since in this example the Gaussian is a
+more heavy-tailed distribution than the Gamma.
 2
-+ 2 2.5 +
-+
-+ 4 2 + kβ
-+ α
-=O
-` ,
-C2 =
-αβ 2 D2
-D α β
-Dβ Dk
-D1.5 α2
-α D
-D
-D
-D
-we can make progress. Now set
-β=
-D
+In a boxplot, the central mark is the median, the edges of the
+box are the 25th and 75th percentiles, the whiskers extend to the
+10th and 90th percentiles.
 
-λ`
- 2q+1 , α =
-r 2q+2
+Weights wd
 
-
-
-λ`
-r
-
-2
- q+1
-
-D
-
-and thus in C2 ,
-1. First term
-2
-
-`2− q+1 k 0 r
-λ
-
-2
-2+ q+1
-
-D
-
-2. Second term
-5
-
-`4− q+1 k 0 r
-λ
-3. Third term
-
-5
-1+ q+1
-
-q+2
-
-D
-
-5q+6
-q+1
-
-m
+Weights wd
 
 1
-2− q+1
+0.8
+0.6
+0.4
+0.2
+0
 
-7q+16
-2q+2
-
-m
-
-1
-2− 2q+2
-
-4q+3
-
-q
-
-`1 k 2q+2 r 2q+2 m 2q+2
-3q+1
-
-λD 2q+2
-4. Fourth term
-
-4
+3 5 7
 
 1
+0.8
 
-4
+Weight wd
 
+Weight wd
+
+Automatic Discovery of the Statistical Types of Variables in a Dataset
+Table 1. Information on real datasets
 1
-
-`3− q+1 k 2 r q+1 +2 m 2
-4
-
-3
-
-λ q+1 D− 2
-5. Fifth term
-
-8
-
-8
-
-`6− q+1 k 0 r4+ q+1 m
-8
-
-λ q+1 D2
-We need each term to be smaller than
-
-λk`
-D ,
-
-which implies that (we can ignore the constant ` )
-
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization with Strong Correlations
-
-1. First term:
-
-1
-
-m≤
-
-2
-
-kD1− q+1 λ3+ q+1
-1
-
-r5+ q+1
-
-2. Second term:
-
-1
-
-m≤
-
-5
-
-kD1− 2q+2 λ2+ q+1
-7
-
-3. Third term:
-m≤
-
+Categorical
+Categorical
+Dataset
+N
+D # of Discrete # of Binary
+0.8
+Ordinal
+Ordinal
+Count
+Count
+0.6
+Abalone
+4, 177
 9
+2
+0
+0.4
+Adult
+32, 561 15
+12
+2
+0.2
+Chess
+28, 056
+7
+7
+0
+0
+9 3 5 7 9 3 5 7 9
+3 5 7 9 3 5 7 9 3 5 7 9
+Dermatology
+366
+35
+35
+0
+# of Categories
+# of Categories
+German
+1000
+21
+20
+4
+1
+Categorical
+Student
+395
+33
+33
+13
+0.8
+Ordinal
+Count
+0.6
+Wine
+177
+14
+2
+0
 
-r 2 + 2q+2
-kD
+0.6
+0.4
+0.2
+0
 
-q−1
-q
+1
+
+3
+
+5 1
+
+3
+
+5 1
+
+3
+
+0.4
+0.2
+0
+
+5
+
+1
+
+# of Latent Variables (K)
+
+3
+
+5 1
+
+3
+
+5 1
+
+3
+
+5
+
+# of Latent Variables (K)
+
+(a) Categorical Data
+
+(b) Ordinal Data
+
+Weight wd
+
+1
+
+Categorical
+Ordinal
+Count
+
+0.8
+0.6
+0.4
+0.2
+0
+
+1
+
+3
+
+5 1
+
+3
+
+5 1
+
+3
+
+5
+
+# of Latent Variables (K)
+
+(c) Count Data
+Figure 3. [Synthetic Discrete Data] Distribution of the inferred
+likelihood weights wd when the ground truth data is (a) categorical, (b) ordinal, and (c) count data. For categorical and ordinal
+data, we plot the likelihood weight distribution with respect to
+both the number of categories in the data and the model complexity K, and for count data with respect to K.
+
+Next, we study whether the proposed model is able to disambiguate among different discrete types of variables, particularly, among categorical, ordinal and count data. To
+this end, we generate three types of datasets of size 1, 000.
+In the first type we account for categorical data by sampling a multinomial variable with R categories, where the
+probability of the categories is sampled from a Dirichlet
+distribution. Then, for each category we sample a multidimensional Gaussian centroid that corresponds to the mean
+of the multivariate Gaussian observations that complete the
+dataset. To account for ordinal observations, we first sample the first variable in our dataset from a uniform distribution in the interval (0, R), which we randomly divide into
+R categories that correspond to the ordinal variable in our
+dataset. Finally, to account for count data we first generate a Gamma variable sampled from Γ(α, α/4), and then
+generate the counting variable in the dataset by taking the
+floor of the Gamma variable. For both categorical and ordinal data, we generate 10 independent datasets for each
+value of the number of categories R ∈ {3, . . . , 10}, and for
+count data we generate another 10 datasets for each value
+of α ∈ {2, . . . , 8}. Figure 3 summarizes the likelihood
+weights obtained for each type of datasets (i.e., for each
+type of discrete variable) after running on each dataset 10
+independent simulations of Algorithm 1 with 500 iterations
+for different model complexity values, i.e., for different
+numbers of latent feature variables K = 1, . . . , 10. In this
+figure we can observe that we can accurately discover the
+true type of discrete variable robustly and independently
+of the assumed model complexity K. We also observe on
+
+the top row of Figure 3(a)-(b) that i) as the number of categories R in the discrete variable decreases, the harder is
+to distinguish between ordinal and categorical data, i.e., to
+find out whether the data takes values in a ordered set or
+in an unordered set; and ii) as R in ordinal data increases,
+the ordinal variable is more likely to be identified as count
+data. Both of these effects are intuitively sensible.
+4.2. Experiments on real data
+In this section, we evaluate the performance of the proposed method on seven real datasets collected from the
+UCI machine learning repository (Lichman, 2013). Table 1
+summarizes theses datasets by providing the number of objects and attributes in the dataset, as well as how many of
+these attributes are discrete.
+In order to quantitatively evaluate the performance of the
+proposed method, we select at random 10% of the observations in each dataset as a held-out set and compare the predictive performance, in terms of average test log-likelihood
+per observation, of our method with a baseline method.
+The baseline method corresponds to a latent feature model
+in which all the continuous variables are modeled as realvalued data and the discrete variables as categorical data.
+Figure 4 shows the obtained results for our method (solid
+line) and the baseline (dashed line) for several values of the
+model complexity (i.e., the number of latent features K)
+averaged over 10 independent runs of the corresponding
+inference algorithms. Here, we observe that i) both methods provide robust results with respect to the number of
+variables K; and ii) our method clearly outperforms the
+baseline in all the datasets, except for the Student dataset
+where the baseline performs slightly better. In other words,
+this figure shows that by taking into account the uncertainty
+in the statistical types of the variables, we provide a better
+fitting of the data.
+Additionally, Table 2 shows the list of (non-binary) attributes in the Adult and the German datasets together with
+the data types with larger inferred likelihood weights,3 i.e.,
+the discovered statistical data types. Here, the number in
+parenthesis corresponds to the observed number of categories in discrete data. The very heterogeneous nature of
+these datasets explains the substantial gain observed in Figure 4. Moreover, Table 2 shows some expected results, e.g.,
+3
+In cases in which two data types present very similar likelihood weights (< 10% difference), we display both of them.
+
+Automatic Discovery of the Statistical Types of Variables in a Dataset
+Test log-likelihood
+
+Abalone
+
+Adult
+
+Chess
+
+Dermatology
+
+0
+
+0
+
+-1
+
+-0.5
+
+German
+
+Student
+
+Wine
+
+200
+
+wRe = 0.99, wRe+ = 0.00, wInt = 0.00
+
+150
+
+150
+
+wRe = 0.07, wRe+ = 0.92, wInt = 0.01
+
+100
+
+100
+
+-2
+
+-1
+
+-3
+
+-1.5
+
+-4
+
+2
 
 4
 
-λ4+ q
-2
-
-r4+ q
-
-4. Fourth term:
+6
 
 8
 
-m≤
+Number of Latent Variables (K)
 
-kDλ2+ q+1
-8
+10
 
-r4+ q+1
+-2
 
-5. Fifth term:
+50
 
-8
-
-m≤
-
-kDλ1+ q+1
-8
-
-r4+ q+1
-
-This is satisfied by our choice of m in the theorem statement.
-Then with Corollary 12 we completes the proof.
-A.4. Expectation Lemmas
-In this subsection, we assume that x follows (r, k, m, λ)-GCC. Then we show the following lemmas.
-A.4.1. L EMMAS WITH ONLY GCC
-Lemma 13 (Expectation). For every ` ∈ [0, 1), every vector e such that kek2 ≤ `, for every α such that α > 2`, we have
-E[φα (he, xi)] ≤
-
-16m`4 r2
-.
-α2 (α − 2`)D2
-
-Proof of Lemma 13. Without lose of generality, we can assume that all the entries of e are non-negative. Let us denote a
-new vector g such that
-
-α
-ei if ei ≥ 2r
-;
-gi =
-0 otherwise.
-Due to the fact that kxk1 ≤ r, we can conclude he − g, xi ≤
-φ α2 (hg, xi) ≥
-
-α
-2r
-
-×r =
-
-α
-2,
-
-which implies
-
-1
-φα (he, xi).
-2
-
-Now we can only focus on g. Since kgk2 ≤ `, we know that g has at most
-2 2
-set of non-zero entries of g as E, so we have |E| ≤ 4`α2r .
-Suppose the all the x such that hg, xi ≥
-
-α
-2
-
-X
-s∈[S]
-
-1. ∀s ∈ [S] :
-
-P
-
-i∈E
-
-(s)
-
-gi xi
-
-≥
-
-α
-2.
-
-non-zero entries. Let us then denote the
-
-forms a set S of size S, each x(s) ∈ S has probability pt . Then we have:
-
-E[φα (he, xi)] ≤ 2
-
-On the other hand, we have:
-
-4`2 r 2
-α2
-
-ps hg, x(s) i = 2
-
-X
-s∈[S],i∈E
-
-(s)
-
-ps gi xi .
-
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization with Strong Correlations
-(s) (s)
-
-P
-
-2. ∀i 6= j ∈ [D] :
-
-s∈[S]
-
-ps xi xj ≤
-
-m
-D2 .
-
-This is by assumption 5 of the distribution of x.
-
-Using (2) and multiply both side by gi gj , we get
-X
-
-(s)
-
-(s)
-
-ps (gi xi )(gj xj ) ≤
-
-s∈[S]
-
-mgi gj
-D2
-
-Sum over all j ∈ E, j 6= i, we have:
-X
-
-X
-
-s∈[S] j∈E,j6=i
-
-By (1), and since
-
-(s)
-
-P
-
-j∈E
-
-gj xj ≥
-
-
-
-X
-mgi X
-mg
-i
-(s)
-(s)
-gj  ≤ 2
-gj
-ps (gi xi )(gj xj ) ≤ 2 
-D
-D
-(s)
-
-α
-2
-
-j∈E
-
-j∈E,j6=i
-
-and gi ≤ `, xi
-
-P
-
-≤ 1, we can obtain
-
-(s)
-j∈E,j6=i gj xj
-
-≥
-
-α
-2
-
-− `. This implies
-
-
-(s)
-
-X
-s∈[S]
-
-ps (gi xi ) ≤ P
-
-1
-(s)
-j∈E,j6=i gj xj
-
-
-X
-X
-mg
-2m
- i
-gj  ≤
-gi
-gj .
-2
-2
-D
-(α − 2`)D
-j∈E
-
-j∈E
-
-Summing over i,
-X
-
-(s)
-ps gi xi
-
-s∈[S],i∈E
-
-
-2
-X
-8m`4 r2
-2m
-2m
-2
-
- ≤
-|E|kgk
-≤
-.
-g
-≤
-j
-2
-(α − 2`)D2
-(α − 2`)D2
-α2 (α − 2`)D2
-j∈E
-
-Putting everything together we complete the proof.
-Lemma 14 (Expectation, Matrix). For every `, `0 ∈ [0, 1), every matrices E, E0 ∈ RD×D such that kEk2 , kE0 k2 ≤ `,
-α ≥ 4` and every bx ∈ [−1, 1] that depends on x, the following hold.
-1. Let M be a matrix such that [M]i,j = bx φα (h[E]i , xi)xj , then
-kE[M]k2 ≤
-
-p
-
-kE[M]k1 kE[M]k∞
-
-√
-8`3 r2 km
-≤
-.
-D1.5 α2
-
-2. Let M be a matrix such that [M]i,j = bx φα (h[E]i , xi)φα (h[E0 ]j , xi), then
-kE[M]k2 ≤
-
-p
-
-kE[M]k1 kE[M]k∞ ≤
-
-32`6 r4 m
-.
-α4 D 2
-
-Proof of Lemma 14. Since all the φα (h[E]i , xi) and xi are non-negative, without lose of generality we can assume that
-bx = 1.
-1. We have
-
-
-X
-
-
-
-E[Mi,j ] = E φα (h[E]i , xi)
-
-X
-
-xj  ≤ rE[φα (h[E]i , xi)] ≤
-
-j∈[D]
-
-j∈[D]
-
-16`4 r3 m
-.
-α2 (α − 2`)D2
-
-On the other hand,
-
-X
-i∈[D]
-
-E[Mi,j ] = E 
-
-
-X
-
-i∈[D]
-
-
-
-φα (h[E]i , xi) xj  ≤ E[(ux Ex)xj ]
-
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization with Strong Correlations
-
-where ux is a vector with each entry either 0 or 1 depend on h[E]
-, xi ≥ α or not. Note that
-√ i
-2
-ux can only have at most `α2r entries equal to 1, so kux k2 ≤ ` α r . This implies that
-(ux Ex) ≤
-Therefore,
-
-P
-
-i∈[D]
-
-2`2 rk
-αD ,
-
-E[Mi,j ] ≤
-
-2
-i h[E]i , xi
-
-P
-
-≤ `2 r, so
-
-`2 r
-.
-α
-
-which implies that
-√
-√
-4 2`3 r2 km
-p
-kE[M]k2 ≤
-.
-D1.5 α1.5 (α − 2`)
-
-2. We have
-
-kE[M]k1 ≤ max
-i
-
-X
-
-E[Mi,j ] = max E φα (h[E]i , xi)
-i
-
-j∈[D]
-
-
-X
-
-φα (h[E0 ]j , xi) ≤
-
-j∈[D]
-
-`2 r 16`4 r3 m
-.
-α D2 α2 (α − 2`)
-
-In the same way we can bound kE[M]k∞ and get the desired result.
-
-A.4.2. L EMMAS WITH xi ∈ {0, 1}
-Here we present some expectation lemmas when xi ∈ {0, 1}.
-Lemma 15 (Expectation, Matrix). For every `, `0 ∈ [0, 1), every matrices E, E0 ∈ RD×D such that kEk2 , kE0 k2 ≤ `, and
-∀i ∈ [D], |Ei,i ||E0i,i | ≤ `0 , then for every β > 4`0 and α ≥ 4` and every bx ∈ [−1, 1] that depends on x, the following
-hold.
-1. Let M be a matrix such that [M]i,j
-
-p
-
-kE[M]k1 kE[M]k∞ = bx φβ (h[E]i , xi)xi xj , then
-p
-8`1.5 r1.25 m
-kE[M]k1 kE[M]k∞ ≤
-.
-D1.5 β 0.5
-
-kE[M]k2 ≤
-
-2. Let M be a matrix such that [M]i,j = bx φβ (h[E]i , xi)xi xj φβ (h[E0 ]j , xi), then
-kE[M]k2 ≤
-
-p
-8`4 r3 m
-kE[M]k1 kE[M]k∞ ≤ 2 2 .
-β D
-
-3. Let M be a matrix such that [M]i,j = bx φβ (h[E]i , xi)xi φα (h[E0 ]j , xi), then
-kE[M]k2 ≤
-
-p
-
-kE[M]k1 kE[M]k∞ ≤
-
-16`5 r2.5 m
-.
-D 2 α2 β
-
-Proof. This Lemma is a special case of Lemma 21 by setting γ = 1.
-A.4.3. L EMMAS WITH GENERAL xi
-Here we present some expectation lemmas for the general case where xi ∈ [0, 1] and the distribution of x satisfies the
-order-q decay condition.
-Lemma 16 (General expectation). Suppose the distribution of x satisfies the order-q decay condition.
-∀i ∈ [D],
-
-E[xi ] ≤ Pr[xi 6= 0] ≤
-
-(q + 2)2k
-.
-qD
-
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization with Strong Correlations
-
-√
-√
-Proof. Denote s = Pr[xi 6= 0]. By assumption, Pr[xi ≤ α | xi 6= 0] ≤ αq/2 , which implies that Pr[xi > α] >
-s(1 − αq/2 ). Now, since
-Z 1
-Z 1
-√
-2k
-2
-2
-E[xi ] =
-Pr[xi ≥ α] =
-Pr[xi ≥ α] ≤
-,
-D
+50
 0
-0
-We obtain
 
-2k
-q + 2 2k
-1
-≤
-.
-R1
-D (1 − αq/2 )dα
-q D
+2
 
-s≤
+4
+
+6
+
+8
 
 0
 
-Lemma 17 (Truncated covariance). For every α > 0, every bx ∈ [−1, 1] that depends on x, the following holds. Let M
-be a matrix such that [M]i,j = bx 1xi ≤α xi xj , then
-kE[M]k2 ≤
-
-p
-6kr q+1
-kE[M]k1 kE[M]k∞ ≤
-α 2 .
-D
-
-Proof of Lemma 17. Again, without lose of generality we can assume that bx are just 1.
-On one hand,
-
-X
-
-E[1xi ≤α xi xj ] ≤ rE[1xi ≤α xi ] ≤ rαE[10<xi ≤α ] = rα Pr[xi ∈ (0, α]].
-
-j∈[D]
-
-By Lemma 16,
-Pr[xi ∈ (0, α]] = Pr[xi 6= 0] Pr[xi ≤ α | xi 6= 0] ≤
-and thus
-X
-
-E[1xi ≤α xi xj ] ≤
-
-j∈[D]
-
-(q + 2)2k q
-α ,
-qD
-
-6kr q+1
-2(q + 2)kr q+1
-α
-≤
-α .
-qD
-D
-
-On the other hand,
-
-X
-
-E[1xi ≤α xi xj ] ≤ E 
-
-i∈[D]
-
-
-X
-
-
-
-xi  xj  ≤
-
-i∈[D]
-
-6kr
-.
-D
-
-Putting everything together we completes the proof.
-Lemma 18 (Truncated half covariance). For every α > 0, every bx ∈ [−1, 1] that depends on x, the following holds. Let
-M be a matrix such that [M]i,j = bx 1xi ≥α xj , then
-kE[M]k2 ≤
-
-p
-
-kE[M]k1 kE[M]k∞ ≤ 12k
-
- r  2q+1
-2q+2
-D
-
-Proof of Lemma 18. Without lose of generality, we can assume bx = 1. We know that
-E[1xi ≥α xj ] ≤ Pr[xi 6= 0]E[xj | xi 6= 0]
-1
-≤
-Pr[xi 6= 0]E[1xi ≥s xi xj | xi 6= 0] + Pr[xi 6= 0]E[1xi <s | xi 6= 0]
-s
-1
-≤
-E[xi xj ] + sq Pr[xi 6= 0].
-s
-From Lemma 16 we know that Pr[xi 6= 0] ≤
-X
-i∈[D]
-
-6k
-D,
-
-E[xi xj ] = E[
-
-which implies that
-
-X
-i∈[D]
-
-xi xj ] ≤ rE[xj ] ≤ r Pr[xj 6= 0] ≤
-
-6kr
-.
-D
-
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization with Strong Correlations
-
-Therefore,
-X
-
-E[1xi ≥α xj ] ≤ 6ksq +
-
-i∈[D]
-
-1 6kr
-s D
-
-Choosing the optimal s, we are able to obtain
-X
-
-
-E[1xi ≥α xj ] ≤
-
-i∈[D]
-
-r
-qD
-
-q/(q+1)
-6k(q + 1) ≤ 24k
-
- r q/(q+1)
-.
-D
-
-On the other hand,
-X
-
-E[1xi ≥α xj ] ≤ rE[1xi >0 ] ≤
-
-j∈[D]
-
-6k
-r.
-D
-
-Putting everything together we get the desired bound.
-Lemma 19 (Expectation). For every ` ∈ [0, 1), every vector e such that kek2 ≤ `, for every i ∈ [D], α > 2|ei |, γ > 0, the
-following hold.
-1.
-∀i ∈ [D] : E[φα (he, xi)1xi ≥γ ] ≤
-2. If ei = 0, then
-∀i ∈ [D] : E[φα (he, xi)1xi ≥γ ] ≤
-
-4`2 rm
-.
-− 2|ei |)
-
-γD2 (α
-
-24kr`2  m q/(q+1)
-.
-Dα
-Dk
-
-Proof of Lemma 19. We define g as in Lemma 13. We still have kgk1 ≤
-
-kgk22
-α
-2r
-
-≤
-
-2r`2
-α .
-
-1. The value φα (he, xi)1xi ≥γ is non-zero only when xi ≥ γ. Therefore, we shall only focus on this case.
-Let us again suppose x such that hg, xi ≥ α2 and xi ≥ γ forms a set S of size S, each x(s) ∈ S has probability ps .
-P
-(s)
-α
-Claim 20. (1) ∀s ∈ [S] :
-j∈E gj xj ≥ 2 .
-P
-(s) (s)
-m
-(2) ∀j 6= i ∈ [D] :
-s∈[S] ps xj xi ≤ D 2 .
-(3) By Lemma 18,
-
-q/(q+1)
-X
-6k(q + 1)
-m
-1 m
-(a)
-q 6k
-∀j 6= i ∈ [D] :
-pa xj ≤
-+s
-=
-s D2
-D
-D
-6Dkq
-a∈[S]
-
-by choosing optimal s. Moreover, we can directly calculate that
-
-q/(q+1)
-m
-6k  m q/(q+1)
-6k(q + 1)
-≤
-.
-D
-6Dkq
-D Dk
-
-With Claim 20(2), multiply both side by gj and taking the summation,
-X
-m X
-(s) (s)
-ps gj xj xi ≤ 2
-gj .
-D
-s∈[S],j∈E,j6=i
-
-(s)
-
-Using the fact that xi
-
-≥ γ for every s ∈ [S], we obtain
-X
-m
-(s)
-ps gj xj ≤
-γD2
-s∈[S],j∈E,j6=i
-
-j∈E,j6=i
-
-X
-j∈E,j6=i
-
-gj .
-
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization with Strong Correlations
-
-On the other hand, by Claim 20(1) and the fact that |ei | ≥ gi ≥ 0, we know that
-(s)
-
-X
-
-gj xj ≥
-
-j∈E,j6=i
-
-(s)
-
-Using the fact that xi
-
-α
-− |ei |.
-2
-
-≥ γ for every s ∈ [S], we obtain
-X
-
-ps ≤
-
-s∈[S]
-
-2m
-γ(α − 2|ei |)D2
-
-X
-
-gj .
-
-j∈E,j6=i
-
-Therefore, since gi ≤ |ei |,
-X
-
-(s)
-
-ps gj xj ≤
-
-s∈[S],j∈E
-
-(s)
-
-X
-s∈[S],j∈E,j6=i
-
-≤
-
-m
-γD2
-
-
-1+
-
-(s)
-
-X
-
-ps gj xj +
-
-ps gi xi
-
-s∈[S]
-
-2gi
-α − 2|ei |
-
- X
-j∈E,j6=i
-
-gj ≤
-
-α
-m
-2`2 rm
-kgk1 ≤
-.
-2
-2
-γD α − 2|ei |
-γD (α − 2|ei |)
-
-2. When ei = 0, in the same manner, but using Claim 20(3), we obtain
-X
-
-(s)
-
-ps gj xj ≤
-
-s∈[S]
-
-6k  m q/(q+1)
-gj .
-D Dk
-
-Summing over j ∈ E, j 6= i we have:
-(s)
-
-X
-
-ps gj xj ≤
-
-s∈[S],j∈E,j6=i
-
-6k  m q/(q+1) 2r`2
-.
-D Dk
-α
-
-Lemma 21 (Expectation, Matrix). For every `, `0 ∈ [0, 1), every matrices E, E0 ∈ RD×D such that kEk2 , kE0 k2 ≤ `,
-and ∀i ∈ [D], |Ei,i |, |E0i,i | ≤ `0 , every β > 4`0 and α ≥ 4`, every γ > 0 and every bx ∈ [−1, 1] that depends on x, the
-following hold.
-1. Let M be a matrix such that [M]i,j = bx φβ (h[E]i , xi)1xi ≥γ xj , then
-(
-kE[M]k2 ≤
-
-p
-
-kE[M]k1 kE[M]k∞ ≤ min
-
-)
-√
-√
-8`2 kr1.5 m 12k`2 r  m q/(2q+2)
-,
-.
-√ 1.5
-γD β
-Dβ
-Dk
-
-2. Let M be a matrix such that [M]i,j = bx φβ (h[E]i , xi)1xi ≥γ 1xj ≥γ φβ (h[E0 ]j , xi), then
-kE[M]k2 ≤
-
-p
-
-kE[M]k1 kE[M]k∞ ≤
-
-8`4 r2 m
-.
-γβ 2 D2
-
-3. Let M be a matrix such that [M]i,j = bx φβ (h[E]i , xi)1xi ≥γ φα (h[E0 ]j , xi), then
-kE[M]k2 ≤
-
-p
-
-16`5 r2.5 m
-kE[M]k1 kE[M]k∞ ≤ √ 2 2 .
-γD α β
-
-Proof of Lemma 21. Without loss of generality, assume bx = 1.
-
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization with Strong Correlations
-
-1. Since every entry of M is non-negative, by Lemma 19,
-
-
-X
-X
-E[Mi,j ] = E φβ (h[E]i , xi)1xi ≥γ
-xj  ≤ rE[φβ (h[E]i , xi)1xi ≥γ ] ≤
-j∈[D]
-
-j∈[D]
-
-and
-X
-
-E[Mi,j ] ≤
-
-j∈[D]
-
-4`2 r2 m
-γD2 (β − 2`0 )
-
-24kr`2  m q/(q+1)
-.
-Dβ
-Dk
-
-On the other hand, as in Lemma 14, we know that
-X
-
-φβ (h[E0 ]j , xi) ≤
-
-j∈[D]
-
-`2 r
-.
-β
-
-Therefore,
-X
-
-E[φβ (h[E]i , xi)1xi ≥γ xj ] ≤
-
-i∈[D]
-
-Now, since each entry of M is non-negative, using kE[M]k2 ≤
-
-`2 r
-6k`2 r
-E[xj ] ≤
-.
-β
-βD
-
-p
-
-kE[M]k1 kE[M]k∞ , we obtain the desired bound.
-P
-2. Since now M is a “symmetric” matrix, we only need to look at j∈[D] E[Mi,j ], and a similar bound holds for
-P
-i∈[D] E[Mi,j ].
-
-X
-
-
-
-E[Mi,j ] = E φβ (h[E]i , xi)1xi ≥γ
-
-j∈[D]
-
-X
-
-φβ (h[E0 ]j , xi)1xj ≥γ  ≤
-
-j∈[D]
-
-4`2 rm
-`2 r
-.
-β γD2 (β − 2`0 )
-
-The conclusion then follows.
-3. On one hand,
-
-X
-
-
-
-E[Mi,j ] = E φβ (h[E]i , xi)1xi ≥γ
-
-j∈[D]
-
-X
-
-φα (h[E0 ]j , xi) ≤
-
-j∈[D]
-
-`2 r
-4`2 rm
-.
-2
-α γD (β − 2`0 )
-
-On the other hand,
-
-X
-i∈[D]
-
-E[Mi,j ] = E 
-
-
-X
-
-
-
-φβ (h[E]i , xi)1xi ≥γ  φα (h[E0 ]j , xi) ≤
-
-i∈[D]
-
-`2 r 16`4 r2 m
-.
-β D2 α2 (α − 2`)
-
-Therefore,
-kE[M]k2 ≤ √
-
-16`5 r2.5 m
-8`5 r2.5 m
-√
-≤
-.
-√
-√
-γD2 α2 β
-γD2 α1.5 β 0.5 β − 2`0 α − 2`
-
-A.5. Robustness
-In this subsection, we show that our algorithm is also robust to noise. To demonstrate the idea, we will present a proof for
-the case when xi ∈ {0, 1}. The general case when xi ∈ [0, 1] follows from the same argument, just with more calculations.
-Lemma 22 (Expectation). For every `, ν ∈ [0, 1), every vector e such that kek2 ≤ `, every α such that α > 2` + 2ν, the
-following hold.
-
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization with Strong Correlations
-16m`4 r 2
-α2 (α−2`−2ν)D 2 .
-
-1. E[φα (he, xi + ν)] ≤
-
-2. If ei,i = 0, then E[|hei , xi|xi ] ≤
-
-q
-
-2mkr
-D3 .
-
-Proof of Lemma 22. The proof of this lemma is almost the same as the proof of Lemma 13 with a few modifications.
-1. Without lose of generality, we can assume that all the entries of e are non-negative. Let us denote a new vector g such
-that
-
-α
-,
-ei if ei ≥ 2r
-gi =
-0 otherwise.
-Due to the fact that kxk1 ≤ r, we can conclude he − g, xi ≤
-φ α2 (hg, xi + ν) ≥
-
-α
-2r
-
-×r =
-
-α
-2,
-
-which implies
-
-1
-φα (he, xi + ν).
-2
-
-Now we can only focus on g. Since kgk2 ≤ `, we know that g has at most
-2 2
-set of non-zero entries of g as E. Then we have |E| ≤ 4`α2r .
-
-4`2 r 2
-α2
-
-non-zero entries. Let us then denote the
-
-α
-2
-
-− ν forms a set S of size S, each x(s) ∈ S has probability pt . Then
-X
-X
-(s)
-E[φα (he, xi)] ≤ 2
-ps hg, x(s) i = 2
-ps gi xi .
-
-Suppose the all the x such that hg, xi ≥
-
-s∈[S]
-
-s∈[S],i∈E
-
-On the other hand, we have the following claim.
-P
-(s)
-α
-Claim 23. 1. ∀s ∈ [S] :
-i∈E gi xi ≥ 2 − ν.
-P
-(s) (s)
-m
-2. ∀i 6= j ∈ [D] :
-s∈[S] ps xi xj ≤ D 2 . This is by the GCC conditions of the distribution of x.
-Using (2) and multiply both side by gi gj , we get
-X
-mgi gj
-(s)
-(s)
-ps (gi xi )(gj xj ) ≤
-.
-D2
-s∈[S]
-
-Sum over all j ∈ E, j 6= i,
-X
-
-(s)
-(s)
-ps (gi xi )(gj xj )
-
-X
-
-j∈E,j6=i
-
-s∈[S] j∈E,j6=i
-
-P
-
-Using (1), and that
-
-(s)
-
-j∈E
-
-gj xj ≥
-
-α
-2
-
-
-
-mgi X
-mgi  X
-≤ 2
-gj  ≤ 2
-gj .
-D
-D
-j∈E
-
-(s)
-
-− ν and gi ≤ `, xi ≤ 1, we can obtain
-X
-α
-(s)
-gj xj ≥ − ν − `.
-2
-j∈E,j6=i
-
-This implies
-
-X
-
-(s)
-ps (gi xi )
-
-s∈[S]
-
-≤P
+0.2
+
+0.4
+
+0.6
+
+10
+
+Number of Latent Variables (K)
+
+Figure 4. [Real Data] Comparison between our model (solid) and
+the baseline (dashed) in terms of average test log-likelihood per
+observation evaluated on a held-out set containing 10% of the observations in each dataset.
+Table 2. Inferred data types.
+Adult
+German
+Attribute Type
+Attribute
+age (74) ord.
+status account (4)
+duration (69)
+workclass (8) cat.
+final weight positive
+credit hist. (5)
+purpose (10)
+education (16) cat.
+education num. (16) cat.
+amount
+marital status (7) cat.
+savings (5)
+occupation (14) cat./ord.
+installment (5)
+personal status (4)
+relationship (6) ord.
+debtors (4)
+race (5) cat.
+sex (2) binary
+residence (3)
+property (4)
+capital-gain real
+capital-loss real
+age (57)
+hours per week (99) cat./ord.
+plans (3)
+housing (3)
+native-country (41) ord.
+# credits (4)
+job (4)
+
+0.8
 
 1
 
-(s)
-j∈E,j6=i gj xj
-
-
-X
-X
-mg
-2m
-i
-
-≤
-g
-gj .
-g
-j
-i
-D2
-(α − 2ν − 2`)D2
-j∈E
-
-j∈E
-
-Summing over i,
-X
-s∈[S],i∈E
-
-(s)
-ps gi xi
-
-
-2
-X
-2m
-2m
-8m`4 r2
-2
-
- ≤
-≤
-g
-|E|kgk
-≤
-.
-j
-2
-(α − 4`)D2
-(α − 2ν − 2`)D2
-α2 (α − 2` − 2ν)D2
-j∈E
-
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization with Strong Correlations
-
-2. We can directly bound this term as follows.
-E[|he, xi|xi ] ≤
-
-X
-j6=i
-
-r
-s
-sX
-m X
-2mkr
-2
-2
-.
-|ej |E[xi xj ] ≤ `
-E[xi xj ] ≤ `
-E[xi xj ] ≤ `
-2
-D
-D3
-j6=i
-
-j6=i
-
-We show the following lemma saying that even with noise, A† A∗ is roughly (Σ + E)−1 .
-Lemma 24 (Noisy inverse). Let A ∈ RW ×D be a matrix such that A = A∗ (Σ + E) + N, for diagonal matrix Σ  12 I,
-off diagonal matrix E with kEk2 ≤ ` ≤ 81 and kNk2 ≤ 14 σmin (A∗ ). Then
-kA† A∗ − (Σ + E)−1 k2 ≤
+In order to better understand these results, we show the histograms of several variables in these datasets and the associated inferred likelihood weights. Figure 5 shows the
+histograms of two continuous variables, length and weight
+of the Abalone dataset, which take only positive real values, but are assigned to different data types (respectively, to
+real-valued and positive real-valued data). This can be explained by the fact that, while the distribution of the length
+presents large tails, the distribution of the weight is clearly
+truncated at zero. Additionally, Figure 6(a)-(b) shows two
+discrete variables, the duration (in months) and the age in
+German data, which based on the documentation are expected to be count data. However, our model assigns the
+duration to ordinal data. This result can be explained by the
+irregular distribution that this variable has. In count data
+the distance between every two consecutive values should
+be roughly the same (there is the same distance from “1
+pen” to “2 pens” as from “2 pens” to “3 pens”, that is 1
+pen), resulting therefore in smooth probability mass functions. We found in Figure 6(c)-(d) that while the number of
+credits and the job variables can be a priori thought as re-
 
 1
-2
-
-32kNk2
-2kNk2
-
-≤
-.
-σmin (A∗ )
-− 23 ` σmin (A∗ ) − kNk2
-
-Proof of Lemma 24.
-kA† A∗ − (Σ + E)−1 k2
-
-≤
-
-kA† (A∗ (Σ + E) + N)(Σ + E)−1 − (Σ + E)−1 k2 + kA† Nk2 k(Σ + E)−1 k2
-
-≤
-
-kA† Nk2 k(Σ + E)−1 k
-2
-kNk2 .
-(1 − `)σmin (A)
-
-≤
-Since A = A∗ (Σ + E) + N,
-
-σmin (A) ≥ σmin (A∗ (Σ + E)) − kNk2 ≥
-
-
-
-
-1
-− ` σmin (A∗ ) − kNk2 .
-2
-
-Putting everything together, we are able to obtain
-kA† A∗ − (Σ + E)−1 k2 ≤
-
-(1 − `)
-
-1
-2
 
 2
-
-kNk2 ≤
-− ` σmin (A∗ ) − kNk2
-
-1
-2
-
-−
 
 3
-2`
 
-
+Figure 5. [Abalone dataset]
+wcat = 0.22, word = 0.56, wcount = 0.22
 
-2kNk2
-.
-σmin (A∗ ) − kNk2
+200
+150
 
-Lemma 25 (Noisy decoding). Suppose we have z = φα ((Σ0 + E0 )x + ξ x ) for diagonal matrix kΣ0 − Ik2 ≤ 12 and
-off diagonal matrix E0 such that kE0 k2 ≤ ` ≤ 18 and random variable ξ x depend on x such that kξ x k∞ ≤ ν. Then if
-1
-D
-4 > α > 4` + 4ν, m ≤ r 2 , we have
-kE[(Σx − z)x> ]k2 , kE[(Σx − z)z > ]k2 = O (C3 )
-where
-C3 = (ν + β)
+wcat = 0.16, word = 0.22, wcount = 0.61
 
-√
-kr m`4 r2
-`2 kmr1.5
-`4 r3 m `5 r2.5 m
-+ 3 2 +
-+ 2 2 + 2 2 .
-1.5
-D
-α D
-D β
-β D
-D α β
+60
+40
 
-Proof of Lemma 25. Since we have now
-zi = φα (Σ0i,i xi + hei , xi + ξix ).
-Like in Lemma 6, we can still show that
-|Σ0i,i xi + hei , xixi + ξix xi − zi | ≤ φα (hei , xi + ξix ) ≤ φα (hei , xi + ν)
-which implies that there exists ax,ξ ∈ [−1, 1] that depends on x, ξ such that
-zi − Σ0i,i xi = hei , xixi + ξix xi + ax,ξ φα (hei , xi + ν).
-
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization with Strong Correlations
-
-Therefore,
-E[zi2 ] ≤ 3(Σ0i,i + ν)2 E[x2i ] + 3E[hei , xi2 x2i ] + 3E[φα (hei , xi + ν)2 ]
-r
-√
-6(2 + ν)2 k
-2mk
-48(` r + ν)m`4 r2
-2
-≤
-+
-+ 3` r
-D
-D3
-α2 (α − 2ν − 2`)D2
- 
-k
-≤ O
-.
-D
-Again, from zi − Σ0i,i xi = hei , xixi + ξix xi + ax,ξ φα (hei , xi + ν), following the exact same calculation as in Lemma 6,
-but using Lemma 22 instead of Lemma 13, we obtain the result.
-Definition 5 ((γ1 , γ2 )-rounded). A random variable ζ is (γ1 , γ2 ) rounded if
-kE[ζζ > ]k2 ≤ γ1 ,
-
-kζk2 ≤ γ2 .
-
-Theorem 26 (Noise). Suppose A0 is (`, ρ)-initialization for ` = O(1), ρ = O(σmin (A∗ )). Suppose that the data is
-generated from y (t) = A∗ x(t) + ζ (t) , where ζ (t) is (γ1 , γ2 )-rounded, and γ2 = O(σmin (A∗ )).
-Then after poly(D, 1 ) iterations, Algorithm 1 outputs a matrix A such that there exists diagonal matrix Σ̃  12 I with
-!
-√ r
-γ1 D
-γ2 σmax (A∗ )
-∗
-+
-+ε .
-kA − A Σ̃k2 = O r
-λ σmin (A∗ )
-λ
-k
-Proof of Theorem 26. For notation simplicity, we only consider one stages, and we drop the round number here and let
-e = A(t+1) and A = A(t) , and we denote the new decomposition as A
-e = A∗ (Σ
-e + E)
-e + N.
-e
-A
-Thus, the decoding of z is given by
-z
-
-= φα (A†0 (A∗ x + ζ)).
-
-† ∗
-0 k2
-−1
-By Lemma 24, there exists a matrix R such that kRk2 ≤ σ32kN
-+ R. Now let Σ0 + E0 =
-∗ with A0 A = (Σ0 + E0 )
-min (A )
-(Σ0 + E0 )−1 + R, where Σ0 is diagonal and E0 is off-diagonal. Then
-
-z = φα ((Σ0 + E0 )x + A†0 ζ)
-where
-ν := kA†0 ζk∞ ≤
-
-16γ2
-16kζk2
-≤
-.
-∗
-σmin (A )
-σmin (A∗ )
-
-For simplicity, we only focus on the expected update. The on-line version can be proved directly from this by setting a
-polynomially small η. The expected update is given by
-e = A + ηE[(A∗ x + ζ)z > − Azz > ].
-A
-Therefore,
-e + E)
-e +N
-e
-A∗ (Σ
-
-= A + ηE[(A∗ x + ζ)z > − Azz > ]
-= A∗ [(Σ + E)(I − ηE[zz > ]) + ηE[xz > ]] + N(I − ηE[zz > ]) + E[ζz > ].
-
-So we still have
-e +E
-e = (Σ + E)(I − ηE[zz > ]) + ηE[xz > ],
-Σ
-
-e = N(I − ηE[zz > ]) + E[ζz > ].
-N
-
-By Lemma 25,
-e +E
-e = (Σ + E)(I − ηΣ0 ∆Σ0 ) + η∆Σ0 + C1
-Σ
-
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization with Strong Correlations
-
-e = N(I − ηΣ0 ∆Σ0 ) + E[ζz > ] + NC2 .
-N
-where kC1 k2 , kC2 k2 ≤ C3 , and
-√
-`2 kmr1.5
-`4 r3 m `5 r2.5 m
-kr m`4 r2
-+ 2 2 .
-+
-C3 = (ν + β) + 3 2 +
-D
-α D
-D1.5 β
-β 2 D2
-D α β
-
-e + E.
-e By a similar argument as in Lemma 11, we know that as long as C3 = O k λkE0 k2
-First, consider the update on Σ
-D
-and ν = O(`), we can reduce the norm of E by a constant factor in polynomially many iterations. To satisfy the requirement
-on C3 , we will choose α = 1/4, β = λr . Then to make the terms in C3 small, m is set as follows.
-1. Second term:
-m≤
-
-Dkλ
-.
-r2
-
-m≤
-
-Dλ4 k
-.
-r5
-
-m≤
-
-Dλ3 k
-.
-r5
-
-m≤
-
-Dλ2 k
-.
-r3.5
-
-2. Third term:
-
-3. Fourth term:
-
-4. Fifth term:
-
-This implies that after poly( 1ε ) stages, the final E will have
-
-kEk2 = O
-
-
-rγ2
-+ε .
-λσmin (A∗ )
-
-e Since the chosen value satisfies C3 ≤ 1 σmin (Σ0 ∆Σ0 ), we have
-Next, consider the update on N.
-2
-
-
-2kE[ζz > ]k2
-e
-kNk2 ≤ max kN0 k2 ,
-.
-σmin (Σ0 ∆Σ0 )
-For the term E[ζz > ], we know that for every vectors u, v with norm 1,
-u> E[ζz > ]v ≤ E[|hu, ζi||hz, vi|].
-Since z is non-negative, we might without loss of generality assume that v is all non-negative, and obtain
-E[|hu, ζi||hz, vi|] ≤
-
-p
-
-E[hu, ζi2 ]E[hz, vi2 ]
-
-!
-r
-r
-p
-kγ1
-2
-2
-≤ E[hu, ζi ] max E[zi ] = O
-.
-D
-i∈[D]
-
-Putting everything together and applying Corollary 12 across stages complete the proof.
-√
-
-Proof of Theorem 5. The theorem follows from Theorem 26 and noting that
-order.
-
-γ1
-λ
-
-q
-
-D
-k
-
-∗
-
-(A )
-is smaller than r γλ2 σσmax
-in
-∗
-min (A )
-
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization with Strong Correlations
-
-B. Additional Experiments
-Here we provide additional experimental results. The first set of experiments in Section B.1 evaluates the performance
-of our algorithm in the presence of weak initialization, since for our theoretical analysis a warm start is crucial for the
-convergence. It turns out that our algorithm is not very sensitive to the warm start; even if there is a lot of noise in the
-initialization, it still produces reasonable results. This allows it to be used in a wide arrange of applications where a strong
-warm start is hard to achieve.
-The second set of experiments in Section B.2 evaluates the performance of the algorithm when the weight x has large
-sparsity. Note that our current bounds have a slightly strong dependency on the `1 norm of x. We believe that this is only
-because we want to make our statement as general as possible, making only assumptions on the first two moments of x. If
-in addition, for example, x is assumed to have nice third moments, then our bound can be greatly improved. Here we show
-that empirically, our algorithm indeed works for typical distributions with large sparsity.
-The final set of experiments in Section B.3 applies our algorithm on typical real world applications of NMF. In particular,
-we consider topic modeling on text data and component analysis for image data, and compare our method to popular
-existing methods.
-B.1. Robustness to Initializations
-In all the experiments in the main text, the initialization matrix A0 is set to A0 = A∗ (I + U) where I is the identity
-matrix and U is a matrix whose entries are i.i.d. samples fromPthe uniform distribution on [−0.05, 0.05]. Note that this is
-a very weak initialization, since [A0 ]i = (1 + Ui,i )[A∗ ]i + j6=i Uj,i [A∗ ]j and the magnitude of the noise component
-P
-∗ j
-∗ i
-j6=i Uj,i [A ] can be larger than the signal part (1 + Ui,i )[A ] .
-Here, we further explore even worse initializations: A0 = A∗ (I + U) + N where I is the identity matrix, U is a matrix
-whose entries are i.i.d. samples from the uniform distribution on [−0.05, 0.05] × rl for a scalar rl , N is an additive error
-matrix whose entries are i.i.d. samples from the uniform distribution on [−0.05, 0.05] × rn for a scalar rn . Here, we call
-U the in-span noise and N the out-of-span noise, since they introduce noise in or out of the span of A∗ .
-
-10
-
-10
-
-5
-
-5
+100
 
 0
 
-0
-log(Error)
-
-log(Error)
-
-We varied the values of rl or rn , and found that even when U violates our assumptions strongly, or the column norm of N
-becomes as large as the column norm of the signal A∗ , the algorithm can still recover the ground-truth up to small relative
-error. Figure 3(a) shows the results for different values of rl . Note that when rl = 1, the in-span noise already violates our
-assumptions, but as shown in the figure, even when rl = 2, the ground-truth can still be recovered, though at a slower yet
-exponential rate. Figure 3(b) shows the results for different values of rn . For these noise values, the column norm of the
-noise matrix N is comparable or even larger than the column norm of the signal A∗ , but as shown in the figure, such noise
-merely affects on the convergence.
-
-−5
-
-−10
-
-level
-level
-level
-level
-
-0.005
-0.01
-0.015
-0.02
-
-−5
-
-−10
-
-noise level 1
-noise level 2
-noise level 4
-
-−15
-
-−20
-
-noise
-noise
-noise
-noise
+marital status and race are identified as categorical, while
+the age is of count data type for both datasets. However,
+other results might seem surprising. For example, the duration (in months), which one would expect it to be count
+data, is identified as ordinal; or the a priori categorical attributes native country and job are inferred to be ordinal.
 
 0
 
-1000
+(b) Weight (grams)
 
-−15
-
-2000
-3000
-Time in seconds
-
-4000
-
-(a) Initialization with in-span noise
-
-5000
-
-−20
-
-0
-
-1000
-
-2000
-3000
-Time in seconds
-
-4000
-
-5000
-
-(b) Initialization with out-of-span noise
-
-Figure 3. The performance of the algorithm AND with weak initialization. The x-axis is the running time (in seconds), the y-axis is the
-logarithm of the total correlation error. (a) Using different values for the noise level rl that controls the in-span noise in the initialization.
-(b) Using different values for the noise level rn that controls the out-of-span noise in the initialization.
-
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization with Strong Correlations
-
-B.2. Robustness to Sparsity
-We performed experiments on the DIR data with different sparsity. In particular, construct a 100 × 5000 matrix X, where
-each column is drawn from a Dirichlet prior D(α) on d = 100 dimension, where α = (α/d, α/d, . . . , α/d) for a scalar α.
-Then the dataset is Y = A∗ X. We varied the α parameter of the prior to control the expected support sparsity, and ran the
-algorithm on the data generated.
-Figure 4 shows the results. For α as large as 20, the algorithm still converges to the ground-truth in exponential rate. When
-α = 80 meaning that the weight vectors (columns in X) have almost full support, the algorithm still produces good results,
-stabilizing to a small relative error at the end. This demonstates that the algorithm is not sensitive to the support sparsity
-of the data.
-
-10
-
-support
-support
-support
-support
-
-log(Error)
-
-5
-
-sparsity
-sparsity
-sparsity
-sparsity
-
-5
-10
 20
+
+50
+
+Type
+cat.
+ord.
+cat./ord.
+cat./ord.
+interval
+ord.
+cat./ord.
+cat.
+ord.
+cat.
+cat./ord.
+count
+cat.
+ord.
+ord.
+ord.
+
+0
+
+(a) Length (mm)
+
+0
+
+20
+
+40
+
+60
+
 80
 
 0
 
-−5
+(a) Duration (months)
+wcat = 0.29, word = 0.54, wcount = 0.16
 
-−10
+600
+
+600
+
+400
+
+400
+
+200
+
+200
+
+2
+
+3
+
+4
+
+40
+
+60
+
+wcat = 0.31, word = 0.54, wcount = 0.15
+
+800
+
+1
+
+20
+
+(b) Age
+
+800
 
 0
 
-1000
+0
 
-2000
-3000
-Time in seconds
+0
 
-4000
+non-resident resident
 
-5000
+skilled
 
-Figure 4. The performance of the algorithm AND on data generated from Dirichlet prior on x with different sparsities. The x-axis is the
-running time (in seconds), the y-axis is the logarithm of the total correlation error.
+highly qualified
 
-B.3. Qualitative Results on Some Real World Applications
-We applied our algorithm to two popular applications with real world data to demonstrate the applicability of the method
-to real world scenarios. Note that the evaluations here are qualitative, due to that the guarantees for our algorithm is the
-convergence to the ground-truth, while there are no predefined ground-truth for these datasets in practice. Quantitative
-studies using other criteria computable in practice are left for future work.
-B.3.1. T OPIC M ODELING
-Here our method is used to compute 10 topics on the 20newsgroups dataset, which is a standard dataset for the topic
-modeling setting. Our algorithm is initialized with 10 random documents from the dataset, and the hyperparameters like
-learning rate are from the experiments in the main text. Note that better initialization is possible, while here we keep things
-simple to demonstrate the power of the method.
-Table 1 shows the results of the NMF method and the LDA method in the sklearn package,10 and the result of our AND
-method. It shows that our method indeed leads to reasonable topics, with quality comparable to well implemented popular
-methods tuned to this task.
-10
+(c) #of Credits
+(d) Job
+Figure 6. [German dataset]
 
-http://scikit-learn.org/
+spectively count and categorical data, they are both inferred
+to be ordinal data. In the case of the number of credits,
+this can be explained by the small (finite) number of values
+that the variable takes, while in the case of the job, this assignment can be explained by the labels of its categories,
+i.e., {unskilled non-resident, unskilled resident, skilled employee and highly qualified employee}, which clearly represent an ordered set.
+From these results, we can conclude that i) our model accurately discovers the true statistical type of the data, which
+might not be easily extracted from its documentation; and
+by doing so, ii) it provides a better fit of the data. Moreover,
+apparent failures are in fact sensible when data histograms
+are carefully examined.
 
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization with Strong Correlations
+5. Conclusions
+In this paper, we presented the first approach to automatically discover the statistical types of the variables in a
+dataset. Our experiments showed that the proposed approach accurately infers the data type, or equivalently likelihood model, that best fits the data.
+Our work opens many interesting avenues for future work.
+For example, it would be interesting to extend the proposed method to account for other data types. We would
+like to include directional data, also called circular data,
+which arise in a multitude of data-modelling contexts ranging from robotics to the social sciences (Navarro et al.,
+2016). Moreover, since the proposed method can be seen
+as a likelihood selection method, it would be interesting to
+study how to incorporate our framework in any statistical
+machine learning tool, where the likelihood model, instead
+of being fixed a priori, would be inferred directly from the
+data jointly with the rest of the model parameters.
 
-Method
+Automatic Discovery of the Statistical Types of Variables in a Dataset
 
-NMF (sklearn)
+Acknowledgement
+Isabel Valera acknowledges her Humboldt Research Fellowship for Postdoctoral Researchers, which funded this
+research during her stay at the Max Planck Institute for
+Software Systems. Zoubin Ghahramani acknowledges
+support from the Alan Turing Institute (EPSRC Grant
+EP/N510129/1) and EPSRC Grant EP/N014162/1, and donations from Google and Microsoft Research.
+The code implementing the proposed method, as
+well as the scripts that reproduce the experiments
+presented in the paper, are publicly available at:
+https://github.com/ivaleraM/DataTypes
 
-LDA (sklearn)
+References
+Agresti, A. Analysis of ordinal categorical data, volume
+656. John Wiley & Sons, 2010.
+Ando, T. Bayesian model selection and statistical modeling. CRC Press, 2010.
+Breiman, L. Statistical modeling: The two cultures (with
+comments and a rejoinder by the author). Statistical science, 16(3):199–231, 2001.
+Burnham, K. P and Anderson, D. R. Model selection and
+multimodel inference: a practical information-theoretic
+approach. Springer Science & Business Media, 2003.
+Chu, W. and Ghahramani, A. Gaussian processes for ordinal regression. Journal of Machine Learning Research,
+6(Jul):1019–1041, 2005a.
+Chu, W. and Ghahramani, Z. Gaussian processes for ordinal regression. J. Mach. Learn. Res., 6:1019–1041,
+December 2005b. ISSN 1532-4435.
+Dong, X. Luna and Srivastava, D. Big data integration.
+In Data Engineering (ICDE), 2013 IEEE 29th International Conference on, pp. 1245–1248. IEEE, 2013.
 
-AND (ours)
-
-Topic
-just people don think like know time good make way
-windows use dos using window program os drivers application help
-god jesus bible faith christian christ christians does heaven sin
-thanks know does mail advance hi info interested email anybody
-car cars tires miles 00 new engine insurance price condition
-edu soon com send university internet mit ftp mail cc
-file problem files format win sound ftp pub read save
-game team games year win play season players nhl runs
-drive drives hard disk floppy software card mac computer power
-key chip clipper keys encryption government public use secure enforcement
-edu com mail send graphics ftp pub available contact university
-don like just know think ve way use right good
-christian think atheism faith pittsburgh new bible radio games
-drive disk windows thanks use card drives hard version pc
-hiv health aids disease april medical care research 1993 light
-god people does just good don jesus say israel way
-55 10 11 18 15 team game 19 period play
-car year just cars new engine like bike good oil
-people said did just didn know time like went think
-key space law government public use encryption earth section security
-game team year games win play season players 10 nhl
-god jesus does bible faith christian christ new christians 00
-car new bike just 00 like cars power price engine
-key government chip clipper encryption keys use law public people
-young encrypted exactly evidence events especially error eric equipment entire
-thanks know does advance mail hi like info interested anybody
-windows file just don think use problem like files know
-drive drives hard card disk software floppy think mac power
-edu com soon send think mail ftp university internet information
-think don just people like know win game sure edu
-
-Table 1. Results of different methods computing 10 topics on the 20newsgroups dataset. Each topic is visualized by using its top frequent
-words, and each line presents one topic.
-
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization with Strong Correlations
-
-B.3.2. I MAGE D ECOMPOSITION
-Here our method is used to compute 6 components on the Olivetti faces dataset, which is a standard dataset for image
-decomposition. Our algorithm is initialized with 6 random images from the dataset, and the hyperparameters like learning
-rate are from the experiments in the main text. Again, note that better initialization is possible, while here we keep things
-simple to demonstrate the power of the method.
-Figure 5 shows some examples from the dataset, the result of our AND method, and 6 other methods using the implementation in the sklearn package. It can be observed that our method can produce meaningful component images, and the
-non-negative matrix factorization implementation from sklearn produces component images of similar quality. The results
-of these two methods are generally better than those by the other methods.
-
-Provable Alternating Gradient Descent for Non-negative Matrix Factorization with Strong Correlations
-
-(a) Example images in the dataset
-
-(b) Our AND algorithm
-
-(c) K-means
-
-(d) Principal Component Analysis
-
-(e) Independent Component Analysis
-
-(f) Dictionary learning
-
-(g) Non-negative matrix factorization (sklearn)
-
-(h) Sparse Principal Component Analysis
-
-Figure 5. The results of different methods computing 6 components on the Olivetti faces dataset. For all the competitors, we used the
-implementations in the sklearn package.
+Girolami, M. and Rogers, S. Variational Bayesian multinomial probit regression with Gaussian process priors.
+Neural Computation, 18:2006, 2005.
+Griffiths, T. L. and Ghahramani, Z. The Indian buffet process: an introduction and review. Journal of Machine
+Learning Research, 12:1185–1224, 2011.
+Hellerstein, J. M. Quantitative data cleaning for large
+databases, 2008.
+Hernandez-Lobato, J. M., Lloyd, J. R., Hernandez-Lobato,
+D., and Ghahramani, Z. Learning the semantics of discrete random variables: Ordinal or categorical? In NIPS
+Workshop on Learning Semantics, 2014.
+Hilbe, J. M. Negative binomial regression. Cambridge University Press, 2011.
+Kandel, S., Heer, J., Plaisant, C., Kennedy, J., van Ham,
+F., Riche, N. H., Weaver, C., Lee, B., Brodbeck, D., and
+Buono, P. Research directions in data wrangling: Visualizations and transformations for usable and credible
+data. Information Visualization, 10(4):271–288, 2011.
+Lichman, M. UCI machine learning repository, 2013. URL
+http://archive.ics.uci.edu/ml.
+Navarro, A. KW, Frellsen, J., and Turner, R. E. The multivariate generalised von mises: Inference and applications. arXiv preprint arXiv:1602.05003, 2016.
+Salakhutdinov, R. and Mnih, A. Probabilistic matrix factorization. In Advances in Neural Information Processing
+Systems, 2007.
+Schmidt, M. N, Winther, O., and Hansen, L. K. Bayesian
+non-negative matrix factorization. In International Conference on Independent Component Analysis and Signal
+Separation, pp. 540–547. Springer, 2009.
+Valera, I. and Ghahramani, Z. General table completion
+using a Bayesian nonparametric model. In Advances in
+Neural Information Processing Systems 27, 2014.
 
 

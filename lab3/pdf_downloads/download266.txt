@@ -1,1482 +1,1173 @@
-Prox-PDA: The Proximal Primal-Dual Algorithm for Fast Distributed
-Nonconvex Optimization and Learning Over Networks
+Delta Networks for Optimized Recurrent Network Computation
 
-Mingyi Hong 1 Davood Hajinezhad 1 Ming-Min Zhao 2
+Daniel Neil 1 Jun Haeng Lee 2 Tobi Delbruck 1 Shih-Chii Liu 1
 
 Abstract
-
-2016); 3) nonconvex utility functions used in applications
-such as resource allocation (Bjornson & Jorswieck, 2013).
-Recently, a number of works in machine learning community have been focused on designing fast algorithms for
-solving problem (1) in centralized setting; e.g., SAG (Defazio et al., 2014), SAGA (Schmidt et al., 2013), and SVRG
-(Johnson & Zhang, 2013) for convex problems, and (Reddi
-et al., 2016; Allen-Zhu & Hazan, 2016; Hajinezhad et al.,
-2016b; Rahimpour et al., 2016) for nonconvex problems.
-
-In this paper we consider nonconvex optimization and learning over a network of distributed
-nodes. We develop a Proximal Primal-Dual Algorithm (Prox-PDA), which enables the network
-nodes to distributedly and collectively compute
-the set of first-order stationary solutions in a
-global sublinear manner [with a rate of O(1/r),
-where r is the iteration counter]. To the best
-of our knowledge, this is the first algorithm that
-enables distributed nonconvex optimization with
-global sublinear rate guarantees. Our numerical
-experiments also demonstrate the effectiveness
-of the proposed algorithm.
+Many neural networks exhibit stability in their
+activation patterns over time in response to inputs from sensors operating under real-world
+conditions. By capitalizing on this property of
+natural signals, we propose a Recurrent Neural
+Network (RNN) architecture called a delta network in which each neuron transmits its value
+only when the change in its activation exceeds
+a threshold. The execution of RNNs as delta networks is attractive because their states must be
+stored and fetched at every timestep, unlike in
+convolutional neural networks (CNNs). We show
+that a naive run-time delta network implementation offers modest improvements on the number of memory accesses and computes, but optimized training techniques confer higher accuracy
+at higher speedup. With these optimizations, we
+demonstrate a 9X reduction in cost with negligible loss of accuracy for the TIDIGITS audio
+digit recognition benchmark. Similarly, on the
+large Wall Street Journal (WSJ) speech recognition benchmark, pretrained networks can also be
+greatly accelerated as delta networks and trained
+delta networks show a 5.7X improvement with
+negligible loss of accuracy. Finally, on an endto-end CNN-RNN network trained for steering
+angle prediction in a driving dataset, the RNN
+cost can be reduced by a substantial 100X.
 
 1. Introduction
-We consider the following optimization problem
-min g(z) :=
+Recurrent Neural Networks (RNNs) have achieved tremendous progress in recent years, with the increased availability of large datasets, more powerful computer resources
+such as GPUs, and improvements in their training algorithms. These combined factors have enabled break1
+Institute of Neuroinformatics, UZH and ETH Zurich, Zurich,
+Switzerland 2 Samsung Advanced Institute of Technology, Samsung Electronics, Suwon-Si, Republic of Korea. Correspondence
+to: Daniel Neil, Shih-Chii Liu <dneil,shih@ini.ethz.ch>.
 
-z∈RM
-
-N
-X
-
-fi (z),
-
-(1)
-
-i=1
-
-where each fi , i ∈ {1, · · · , N } := [N ] is a nonconvex cost
-function, and we assume that it is smooth and has Lipschitz
-continuous gradient.
-Such a finite sum problem plays a central role in machine
-learning and signal/information processing (Cevher et al.,
-2014; Hong et al., 2016). In particular, in the class of empirical risk minimization (ERM) problem, z represents the
-feature vectors to be learned, and each fi can represent: 1)
-a mini-batch of (possibly nonconvex) loss functions modeling data fidelity (Antoniadis et al., 2009); 2) nonconvex activation functions of neural networks (Allen-Zhu & Hazan,
-1
-
-Department of Industrial and Manufacturing Systems Engineering, Iowa State University, Ames, IA, USA
-2
-College of Information Science and Electronic Engineering, Zhejiang University, China.
-Correspondence
-to:
-Mingyi Hong <mingyi@iastate.edu>, Davood Hajinezhad <dhaji@iastate.edu>, Ming-Min Zhao <zmmblack@zju.edu.cn>.
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-In this work, we are interested in designing algorithms
-that solve problem (1) in a distributed manner. In particular, we focus on the scenario where each fi (or equivalently, each subset of data points in the ERM problem) is
-available locally at a given computing node i ∈ [N ], and
-the nodes are connected via a network. Clearly, such distributed optimization and learning scenario is important for
-machine learning, because in contemporary applications
-such as document topic modeling and/or social network
-data analysis, oftentimes data corporas are stored in geographically distributed locations without any central controller managing the entire network of nodes; see (Forero
-et al., 2010; Yan et al., 2013; Rahmani & Atia, 2015; Aybat
-& Hamedani, 2016).
-Related Works. Distributed convex optimization and
-learning has been thoroughly investigated in the literature.
-In (Nedic & Ozdaglar, 2009b), the authors propose a distributed subgradient algorithm (DSG), which allows the
-agents to jointly optimize problem (1). Subsequently, many
-variants of DSG have been proposed, either with special assumptions on the underlying graph, or having additional
-structures of the problem; see, e.g., (Lobel & Ozdaglar,
-2011; Lobel et al., 2011; Nedic & Olshevsky,
-√ 2015). The
-rate of convergence for DSG is O(log(r)/ r) under certain diminishing stepsize rules. Recently, a number of algorithms such as the exact first-order algorithm (EXTRA)
-(Shi et al., 2014) and DLM (Ling et al., 2015) have been
-proposed, which use constant stepsize and achieve faster
-O(1/r) rate for convex problems. Recent works that apply distributed optimization algorithms to machine learning applications include (Scardapane et al., 2016; Aybat &
-Hamedani, 2016; Scardapane & Lorenzo, 2016).
-On the other hand, there has been little work for dis-
+throughs in the use of RNNs for processing of temporal sequences. Applications such as natural language processing
+(Mikolov et al., 2010), speech recognition (Amodei et al.,
+2015; Graves et al., 2013), and attention-based models for
+structured prediction (Yao et al., 2015; Xu et al., 2015)
+have showcased the advantages of RNNs. The introduction
+of gating units such as long short-term memory (LSTM)
+units (Hochreiter & Schmidhuber, 1997) and gated recurrent units (GRU) (Cho et al., 2014) has greatly improved
+the training process with these networks. However, RNNs
+require many matrix-vector multiplications per layer to calculate the updates of neuron activations over time.
+RNNs also require a large weight memory storage that is
+expensive to allocate to on-chip static random access memory (SRAM). In a 45nm technology, the energy cost of an
+off-chip 32-bit dynamic DRAM access is about 2nJ and the
+energy for a 32-bit integer multiply is about 3pJ, so memory access is about 700 times more expensive than arithmetic (Horowitz, 2014). Architectures can benefit from
+minimizing the use of this external memory. Previous work
+focused on a variety of algorithmic optimizations for reducing compute and memory access requirements for deep
+neural networks. These methods include reduced precision
+for hardware optimization (Courbariaux et al., 2015; Stromatias et al., 2015; Courbariaux & Bengio, 2016; Esser
+et al., 2016; Rastegari et al., 2016); weight encoding, pruning, and compression (Han et al., 2015; 2016); and architectural optimizations (Iandola et al., 2016; Szegedy et al.,
+2015; Huang et al., 2016). However these studies did not
+consider the temporal properties of the data.
+Natural inputs to a neural network tend to have a high
+degree of temporal autocorrelation, resulting in slowlychanging network states. This slow-changing activation
+feature is also seen within the computation of RNNs processing audio inputs, for example, speech (Fig. 1).
+Delta networks, as introduced here, exploit the temporal
+stability of both the input stream and the associated neural representation to reduce memory access and computation without loss of accuracy. By caching neuron activations, computations can be skipped where inputs change
+by a small amount from the previous update. Because
+each neuron that is not updated will save fetches of entire columns of several weight matrices, determining which
 
-Proximal Primal Dual Algorithm for Distributed Nonconvex Optimization
+MFCC
 
-tributed optimization and learning when the objective function involves nonconvex problems. A dual subgradient
-method has been proposed in (Zhu & Martinez, 2010),
-which relaxes the exact consensus constraint. In (Bianchi
-& Jakubowicz, 2013) a stochastic projection algorithm using diminishing stepsizes has been proposed. An ADMM
-based algorithm has been presented in (Hong et al., 2014;
-Hajinezhad & Hong, 2015) for a special type of problem called global consensus, where all distributed nodes
-are directly connected to a central controller. Utilizing
-certain convexification decomposition technique the authors of (Lorenzo & Scutari, 2016) designed an algorithm
-named NEXT, which converges to the set of stationary solutions when using diminishing stepsizes. To the best of
-our knowledge, no multi agent distributed algorithm is able
-to guarantee global sublinear convergence rate for problem
-(1).
-Our Contributions. In this work, we propose a proximal
-primal-dual algorithm (Prox-PDA) for problem (1) over an
-undirected connected network. We show that Prox-PDA
-converges to the set of stationary solutions of problem (1)
-(satisfying the first-order optimality condition) in a globally sublinear manner. We also show that Prox-PDA can
-be extended in several directions to improve its practical
-performance. To the best of our knowledge, this is the first
-algorithm that is capable of achieving global sublinear convergence rate for distributed non-convex optimization.
-Further, our work reveals an interesting connection between the primal-dual based algorithm Prox-PDA and the
-primal-only fast distributed algorithms such as EXTRA
-(Shi et al., 2014). Such new insight of the connection between primal-dual and primal-only algorithms could be of
-independent interest for the optimization community. Finally, we generalize the theory for Prox-PDA based algorithms to a challenging distributed matrix factorization
-problem.
-
-2. System Model
-Define a graph G := {V, E}, where V and E are the
-node and edge sets; Let |V| = N and |E| = E. Each
-node v ∈ V represents an agent in the network, and each
-edge eij = (i, j) ∈ E indicates that node i and j are
-neighbors; see Fig.1(Left). Assume that each node i can
-only communicate with its immediate neighbors, defined
-as Ni := {j | (i, j) ∈ V}, with |Ni | = di . The distributed
-version of problem (1) is given as below
-min f (x) :=
-
-xi ∈RM
-
-N
-X
-
-fi (xi ), s.t. xi = xj , ∀ (i, j) ∈ E. (2)
-
-i=1
-
-Clearly the above problem is equivalent to (1) as long as G
-is connected. For notational simplicity, define x := {xi } ∈
-RN M ×1 , and Q := N × M .
-
-e12
-N2
-
-N1
-e14
-
-N3
-
-e34
-
-e24
-
-
-1
-1
-Ã = 
-0
+Delta Networks for Optimized Recurrent Network Computation
 0
+5
+10
+15
+20
+25
+30
+35
 
-−1
-0
-1
-0
-
-
-0 0
-0 −1
-.
-0 −1
-1 −1
-
-N4
-
-Figure 1. (Left) An undirected Connected Network,
-(Right) Incidence Matrix.
-
-To proceed, let us introduce a few useful quantities related
-to graph G.
-• The incidence matrix Ã ∈ RE×N is a matrix with entires
-Ã(k, i) = 1 and Ã(k, j) = −1 if k = (i, j) ∈ E with j > i,
-and all the rest of the entries being zero. For example, for
-the network in Fig.1 (Left); the incidence matrix is given in
-Fig.1 (Right). Define the extended incidence matrix as
-A := Ã ⊗ IM ∈ REM ×Q ,
-
-(3)
-
-where ⊗ denotes the Kronecker product.
-• The Degree matrix D̃ ∈ RN ×N is given by D̃ :=
-diag[d1 , · · · , dN ]; Let D := D̃ ⊗ IM ∈ RQ×Q .
-• The signed and the signless Laplacian matrices (denoted
-as L− and L+ respectively), are given below
-L− := A> A ∈ RQ×Q , L+ := 2D − A> A ∈ RQ×Q . (4)
-Using the above notations, one can verify that problem (2)
-can be written in the following compact form
-min f (x),
-
-x∈RQ
-
-s.t. Ax = 0.
-
-(5)
-
-3. The Prox-PDA Algorithm
-The proposed algorithm builds upon the classical augmented Lagrangian (AL) method (Bertsekas, 1982; Powell,
-1969). Let us define the AL function for (5) as
-β
-(6)
-Lβ (x, µ) = f (x) + hµ, Axi + kAxk2 ,
-2
-where µ ∈ RQ is the dual variable; β > 0 is a penalty
-parameter. Let B ∈ RQ×Q be some arbitrary matrix to be
-determined shortly. Then the proposed algorithm is given
-in the table below (Algorithm 1).
-In Prox-PDA, the primal iteration (7a) minimizes the augmented Lagrangian plus a proximal term β2 kx − xr k2B T B .
-We emphasize that the proximal term is critical in both the
-algorithm implementation and the analysis. It is used to ensure the following key properties:
-(1). The primal problem is strongly convex;
-(2). The primal problem is decomposable over different
-network nodes, hence distributedly implementable.
-To see the first point, suppose B T B is chosen such that
-AT A + B T B  IQ , and that f (x) has Lipschitz gradient.
-Then by a result in (Zlobec, 2005)[Theorem 2.1], we know
-
-Proximal Primal Dual Algorithm for Distributed Nonconvex Optimization
-
-Algorithm 1 The Prox-PDA Algorithm
-
-4.1. The Analysis Steps
+•
 
 0
+Neuron
 
-0
+Delta
+Vector
 
-Q
+Weight Matrix
 
-1: At iteration 0, initialize µ = 0 and x ∈ R .
-2: At each iteration r + 1, update variables by:
+50
 
-xr+1 = arg min f (x) + hµr , Axi +
-x∈RQ
+Nonzero Operations
 
-β
-kAxk2
-2
-
-β
-kx − xr k2B T B ;
-2
-= µr + βAxr+1 .
-+
-
-µr+1
-
-(7a)
-(7b)
-
-that there exists β > 0 large enough such that the objective function of (7a) is strongly convex. To see the second
-point, Let B := |A|, where the absolute value is taken for
-each component of A. It can be verified that B T B = L+ ,
-and step (7a) becomes
-xr+1 = arg min
-x
-
-N
-X
-
-fi (xi ) + hµr , Axi
-
-i=1
-
-β
-β
-+ xT L− x + (x − xr )T L+ (x − xr )
-2
-2
-N
-X
-fi (xi ) + hµr , Axi + βxT Dx − βxT L+ xr .
-= arg min
-x
-
-i=1
-
-Clearly this problem is separable over the nodes, therefore
-it can be solved completely distributedly.
-
-4. The Convergence Analysis
-In this section we provide convergence analysis for Algorithm 1. The key in the analysis is the construction of a
-novel potential function, which decreases at every iteration
-of the algorithm. In particular, the constructed potential
-function is a conic combination of the AL function and the
-size of the violation of the consensus constraint, therefore it
-measures the progress of both the primal and dual updates.
-We first state our main assumptions below.
-[A1.] The function f (x) is differentiable and has Lipschitz
-continuous gradient, i.e.,
-k∇f (x) − ∇f (x)k ≤ Lkx − yk,
-
-∀ x, y ∈ RQ .
-
-Further assume that AT A + B T B  IQ .
-[A2.] There exists a constant δ > 0 such that
-∃ f > −∞,
-
-δ
-s.t. f (x) + kAxk2 ≥ f , ∀ x ∈ RQ .
-2
-
-Without loss of generality we will assume that f = 0.
-Below we provide a few nonconvex smooth functions that
-satisfy our assumptions, all of which are commonly used
-as activation functions for neural networks.
-• The sigmoid function sigmoid(x) =
-• The arctan and tanh function.
-x
-• The logit function logit(x) = exe+1 .
-
-1
-1+e−x .
-
-Below we provide the analysis of Prox-PDA. First we provide a bound on the size of the constraint violation using
-a quantity related to the primal iterates. Let σmin denotes
-the smallest non-zero eigenvalue of AT A, and we define
-wr := (xr+1 − xr ) − (xr − xr−1 ) for notational simplicity.
-We have the following result.
-Lemma 1 Suppose Assumptions [A1] and [A2] are satisfied. Then the following is true for Prox-PDA
-1 r+1
-kµ
-− µr k2
-β
-
-2L2 
-xr − xr+1 2 + 2β kB T Bwr k2 . (8)
-≤
-βσmin
-σmin
-Then we bound the descent of the AL function.
-Lemma 2 Suppose Assumptions [A1] and [A2] are satisfied. Then the following is true for Algorithm 1
-2βkB T Bk
-2
-kwr kB T B
-Lβ (xr+1 , µr+1 ) − Lβ (xr , µr ) ≤
-σmin
-
-
-β−L
-2L2
-−
-−
-kxr+1 − xr k2 .
-(9)
-2
-βσmin
-A key observation from Lemma 2 is that no matter how
-large β is, the rhs of (9) cannot be made negative. This
-observation suggests that in contrast to (Hong et al., 2014;
-Hajinezhad et al., 2016a) the augmented Lagrangian alone
-cannot serve as the potential function for Prox-PDA. In
-search for an appropriate potential function, we need a new
-2
-object that is decreasing in the order of β kwr kB T B . The
-following lemma shows that the descent of the sum of the
-constraint violation and the proximal term has the desired
-property.
-Lemma 3 Suppose Assumption [A1] is satisfied. Then the
-following is true
-
-β
-kAxr+1 k2 + kxr+1 − xr k2B T B
-2
-
-β
-≤ Lkxr+1 − xr k2 +
-kAxr k2 + kxr − xr−1 k2B T B
-2
-
-β
-kwr k2B T B + kA(xr+1 − xr )k2 .
-(10)
-−
-2
-
-It is interesting to observe that the new object,
-β/2 kAxr+1 k2 + kxr+1 − xr k2B T B ,
-increases
-in
-Lkxr+1 − xr k2 and decreases in β/2kwr k2B T B , while the
-AL behaves in an opposite manner (cf. Lemma 2). More
-importantly, in our new object, the constant in front of
-kxr+1 − xr k2 is independent of β. Although neither of
-these two objects decreases by itself, quite surprisingly, a
-proper conic combination of these two objects decreases at
-every iteration of Prox-PDA. To precisely state the claim,
-let us define the potential function for Algorithm 1 as
-Pc,β (xr+1 , xr , µr+1 ) := Lβ (xr+1 , µr+1 )
-
-cβ
-+
-kAxr+1 k2 + kxr+1 − xr k2B T B ,
-2
-
-(11)
-
-Proximal Primal Dual Algorithm for Distributed Nonconvex Optimization
-
-where c > 0 is some constant to be determined later. We
-have the following result.
-
-Theorem 1 Suppose Assumption A and the conditions (13)
-and (14) are satisfied. Then we have
-• Eventual Consensus:
-
-Lemma 4 Suppose the assumptions made in Lemmas 1 –
-3 are satisfied. Then we have the following
-r+1
-
-r
-
-r+1
-
-r
-
-r−1
-
-Pc,β (x , x , µ ) ≤ Pc,β (x , x , µ )
-
-
-2L2
-β−L
-−
-− cL kxr+1 − xr k2
-−
-2
-βσmin
-
-
-cβ
-2βkB T BkF
-2
-−
-−
-kwr kB T B .
-2
-σmin
-
-Second, for any given c, we need β to satisfy
-2L2
-βσmin − cL > 0, which implies the following
-
-
-s
-2
-L
-16L
-.
-β>
-2c + 1 + (2c + 1)2 +
-2
-σmin
-
-(12)
-
-β−L
-2
-
-−
-
-(14)
-
-We conclude that if both (13) and (14) are satisfied, then
-the potential function Pc,β (xr+1 , xr , µr+1 ) decreases at
-every iteration.
-Our next step shows that by using the particular choices of
-c and β in (13) and (14), the constructed potential function
-is lower bounded.
-Lemma 5 Suppose [A1] - [A2] are satisfied, and (c, β)
-are chosen according to (13) and (14). Then the following statement holds true
-∃ P > −∞ s.t. Pc,β (xr+1 , xr , µr+1 ) ≥ P , ∀ r > 0.
-Now we are ready to present the main result of this section.
-To this end, define Q(xr+1 , µr ) as the optimality gap of
-problem (5), given by
-Q(xr+1 , µr ) := k∇x Lβ (xr+1 , µr )k2 + kAxr+1 k2 . (15)
-
-• Sublinear Convergence Rate: For any given ϕ > 0,
-let us define T to be the first time that the optimality gap
-reaches below ϕ, i.e.,
-T := arg min Q(xr+1 , µr ) ≤ ϕ.
-r
-
-Then for some ν > 0, we have ϕ ≤ T ν−1 . That is, the
-optimality gap Q(xr+1 , µr ) converges sublinearly.
-
-5. Variants of Prox-PDA
-In this section, we discuss two important extensions of the
-Prox-PDA, one allows the x-problem (7a) to be solved
-inexactly, while the second allows the use of increasing
-penalty parameter β. In many practical applications, exactly minimizing the augmented Lagrangian may not be
-easy. Therefore, we propose the proximal gradient primaldual algorithm (Prox-GPDA), whose main steps are given
-below
-xr+1 = arg min h∇f (xr ), x − xr i + hµr , Axi
-x∈RQ
-
-+
-µr+1
-
-β
-β
-kAxk2 + kx − xr k2B T B ;
-2
-2
-= µr + βAxr+1 .
-
-It is easy to see that Q(x , µ ) → 0 implies that any
-limit point (x∗ , µ∗ ), if it exists, is a KKT point of (5) that
-satisfies the following conditions
-Ax∗ = 0.
-
-(17)
-(18)
-
-The analysis of this algorithm follows similar steps as that
-for Prox-PDA. For detailed discussion see (Hong, 2016).
-Our second variant do not require to explicitly compute the
-bound for β given in (14). Indeed, the bounds on β derived in the previous sections are the worst case bounds,
-and algorithms that use stepsizes that strictly satisfy such
-bounds may be slow at the beginning. In practice, one may
-prefer to start with a small penalty parameter and gradually increase it. We denote this algorithm by Prox-PDA-IP,
-whose main steps are given below
-xr+1 = arg min f (x) + hµr , Axi
-
-r
-
-0 = ∇f (x∗ ) + AT µ∗ ,
-
-r→∞
-
-• Convergence to Stationary Points: Every limit point of
-the iterates {xr , µr } generated by Algorithm 1 converges
-to a KKT point of problem (5). Further, Q(xr+1 , µr ) → 0.
-
-From the above analysis, it is easy to see that as long as c
-and β are sufficiently large, the potential function decreases
-at each iteration of Prox-PDA. Below we derive the precise
-bounds for c and β. First, a sufficient condition for c is
-given below (note, that δ > 0 is defined in Assumption
-[A2])
-
-
-δ 4kB T BkF
-,
-.
-(13)
-c ≥ max
-L
-σmin
-
-r+1
-
-lim µr+1 − µr → 0, lim Axr → 0.
-
-r→∞
-
-r
-
-β r+1
-kx − xr k2B T B ;
-2
-2
-= µr + β r+1 Axr+1 .
-
-+
-r+1
-
-µ
-
-x∈RQ
-r+1
-
-β
-
-kAxk2 +
-
-(19)
-(20)
-
-(16)
-
-In the following we show that the gap Q(·) not only decreases to zero, but does so in a sublinear manner.
-
-Note that one can also replace f (x) in (19) by h∇f (xr ), x−
-xr i to obtain a similar variant for Prox-GPDA denoted by
-Prox-GPDA-IP. Throughout this section we will still as-
-
-Proximal Primal Dual Algorithm for Distributed Nonconvex Optimization
-
-sume that Assumption A holds true. Further, we will assume that β r satisfies the following conditions
-1
-→ 0,
-βr
-
-∞
-X
-r=1
-
-1
-= ∞, β r+1 ≥ β r ,
-βr
-
-max (β r+1 − β r ) < κ, for some finite κ > 0.
-r
-
-− βL+ (xr − xr−1 ) = 0,
-where we have used the fact that AT (µr − µr−1 ) =
-βAT Axr = βL− xr . Rearranging terms, we have
-
-(21)
-
-
-1 −1
-D
-∇f (xr ) − ∇f (xr−1 )
-2β
-1
-1
-+ D−1 (L+ − L− )xr − D−1 L+ xr−1
-2
-2
-
-1 −1
-r
-r
-=x −
-D
-∇f (x ) − ∇f (xr−1 ) + W xr
-2β
-1
-− (I + W )xr−1 ,
-(23)
-2
-
-xr+1 = xr −
-
-Also without loss of generality we will assume that
-B T B  0,
-
-and kB T BkF > 1.
-
-(22)
-
-Note that this is always possible, by adding an identity
-matrix to B T B if necessary.
-The analysis for Prox-PDA-IP is long and technical, therefore we refer the readers to (Hong, 2016). The key step is
-to construct a new potential function, given below
-Pβ r+1 ,c (xr+1 , xr , µr+1 ) = Lβ r+1 (xr+1 , µr+1 )
-+
-
-∇f (xr ) − ∇f (xr−1 ) + βL− xr + 2βD(xr+1 − xr )
-
-cβ r+1 β r r
-cβ r+1 β r
-kAxr+1 k2 +
-kx − xr+1 k2B T B .
-2
-2
-
-The insight here is that in order to achieve the desired descent, in the potential function the coefficients for
-kxr+1 − x r k2B T B and kAxr+1 k2 should be proportional to
-O (β r )2 . We have the following theorem regarding to the
-convergence of Prox-PDA-IP.
-Theorem 2 Suppose Assumption A and (21) are satisfied.
-Suppose that B is selected such that (22) holds true. Then
-the following hold for Prox-PDA-IP
-• Eventual Consensus:
-lim µr+1 − µr → 0, lim Axr → 0.
-
-r→∞
-
-r→∞
-
-where in the last equality we have defined the weight matrix W := 21 D−1 (L+ − L− ), which is a row stochastic
-matrix.
-Iteration (23) has the same form as the EXTRA algorithm
-given in (Shi et al., 2014), therefore we can conclude that
-EXTRA is a special case of Prox-GPDA. Moreover, by appealing to our analysis in Section 5, it readily follows that
-EXTRA works for the nonconvex distributed optimization
-problem as well.
-We remark that each node i can distributedly implement
-iteration (23) by performing the following
-
-1
-∇fi (xri ) − ∇fi (xr−1
-)
-i
-2βdi
-
-
-X 1 r−1
-X 1 r 1
-.
-xj − 
-x
-+ xr−1
-+
-i
-di
-2
-di j
-
-= xri −
-xr+1
-i
-
-j∈N (i)
-
-(24)
-
-j∈N (i)
-
-• Convergence to KKT Points: Every limit point of the
-iterates {xr , µr } generated by Prox-PDA-IP converges to
-a KKT point of problem (5). Further, Q(xr+1 , µr ) → 0.
-
-Clearly, at iteration r + 1, besides the local gradient information, node i only
-P needs the aggregated information
-from its neighbors, j∈N (i) xrj . Therefore the algorithm
-is distributedly implementable.
-
-6. Connections and Discussions
-
-7. Distributed Matrix Factorization
-
-In this section we present an interesting observation which
-establishes links between the so-called EXTRA algorithm
-(Shi et al., 2014) (developed for distributed, but convex optimization) and the Prox-GPDA.
-
-In this section we study a variant of the Prox-PDA/ProxPDA-IP for the following distributed matrix factorization
-problem (Ling et al., 2012)
-1
-min
-kXY − Zk2F + ηkXk2F + h(Y )
-(25)
-X,Y
-2
-N
-X
-1
 =
-kXyi − zi k2 + γkXk2F + hi (yi ),
-2
-i=1
 
-Specifically, the optimality condition of the x-update step
-(17) is given by
-∇f (xr ) + AT (µr + βAxr+1 ) + β(B T B(xr+1 − xr )) = 0.
-Utilizing the fact that AT A = L− , B T B = L+ and L+ +
-L− = 2D, we have
-∇f (xr ) + AT µr + 2βDxr+1 − βL+ xr = 0.
-Subtracting the same equation evaluated at the previous
-iteration, we obtain
-
-s.t. kyi k2 ≤ τ, ∀ i
-where X ∈ RM ×K , Y ∈ RK×N ; for each i, yi ∈ RK
-M ×N
-consists of one column
-is some known
-PN of Y ; Z ∈ R
-matrix; h(Y ) := i=1 hi (yi ) is some convex but possibly
-nonsmooth penalization term; η > 0 is some given constant; for notation simplicity we have defined γ := 1/N η.
-
-Proximal Primal Dual Algorithm for Distributed Nonconvex Optimization
-
-It is easy to extend the above formulation to the case where
-Y and Z both have N P columns, and each yi and zi consists of P columns of Y and Z respectively.
-We assume that h(Y ) is lower bounded over dom (h). One
-application of problem (25) is the distributed sparse dictionary learning problem where X is the dictionary to be
-learned, each zi is a training data sample, and each yi is the
-sparse coefficient corresponding to the particular training
-sample zi . The constraint kyi k2 ≤ τ simply says that the
-size of the coefficient must be bounded.
-Consider a distributed scenario where N agents form a
-graph {V, E}, each having a column of Y . We reformulate problem (25) as
-
-N 
-X
-1
-kXi yi − zi k2 + hi (yi ) + γkXi k2F
-min
-2
-{Xi },{yi }
-i=1
-2
-
-s.t. kyi k ≤ τ, ∀ i
-
-Xi = Xj , ∀ (i, j) ∈ E.
-
-Let us stack all the variables Xi , and define X :=
-[X1 ; X2 ; · · · ; XN ] ∈ RN M ×K . Define the block signed
-incidence matrix as A = Ã ⊗ IM ∈ REM ×N M , where
-A is the standard graph incidence matrix. Define the block
-signless incidence matrix B ∈ REM ×N M similarly. If the
-graph is connected, then the condition AX = 0 implies
-network-wide consensus. We formulate the distributed matrix factorization problem as
-min
-
-f (X, Y ) + h(Y )
-
-{Xi },{yi }
-
-:=
-
-N 
-X
-1
-
-2
-
-i=1
-
-2
-
-kXi yi − zi k +
-
-s.t. kyi k2 ≤ τ, ∀ i
-
-γkXi k2F
-
-
-+ hi (yi )
-
-AX = 0.
-
-(26)
-
-Algorithm 2 Prox-PDA for Distr. Matrix Factorization
-1: At iteration 0, initialize Ω0 = 0, and X 0 , y 0
-2: At each iteration r + 1, update variables by:
-θir = kXir yir − zi k2 , ∀ i;
-(29a)
-1
-r+1
-r
-2
-= arg min
-yi
-kXi yi − zi k + hi (yi )
-kyi k2 ≤τ 2
-θr
-+ i kyi − yir k2 , ∀ i;
-(29b)
-2
-r+1
-r+1
-r
-X
-= arg min f (X, Y
-) + hΩ , AXi
-(29c)
-X
-β
-β
-+ hAX, AXi + hB(X − X r ), B(X − X r )i;
-2
-2
-Ωr+1 = Ωr + βAX r+1 .
-(29d)
-
-of the local factorization error. We note that including the
-θr
-proximal term 2i kyi − yir k2 is the key to achieve convergence for Algorithm 2.
-Let us comment on the distributed implementation of
-the algorithm.
-First note that the y subproblem
-(29b) is naturally distributed to each node, that is,
-only local information is needed to perform the update. Second, the X subproblem (29c) can also be
-decomposed into N subproblems, one for each node.
-To be more precise, let us examine the terms in
-(29c) one by one. First, the term f (X, Y r+1 ) =
-
-PN 1
-r+1
-− zi k2 + hi (yir+1 ) + γkXi k2F , hence
-i=1 2 kXi yi
-it is decomposable. Second, the term hΩr , AXi can be
-expressed as
-N
-X
-X
-X
-hΩre , Xi i −
-hΩre , Xi i
-hΩr , AXi =
-i=1 e∈U (i)
-
-Clearly the above problem does not satisfy Assumption
-A, because the objective function is not smooth, and neither ∇X f (X, Y ) nor ∇Y f (X, Y ) is Lipschitz continuous.
-The latter fact poses significant difficulty in algorithm development and analysis. Define the block-signed/signless
-Laplacians as
-−
-
-T
-
-+
-
-T
-
-L = A A, L = B B.
-
-(27)
-
-e∈H(i)
-
-where the sets U (i) and H(i) are defined as
-U (i) := {e | e = (i, j) ∈ E, i ≥ j},
-H(i) := {e | e = (i, j) ∈ E, j ≥ i}.
-Similarly, we have
-r
-
-hBX , BXi =
-
-N
-X
-
-*
-Xi , di Xir
-
-+
-+
-
-i=1
-
-The AL function for the above problem is given by
-Lβ (X, Y, Ω) =
-
-N 
-X
-1
-i=1
-
-+ hΩ, AXi +
-
-2
-
-2
-
-kXi yi − zi k +
-
-β
-hAX, AXi,
-2
-
-γkXi k2F
-
-
-+ hi (yi )
-(28)
-
-where Ω := {Ωe } ∈ REM ×K is the matrix of the dual
-variable, with Ωe ∈ RM ×K being the dual variable for the
-consensus constraint on link e, i.e, Xi = Xj , e = (i, j).
-Let us generalize Algorithm 1 for distributed matrix factorization given in Algorithm 2. In Algorithm 2 we have
-introduced a sequence {θir ≥ 0} which measures the size
-
-X
-
-Xjr
-
-j∈N (i)
-
-β
-(hAX, AXi + hBX, BXi)
-2
-N
-X
-= βhDX, Xi = β
-di kXi k2F ,
-i=1
-
-where D := D̃ ⊗ IM ∈ RN M ×N M with D̃ being the
-degree matrix. It is easy to see that the X subproblem (29c)
-is separable over the distributed agents. Finally, one can
-verify that the Ω update step (29d) can be implemented by
-each edge e ∈ E as follows
-
-Ωr+1
-= Ωre + β Xir+1 − Xjr+1 , e = (i, j), i ≥ j.
-e
-
-Proximal Primal Dual Algorithm for Distributed Nonconvex Optimization
-
-To show convergence rate of the algorithm, we need the
-following definition
-Q(X r+1 , Y r+1 , Ωr ) := βkAX r+1 k2 + k[Z r+1
-; Z r+1
-]k2 ,
-1
-2
-
-where we have defined
-Z r+1
-:= ∇X Lβ (X r+1 , Y r+1 , Ωr );
-1
-Z r+1
-:= Y r+1
-2
-
-
-− proxh+ι(Y) Y r+1 − ∇Y Lβ (X r+1 , Y r+1 , Ωr ) − h(Y ) .
-
-	 expression, we have used Y :=
-SIn the 2 above
-ky
-k
-≤
-τ
-to denote the feasible set of Y , and used
-i
-i
-ι(Y) to denote the indicator function of such set. Similarly
-as in Section 4, we can show that Q(X r+1 , Y r+1 , Ωr ) →
-0 implies that every limit point of (X r+1 , Y r+1 , Ωr ) is a
-KKT point of problem (26).
-Next we present the main convergence analysis for Algorithm 2. The proof is long and technical, therefore we refer
-the readers to (Hong, 2016).
-Theorem 3 Consider using Algorithm 2 to solve the distributed matrix factorization problem (26). Suppose that
-h(Y ) is lower bounded over dom h(x), and that the penalty
-parameter β, together with two positive constants c and d,
-satisfies the following conditions
-8(τ 2 + 4γ 2 ) cd
-β + 2γ
-−
-> 0,
-−
-2
-βσmin
-2
-1
-8
-c
-1
-8τ
-cτ
-−
-− > 0, −
-−
-> 0,
-(30)
-2 σmin β
-d
-2 σmin β
-d
-2βkB T Bk
-cβ
-−
-> 0.
-2
-σmin
-
-gradually increase d to find an appropriate β that satisfies
-the first three conditions.
-We remark that Algorithm 2 can be extended to the case
-with increasing penalty. Due to the space limitation we
-omit the details here.
-
-8. Numerical Results
-In this section, we demonstrate the performance of the proposed algorithms. All experiments are performed in Matlab
-(2016b) on a desktop with an Intel Core(TM) i5-4690 CPU
-(3.50 GHz) and 8GB RAM running Windows 7.
-8.1. Distributed Binary Classification
-In this subsection, we study the problem of binary classification using nonconvex regularizers in the mini-bach setup
-i.e. each node stores b (batch size) data points, and each
-component function is given by
-fi (xi ) =
-
- b
-
-M
-X
-λαx2i,k
-1 X
-log(1 + exp(−yij xTi vij )) +
-N b j=1
-1 + αx2i,k
-k=1
-
-where vij ∈ RM and yij ∈ {1, −1} are the feature vector
-and the label for the jth date point in ith agent (Antoniadis
-et al., 2009). We use the parameter settings of λ = 0.001,
-α = 1 and M = 10. We randomly generated 100, 000 data
-points and distribute them into N = 20 nodes (i.e. b =
-5000). We use the optimality gap (opt-gap) and constraint
-violation (con-vio), displayed below, to measure the quality
-of the solution generated by different algorithms
-X
-2
-N
-
-2
-2
-
-opt-gap := 
-∇fi (zi )
- + kAxk , con-vio = kAxk .
-i=1
-
-Then in the limit, consensus will be achieved, i.e.,
-lim kXir − Xjr k = 0,
-
-r→∞
-
-∀ (i, j) ∈ E.
-
-Further, the sequences {X r+1 } and {Ωr+1 } are both
-bounded, and every limit point generated by Algorithm 2
-is a KKT point of problem (25).
-Additionally, Algorithm 2 converges sublinearly. Specifically, for any given ϕ > 0, define T to be the first time that
-the optimality gap reaches below ϕ, i.e.,
-T := arg min Q(X r+1 , Y r+1 , Ωr ) ≤ ϕ.
-r
-
-Then for some constant ν > 0 we have ϕ ≤ T ν−1 .
-We can see that it is always possible to find the tuple
-{β, c, d > 0} that satisfies (30): c can be solely determined by the last inequality; for fixed c, the constant d
-needs to be chosen large enough such that 1/2 − dc > 0
-and 1/2 − cτ
-d > 0 are satisfied. After c and d are fixed,
-one can always choose β large enough to satisfy the first
-three conditions. In practice, we typically prefer to choose
-β as small as possible to improve the convergence speed.
-Therefore empirically one can start with (for some small
-T
-Bk
-ν > 0): c = 4kB
-+ ν, d = max{4, 2cτ }, and then
-σmin
-
-We compare the the Prox-GPDA, and Prox-GPDA-IP
-with the distributed subgradient (DSG) method (Nedic &
-Ozdaglar, 2009a;b) (which is only known to work for convex cases) and the Push-sum algorithm (Tatarenko & Touri,
-2015). The performance of all three algorithms in terms of
-the consensus error and the optimality gap (averaged over
-30 problem instances) are presented in Fig. 2. The penalty
-parameter for Prox-GPDA is chosen such that satisfy (14),
-and β r for Prox-GPDA-IP is set as 0.05 log(r), the stepsizes of the DSG algorithm and the Push-sum algorithm are
-chosen as 1/0.05 log(r) and 1/r, respectively. Note that
-these parameters are tuned for each algorithm to achieve
-the best results. All Algorithms will stop after 1000 iterations. It can be observed that the Prox-GPDA with constant
-stepsize outperforms other algorithms. The Push-sum algorithm does not seem to converge within 1000 iterations.
-To see more results, we compare different algorithms with
-different number of agents in the network (N ). The problem and the algorithms setup are set as the previous case.
-We measure the optimality gap as well as the constraint
-violation and the results are respectively reported in Table 1 and Table 2. In the tables Alg1, Alg2, Alg3, Alg4
-
-Proximal Primal Dual Algorithm for Distributed Nonconvex Optimization
-10 10
-
-10 10
-10 0
-
-10 0
-
-10 -10
-
-10 -10
-
-10 -20
-
-10 -20
-
-10 -30
-
-10 -30
-
-10 -40
-
-10 -40
-0
-
+100
+150
 200
-
-400
-
-600
-
-800
-
 0
 
-1000
-
-200
-
-400
-
-600
-
-800
-
-1000
-
-Figure 2. Results for the matrix factorization problem.
-1010
-
-Prox-PDA-IP
-
-Optimality Gap
-
-102
-10
-
-Prox-PDA-IP
-
-EXTRA-AO
-
-0
-
-Consensus Error
-
-10
-
-4
-
-10-2
-10
-
--4
-
-10-6
-10-8
-
-0
-
-1000
-
-2000
-
-3000
-
-4000
-
-5000
-
-Iteration number
-
-105
-
-EXTRA-AO
+50
 
 100
 
-10-5
+150
 
-10-10
+200
+
+Time
+
+Figure 1. Stability in RNN activations over time. The top figure
+shows the continually-changing MFCC features for a spoken digit
+from the TIDIGITS dataset (Leonard & Doddington, 1993); the
+bottom figure shows the corresponding neural network output activations in response to these features. Note the slow evolution of
+the network states over timesteps.
+
+Figure 2. Illustration of saved matrix-vector computation using
+delta networks with sparse delta vectors and weight matrices.
+
+Now consider multiple matrix-vector multiplications for a
+long input vector sequence xt indexed by t = 1, 2, . . . . The
+result rt can be calculated recursively as:
+rt = W ∆ + rt−1 ,
+
+neurons need to be updated offers significant speedups.
+The rest of the paper is organized as follows. Sec. 2 introduces the delta network concept in terms of the basic
+matrix-vector operations. Sec. 3 formulates it concretely
+for a GRU RNN. Sec. 4 proposes a method using a finite
+threshold for the deltas that suppresses the accumulation of
+the transient approximation error. Sec. 5 describes methods
+for optimally training a delta RNN. Sec. 6 shows network
+accuracy versus speedup for three examples. Finally, Sec. 7
+summarizes the results.
+
+2. Delta Network Formulation
+The purpose of a delta network is to transform a dense
+matrix-vector multiplication (for example, a weight matrix and a state vector) into a sparse matrix-vector multiplication followed by a full addition. This transformation
+leads to savings on both operations (actual multiplications)
+and more importantly memory accesses (weight fetches).
+Fig. 2 illustrates the savings due to a sparse multiplicative
+vector. Zeros are shown with white, while non-zero matrix
+and vector values are shown in black. Note the multiplicative effect of sparsity in the weight matrix and sparsity in
+the delta vector. In this example, 20% occupancy of the
+weight matrix and 20% occupancy of the ∆ vector requires
+fetching and computing only 4% of the original operations.
+To illustrate the delta network methodology, consider a
+general matrix-vector multiplication of the form
+r = Wx
+
+(1)
+
+that uses n2 compute operations1 , n2 +n reads and n writes
+for a W matrix of size n × n and a vector x of size n.
+1
+
+In this paper, a “compute” operation is either a multiply, an
+add, or a multiply-accumulate. The costs of these operations are
+
+(2)
+
+where ∆ = xt − xt−1 and rt−1 is the result obtained from
+the previous calculation; if stored, the compute cost of rt−1
+is zero as it can be fetched from the previous timestep. Trivially, x0 = 0 and r0 = 0. It is clear that
+rt = W (xt − xt−1 ) + rt−1
+
+(3)
+
+= W (xt − xt−1 ) + W (xt−1 − xt−2 ) + . . . + r0 (4)
+= W xt
+
+(5)
+
+Thus this formulation, which uses the difference between
+two subsequent timesteps and referred to as the delta network formulation, can be seen to produce exactly the same
+result as the original matrix-vector multiplication.
+2.1. Theoretical Cost Calculation
+To illustrate the savings if ∆ from (2) is sparse, we begin
+by defining oc to be the occupancy of a vector , that is, the
+percentage of nonzero elements in the vector.
+Consider the compute cost for rt ; it consists of the total
+cost for calculating ∆ (n operations for a vector of size
+n), adding in the stored previous result rt−1 (n operations),
+and performing the sparse matrix multiply W ∆ (oc · n2 operations for a W of size n × n and a sparse ∆ vector of
+occupancy ratio oc ). Similarly, the memory cost for calculating rt requires fetching oc · n2 weights for W , 2n values
+for ∆, n values for rt−1 and writing out the n values for rt .
+Overall, the compute cost for the standard formulation
+(Ccomp,dense ) and the new delta formulation (Ccomp,sparse )
+similar, particularly when compared to the cost of an off-chip
+memory operation. See (Horowitz, 2014) for a simple comparison of energy costs of compute and memory operations.
+
+Delta Networks for Optimized Recurrent Network Computation
+
+placed with the delta update defined in (2), forming:
+
+will be:
+Ccomp,dense = n2
+
+(6)
+
+∆x =xt − xt−1
+
+(15)
+
+Ccomp,sparse = oc · n2 + 2n
+
+(7)
+
+∆h =ht−1 − ht−2
+
+(16)
+
+while the memory access costs for both the standard
+(Cmem,dense ) and delta networks (Cmem,sparse ) can be seen
+from inspection as:
+2
+
+Cmem,dense = n + n
+2
+
+Cmem,sparse = oc · n + 4n
+
+(8)
+(9)
+
+Thus, the arithmetic intensity (ratio of arithmetic to memory access costs) as n → ∞ is 1 for both the standard and
+delta network methods. This means that every arithmetic
+operation requires a memory access, unfortunately placing
+computational accelerators at a disadvantage. However, if a
+sparse occupancy oc of ∆ is assumed, then the decrease in
+computes and memory accesses due to storing the previous
+state will result in a speedup of:
+Cdense /Csparse ≈ n2 /(oc · n2 ) = (1/oc )
+
+(10)
+
+For example, if oc = 10%, then the theoretical speedup will
+be 10X. Note that this speedup is determined by the occupancy in each computed ∆ = xt − xt−1 , implying that this
+sparsity is determined by the data stream. Specifically, the
+regularity with which values stay exactly the same between
+xt and xt−1 , or as demonstrated later, within a certain absolute value called the threshold, determines the speedup.
+In a neural network, x can represent inputs, intermediate
+activation values, or outputs of the network. If x changes
+slowly between subsequent timesteps then the input values
+xt and xt−1 will be highly redundant, leading to a low occupancy oc and a correspondingly increased speedup.
+
+rt =σr (Wxr ∆x + zxr + Whr ∆h + zhr + br )
+
+(17)
+
+ut =σu (Wxu ∆x + zxu + Whu ∆h + zhu + bu )
+
+(18)
+
+ct =σc (Wxc ∆x + zxc + bc
+rt  (Whc ∆h + zhc ))
+
+(19)
+
+ht =(1 − ut )  ht−1 + ut  ct
+
+(20)
+
+where the values zxr , zxu , zxc , zhr , zhu , zhc are recursively
+defined as the the stored result of the previous computation
+for the input or hidden state, i.e.:
+zxr := zxr,t−1 = Wxr (xt−1 − xt−2 ) + zxr,t−2 (21)
+The above operation can be applied for the other five values
+zxu , zxc , zhr , zhu , zhc . The initial condition at time x0 is
+z0 := 0. Also, many of the additive terms in the equations
+above, including the stored full-rank pre-activation states
+as well as the biases, can be merged into single values resulting into four stored memory values (Mr , Mu , Mxc , and
+Mhr ) for the three gates:
+Mt−1 := zx,t−1 + zh,t−1 + b
+
+(22)
+
+Finally, in accordance with the above definitions of the initial state, the memories M are initialized at their corresponding biases, i.e., Mr,0 = br , Mu,0 = bu , Mxc,0 = bc ,
+and Mhr,0 = 0, resulting in the following full formulation
+of the delta network GRU:
+∆x = xt − xt−1
+
+(23)
+
+∆h = ht−1 − ht−2
+
+(24)
+
+Mr,t := Wxr ∆x + Whr ∆h + Mr,t−1
+
+(25)
+
+Mu,t := Wxu ∆x + Whu ∆h + Mu,t−1
+
+(26)
+
+3. Delta Network GRUs
+
+Mxc,t := Wxc ∆x + Mxc,t−1
+
+(27)
+
+In GRUs, the matrix-vector multiplication operation that
+can be replaced with a delta network operation appears several times, shown in bold below. This GRU formulation is
+from (Chung et al., 2014):
+
+Mhc,t := Whc ∆h + Mhc,t−1
+
+(28)
+
+rt = σr (Wxr xt + Whr ht−1 + br )
+
+(11)
+
+ut = σu (Wxu xt + Whu ht−1 + bu )
+
+(12)
+
+ct = σc (Wxc xt + rt  (Whc ht−1 ) + bc )
+
+(13)
+
+ht = (1 − ut )  ht−1 + ut  ct
+
+(14)
+
+Here r, u, c and h are reset and update gates, candidate
+activation, and activation vectors, respectively, typically a
+few hundred elements long. The σ functions are nonlinear
+logistic sigmoids that saturate at 0 and 1. The  signifies
+element-wise multiplication. Each term in bold can be re-
+
+rt = σr (Mr,t )
+
+(29)
+
+ut = σu (Mu,t )
+
+(30)
+
+ct = σc (Mxc,t + rt  Mhc,t )
+
+(31)
+
+ht = (1 − ut )  ht−1 + ut  ct
+
+(32)
+
+4. Delta Network Approximations
+The formulations described in Secs. 2 and 3 are designed to
+give precisely the same answer as the original computation
+in the network. However, a more aggressive approach can
+be taken in the update, inspired by recent studies that have
+shown the possibility of greatly reducing weight precision
+in neural networks without giving up accuracy (Stromatias
+et al., 2015; Courbariaux et al., 2014). Instead of skipping
+
+Delta Networks for Optimized Recurrent Network Computation
+
+a vector-multiplication computation if a change in the activation ∆ = 0, a vector-multiplication can be skipped if
+a value of ∆ is smaller than the threshold (i.e |∆i,t | < Θ,
+where Θ is a chosen threshold value for a state i at time
+t). That is, if a neuron’s hidden-state M activation has
+changed by less than Θ since it was last memorized, the
+neuron output will not be propagated, i.e., its ∆ value is set
+to zero for that update. Using this threshold, the network
+will not produce precisely the same result at each update,
+but will produce a result which is approximately correct.
+Moreover, the use of a threshold substantially increases activation sparsity.
+Importantly, if a non-zero threshold is used with a naive
+delta change propagation, errors can accumulate over multiple time steps through state drift. For example, if the input value xt increases by nearly Θ on every time step, no
+change will ever be triggered despite an accumulated significant change in activation, causing a large drift in error.
+Therefore, in our implementation, the memory records the
+last value causing an above-threshold change, not the difference since the last time step.
+More formally, we introduce the states x̂i,t−1 and ĥj,t−1 .
+These states store the i−th input and the hidden state of the
+j−th neurons, respectively, at their last change. The current input xi,t and state hj,t will be compared against these
+values to determine the ∆. Then the x̂i,t−1 and ĥj,t−1 values will only be updated if the threshold Θ is crossed. The
+equations are shown below for x̂i,t−1 with similar equations for ĥj,t−1 :
+(
+xi,t−1 if |xi,t − x̂i,t−1 | > Θ
+x̂i,t−1 =
+(33)
+x̂i,t−2 otherwise
+(
+xi,t − x̂i,t−1 if |xi,t − x̂i,t−1 | > Θ
+∆xi,t =
+(34)
+0
+otherwise
+That is, when calculating the input delta vector ∆xi,t comprised of each element i at time t, the difference between
+two values are used: the current value of the input xi,t , and
+the value the last time the delta vector was nonzero x̂i,t−1 .
+Furthermore, if the delta change is less than Θ, then the
+delta change is set to zero, producing a small approximation error that will be corrected when a sufficiently large
+change produces a nonzero update. The same formulation
+is used for the hidden state delta vector ∆hj,t .
+This input approximation does not guarantee that the output
+error is bounded by the same threshold Θ. As supported by
+previous studies demonstrating that GRUs can be arbitrarily sensitive to input perturbations (Laurent & von Brecht,
+2016), the per-timestep error can grow with the input error. While thresholding should offer greater sparsity, the
+accumulation of these approximations could result in a diverging output error, therefore motivating the experiments
+
+in Sec. 6.1 that examine the effect of approximation on trajectory evolution.
+
+5. Methods to Increase Accuracy & Speedup
+This section presents training methods and optimization
+schemes for faster and more accurate delta networks.
+5.1. Training Directly on Delta Networks
+The most principled method of training to minimize accuracy loss when running as a delta network would be to train
+directly on the delta network model. This should yield the
+best results as the network will receive errors that arise directly from the truncations of the delta network computation, and through training, learn to become robust to the
+types of errors that delta networks make.
+More accurately, instead of training on the original GRU
+equations Eq. 11–14, the state is updated using the delta
+network model described in Eq. 23–34. Importantly, this
+change should incur no accuracy loss between train accuracy and test accuracy, though gradient descent may yet
+have more difficulty optimizing the model during training.
+5.2. Rounding Network Activations
+As the truncation of network activation due to the delta network is inherently non-differentiable, this training method
+should be compared against more widely used methods to
+verify its effectiveness. The delta network’s computation
+can be viewed as analogous to the reduced-precision rounding training methods; small changes are rounded to zero
+while larger changes are propagated. Since many previous investigations have demonstrated methods to train networks to be robust against small rounding errors by rounding during training (Courbariaux et al., 2014; Stromatias
+et al., 2015), these methods can be leveraged here to train
+a network that does not rely on small fluctuations in inputs.
+Low-precision computation and parameters can further reduce power consumption and improve the efficiency of the
+network for dedicated hardware implementations.
+As in other studies, a low-resolution activation θL in signed
+fixed-point format Qm.f with m integer bits and f fractional bits can be produced from a high-resolution activation θ by using a deterministic and gradient-preserving
+rounding: θL = round(2f · θ) · 2−f with 2f · θ clipped to
+a bounding range [−2m+f −1 , 2m+f −1 ] to produce a quantized fixed-point activation. The output error cost forces
+the network to avoid quantization errors during training.
+5.3. Adding Gaussian Noise to Network Activations
+Random noise injection provides another useful comparison point. By injecting noise, the network will be un-
+
+Delta Networks for Optimized Recurrent Network Computation
+
+able to rely on small changes, and occasionally even larger
+changes will be incorrect (as may be the case of threshold rounding). This robustness can be provided by adding
+Gaussian noise η to terms that will have a thresholded delta
+activation:
+rt =σr ((xt + ηx )Wxr + (ht−1 + ηh )Whr + br )
+
+(35)
+
+ut =σu ((xt + ηx )Wxu + (ht−1 + ηh )Whu + bu ) (36)
+ct = σc ((xt + ηx )Wxc +
+rt  ((ht−1 + ηh )Whc ) + bc )
+ht =
+
+(1 − ut )  ht−1 + ut  ct
+
+(37)
+(38)
+
+where η ∼ N (µ, σ). That is, η is a vector of samples drawn
+from the Gaussian distribution with mean µ and variance σ,
+and η ∈ {ηx , ηh }. Each element of these vectors is drawn
+independently. Typically, the value µ is set to 0 so that the
+expectation is unbiased, e.g., E[xt + ηx ] = E[xt ].
+As a result, the Gaussian noise should prevent the network
+from being sensitive to minor fluctuations, and increase its
+robustness to truncation errors.
+
+values in ∆h, so that fewer delta updates are required.
+
+6. Results
+This section presents results demonstrating the trade-off
+between compute savings and accuracy loss, using Delta
+Network RNNs trained on the TIDIGITS digit recognition
+benchmark. Furthermore, it also demonstrates that the results found on small datasets also translate to the much
+larger Wall Street Journal speech recognition benchmark.
+The final example is for a CNN-RNN stack trained on endto-end steering prediction using a recent driving dataset.
+The fixed-point Q3.4 (i.e. m = 3 and f = 4) format
+was used for network activation values in all speech experiments except the “Original” RNN line for TIDIGITS
+in Fig. 4, which was trained in floating-point representation. The driving dataset in Sec. 6.4 used Q2.5 activation.
+The networks were trained with Lasagne (Dieleman et al.,
+2015) powered by Theano (Bergstra et al., 2010). Reported
+training time is for a single Nvidia GTX 980 Ti GPU.
+6.1. TIDIGITS Dataset Trajectory Evolution
+
+5.4. Considering Weight Sparsity
+
+5.5. Incurring Sparsity Cost on Changes in Activation
+Finally, a computation-specific cost can be associated with
+the delta terms and added to the overall cost. In an input
+batch, the L1 norm for ∆h can be calculated as the mean
+absolute delta changes, and this norm can be scaled by a
+weighting factor β. This Lsparse cost (Lsparse = β||∆h||1 )
+can then be additively incorporated into the standard loss
+function. Here the L1 norm is used to encourage sparse
+
+90
+
+Thr:
+Thr:
+Thr:
+Thr:
+Thr:
+Thr:
+Thr:
+Thr:
+Thr:
+Thr:
+Thr:
+Thr:
+Thr:
+Thr:
+Thr:
+Thr:
+Thr:
+Thr:
+
+15
+
+10
+
+5
+
+0
+0
+
+5
+
+10 15 20 25 30 35 40 45
+Angle [Degrees]
+
+0.00
+0.05
+0.10
+0.15
+0.20
+0.25
+0.30
+0.35
+0.40
+0.45
+0.50
+0.55
+0.60
+0.65
+0.70
+0.75
+0.80
+0.85
+
+80
+
+70
+
+60
+Angle [Degrees]
+
+Error, Relative to Best Training Error [%]
+
+20
+
+In all training methods, considering the additional speedup
+from weight sparsity, in addition to skipping activation computation, should improve the theoretical speedup.
+Studies such as in (Ott et al., 2016) show that in trained
+low-precision networks, the weight matrices can be quite
+sparse. For example, in a ternary or 3-bit weight network
+the weight matrix sparsity can exceed 80% for small RNNs.
+Since every nonzero input vector element is multiplied by
+a column of the weight matrix, this computation can be
+skipped if the weight value is zero. That is, the zeros in
+the weight matrix act multiplicatively with the delta vector
+to produce even fewer necessary multiply-accumulates, as
+illustrated above in Fig. 2. The compute cost of the matrixvector product will be Ccomp,sparse = om · oc · n2 + 2n and
+the memory cost will be Cmem,sparse = om · oc · n2 + 4n
+for a weight matrix with occupancy om . By comparison
+to Eq. 10, the system can achieve a theoretical speedup of
+1/(om · oc ). That is, by compressing the weight matrix and
+only fetching nonzero weight elements that combine with
+the nonzero state vector, a higher speedup can be obtained
+without degrading the accuracy.
+
+50
+
+40
+
+30
+
+20
+
+10
+
+0
+160
+
+180
+200
+220
+Time [Timesteps]
+
+240
+
+Figure 3. Comparison of trajectories over time by increasing Θ
+from 0 to 0.85 in steps of 0.05. At left, an increase of error angle between the final training state and the final thresholded state
+manifests as a decrease in accuracy, with the Gaussian-trained net
+as squares and DN-trained net as circles. At right, the mean angle
+between the unapproximated state and the thresholded state over
+time. In red, the angle over time of an untrained network that has
+the same weight statistics as a trained network; in solid lines, a
+network that was trained as a delta network; in dashed lines, a
+network that was only trained with Gaussian noise. Curves for
+Θ = 0.55 are highlighted in blue. Note that a DN-trained network has lower angle error, especially at higher thresholds, and
+an untrained net always quickly converges to an orthogonal state.
+
+The TIDIGITS dataset was used as an initial evaluation task
+to study the trajectory evolution of delta networks. Single digits (“oh” and zero through nine), totalling 2464 dig-
+
+Delta Networks for Optimized Recurrent Network Computation
+
+To determine the robustness of the network to thresholded
+input, the trajectory evolution of these three networks were
+examined in comparison to their training conditions. Since
+the hidden states are bounded by (-1, 1) from the tanh nonlinearity, each 200-dimensional hidden state vector is normalized to construct a unit vector. Then, the error angle between the hidden state at training time and the hidden state
+with a threshold is measured. This error angle is correlated
+with the final accuracy, as seen in Fig. 3 left. The threshold is swept from 0 to 0.85, producing the results found in
+Fig. 3 right, in which each line represents the mean difference angle over all states across time. The figure begins at
+the median start point of a digit presentation (t=158), as the
+digits are pre-padded with zeros to match lengths.
+A Gaussian-trained network’s trajectory initially matches
+its training trajectory to produce a low error angle at low
+thresholds, which gradually increases as the threshold is
+raised. However, across a wide range of Θ, a DN-trained
+net’s trajectory matches its training trajectory much more
+closely to produce a tighter-spaced arrangement and substantially lower angle error at higher threshold. Finally, an
+untrained network is indeed very sensitive to input approximations and quickly reaches an orthogonal representation,
+thus emphasizing the role of training to provide robustness.
+
+97
+
+14
+2, 2a
+
+1ab
+
+12
+1a
+
+2ab
+
+1
+
+10
+
+96
+95
+94
+
+1: Original
+1a: + Rounding during Train
+1ab: + Noise
+2: Train on DN
+2a: + Account for Sparse Weights
+2ab: + L1 Cost
+
+8
+
+6
+
+93
+4
+
+Speedup Factor [Dashed]
+
+98
+
+Accuracy [%, Solid]
+
+The network architecture consists of a layer of 200 GRU
+units connected to a layer of 200 fully-connected units
+and finally to a classification layer for the 10 digit classes.
+First, a network was trained with Gaussian noise injection
+(Sec. 5.3) and subsequently tested using the delta network
+GRU formulation given in Sec. 3. A second network was
+trained directly on the delta network GRU formulation in
+accordance with Sec. 5.1, with the same architecture and
+Θ = 0.5. Finally, a third network was constructed from the
+DN-trained network by permuting its weights to produce
+an “untrained” network with identical weight statistics.
+
+99
+
+92
+2
+
+91
+90
+0.0
+
+0.1
+
+0.2
+
+0.3
+
+0.4
+0.5
+Threshold at Test
+
+0.6
+
+0.7
+
+0.8
+
+0
+0.9
+
+Figure 4. Test accuracy results from standard GRUs run as delta
+networks after training (curves 1, 1a, and 1ab) and those trained
+as delta networks (curves 2, 2a, and 2ab) under different constraints on the TIDIGITS dataset. The delta networks are trained
+for Θ = 0.5, and the average of five runs is shown. Note that
+the methods are combined, hence the naming scheme. Additionally, the accuracy curve for 2 is hidden by the curve 2a, since both
+achieve the same accuracy and only differ in speedup metric.
+100
+
+98
+
+2
+
+1ab
+
+96
+
+1: Original
+1a: + Rounding during Train
+1ab: + Noise
+2: Train on DN
+2a: + Account for Sparse Weights
+2ab: + L1 Cost
+
+2a
+
+1a
+
+Accuracy [%]
+
+its in the training set and 2486 digits in the test set, were
+transformed in the standard way (Neil & Liu, 2016) to produce a 39-dimensional Mel-Frequency Cepstral Coefficient
+(MFCC) feature vector using a 25 ms window, 10 ms frame
+shift, and 20 filter bank channels. The labels for “oh” and
+“zero” were collapsed to a single label. Training time is
+approximately 8 minutes for a 150 epoch experiment.
+
+2ab
+
+1
+
+94
+
+92
+
+90
+0
+
+2
+
+4
+
+6
+
+8
+10
+Speedup Factor [x]
+
+12
+
+14
+
+16
+
+Figure 5. Accuracy-speedup tradeoff by adjusting Θ for TIDIGITS. By increasing Θ (indicated by sample point size), larger
+speedups can be obtained at greater losses of accuracy. For networks trained as delta networks, the training threshold is the first
+(leftmost) point in the line point sequence.
+
+6.2. TIDIGITS Dataset Speedup and Accuracy
+The results of applying the methods introduced in Sec. 5
+can be found in Fig. 4. There are two quantities measured:
+the change in the number of memory fetches, and the accuracy as a function of the threshold Θ. Fig. 5 shows the same
+results, but removes the threshold axis to directly compare
+the accuracy-speedup tradeoff among the different training
+methods. First, a standard GRU RNN achieving 96.59%
+accuracy on TIDIGITS was trained without data augmen-
+
+tation and regularization. This network has the architecture
+described in Sec. 6.1. It was then subsequently tested using
+the delta network GRU formulation given in Sec. 3.
+The standard RNN run as a delta network (“Original”)
+achieves 95% accuracy (a drop from zero delta threshold
+accuracy of 96%) with a speedup factor of about 2.2X. That
+is, only approximately 45% of the computes or fetches are
+needed in achieving this accuracy. By adding the round-
+
+Delta Networks for Optimized Recurrent Network Computation
+
+The best model for training is the delta network itself
+(“Train on DN”). This network achieved 97.5% accuracy
+with a 8X speedup. Accounting for the pre-existing sparsity in the weight matrix (“+ Account for Sparse Weights”),
+the speedup increases to 10.5X, without affecting the accuracy (since it is the same network). Finally, incorporating
+an L1 cost on network changes in addition to training on
+the delta network model (“+ L1 cost”) achieves 97% accuracy while boosting speedup to 11.9X. Adding in the final
+sparseness cost on network changes decreases the accuracy
+slightly since the loss minimization must find a tradeoff between both error and delta activation instead of considering
+error alone. However, using the L1 loss can offer a significant additional speedup while retaining an accuracy increase over the original GRU network.
+Finally, Fig. 5 also demonstrates the primary advantage
+given by each algorithm; an increase in generalization robustness manifests as an overall upward shift in accuracy,
+while an increase in sparsity manifests as a rightward shift
+in speedup. As proposed, methods 1a and 1b increase generalization robustness while only modestly influencing the
+sparsity. Method 2 greatly increases both, while method
+2a only increases sparsity, and finally method 2ab slightly
+decreases accuracy but offers the highest speedup.
+
+12
+
+50
+
+Trained Delta Network
+GRU Network used as a DN
+
+10.3x
+
+10
+
+40
+
+9.1x
+8.5x
+8
+
+7.3x
+30
+6.2x
+5.7x
+
+6
+4.7x
+
+20
+
+4.2x
+4
+
+16.3%
+
+3.1x
+
+2
 
 0
 
-1000
+11.0%
+10.2% 10.2% 10.2% 10.4% 10.8%
+1.3x
 
-2000
+0.0
 
-3000
+Word Error Rate
 
-4000
+Reduction in Ops [Multiples]
 
-5000
+ing constraint during training (“+ Rounding during Training”), the accuracy is nearly 97% with an increase to a
+3X speedup. By incorporating Gaussian noise (“+ Noise”),
+97% accuracy can be maintained with a 5X speedup. Essentially, these methods added generalization robustness to
+the original GRU, while preventing small changes from influencing the network output. These techniques allow a
+higher threshold to be used while maintaining the same accuracy, therefore resulting in a decrease of memory fetches
+and a corresponding speedup.
 
-Iteration Number
+0.1
 
-Figure 3. Results for the matrix factorization problem.
-Table 1. Optimality Gap for different Algorithms
+0.2
+Threshold
 
-N
+12.1%
+
+0.3
+
+13.2%
+
+14.2%
 10
-20
+
+0.4
+
+0
+0.5
+
+Figure 6. Accuracy and speedup tradeoffs on the WSJ dataset.
+The solid lines show results from an existing deep RNN run as
+a delta network. The dashed lines show results from a network
+trained as a delta network with Θ = 0.2. The horizontal lines
+indicate the non-delta network accuracy level; similarly, the solid
+and dashed horizontal lines indicate the accuracy of the normal
+network and the DN network prior to rounding, respectively.
+
+Surprisingly, the existing highly trained network already
+shows significant speedup without loss of accuracy as the
+threshold, Θ, is increased: At Θ = 0.2, the speedup is
+about 5.5X with a WER of 10.8% compared with the WER
+of 10.2% at Θ = 0. However, training the RNN to run
+as a delta network yields a network that achieves a slightly
+higher 5.7X speedup with the same WER. Thus, even the
+conventionally-trained RNN run as a delta network can
+provide greater than 5X speedup with only a 1.05X increase in the WER.
+6.4. Comma.ai Driving DataSet
+
+6.3. Wall Street Journal Dataset
+The delta network methodology was applied to an RNN
+trained on the larger WSJ dataset to determine whether it
+could produce the same gains as seen with the TIDIGITS
+dataset. This dataset comprised 81 hours of transcribed
+speech, as described in (Braun et al., 2016). Similar to that
+study, the first 4 layers of the network consisted of bidirectional GRU units with 320 units in each direction. Training
+time for each experiment was about 120h.
+Fig. 6 presents results on the achieved word error rate
+(WER) and speedup on this dataset for two cases: First,
+running an existing speech transcription RNN as a delta
+network (results shown as solid curves labeled “RNN used
+as a DN”), and second, a network trained as a delta network
+with results shown as the dashed curves “Trained Delta
+Network”. The speedup here accounts for weight matrix
+sparsity as described in Sec. 5.4 .
+
+Driving scenarios are rapidly emerging as another area of
+RNN focused research. Here, the delta network model
+was applied to determine the gains of exploiting the redundancy of real-time video input. The open driving dataset
+from comma.ai (Santana & Hotz, 2016) with 7.25 hours of
+driving data was used, with video data recorded at 20 FPS
+from a camera mounted on the windshield. The network is
+trained to predict the steering angle from the visual scene
+similar to (Hempel, 2016; Bojarski et al., 2016). We followed the approach in (Hempel, 2016) by using an RNN on
+top of the CNN feature detector. The CNN feature detector
+has three convolution layers without pooling layers and a
+fully-connected layer with 512 units. During training, the
+CNN feature detector was pre-trained with an analog output unit to learn the recorded steering angle from randomly
+selected single frame images. Afterwards, the delta network RNN was added, and trained by feeding sequences of
+the visual features from the CNN feature detector to learn
+
+Delta Networks for Optimized Recurrent Network Computation
+33
+405x
+
+32
+
+354x
+324x
+
+Speedup
+
+300
+
+CNN only
+
+253x
+
+200
+
+29
+
+137x
+42x
+
+Figure 7. Reduction of RNN compute cost in the steering angle
+prediction task. Top figure shows the required # of ops per frame
+for the delta network GRU layer (trained with Θ = 0.1) in comparison with the conventional GRU case. Bottom figure compares
+the prediction errors of CNN predictor and CNN+RNN predictor.
+The RNN slightly improves the steering angle prediction.
+
+sequences of the steering angle. Since the Q2.5 format was
+used for the GRU layer activations, the GRU input vectors
+were scaled to match the CNN output and the target output
+was scaled to match the RNN output.
+However, this raw dataset results in a few practical difficulties and requires data preprocessing. By excluding the
+frames recorded during periods of low speed driving, we
+remove the segments where the steering angle is not correlated to the direction of the car movement. Training time
+of the CNN feature detector was about 8h for 10k updates
+with the batch size of 200. Training of the RNN part took
+about 3h for 5k updates with the batch size of 32 samples
+consisting of 48 frames/sample.
+A very large speedup exceeding 100X in the delta network
+GRU can be seen in Fig. 7, computed for the steering angle
+prediction task on 2000 consecutive frames (100s) from the
+validation set. While the number of operations per frame
+remains constant for the conventional GRU layer, those for
+the delta network GRU layer varies dynamically depending
+on the change of visual features.
+In this steering network, the computational cost of the CNN
+(about 37 MOp/frame) dominates the RNN cost (about
+1.58 MOp/frame), therefore the overall system-level computational savings is only about 4.2%. However, future applications will likely have efficient dedicated vision hardware or require a greater role for RNNs in processing numerous and complex data streams, which result in RNN
+models that consume a greater percentage of the overall energy/compute cost. Even now, the steering angle prediction
+network already benefits from a delta network approach.
+
+7. Discussion and Conclusion
+Although the delta network methodology can be applied to
+other network architectures, as was shown in similar con-
+
+0.0
+
+0.1
+
+31
 30
-40
-50
 
-Alg1
-5.1e-36
-4.7e-32
-2.3e-21
-1.3e-12
-5.5e-10
+177x
 
-Alg2
-2.4e-22
-5.0e-9
-5.1e-8
-2.9e-7
-4.2e-6
+100
 
-Alg3
-1.34
-0.04
-0.008
-0.007
-0.005
+RMS Prediction Error (deg)
 
-Alg4
-2.79
-0.42
-0.20
-0.21
-0.40
+400
 
-Table 2. Constraint Violation for different Algorithms
+28
 
-N
-10
-20
-30
-40
-50
+67x
 
-Alg1
-1.3e-36
-1.2e-34
-2.3e-24
-2.2e-16
-2.2e-14
+0.2
+0.3
+Delta Threshold
 
-Alg2
-3.4e-27
-3.7e-16
-7.8e-15
-2.1e-14
-2.2e-12
+0.4
 
-Alg3
-0.35
-0.02
-0.01
-0.03
-0.01
+27
+0.5
 
-Alg4
-0.65
-0.40
-0.18
-0.20
-0.12
+Figure 8. Tradeoffs between prediction error and speedup of the
+GRU layer on the steering angle prediction. The result was obtained from 1000 samples with 48 consecutive frames sampled
+from the validation set. Speedup here does not include weight matrix sparsity. The network was trained with Θ = 0.1. A speedup
+of approximately 100X can be obtained without increasing the
+prediction error, using Θ between 0.1 and 0.25.
 
-denote Prox-GPDA, Prox-GPDA-IP, DGS, and Push-sum
-algorithms respectively. As seen, the performance of the
-proposed algorithms (Alg1, Alg2) are significantly better
-than DGS and Push-Sum.
+current work for CNNs (O’Connor & Welling, 2016), in
+practice a larger benefit is seen in RNNs because all the
+intermediate activation values for the delta networks are already stored between subsequent inputs. For example, the
+widely-used VGG19 CNN has 16M neuron states (Chatfield et al., 2014). Employing the delta network approach
+for CNNs requires doubled memory access and significant
+additional memory space to store the entirety of the network state. Because the cost of external memory access is
+hundreds of times larger than that of arithmetic operations,
+delta network CNNs seem impractical without novel memory technologies to address this issue.
+In contrast, RNNs have a much larger number of weight
+parameters than activations. The sparsity of the delta activations can therefore enable large savings in power consumption by reducing the number of memory accesses required to fetch weight parameters. CNNs, however, do not
+have this advantage since the weight parameters are few
+and shared by many units. Finally, the delta network approach is extremely flexible as pre-existing networks can
+be used without retraining, or trained specifically for increased optimization.
+Recurrent neural networks can be highly optimized due to
+the redundancy of their activations over time. When the
+use of this temporal redundancy is combined with robust
+training algorithms, this work demonstrates that speedups
+of 6X to 9X can be obtained with negligible accuracy loss
+in speech RNNs, and speedups of over 100X are possible
+in steering angle prediction RNNs, suggesting significant
+speedups are achievable on practical, real-world problems.
 
-by randomly extracting 300 overlapping patches from the
-512 × 512 image of barbara.png, each with size 16 × 16
-pixels. Each of the extracted patch is vectorized, resulting a training data set Z of size 256 × 300. We consider
-a network of N = 10 agents, and the columns of Z are
-evenly distributed among the agents (each having P = 30
-columns). We compare Prox-PDA-IP with the EXTRAAO algorithm proposed in (H.-T. Wai & Scaglione, 2015).
-Note that the EXTRA-AO is also designed for a similar
-distributed matrix factorization problem and it works well
-in practice. However, it does not have formal convergence
-proof. We initialize both algorithms with X being the 2D
-discrete cosine transform (DCT) matrix. We set γ = 0.05,
-τ = 105 and β = 0.001r, and the results are averaged
-over 30 problem instances. The stepsizes of the EXTRAAO is set as αAO = 0.03 and βAO = 0.002. In Fig. 3,
-we compare the performance of the proposed Prox-PDAIP and the EXTRA-AO. It can be observed that our proposed algorithm converges faster than the EXTRA-AO. We
-have observed that the EXTRA-AO does have reasonably
-good practical performance, however it lacks formal convergence proof.
+Delta Networks for Optimized Recurrent Network Computation
 
-Acknowledgment
-8.2. Distributed Matrix Factorization
-In this section we consider the distributed matrix factorization problem (25). The training data is constructed
-
-The authors supported by National Natural Science Foundation (Grant No. CCF-1526078).
-
-Proximal Primal Dual Algorithm for Distributed Nonconvex Optimization
+Acknowledgements
+We thank S. Braun for helping with the WSJ speech transcription pipeline. This work was funded by Samsung Institute of Advanced Technology, the University of Zurich
+and ETH Zurich.
 
 References
-Allen-Zhu, Z. and Hazan, E. Variance Reduction for Faster NonConvex Optimization. In Proceedings of the 33rd International
-Conference on Machine Learning, ICML, 2016.
-Antoniadis, A., Gijbels, I., and Nikolova, M. Penalized likelihood
-regression for generalized linear models with non-quadratic
-penalties. Annals of the Institute of Statistical Mathematics,
-63(3):585–615, 2009.
-Aybat, N-S. and Hamedani, E-Y. A primal-dual method for conic
-constrained distributed optimization problems. Advances in
-Neural Information Processing Systems, 2016.
-Bertsekas, D. P. Constrained Optimization and Lagrange Multiplier Method. Academic Press, 1982.
-Bianchi, P. and Jakubowicz, J. Convergence of a multi-agent projected stochastic gradient algorithm for non-convex optimization. IEEE Transactions on Automatic Control, 58(2):391–405,
-2013.
+Amodei, Dario, Anubhai, Rishita, Battenberg, Eric, Case,
+Carl, Casper, Jared, Catanzaro, Bryan, Chen, Jingdong,
+Chrzanowski, Mike, Coates, Adam, Diamos, Greg, et al.
+Deep speech 2: End-to-end speech recognition in english
+and mandarin. arXiv preprint arXiv:1512.02595, 2015.
+Bergstra, James, Breuleux, Olivier, Bastien, Frédéric,
+Lamblin, Pascal, Pascanu, Razvan, Desjardins, Guillaume, Turian, Joseph, Warde-Farley, David, and Bengio, Yoshua. Theano: a CPU and GPU math expression compiler. In Proceedings of the Python for scientific
+computing conference (SciPy), volume 4, pp. 3, 2010.
+Bojarski, Mariusz, Testa, Davide Del, Dworakowski,
+Daniel, Firner, Bernhard, Flepp, Beat, Goyal, Prasoon,
+Jackel, Lawrence D., Monfort, Mathew, Muller, Urs,
+Zhang, Jiakai, Zhang, Xin, Zhao, Jake, and Ziebam,
+Karol. End to end learning for self-driving cars. arXiv
+preprint arXiv:1604.07316, 2016.
 
-Hong, M., Razaviyayn, M., Luo, Z.-Q., and Pang, J.-S. A unified algorithmic framework for block-structured optimization
-involving big data. IEEE Signal Processing Magazine, 33(1):
-57–77, 2016.
-Johnson, R. and Zhang, T. Accelerating stochastic gradient descent using predictive variance reduction. In the Proceedings
-of the Neural Information Processing (NIPS). 2013.
-Ling, Q., Xu, Y., Yin, W., and Wen, Z. Decentralized low-rank
-matrix completion. In 2012 IEEE International Conference on
-Acoustics, Speech and Signal Processing (ICASSP), pp. 2925–
-2928, March 2012.
-Ling, Q., Shi, W., Wu, G., and Ribeiro, A. DLM: Decentralized
-linearized alternating direction method of multipliers. IEEE
-Transactions on Signal Processing, 63(15):4051–4064, Aug
+Courbariaux, Matthieu, Bengio, Yoshua, and David, JeanPierre. Binaryconnect: Training deep neural networks
+with binary weights during propagations. In Advances in
+Neural Information Processing Systems, pp. 3123–3131,
 2015.
-Lobel, I. and Ozdaglar, A. Distributed subgradient methods for
-convex optimization over random networks. Automatic Control, IEEE Transactions on, 56(6):1291–1306, 2011.
+Dieleman, Sander et al. Lasagne: First release., August 2015. URL http://dx.doi.org/10.5281/
+zenodo.27878.
+Esser, Steven K, Merolla, Paul A, Arthur, John V, Cassidy,
+Andrew S, Appuswamy, Rathinakumar, Andreopoulos,
+Alexander, Berg, David J, McKinstry, Jeffrey L, Melano,
+Timothy, Barch, Davis R, et al. Convolutional networks for fast, energy-efficient neuromorphic computing. arXiv preprint arXiv:1603.08270, 2016.
+Graves, Alan, Mohamed, Abdel-rahman, and Hinton, Geoffrey. Speech recognition with deep recurrent neural
+networks. In Acoustics, Speech and Signal Processing
+(ICASSP), 2013 IEEE International Conference on, pp.
+6645–6649. IEEE, 2013.
+Han, Song, Mao, Huizi, and Dally, William J. Deep compression: Compressing deep neural network with pruning, trained quantization and huffman coding. CoRR,
+abs/1510.00149, 2, 2015.
 
-Bjornson, E. and Jorswieck, E. Optimal resource allocation in coordinated multi-cell systems. Foundations and Trends in Communications and Information Theory, 9, 2013.
+Braun, Stefan, Neil, Daniel, and Liu, Shih-Chii. A curriculum learning method for improved noise robustness in automatic speech recognition. arXiv preprint
+arXiv:1606.06864, 2016.
 
-Lobel, I., Ozdaglar, A., and Feijer, D. Distributed multi-agent optimization with state-dependent communication. Mathematical
-Programming, 129(2):255–284, 2011.
+Han, Song, Kang, Junlong, Mao, Huizi, Hu, Yiming, Li,
+Xin, Li, Yubin, Xie, Dongliang, Luo, Hong, Yao, Song,
+Wang, Yu, et al. Ese: Efficient speech recognition engine
+with compressed lstm on fpga. In FPGA 2017; NIPS
+2016 EMDNN workshop, 2016.
 
-Cevher, V., Becker, S., and Schmidt, M. Convex optimization
-for big data: Scalable, randomized, and parallel algorithms for
-big data analytics. IEEE Signal Processing Magazine, 31(5):
-32–43, 2014.
+Chatfield, Ken, Simonyan, Karen, Vedaldi, Andrea, and
+Zisserman, Andrew. Return of the devil in the details:
+Delving deep into convolutional nets. arXiv preprint
+arXiv:1405.3531, 2014.
 
-Lorenzo, P. Di and Scutari, G. Next: In-network nonconvex optimization. IEEE Transactions on Signal and Information Processing over Networks, 2(2):120–136, 2016.
+Hempel, Martin. Deep learning for piloted driving. In
+NVIDIA GPU Tech Conference, 2016.
 
-Defazio, A., Bach, F., and Lacoste-Julien, S. Saga: A fast incremental gradient method with support for non-strongly convex
-composite objectives. In The Proceeding of NIPS, 2014.
-Forero, P. A., Cano, A., and Giannakis, G. B. Consensusbased distributed support vector machines. Journal of Machine
-Learning Research, 11(May):1663–1707, 2010.
-H.-T. Wai, T.-H. Chang and Scaglione, A. A consensus-based
-decentralized algorithm for non-convex optimization with application to dictionary learning. In the Proceedings of the IEEE
-ICASSP, 2015.
-Hajinezhad, D. and Hong, M. Nonconvex alternating direction
-method of multipliers for distributed sparse principal component analysis. In IEEE Global Conference on Signal and Information Processing (GlobalSIP). IEEE, 2015.
-Hajinezhad, D., Chang, T-H., Wang, X., Shi, Q., , and Hong, M.
-Nonnegative matrix factorization using admm: Algorithm and
-convergence analysis. In IEEE International Conference on
-Acoustics, Speech and Signal Processing (ICASSP), 2016a.
-Hajinezhad, D., Hong, M., Zhao, T., and Wang, Z. Nestt: A
-nonconvex primal-dual splitting method for distributed and
-stochastic optimization. In Advances in Neural Information
-Processing Systems 29, pp. 3215–3223. 2016b.
-Hong, M. Decomposing linearly constrained nonconvex problems
-by a proximal primal dual approach: Algorithms, convergence,
-and applications. arXiv preprint arXiv:1604.00543, 2016.
-Hong, M., Luo, Z.-Q., and Razaviyayn, M. Convergence analysis
-of alternating direction method of multipliers for a family of
-nonconvex problems. 2014. technical report, University of
-Minnesota.
+Cho, Kyunghyun, van Merrienboer, Bart, Gulcehre, Caglar,
+Bougares, Fethi, Schwenk, Holger, and Bengio, Yoshua.
+Learning phrase representations using RNN encoderdecoder for statistical machine translation.
+arXiv
+preprint arXiv:1406.1078, 2014.
+Chung, Junyoung, Gulcehre, Caglar, Cho, KyungHyun,
+and Bengio, Yoshua. Empirical evaluation of gated recurrent neural networks on sequence modeling. arXiv
+preprint arXiv:1412.3555, 2014.
+Courbariaux, Matthieu and Bengio, Yoshua.
+Binarynet: Training deep neural networks with weights
+and activations constrained to+ 1 or-1. arXiv preprint
+arXiv:1602.02830, 2016.
+Courbariaux, Matthieu, Bengio, Yoshua, and David, JeanPierre. Low precision arithmetic for deep learning. arXiv
+preprint arXiv:1412.7024, 2014.
 
-Nedic, A. and Olshevsky, A. Distributed optimization over timevarying directed graphs. IEEE Transactions on Automatic Control, 60(3):601–615, 2015.
-Nedic, A. and Ozdaglar, A. Cooperative distributed multi-agent
-optimization. In Convex Optimization in Signal Processing and
-Communications. Cambridge University Press, 2009a.
-Nedic, A. and Ozdaglar, A. Distributed subgradient methods for
-multi-agent optimization. IEEE Transactions on Automatic
-Control, 54(1):48–61, 2009b.
-Powell, M. M. D. An efficient method for nonlinear constraints
-in minimization problems. In Optimization. Academic Press,
-1969.
-Rahimpour, Alireza, Taalimi, Ali, Luo, Jiajia, and Qi, Hairong.
-Distributed object recognition in smart camera networks. In
-IEEE International Conference on Image Processing, Phoenix,
-Arizona, USA. IEEE, 2016.
-Rahmani, M. and Atia, G. A decentralized approach to robust subspace recovery. In 2015 53rd Annual Allerton Conference on
-Communication, Control, and Computing (Allerton), pp. 802–
-807. IEEE, 2015.
-Reddi, S., Sra, S., Poczos, B., and Smola, A. Fast incremental method for nonconvex optimization. arXiv preprint
-arXiv:1603.06159, 2016.
-Scardapane, S. and Lorenzo, P. Di. A framework for parallel
-and distributed training of neural networks. arXiv preprint
-arXiv:1610.07448, 2016.
-Scardapane, S., Fierimonte, R., Lorenzo, P. Di, Panella, M., and
-Uncini, A. Distributed semi-supervised support vector machines. Neural Networks, 80:43–52, 2016.
+Hochreiter, Sepp and Schmidhuber, Jürgen. Long shortterm memory. Neural computation, 9(8):1735–1780,
+1997.
+Horowitz, M. 1.1 Computing’s energy problem (and what
+we can do about it). In 2014 IEEE International SolidState Circuits Conference Digest of Technical Papers
+(ISSCC), pp. 10–14, February 2014. doi: 10.1109/
+ISSCC.2014.6757323.
+Huang, Gao, Sun, Yu, Liu, Zhuang, Sedra, Daniel, and
+Weinberger, Kilian. Deep networks with stochastic
+depth. arXiv preprint arXiv:1603.09382, 2016.
+Iandola, Forrest N, Moskewicz, Matthew W, Ashraf,
+Khalid, Han, Song, Dally, William J, and Keutzer,
+Kurt. Squeezenet: Alexnet-level accuracy with 50x
+fewer parameters and¡ 1mb model size. arXiv preprint
+arXiv:1602.07360, 2016.
 
-Proximal Primal Dual Algorithm for Distributed Nonconvex Optimization
-Schmidt, M., Roux, N. Le, and Bach., F. Minimizing finite sums
-with the stochastic average gradient. 2013. Technical report,
-INRIA.
-Shi, W., Ling, Q., Wu, G., and Yin, W. Extra: An exact first-order
-algorithm for decentralized consensus optimization. SIAM
-Journal on Optimization, 25(2):944–966, 2014.
-Tatarenko, T. and Touri, B. Non-convex distributed optimization.
-2015. arXiv Preprint: arXiv:1512.00895.
-Yan, F., Sundaram, S., Vishwanathan, S. V. N., and Qi, Y. Distributed autonomous online learning: Regrets and intrinsic
-privacy-preserving properties. IEEE Transactions on Knowledge and Data Engineering, 25(11):2483–2493, 2013.
-Zhu, M. and Martinez, S. An approximate dual subgradient algorithm for multi-agent non-convex optimization. In 49th IEEE
-Conference on Decision and Control (CDC), pp. 7487–7492,
-2010.
-Zlobec, S. On the liu-floudas convexification of smooth programs.
-Journal of Global Optimization, 32(3):401–407, 2005.
+Delta Networks for Optimized Recurrent Network Computation
+
+Laurent, Thomas and von Brecht, James. A recurrent neural network without chaos. arXiv preprint
+arXiv:1612.06212, 2016.
+Leonard, R Gary and Doddington, George. Tidigits speech
+corpus. Texas Instruments, Inc, 1993.
+Mikolov, Tomas, Karafiát, Martin, Burget, Lukas, Cernockỳ, Jan, and Khudanpur, Sanjeev. Recurrent neural network based language model. In Interspeech, volume 2, pp. 3, 2010.
+Neil, Daniel and Liu, Shih-Chii. Effective sensor fusion
+with event-based sensors and deep network architectures. In IEEE Int. Symposium on Circuits and Systems
+(ISCAS), 2016.
+O’Connor, Peter and Welling, Max. Sigma delta quantized
+networks. arXiv preprint arXiv:1611.02024, 2016.
+Ott, Joachim, Lin, Zhouhan, Zhang, Ying, Liu, ShihChii, and Bengio, Yoshua.
+Recurrent neural networks with limited numerical precision. arXiv preprint
+arXiv:1608.06902, 2016.
+Rastegari, Mohammad, Ordonez, Vicente, Redmon,
+Joseph, and Farhadi, Ali. Xnor-net: Imagenet classification using binary convolutional neural networks. arXiv
+preprint arXiv:1603.05279, 2016.
+Santana, Eder and Hotz, George. Learning a driving simulator. arXiv preprint arXiv:1608.01230, 2016.
+Stromatias, Evangelos, Neil, Daniel, Pfeiffer, Michael,
+Galluppi, Francesco, Furber, Steve B, and Liu, ShihChii. Robustness of spiking Deep Belief Networks to
+noise and reduced bit precision of neuro-inspired hardware platforms. Frontiers in Neuroscience, 9, 2015.
+Szegedy, Christian, Liu, Wei, Jia, Yangqing, Sermanet,
+Pierre, Reed, Scott, Anguelov, Dragomir, Erhan, Dumitru, Vanhoucke, Vincent, and Rabinovich, Andrew.
+Going deeper with convolutions. In Proceedings of
+the IEEE Conference on Computer Vision and Pattern
+Recognition, pp. 1–9, 2015.
+Xu, Kelvin, Ba, Jimmy, Kiros, Ryan, Courville, Aaron,
+Salakhutdinov, Ruslan, Zemel, Richard, and Bengio,
+Yoshua. Show, attend and tell: Neural image caption generation with visual attention. arXiv preprint
+arXiv:1502.03044, 2015.
+Yao, Li, Torabi, Atousa, Cho, Kyunghyun, Ballas, Nicolas, Pal, Christopher, Larochelle, Hugo, and Courville,
+Aaron. Describing videos by exploiting temporal structure. In Proceedings of the IEEE International Conference on Computer Vision, pp. 4507–4515, 2015.
 
 

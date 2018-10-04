@@ -1,908 +1,1126 @@
-Warped Convolutions: Efficient Invariance to Spatial Transformations
-
-João F. Henriques 1 Andrea Vedaldi 1
+Improving Gibbs Sampler Scan Quality with DoGS
+Ioannis Mitliagkas 1 Lester Mackey 2
 
 Abstract
-Convolutional Neural Networks (CNNs) are extremely efficient, since they exploit the inherent
-translation-invariance of natural images. However, translation is just one of a myriad of useful spatial transformations. Can the same efficiency be attained when considering other spatial invariances? Such generalized convolutions
-have been considered in the past, but at a high
-computational cost. We present a construction
-that is simple and exact, yet has the same computational complexity that standard convolutions
-enjoy. It consists of a constant image warp followed by a simple convolution, which are standard blocks in deep learning toolboxes. With
-a carefully crafted warp, the resulting architecture can be made equivariant to a wide range of
-two-parameter spatial transformations. We show
-encouraging results in realistic scenarios, including the estimation of vehicle poses in the Google
-Earth dataset (rotation and scale), and face poses
-in Annotated Facial Landmarks in the Wild (3D
-rotations under perspective).
+The pairwise influence matrix of Dobrushin has
+long been used as an analytical tool to bound the
+rate of convergence of Gibbs sampling. In this
+work, we use Dobrushin influence as the basis
+of a practical tool to certify and efficiently improve the quality of a discrete Gibbs sampler. Our
+Dobrushin-optimized Gibbs samplers (DoGS) offer customized variable selection orders for a
+given sampling budget and variable subset of interest, explicit bounds on total variation distance
+to stationarity, and certifiable improvements over
+the standard systematic and uniform random scan
+Gibbs samplers. In our experiments with joint image segmentation and object recognition, Markov
+chain Monte Carlo maximum likelihood estimation, and Ising model inference, DoGS consistently deliver higher-quality inferences with significantly smaller sampling budgets than standard
+Gibbs samplers.
 
 1. Introduction
-A crucial aspect of current deep learning architectures is the
-encoding of invariances. This fact is epitomized in the success of convolutional neural networks (CNN), where equivariance to image translation is key: translating the input
-results in a translated output. When invariances are present
-in the data, encoding them explicitly in an architecture provides an important source of regularization, which reduces
-the amount of training data required for learning.
-Invariances may also be used to improve the efficiency of
-implementations. For instance, a convolutional layer requires orders of magnitude less memory (by reusing filters
-1
+The Gibbs sampler of Geman & Geman (1984), also known
+as the Glauber dynamics or the heat-bath algorithm, is a
+leading Markov chain Monte Carlo (MCMC) method for approximating expectations unavailable in closed form. First
+detailed as a technique for restoring degraded images (Geman & Geman, 1984), Gibbs sampling has since found
+diverse applications in statistical physics (Janke, 2008),
+stochastic optimization and parameter estimation (Geyer,
+1991), and Bayesian inference (Lunn et al., 2000).
+The hallmark of any Gibbs sampler is conditional simulation: individual variables are successively simulated from
+the univariate conditionals of a multivariate target distribu1
 
-Visual Geometry Group, University of Oxford,
-United Kingdom. Correspondence to: João F. Henriques
-<joao@robots.ox.ac.uk>.
+Department of Computer Science, Stanford University, Stanford, CA 94305 USA 2 Microsoft Research New England, One
+Memorial Drive, Cambridge, MA 02142 USA. Correspondence
+to: Ioannis Mitliagkas <imit@stanford.edu>, Lester Mackey
+<lmackey@microsoft.com>.
 Proceedings of the 34 th International Conference on Machine
-Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
-by the author(s).
+Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017 by
+the author(s).
 
-across space) and less computation (due to their limited
-support) compared to a fully-connected layer. Its local and
-predictable memory access pattern also makes better use of
-modern hardware’s caching mechanisms.
-The success of CNNs indicates that translation invariance
-is an important property of images. However, this does
-not explain why translation equivariant operators work well
-for image understanding. The common interpretation is
-that such operators are matched to the statistics of natural images, which are well known to be translation invariant (Hyvärinen et al., 2009). However, natural image
-statistics are also (largely) invariant to other transformations such as isotropic scaling and rotation, which suggests
-that alternative neural network designs may also work well
-with images. Furthermore, in specific applications, invariances other than translation may be more appropriate.
-Therefore, it is natural to consider generalizing convolutional architectures to other image transformations, and this
-has been the subject of extensive study (Kanazawa et al.,
-2014; Bruna et al., 2013; Cohen & Welling, 2016). Unfortunately these approaches do not possess the same memory
-and speed benefits that CNNs enjoy. The reason is that, ultimately, they have to transform (warp) an image or filter
-several times (Kanazawa et al., 2014; Marcos et al., 2016;
-Dieleman et al., 2015), incurring a high computational burden. Another approach is to consider a basis of filters
-(analogous to eigen-images) encoding the desired invariance (Cohen & Welling, 2014; Bruna et al., 2013; Cohen
-& Welling, 2016). Although they are able to handle transformations with many pose parameters, in practice most
-recent proposals are limited to very coarsely discretized
-transformations, such as horizontal/vertical flips and 90◦
-rotations (Dieleman et al., 2015; Cohen & Welling, 2014).
-In this work we consider generalizations of CNNs that
-overcome these disadvantages. Well known constructions
-in group theory enable the extension of convolution to general transformation groups (Folland, 1995). However, this
-generality usually comes at an increased computational
-cost or complexity. Here we show that, by making appropriate assumptions, we can design convolution operators that are equivariant to a large class of two-parameter
-transformations while reducing to a standard convolution
-in a warped image space. The fixed image warp can be
+tion. The principal degree of freedom is the scan, the order
+in which variables are sampled (He et al., 2016). While it
+is common to employ a systematic scan, sweeping through
+each variable in turn, or a uniform random scan, sampling
+each variable with equal frequency, it is known that nonuniform scans can lead to more accurate inferences both in
+theory and in practice (Liu et al., 1995; Levine & Casella,
+2006). This effect is particularly pronounced when certain
+variables are of greater inferential interest. Past approaches
+to optimizing Gibbs sampler scans were based on asymptotic quality measures approximated with the output of a
+Markov chain (Levine et al., 2005; Levine & Casella, 2006).
+In this work, we propose a computable non-asymptotic scan
+quality measure for discrete target distributions based on Dobrushin’s notion of variable influence (Dobrushin & Shlosman, 1985). We show that for a given subset of variables,
+this Dobrushin variation (DV) bounds the marginal total
+variation between a target distribution and T steps of Gibbs
+sampling with a specified scan. More generally, Dobrushin
+variation bounds a weighted total variation based on userinputted importance weights for each variable. We couple
+this quality measure with an efficient procedure for optimizing scan quality by minimizing Dobrushin variation.
+Our Dobrushin-optimized Gibbs samplers (DoGS) come
+equipped with a guaranteed bound on scan quality, are never
+worse than the standard uniform random and systematic
+scans, and can be tailored to a target number of sampling
+steps and a subset of target variables. Moreover, Dobrushin
+variation can be used to evaluate and compare the quality of any user-specified set of scans prior to running any
+expensive simulations.
+The improvements achieved by DoGS are driven by an inputted matrix, C̄, of pairwise variable influence bounds
+discussed in more detail in Section 3. While DoGS can
+be used with any discrete distribution, it was designed for
+targets with total influence kC̄k < 1, measured in any matrix norm. This criterion is known to hold for a variety of
+distributions, including Ising models with sufficiently high
+temperatures, hard-core lattice gas models, random graph
+colorings (Hayes, 2006), and classes of weighted constraint
+satisfaction problems (Feng et al., 2017). Moreover, as we
+will see in Section 4.1, suitable variable influence bounds
+are readily available for pairwise and binary Markov random fields. These user-friendly bounds give rise to total
 
-Warped Convolutions: Efficient Invariance to Spatial Transformations
+Improving Gibbs Sampler Scan Quality with DoGS
 
-implemented using bilinear resampling, a simple and fast
-operation that has been popularized by spatial transformer
-networks (Jaderberg et al., 2015; Heckbert, 1989) and is
-part of most deep learning toolboxes. Unlike previous proposals, the proposed warped convolutions can handle continuous transformations, such as fine rotation and scaling.
-This makes generalized convolution easily implementable
-in neural networks, reusing fast convolution algorithms on
-GPU hardware, such as Winograd (Lavin, 2015) or the Fast
-Fourier Transform (Lyons, 2010).
+influence kC̄k < 1 in all of our experiments and thereby
+enable improvements in both inferential speed and accuracy
+over standard scans.
+The remainder of the paper is organized as follows. Section 2 reviews Gibbs sampling and standard but computationally intractable measures of Gibbs sampler quality.
+In Section 3, we introduce our scan quality measure and
+its relationship to (weighted) total variation. We describe
+our procedures for selecting high-quality Gibbs sampler
+scans in Section 4. In Section 5, we apply our techniques
+to three popular applications of the Gibbs sampler: joint
+image segmentation and object recognition, MCMC maximum likelihood estimation with intractable gradients, and
+inference in the Ising model. In each case, we observe
+substantial improvements in full or marginal total variation
+over standard scans. Section 6 presents our conclusions and
+discussion of future work.
+Notation For any vector v and index i, we let v i represent
+the subvector of v with entry vi removed. We use diag(v)
+for a square diagonal matrix with v on the diagonal and
+for element-wise multiplication. The i-th standard basis
+vector is denoted by ei , I represents an identity matrix, 1
+signifies a vector of ones, and kCk is the spectral norm of
+matrix C. We use the shorthand [p] , {1, . . . , p}.
 
-2. Generalizing convolution
-2.1. Discrete and continuous convolution
-We start by looking at the basic building block of CNNs,
-i.e. the convolution operator. This operator computes the
-inner product of an image I ∈ RN ×N with a translated
-version of the filter F ∈ RM ×M , producing a new image
-as output:
+2. Gibbs sampling and total variation
+Consider a target distribution ⇡ on a finite p-dimensional
+state space, X p . Our inferential goal is to approximate expectations – means, moments, marginals,
+and more complex
+P
+function averages, E⇡ [f (X)] = x2X p ⇡(x)f (x) – under
+⇡, but we assume that both exact computation and direct
+sampling from ⇡ are prohibitive due to the large number
+of states, |X |p . Markov chain Monte Carlo (MCMC) algorithms attempt to skirt this intractability by simulating a
+sequence of random vectors X 0 , X 1 , . . . , X T 2 X p from
+tractable distributions such that expectations over X T are
+close to expectations under ⇡.
+2.1. Gibbs sampling
+Algorithm 1 summarizes the specific recipe employed by
+the Gibbs sampler (Geman & Geman, 1984), a leading
+MCMC algorithm which successively simulates single variables from their tractable conditional distributions. The principal degree of freedom in a Gibbs sampler is the scan, the
+sequence of p-dimensional probability vectors q1 , . . . , qT
+determining the probability of resampling each variable on
+each round of Gibbs sampling. Typically one selects between the uniform random scan, qt = (1/p, . . . , 1/p) for all
+t, where variable indices are selected uniformly at random
+on each round and the systematic scan, qt = e(t mod p)+1
+for each t, which repeatedly cycles through each variable
+
+Algorithm 1 Gibbs sampling (Geman & Geman, 1984)
+input Scan (qt )Tt=1 ; starting distribution µ; single-variable
+conditionals of target distribution, ⇡(·|X i )
+Sample from starting distribution: X 0 ⇠ µ
+for t in 1, 2, . . . , T do
+Sample variable index to update using scan: it ⇠ qt
+Sample Xitt ⇠ ⇡(·|X t it1 ) from its conditional
+Copy remaining variables: X t it = X t it1
+end for
+output Sample sequence (X t )Tt=0
+in turn. However, non-uniform scans are known to lead to
+better approximations (Liu et al., 1995; Levine & Casella,
+2006), motivating the need for practical procedures for evaluating and improving Gibbs sampler scans.
+2.2. Total variation
+Let ⇡t represent the distribution of the t-th step, X t , of a
+Gibbs sampler. The quality of a T -step Gibbs sampler and
+its scan is typically measured in terms of total variation (TV)
+distance between ⇡T and the target distribution ⇡:
+Definition 1. The total variation distance between probability measures µ and ⌫ is the maximum difference in expectations over all [0, 1]-valued functions,
+kµ
+
+⌫kT V ,
+
+sup
+f :X p ![0,1]
+
+E⌫ [f (Y )]|.
+
+|Eµ [f (X)]
+
+We view TV as providing a bound on the bias of a large
+class of Gibbs sampler expectations; note, however, that TV
+does not control the variance of these expectations.
+2.3. Marginal and weighted total variation
+While we typically sample all p variables in the process of
+Gibbs sampling, it is common for some variables to be of
+greater interest than others. For example, when modeling
+a large particle system, we may be interested principally in
+the behavior in local region of the system; likewise, when
+segmenting an image into its component parts, a particular
+region, like the area surrounding a face, is often of primary
+interest. In these cases, it is more natural to consider a
+marginal total variation that measures the discrepancy in
+expectation over only those variables of interest.
+Definition 2 (Marginal total variation). The marginal total
+variation between probability measures µ and ⌫ on a subset
+of variables S 2 [p] is the maximum difference in expectations over all [0, 1]-valued functions of X S , the restriction
+of X to the coordinates in S:
+kµ ⌫kS,T V ,
+
+sup
+f :X |S| ![0,1]
+
+⇥
+Eµ f X
+
+S
+
+⇤
+
+⇥
+E⌫ f Y
+
+S
+
+⇤
+
+.
+
+Improving Gibbs Sampler Scan Quality with DoGS
+
+More generally, we will seek to control an arbitrary userdefined weighted total variation that assigns an independent
+non-negative weight to each variable and hence controls the
+approximation error for functions with varying sensitivities
+in each variable.
+
+Definition 6 (Dobrushin influence matrix). The Dobrushin
+influence of variable j on variable i is given by
+
+Definition 3 (d-bounded differences). We say f : X p ! R
+has d-bounded differences for d 2 Rd if, for all X, Y 2 X p ,
+
+where (X, Y ) 2 Nj signifies Xl = Yl for all l 6= j.
+
+|f (X)
+
+f (Y )| 
+
+p
 X
-(I ∗ F )(j) =
-I(k)F (j − k),
+i=1
+
+di I[Xi 6= Yi ].
+
+For example, every function with range [0, 1] is a 1Lipschitz feature, and the value of the first variable, x 7! x1 ,
+is an e1 -Lipschitz feature. This definition leads to a measure
+of sample quality tailored to d-bounded difference functions.
+Definition 4 (d-weighted total variation). The d-weighted
+total variation between probability measures µ and ⌫ is
+the maximum difference in expectations across d-bounded
+difference functions:
+kµ ⌫kd,TV ,
+
+sup
+d bounded di↵erencef
+
+|Eµ [f (X)] E⌫ [f (Y )]|
+
+3. Measuring scan quality with Dobrushin
+variation
+Since the direct computation of total variation measures
+is typically prohibitive, we will define an efficiently computable upper bound on the weighted total variation of Definition 4. Our construction is inspired by the Gibbs sampler
+convergence analysis of Dobrushin & Shlosman (1985).
+The first step in Dobrushin’s approach is to control total
+variation in terms of coupled random vectors, (Xt , Yt )Tt=0 ,
+where X t has the distribution, ⇡t , of the t-th step of the
+Gibbs sampler and Y t follows the target distribution ⇡. For
+any such coupling, we can define the marginal coupling
+probability pt,i , P(Xit 6= Yit ). The following lemma, a
+generalization of results in (Dobrushin & Shlosman, 1985;
+Hayes, 2006), shows that weighted total variation is controlled by these marginal coupling probabilities. The proof
+is given in Appendix A.1, and similar arguments can be
+found in Rebeschini & van Handel (2014).
+
+Cij ,
+
+max
+
+(X,Y )2Nj
+
+k⇡(·|X i )
+
+⇡(·|Y i )kT V
+
 (1)
-k
 
-where k, j ∈ Z2 are two-dimensional vectors of indexes,
-and the summation ranges inside the extents of both arrays.
-Over the next sections it will be more convenient to translate the image I instead of the filter F . This alternative
-form of eq. (1) is obtained by the substitution k ← j + k:
+This influence matrix is at the heart of our efficiently computable measure of scan quality, Dobrushin variation.
+Definition 7 (Dobrushin variation). For any nonnegative
+weight vector d 2 Rp and entrywise upper bound C̄ on the
+Dobrushin influence (1), we define the Dobrushin variation
+of a scan (qt )Tt=1 as
+V(q1 , . . . , qT ; d, C̄) , d> B(qT ) · · · B(q1 )1
+for B(q) , (I
+
+diag(q)(I
+
+C̄)).
+
+Theorem 8 shows that Dobrushin variation dominates
+weighted TV and thereby provides target- and scan-specific
+guarantees on the weighted TV quality of a Gibbs sampler.
+The proof in Appendix A.2 rests on the fact that, for each
+t, bt , B(qt ) · · · B(q1 )1 provides an elementwise upper
+bound on the vector of marginal coupling probabilities, pt .
+Theorem 8 (Dobrushin variation controls weighted TV).
+Suppose that ⇡T is the distribution of the T -th step of a
+Gibbs sampler with scan (qt )Tt=1 . Then, for any nonnegative
+weight vector d 2 Rp and entrywise upper bound C̄ on the
+Dobrushin influence (1),
+k⇡T
+
+⇡kd,TV  V (qt )Tt=1 ; d, C̄ .
+
+4. Improving scan quality with DoGS
+
+Lemma 5 (Marginal coupling controls weighted TV). For
+any joint distribution (X, Y ) such that X ⇠ µ and Y ⇠ ⌫
+for probability measures µ and ⌫ on X p and any nonnegative weight vector d 2 Rp ,
 X
-(I ∗ F )(j) =
-I(j + k)F (−k)
-(2)
-k
+kµ ⌫kd,TV 
+di P(Xi 6= Yi ).
 
-2.2. Convolution on groups
-The standard convolution operator of eq. (4) can be interpreted as applying the filter to translated versions of the
-image. We wish to replace translations with other image
-transformations g, belonging to a group G. In the context of machine learning models for images, this generalized (group) convolution can be understood to exhaustively
-search for a pattern at various poses g ∈ G (e.g. rotation
-angles or scale factors) (Dieleman et al., 2015; Kanazawa
-et al., 2014).
-Following standard derivations (Folland, 1995), the most
-common way of generalising convolution to transformations other than translations starts from the Haar integral.
-Given a measure µ over a group G, one can define the integral of a real function I˜ : G → R, written:
-ˆ
-˜ dµ(g).
-I(g)
-G
+We next present an efficient algorithm for improving the
+quality of any Gibbs sampler scan by minimizing Dobrushin
+variation. We will refer to the resulting customized Gibbs
+samplers as Dobrushin-optimized Gibbs samplers or DoGS
+for short. Algorithm 2 optimizes Dobrushin variation using
+coordinate descent, with the selection distribution qt for
+each time step serving as a coordinate. Since Dobrushin
+variation is linear in each qt , each coordinate optimization
+(in the absence of ties) selects a degenerate distribution, a
+single coordinate, yielding a fully deterministic scan. If
+m  p is a bound on the size of the Markov blanket of
+each variable, then our forward-backward algorithm runs
+in time O(kdk0 + min(m log p + m2 , p)T ) with O(p + T )
+storage for deterministic input scans. The T (m log p + m2 )
+term arises from maintaining the derivative vector, w, in an
+efficient sorting structure, like a max-heap.
 
-The (left) Haar measure is the most natural choice for µ;
-it is the only measure (up to scaling factors) that is (left)
-invariant to group translation. In other words, µ satisfies
-the equation:
-ˆ
-ˆ
-˜ dµ(g).
-˜
-I(g)
-I(hg) dµ(g) =
-∀h ∈ G :
-G
+Dobrushin’s second step is to control the marginal coupling
+probabilities pt in terms of influence, a measure of how
+much a change in variable j affects the conditional distribution of variable i.
 
-G
+A user can initialize DoGS with any baseline scan, including
+a systematic or uniform random scan, and the resulting
+customized scan is guaranteed to have the same or better
+Dobrushin variation. Moreover, DoGS scans will always
 
-Mirroring eq. (4), the group convolution of two functions I˜
-and F̃ is defined as1
-ˆ
-˜
-(I˜ ∗ F̃ )(t) = I(tg)
-F̃ (g −1 ) dµ(g).
-(5)
-G
+i
 
-In the neural network literature, this is often written using
-the cross-correlation convention (Goodfellow et al., 2016),
-by considering the reflected filter F− (j) = F (−j):
-X
-(I ∗ F )(j) =
-I(j + k)F− (k).
+Improving Gibbs Sampler Scan Quality with DoGS
+
+Algorithm 2 DoGS: Scan selection via coordinate descent
+input Scan (q⌧ )T⌧ =1 ; variable weights d; influence entrywise upper bound C̄; (optional) target accuracy ✏.
+// Forward: Precompute coupling bounds of Section 3,
+// bt = B(qt ) · · · B(q1 )1 = B(qt )bt 1 with b0 = 1.
+// Only store b = bT and sequence of changes ( bt )Tt=01 .
+// Also precompute Dobrushin variation V = d> bT
+// and derivatives w = @V/@qT = d (I C̄)bT .
+b
+1, V
+d> b, w
+d (I C̄)b
+for t in 1, 2, . . . T do
+b
+diag (qt )(I C̄)b
+t 1
+b
+b
+b
+b
+// bt = bt 1
+t 1
+t 1
+> b
+>
+V
+V d
+// V = d bt
+t 1
+w
+w + d (I C̄) bt 1 // w = d (I C̄)bt
+end for
+// Backward: Optimize scan one step, qt⇤ , at a time.
+for t in T, T 1, . . . , 1 do
+If V  ✏, then qt⇤
+qt ; break
+// early stopping
+b
+b + bt 1
+// bt 1 = bt + bt 1
+// Update w = @V/@qt = dt (I C̄)bt 1
+>
+⇤
+⇤
+>
+>
+// for d>
+t , d B(qT ) · · · B(qt+1 ) and dT , d
+b
+w
+w d (I C̄) t 1
+// Pick probability vector qt⇤ minimizing d>
+t B(qt )bt 1
+qt⇤
+eargmini wi
+V
+V + d> diag(qt⇤ qt )b
+// V = d>
+t 1 bt 1
+d>
+
+d> diag(qt⇤ )(I
+
+C̄)
+d>
+>
+⇤
+d>
+d>
+// d>
+t 1 = dt B(qt )
+w
+w + d (I C̄)b // w = dt 1 (I C̄)bt 1
+end for
+1
+output Optimized scan (q⌧ )t⌧ =1
+, (q⌧⇤ )T⌧ =t
+be d-ergodic (i.e., k⇡T ⇡kd,TV ! 0 as T ! 1) when
+initialized with a systematic or uniform random scan and
+C̄ < 1. This follows from the following proposition,
+which shows that Dobrushin variation—and hence the dweighted total variation by Theorem 8—goes to 0 under
+these conditions and standard scans. The proof relies on
+arguments in (Hayes, 2006) and is outlined in Appendix A.3.
+Proposition 9. Suppose that C̄ is an entrywise upper bound
+on the Dobrushin influence matrix (1) and that (qt )Tt=1 is a
+systematic or uniform random scan. If C̄ < 1, then, for
+any nonnegative weight vector d, the Dobrushin variation
+vanishes as the chain length T increases. That is,
+lim V(q1 , . . . , qT ; d, C̄) = 0.
+
+T !1
+
+4.1. Bounding influence
+An essential input to our algorithms is the entrywise upper
+bound C̄ on the influence matrix (1). Fortunately, Liu &
+
+Domke (2014) showed that useful influence bounds are
+particularly straightforward to compute for any pairwise
+Markov random field (MRF) target,
+P P
+ij
+⇡(X) / exp( i,j a,b2X ✓ab
+I[Xi = a, Xj = b]). (2)
+
+Theorem 10 (Pairwise MRF influence (Liu & Domke, 2014,
+Lems. 10, 11)). Using the shorthand (s) , 1+e1 s , the
+influence (1) of the target ⇡ in (2) satisfies
+ij
+Cij  max |2 ( 12 max(✓ax
+j
+xj ,yj
+
+a,b
+
+ij
+✓ay
+)
+j
+
+ij
+(✓bx
+j
+
+ij
+✓by
+))
+j
+
+1|.
+
+Pairwise MRFs with binary variables Xi 2 { 1, 1} are especially common in statistical physics and computer vision.
+A general parameterization for binary pairwise MRFs is
+given by
+P
+P
+⇡(X) / exp( i6=j ✓ij Xi Xj + i ✓i Xi ),
 (3)
-k
+and our next theorem, proved in Appendix A.4, leverages
+the strength of the singleton parameters ✓i to provide a
+tighter bound on the influence of these targets.
+Theorem 11 (Binary pairwise influence). The influence (1)
+of the target ⇡ in (3) satisfies
+Cij 
 
-To handle continuous deformations of the input, it is more
-natural to express eq. (2) as an integral over continuous
-rather than discrete inputs:
-ˆ
-(I ∗ F )(y) = I(y + x) F (−x) dx,
-(4)
-where I, F : R2 → R are functions of continuous inputs
-in R2 . The real-valued 2D vectors x, y ∈ R2 now play the
-role of the indexes k ∈ Z2 . Equation (4) reduces to the
-discrete case of eq. (1) if we define I and F as the sum of
-delta functions on grids (Dirac comb). Intermediate values
-can be obtained by interpolation, such as bilinear (which
-amounts to convolution of the delta functions with a triangle filter (Jaderberg et al., 2015)). Importantly, such continuous images can be deformed by a rich set of continuous
-transformations of the input coordinates, whereas strictly
-discrete operations would be more limiting.
+|exp(2✓ij ) exp( 2✓ij )| b⇤
+(1 + b⇤ exp(2✓ij ))(1 + b⇤ exp( 2✓ij ))
 
-From the viewpoint of statistical learning, a key property of
-convolution is equivariance. Consider the (left) translation
-operator
-˜ : t 7−→ I(h
-˜ −1 t).
-Lh (I)
-(6)
-Then:
-Lemma 1. (Folland, 1995) Convolution is equivariant with
-group translations, in the sense that Lh commutes with ∗ :
-G
+for b⇤ = max(e
 
-˜ ∗ F̃ )(t).
-Lh (I˜ ∗ F̃ )(t) = (Lh (I)
-G
+2
 
-G
+P
+
+k6=j
+
+|✓ik | 2✓i
+
+, min[e2
+
+P
+
+k6=j
+
+|✓ik | 2✓i
+
+, 1]).
+
+Theorem 11 in fact provides an exact computation of the
+Dobrushin influence Cij whenever b⇤ 6= 1. The only approx⇤
+imation comes from the fact
+P that the value b = 1 may not
+2 k6=j ✓ik Xk 2✓i
+belong to the set B = {e
+| X 2 { 1, 1}p }.
+An exact computation of Cij would replace the cutoff of 1
+with its closest approximation in B.
+So far, we have focused on bounding influence in pairwise
+MRFs, as these bounds are most relevant to our experiments;
+indeed, in Section 5, we will use DoGS in conjunction with
+the bounds of Theorems 10 and 11 to improve scan quality
+for a variety of inferential tasks. However, user-friendly
+bounds are also available for non-pairwise MRFs (note that
+any discrete distribution can be represented as an MRF with
+parameters in the extended reals), and we include a simple
+extension of Theorem 11 that applies to binary MRFs with
+higher-order interactions. Its proof is in Appendix A.5
+Theorem 12 (Binary higher-order influence). The target
+P
+Q
+P
+⇡(X) / exp( S2S ✓S k2S Xk + i ✓i Xi ),
+for X 2 { 1, 1}d and S a set of non-singleton subsets of
+[p], has influence (1) satisfying
+Cij 
+
+| exp(2
+
+P
+
+S2S:i,j2S
+
+|✓S |) exp( 2
+(1+b⇤ )2
+
+P
+
+S2S:i,j2S
+
+|✓S |)| b⇤
+
+P
+for b⇤
+= P max(exp( 2 S2S:i2S,j 2S
+/ |✓S |
+2✓i ), min(exp(2 S2S:i2S,j 2S
+|✓
+|
+2✓
+),
+1)).
+S
+i
+/
+
+Improving Gibbs Sampler Scan Quality with DoGS
+102
+
+4.2. Related Work
+
+Levine & Casella (2006) approximate these Minimax Adaptive Scans for specific mixture models by considering single
+ad hoc features of interest; the approach has many hyperparameters to tune including the order of the Taylor expansion approximation, which sample points are used to approximate asymptotic quantities online, and the frequency
+of adaptive updating. Our proposed quality measure, Dobrushin variation, requires no approximation or tuning and
+can be viewed as a practical non-asymptotic objective function for the abstract scan selection framework of Levine and
+Casella. In the spirit of (Lacoste-Julien et al., 2011), DoGS
+can also be viewed as an approximate inference scheme
+calibrated for downstream inferential tasks depending only
+on subsets of variables.
+Levine et al. (2005) employ the Minimax Adaptive Scans of
+Levine and Casella by finding the mode of their target distribution using EM and then approximating the distribution by
+a Gaussian. They report that this approach to scan selection
+introduces substantial computational overhead (10 minutes
+of computation for an Ising model with 64 variables). As we
+will see in Section 5, the overhead of DoGS scan selection is
+manageable (15 seconds of computation for an Ising model
+with 1 million variables) and outweighed by the increase in
+scan quality and sampling speed.
+
+5. Experiments
+In this section, we demonstrate how our proposed scan quality measure and efficient optimization schemes can be used
+to both evaluate and improve Gibbs sampler scans when
+either the full distribution or a marginal distribution is of
+principal interest. For all experiments with binary MRFs, we
+adopt the model parameterization of (3) (with no additional
+temperature parameter) and use Theorem 11 to produce the
+Dobrushin influence bound C̄. On all ensuing plots, the
+numbers in the legend state the best guarantee achieved for
+each algorithm plotted. Due to space constraints, we display
+only one representative plot per experiment; the analogous
+plots from independent replicates of each experiment can
+be found in Appendix B.
+
+101
+TV guarantee
+
+In related work, Latuszynski et al. (2013) recently analyzed
+an abstract class of adaptive Gibbs samplers parameterized
+by an arbitrary scan selection rule. However, as noted in
+their Rem. 5.13, no explicit scan selection rules were provided in that paper. The only prior concrete scan selection
+rules of which we are aware are the Minimax Adaptive
+Scans with asymptotic variance or convergence rate objective functions (Levine & Casella, 2006). Unless some
+substantial approximation is made, it is unclear how to implement these procedures when the target distribution of
+interest is not Gaussian.
+
+100
+10
 
 1
 
-Due to the Haar invariance property, this definition is equivalent to the following one, also commonly found in the literature:
-ˆ
-˜ F̃ (g −1 t) dµ(g).
-(I˜ ∗ F̃ )(t) = I(g)
-G
+10
 
-The equivalence mirrors the one between eq. (1) and eq. (2), and
-can be easily proved:
-ˆ
-˜
-(I˜ ∗ F̃ )(t) = I(tg)
-F̃ ((tg)−1 t) dµ(g)
-G
-ˆ
-˜
-= I(tg)
-F̃ (g −1 ) dµ(g).
-
-Warped Convolutions: Efficient Invariance to Spatial Transformations
-
-´
-˜ −1 t)g)F̃ (g −1 ) dµ(g) =
-Proof. Lh (I˜ ∗ F̃ )(t) = I((h
-G
-´
-˜ −1 (tg))F̃ (g −1 ) dµ(g) = (Lh (I)
-˜ ∗ F̃ )(t).
-I(h
-
-and group convolution reduces to the standard notion of
-convolution ∗ on V :
-V
-
-G
-
-ˆ
-(I˜ ∗ F̃ )(exp(v)) =
-
-2.3. From groups to images
-
-G
-
-The functions I˜ and F̃ above have been defined on groups.
-In applications, however, we are interested in images, i.e.
-functions I : Ω → R defined on a subset Ω of the real plane
-R2 .
-The connection between the two function types is easy to
-establish. The assumption is that G acts2 on the image domain Ω (i.e. G is a group of transformations of Ω). We can
-then define the ˜· operator as:
-˜ = I(gx0 )
-I(g)
-where x0 ∈ Ω is an arbitrary pivot point. Note that the
-values of I˜ depend only on the values of I on the orbit of
-x0 , i.e. the set Gx0 = {gx0 : g ∈ G}. Therefore we
-typically set the domain Ω of I to be equal to Gx0 .
-By this definition, left translation of I˜ by h corresponds to
-warping the image I by the transformation h:
-˜
-Lh (I)(t)
-= I((h−1 t)x0 ) = I(h−1 (tx0 )) = (I^
-◦ h−1 )(t).
-We can then update eq. (5) to express group convolution as
-a function of images on the real plane:
-ˆ
-(I ∗ F )(t) = I(tgx0 )F (g −1 x0 ) dµ(g).
-(7)
-G
-
-Iw (v + u)Fw (−u) du.
-
-(8)
-
-V
-
-We refer to this standard convolution in warped space
-(eq. (8)) as warped convolution.
-Discussion. Note that the result is an image whose dimensionality P is that of the vector space V ; in the following,
-we mainly work in the case P = 2. By far, the strongest
-requirement is that the map is additive: this is the same as
-requiring the transformation group G to be Abelian, in the
-sense that transformations commute (hg = gh). In section 5 we will show a variety of useful image transformations that respect this property. The advantage of introducing this restriction is that calculations simplify tremendously, ultimately enabling a simple and efficient implementation of the operator as discussed below.
-
-3. Warped convolutions
-Our main contribution is to note that certain group convolutions can be implemented efficiently by a standard convolution, by pre-warping the input image and filter appropriately. The warp is the same for any image, depending
-solely on the nature of the relevant transformations, and
-can be written in closed form. This result allows one to
-implement very efficient group convolutions using simple
-computational blocks, as shown in section 3.2.
-
-2.4. Standard convolutions with exponential maps
-
-3.1. Warped convolution layer
-
-In the definitions of sections 2.2 and 2.3, while we could
-reduce the functions I˜ and F̃ to images I and F , the result of convolution is still a function defined over a group.
-One needs therefore to understand how to represent such
-functions and calculate the corresponding integrals.
-
-We can now reinterpret these results in terms of a new neural network convolutional layer. The input of the layer is an
-image I and the learnable parameters are the coefficients of
-the filter Fw . The output is a new “image” C(I; Fw )(v) defined on the vector space V . This image is obtained by first
-warping I using the exponential map and then by convolving the result with Fw in the standard sense:
-
-We note here that the simplest case is when G is a
-Lie group parameterised by the exponential map exp :
-V → G, where V is a subset of RP , in such a way
-that exp is smooth, bijective and additive (exp(u + v) =
-exp(u) exp(v)). Then:
-ˆ
-ˆ
-˜
-˜
-I(g) dµ(g) =
-I(exp(u))
-du.
-G
-
-V
-
-(9)
-
-The most important property of this layer is equivariance:
-if we warp the image by the transformation h = exp(u),
-then the convolution result translates by u:
-
-V
-
-C(I ◦ h−1 ; Fw ) = C(I; Fw )(v − u),
-
-Hence we can define the warped image
-˜
-Iw (u) = I(exp(u))
-= I(exp(u)x0 ),
 2
 
-C(I; Fw )(v) = (I(exp(·)x0 ) ∗ Fw )(v).
+10
 
-u ∈ V.
-
-This means that g defines a mapping Ω 7→ Ω and that
-the group multiplication hg corresponds to function composition
-(hg)x = h(gx).
-
-h = exp(u).
-
-Note that the output action equivalent to warping the input
-is simply to translate the result, as for standard convolution. The second most important property is that this operator can be implemented efficiently as the combination of
-warping and standard convolution.
-
-Warped Convolutions: Efficient Invariance to Spatial Transformations
-
-3.2. Implementation and intuition
-
-Algorithm 1 Warped Convolution
-
-The warp (exponential map) that is applied to the input image eq. (9) can be implemented as follows. We start with
-an arbitrary pivot point x0 in the image, and then sample
-all possible transformations of that point, {gx0 : g ∈ G}.
-For discrete images, G will be implemented as a 2D grid of
-discrete transformations (e.g. rotations and scales at regular intervals), and {gx0 } will be a 2D grid as well, referred
-to as the warp grid. Finally, sampling the input image at the
-points {gx0 } (for example, by bilinear interpolation) yields
-the warped image.
-
-Grid generation (offline)
-
-An illustration is given in fig. 1, for various transformations
-(each one is discussed in more detail in section 5). The red
-dot shows the pivot point x0 , and the two arrows pointing
-away from it show the original axes of the sampled grid
-of parameters. The grids were generated by sampling the
-transformation parameters at regular intervals. Note that
-the warp grids are independent of the image contents – they
-can be computed once offline and then applied to any image.
-The steps for implementing a warped convolution block are
-outlined in algorithm 1. The main advantage of implementing group convolution as warped convolution is that it replaces a large number of warping operations (one per group
-element) with a single warp.
-
-4. Discussion
-4.1. Interpretation as a filtering operator in image
-space
-When V ⊂ R2 , we can often interpret group convolution
-as an integration over image space, instead of over group
-elements. For this, we introduce the map η(v) = exp(v)x0
-and assume that it is smooth, invertible, and surjective on
-the image domain Ω. Surjectivity means that G acts transitively on Ω, in the sense that every point x ∈ Ω can be
-reached from x0 by a transformation g. Injectivity means
-that this transformation is unique.
-Next, let h = exp(v) and note that exp(v + u) =
-exp(v) exp(u) = h exp(u). Hence
-ˆ
-(I˜ ∗ F̃ )(h) =
-G
-
-Iw (v + u)Fw (−u) du
-ˆV
-
-=
-
-I(h exp(u)x0 )F (exp(−u)x0 ) du.
-V
-
-Let the filter F− be the reflection3 of F around the pivot
-point x0 by the group G, i.e. F− (gx0 ) = F (g −1 x0 ). It
 3
 
-This is well defined because η is invertible. In fact, if x =
-gx0 = exp(u)x0 = η(u), then u = η −1 (x) and F− (x) =
-F (η(−η −1 (x))).
+10
 
-• Compute the 2D warp grid w = gu (x0 ) by applying a two-parameter spatial transformation g : R2 ×
-R2 → R2 to a single pivot point x0 , using a 2D
-grid of parameters u = {(u1 + iδ1 , u2 + jδ2 ) : i =
-0, . . . , m, j = 0, . . . , n}.
-Warped convolution
-1. Resample input image I using the warp grid w, by
-bilinear interpolation.
-2. Convolve warped image Iw with a learned filter Fw .
-By eq. (8), and for appropriate transformations, these steps
-are equivalent to group convolution (which performs an exhaustive search across the pose-space of transformations),
-but at a much lower computational cost.
-follows that:
+4
 
-ˆ
+10
 
-(I˜ ∗ F̃ )(h) =
-G
+5
 
-I(h exp(u)x0 )F− (exp(u)x0 ) du.
-V
+Uniform (9.19E-01)
+Systematic (9.59E-03)
+DoGS (1.45E-04)
+Iterated DoGS (3.84E-05)
 
-We can now use the change of variable u ← η −1 (x) to
-write
-ˆ
-I(hη(u))F− (η(u)) du
-(10)
-(I˜ ∗ F̃ )(h) =
-G
-V
- −1 
-ˆ
- dη 
- dx.
-=
-I(hx)F− (x) 
-(11)
-dx 
-Ω
-Thus we see that the group convolution amounts to applying a certain filter F− to the warped image I ◦ h. The filter
-elements are reweighed by the determinant of the Jacobian
-of η −1 , which accounts for the stretching and shrinking of
-space due to the non-linear map. In practice, both the reflection and Jacobian can be absorbed into a learned filter,
-making such calculations unnecessary. Nevertheless, they
-offer a complementary view of warped convolutions.
-4.2. Efficiency vs. generality
-By reducing to standard convolution, warped convolution allows one to take full advantage of modern convolution implementations (Lavin, 2015; Lyons, 2010), including those with lower computational complexity (e.g.
-FFT (Lyons, 2010)). However, while warped convolution
-works with an important class of transformations (including the ones considered in previous works Kanazawa et al.
-(2014); Cohen & Welling (2014); Marcos et al. (2016)),
-non-trivial restrictions are imposed on the transformation
-group: it must be Abelian and have only two parameters.
-By contrast, the group-theoretic convolution operator
-of eq. (5) does not make (almost) any restriction on the
+0
 
-Warped Convolutions: Efficient Invariance to Spatial Transformations
+200
+400
+600
+800
+Length of Markov chain, T
 
-(a) translation
+1000
 
-(b) scale/aspect ratio
+Figure 1. TV guarantees provided Dobrushin variation for various
+Gibbs sampler scans on a 10 ⇥ 10 non-toroidal Ising model with
+random parameters (see Section 5.1). DoGS is initialized with the
+systematic scan.
 
-(c) scale/rotation
+5.1. Evaluating and optimizing Gibbs sampler scans
+In our first experiment, we illustrate how Dobrushin variation can be used to select between standard scans and how
+DoGS can be used to efficiently improve upon standard scan
+quality when total variation quality is of interest. We remind
+the reader that both scan evaluation and scan selection are
+performed offline prior to any expensive simulation from
+the Gibbs sampler. Our target is a 10 ⇥ 10 Ising model
+arranged in a two-dimensional lattice, a standard model of
+ferromagnetism in statistical physics. In the notation of (3),
+we draw the unary parameters ✓i uniformly at random from
+{0, 1}, and the interaction parameters uniformly at random:
+✓ij ⇠ Uniform([0, 0.25]).
 
-(d) 3D rotation (yaw/pitch)
+Figure 1 compares, as a function of the number of steps T ,
+the total variation guarantee provided by Dobrushin variation (see Theorem 8) for the standard systematic and uniform random scans. We see that the systematic scan, which
+traverses variables in row major order, obtains a significantly
+better TV guarantee than its uniform random counterpart for
+all sampling budgets T . Hence, the systematic scan would
+be our standard scan of choice for this target. DoGS (Algorithm 2) initialized with d = 1 and the systematic scan further improves the systematic scan guarantee by two orders
+of magnitude. Iterating Algorithm 2 on its own scan output
+until convergence (“Iterated DoGS” in Figure 1) provides
+additional improvement. However, since we consistently
+find that the bulk of the improvement is obtained with a
+single run of Algorithm 2, non-iterated DoGS remains our
+recommended recipe for quickly improving scan quality.
+Note that since our TV guarantee is an upper bound provided
+by the exact computation of Dobrushin variation, the actual
+gains in TV may differ from the gains in Dobrushin variation.
+In practice and as evidenced in Section 5.4, we find that
+the actual gains in (marginal) TV over standard scans are
+typically larger than the Dobrushin variation gains.
 
-Figure 1. First row: Sampling grids that define the warps associated with different spatial transformations. Second row: An example
-image (a) after warping with each grid (b-d). Third row: A small translation is applied to each warped image, which is then mapped
-back to the original space (by an inverse warp). Translation in one axis of the appropriate warped space is equivalent to (b) horizontal
-scaling; (c) planar rotation; (d) 3D rotation around the vertical axis.
+Improving Gibbs Sampler Scan Quality with DoGS
+100
+Uniform random scan
+DoGS
 
-transformation group. Unfortunately, it is in general significantly more difficult to compute efficiently than the special
-case we consider here. To understand some of the implementation challenges, consider specializing eq. (7) to a discrete group G such as a discrete set of planar rotations. In
-this case the Haar measure is trivial and equal to 1, and one
-has:
-X
-(I ∗ F )(t) =
-I(tgx0 )F (g −1 x0 ).
-G
+Systematic scan
+DoGS
+DoGS setup phase
 
-g∈G
+10
 
-Direct computation of this equation has complexity
-O(|G|2 ) where |G| is the cardinality of the discrete group.
-Assuming that |G| is in the order of O(N 2 ) where N is the
-resolution of the input image (as it would be for standard
-convolution), one would obtain a complexity of O(N 4 ). In
-practice, since usually the support of a M ×M filter is much
-smaller than the image, this complexity might reduce to
-O(N 2 M 2 ), which is the complexity for the spatial domain
+✓⇤ k2
 
-implementation of convolution; however, compared to the
-standard case, this has two major disadvantages. First, the
-image is sampled in a spatially-varying manner, using bilinear or other interpolation, which foregoes the benefit of
-the regular, predictable, and local pattern of computations
-in standard convolution. This makes high-performance implementation of the naive algorithm difficult, particularly
-on GPUs. Secondly, it precludes the use of faster convolution routines such as Winograd’s algorithm (Lavin, 2015)
-or the Fast Fourier Transform (Lyons, 2010), the later having lower computational complexity than exhaustive search
-(O(N 2 log N )). The development of analogues of the FFT
-for other general groups remains the subject of active research (Tygert, 2010; Li & Yang, 2016), which we sidestep
-by reusing highly optimized standard convolutions.
-In practice, most recent works focus on very coarse transformations that do not change the filter support and can
+0.5
+0.0
 
-Warped Convolutions: Efficient Invariance to Spatial Transformations
+k✓ˆ
 
-be implemented strictly via permutations, like horizontal/vertical flips and 90◦ rotations (Dieleman et al., 2015;
-Cohen & Welling, 2014). Such difficulties may explain
-why group convolutions are not as widespread as CNNs.
+Estimate for E⇡ [X1 ]
 
-5. Examples of spatial transformations
-We now give some concrete examples of two-parameter
-spatial transformations that obey the conditions of section 2.4, and can be useful in practice.
-5.1. Scale and aspect ratio
-Visual object detection tasks require predicting the extent
-of an object as a bounding box. While the location can
-be found accurately by a standard CNN, which is equivariant to translation, the size prediction could similarly benefit
-from equivariance to horizontal and vertical scale (equivalently, scale and aspect ratio).
-Such a spatial transformation, from which a warp can be
-constructed, is given by:
-
-gu (x) =
+1.0
 
-x1 su1
-x2 su2
+10
 
-
-(12)
-
-The s constant controls the total degree of scaling applied.
-Notice that the output must be exponential in the scale parameters u; this ensures the additive structure of the exponential map (exp(v + u) = exp(v) exp(u)). The resulting
-warp grid can be visualized in fig. 1-b. In this case, the domain of the image must be Ω ∈ R2+ , since a pivot x0 in one
-quadrant cannot reach another quadrant by any amount of
-(positive) scaling.
-5.2. Scale and rotation (log-polar warp)
-Planar scale and rotation are perhaps the most obvious
-spatial transformations in images, and are a natural test
-case for works on spatial transformations (Kanazawa et al.,
-2014; Marcos et al., 2016). Rotating a point x by u1 radians
-and scaling it by u2 , around the origin, can be performed
-with
-
-gu (x) =
-
-su2 kxk cos(atan2 (x2 , x1 ) + u1 )
-su2 kxk sin(atan2 (x2 , x1 ) + u1 )
-
-
-,
-
-(13)
-
-where atan2 is the standard 4-quadrant inverse tangent
-function (atan2). The domain in this case must exclude
-the origin (Ω ∈ R2 \ {0}), since a pivot x0 = 0 cannot
-reach any other points in the image by rotation or scaling.
-The resulting warp grid can be visualized in fig. 1-c. It
-is interesting to observe that it corresponds exactly to the
-log-polar domain, which is used in the signal processing
-
-I
-
-Warp
-
-Iw
-
-CNN
-
-Soft argmax
-
-Scale+bias
-
-û
-
-Figure 2. Equivariant pose estimation strategy used in the experiments (section 6). With an appropriate warp and a standard CNN,
-the shaded block becomes equivalent to a group-equivariant CNN,
-which performs exhaustive searches across pose-space instead of
-image-space.
-
-literature to perform correlation across scale and rotation
-(Tzimiropoulos et al., 2010; Reddy & Chatterji, 1996). In
-fact, it was the source of inspiration for this work, which
-can be seen as a generalization of the log-polar domain to
-other spatial transformations.
-5.3. 3D sphere rotation under perspective
-We will now tackle a more difficult spatial transformation,
-in an attempt to demonstrate the generality of our result.
-The transformations we will consider are yaw and pitch rotations in 3D space, as seen by a perspective camera. In
-the experiments (section 6) we will show how to apply it to
-face pose estimation.
-In order to maintain additivity, the rotated 3D points must
-remain on the surface of a sphere. We consider a simplified
-camera and world model, whose only hyperparameters are
-a focal length f , the radius of a sphere r, and its distance
-from the camera center d. The equations for the spatial
-transformation corresponding to yaw and pitch rotation under this model are in appendix A.
-The corresponding warp grid can be seen in fig. 1-d. It can
-be observed that the grid corresponds to what we would expect of a 3D rendering of a sphere with a discrete mesh. An
-intuitive picture of the effect of the warp grid in such cases
-is that it wraps the 2D image around the surface of the 3D
-object, so that translation in the warped space corresponds
-to moving between vertexes of the 3D geometry.
-
-6. Experiments
-6.1. Architecture
-As mentioned in section 2.2, group convolution can perform an exhaustive search for patterns across spatial transformations, by varying pose parameters. For tasks where
-invariance to that transformation is important, it is usual to
-pool the detection responses across all poses (Marcos et al.,
-2016; Kanazawa et al., 2014).
-In the experiments, however, we will test the framework in
-pose prediction tasks. As such, we do not want to pool the
-detection responses (e.g. with a max operation) but rather
-find the pose with the strongest response (i.e., an argmax
-operation). To perform this operation in a differentiable
-
-Warped Convolutions: Efficient Invariance to Spatial Transformations
-
-manner, we implement a soft argmax operation, defined as
-follows:
-mn
-X
-i
-s1 (a) =
-σij (a),
-m
-ij
-
-mn
-X
-j
-s2 (a) =
-σij (a), (14)
-n
-ij
-
-where σ(a) ∈ Rm×n is the softmax over all spatial locations, and σij (a) indexes the element at (i, j). The outputs are the two spatial coordinates of the maximum value,
-s(a) ∈ R2 .
-Our base architecture then consists of the following blocks,
-outlined in fig. 2. First, the input image is warped with a
-pre-generated grid, according to section 4.1. The warped
-image is then processed by a standard CNN, which is now
-equivariant to the spatial transformation that was used to
-generate the warp grid. A soft argmax (eq. (14)) then finds
-the maximum over pose-space. To ensure the pose prediction is well registered to the reference coordinate system, a
-learnable scale and bias are applied to the outputs; multiple predictions can be linearly combined into a single one
-at this stage. Training proceeds by minimizing the L1 loss
-between the predicted pose and ground truth pose.
-6.2. Google Earth
-For the first task in our experiments, we will consider aerial
-photos of vehicles, which have been used in several works
-that deal with rotation invariance (Liu et al., 2014; Schmidt
-& Roth, 2012; Henriques et al., 2014).
-Dataset. The Google Earth dataset (Heitz & Koller, 2008)
-contains bounding box annotations, supplemented with angle annotations from (Henriques et al., 2014), for 697 vehicles in 15 large images. We use the first 10 for training and
-the rest for validation. Going beyond these previous works,
-we focus on the estimation of both rotation and scale parameters. The object scale is taken to be the diagonal length
-of the bounding box. Due to its small size, we augment the
-dataset during training, by randomly rotating the images
-uniformly over 360◦ and scaling them by up to 20%.
-Implementation. A 48 × 48 image is cropped around
-each vehicle, and then fed to a network for pose prediction. The proposed method, Warped CNN, follows the architecture of section 6.1 (visualized in fig. 2). The CNN
-block contains 3 convolutional layers with 3 × 3 filters,
-with 50, 20 and 50 output channels respectively. We use
-dilation factors of 2, 4 and 8 respectively (à trous convolution (Chen et al., 2015)), which increases the receptive
-field and resolution without adding paramenters. There is
-a batch normalization and ReLU layer after each convolution, and a 3 × 3 max-pooling operator (stride 2) after
-the second one. The CNN block outputs response maps
-
-Table 1. Results of scale and rotation pose estimation of vehicles
-in the Google Earth dataset (errors in pixels and degrees, resp.).
-ROT.
-CNN+FC
-CNN+ SOFTARGMAX
-WARPED CNN
-(D IELEMAN ET AL ., 2015)
-
-ERR .
-
-22.54
-9.36
-8.29
-31.11
-
-S CALE ERR .
-5.04
-4.87
-4.79
-4.29
-
-over 2D pose-space, which in this case consists of rotation
-and scale. All networks are trained for 40 epochs using
-the ADAM solver (Kingma & Ba, 2015) and implemented
-in MatConvNet (Vedaldi & Lenc, 2015). Angular error is
-taken modulo 180◦ due to annotation ambiguity. We report
-the average validation error over 3 runs.
-Baselines and results. The results of the experiments are
-presented in table 1, which shows angular and scale error in the validation set. To verify whether the proposed
-warped convolution is indeed responsible for a boost in performance, rather than other architectural details, we compare it against a number of baselines with different components removed. The first baseline, CNN+softargmax, consists of the same architecture but without the warp (section 5.2). This is a standard CNN, with the soft argmax at
-the end. Since CNNs are equivariant to translation, rather
-than scale and rotation, we observe a drop in performance.
-For the second baseline, CNN+FC, we replace the soft
-argmax with a fully-connected (FC) layer, to allow a prediction that is not equivariant with translation. Due to the
-larger number of parameters, there is overfitting and a large
-drop in performance. We also compare against the method
-of (Dieleman et al., 2015), which applies the same CNN to
-90◦ rotations and flips of the image, combining the result
-with a FC layer. Just like with CNN+FC, there is overfitting on this small dataset, which requires very fine angular predictions. The proposed Warped CNN achieves the
-best results, except for scale prediction where (Dieleman
-et al., 2015) performs better. Our method has the same runtime performance as the CNN baselines, since the cost of a
-single warp is negligible, however (Dieleman et al., 2015)
-is 16× slower, since it applies the same CNN to multiple
-transformed images.
-6.3. Faces
-We now turn to face pose estimation in unconstrained photos, which requires handling more complex 3D rotations
-under perspective.
-Dataset. For this task we use the Annotated Facial Landmarks in the Wild (AFLW) dataset (Koestinger et al.,
-2011). It contains about 25K faces found in Flickr photos, and includes yaw (left-right) and pitch (up-down) an-
-
-Warped Convolutions: Efficient Invariance to Spatial Transformations
-Table 2. Results of yaw and pitch pose estimation of faces on the
-AFLW dataset (error in degrees).
-
-CNN+FC
-STN (JADERBERG ET AL ., 2015)
-WARPED CNN
-
-YAW ERR .
-
-P ITCH ERR .
-
-12.56
-13.65
-7.07
-
-6.59
-7.22
-5.28
-
-notations. We removed 933 faces with yaw larger than 90
-degrees (i.e., facing away from the camera), resulting in a
-set of 24,384 samples. 20% of the faces were set aside for
-validation.
-
-Implementation. The region in each face’s bounding box
-is resized to a 64 × 64 image, which is then processed by
-the network. Recall that our simplified 3D model of yaw
-and pitch rotation (section 5.3) assumes a spherical geometry. Although a person’s head roughly follows a spherical
-shape, the sample images are centered around the face, not
-the head. As such, we use an affine Spatial Transformer
-Network (STN) (Jaderberg et al., 2015) as a first step, to
-center the image correctly. Similarly, because the optimal
-camera parameters (f , r and d) are difficult to set by hand,
-we let the network learn them, by computing their derivatives numerically (which has a low overhead, since they are
-scalars). The rest of the network follows the same diagram
-as before (fig. 2). The main CNN has 4 convolutional layers, the first two with 5×5 filters, the others being 9×9. The
-numbers of output channels are 20, 50, 20 and 50, respectively. A 3 × 3 max-pooling with a stride of 2 is performed
-after the first layer, and there are ReLU non-linearities between the others. As for the STN, it has 3 convolutional
-layers (5 × 5), with 20, 50 and 6 output channels respectively, and 3 × 3 max-pooling (stride 2) between them. The
-remaining experimental settings are as in section 6.2.
-
-Baselines and results. The angular error of the proposed
-equivariant pose estimation, Warped CNN, is shown in table 2, along with a number of baselines. The goal of
-these experiments is to demonstrate that it is possible to
-achieve equivariance to complex 3D rotations. To compare
-with non-equivariant models, we test two baselines with
-the same CNN architecture, where the softargmax is replaced with a fully-connected (FC) layer. We include the
-Spatial Transformer Network (Jaderberg et al., 2015) and
-CNN+FC, which is a standard CNN of equivalent (slightly
-larger) capacity. We observe that neither the FC or the STN
-components account for the performance of the warped
-convolution, which better exploits the natural 3D rotation
-equivariance of the data.
-
-7. Conclusions
-In this work we show that it is possible to reuse highly optimized convolutional blocks, which are equivariant to image
-translation, and coax them to exhibit equivariance to other
-operators, including 3D transformations. This is achieved
-by a simple warp of the input image, implemented with offthe-shelf components of deep networks, and can be used
-for image recognition tasks involving a large range of image transformations. Compared to other works, warped
-convolutions are simpler, relying on highly optimized convolution routines, and can flexibly handle many types of
-continuous transformations. Studying generalizations that
-support more than two parameters seems like a fruitful direction for future work. In addition to the practical aspects,
-our analysis offers some insights into the fundamental relationships between arbitrary image transformations and convolutional architectures.
-
-A. Spatial transformation for 3D sphere
-rotation under perspective
-Our simplified model consists of a perspective camera with
-focal length f and all other camera parameters equal to
-identity, at a distance d from a centered sphere of radius
-r (see fig. 1-d).
-A 2D point x in image-space corresponds to the 3D point
-p = (x1 , x2 , f ).
-
-(15)
-
-Raycasting it along the z axis, it will intersect the sphere
-surface at the 3D point
-q=
-
-
-p
-fd
-p 
-k − k 2 − d2 + r2 , k =
-.
-kpk
-kpk
-
-(16)
-
-If the argument of the square-root is negative, the ray does
-not intersect the sphere and so the point transformation is
-undefined. This means that the domain of the image Ω
-should be restricted to the sphere region. In practice, in
-such cases we simply leave the point unmodified. Then,
-the yaw and pitch coordinates of the point q on the surface
-of the sphere are
-
-
- q 
-q1
 2
-φ1 = cos−1 −
-, φ2 = atan2 −
-.
-r
-d − q3
 
-(17)
+10
 
-These polar coordinates are now rotated by the spatial
-transformation parameters, φ0 = φ + u. Converting them
-back to a 3D point q 0
-q 0 = (r sin φ01 sin φ02 , −r cos φ01 , r sin φ01 cos φ02 − d) (18)
-Finally, projection of q 0 into image-space yields
-gu (x) = − qf0 (q10 , q20 ) .
 3
 
-(19)
+0.5
+1.0
+0
 
-Warped Convolutions: Efficient Invariance to Spatial Transformations
+10
+
+10
+
+20
+
+30 40 50 60
+Time in seconds
+
+70
+
+0
+
+80
+
+500
+1000
+1500
+Total number of sampling steps
+
+2000
+
+100
+Uniform random scan
+DoGS
+
+6
+
+105
+
+✓⇤ k2
+
+10
+
+104
+
+k✓ˆ
+
+Speed-up over systematic scan
+
+1
+
+103
+
+1
+
+10
+
+2
+
+10
+
+3
+
+102
+101
+100
+100
+
+0
+
+101
+102
+103
+104
+105
+Number of sample points drawn
+
+106
+
+Figure 2. (top) Estimate of target, E⇡ [X1 ], versus wall-clock time
+for a standard row-major-order systematic scan and a DoGS optimized sequence on an Ising model with 1 million variables (see
+Section 5.2). By symmetry E⇡ [X1 ] = 0. (bottom) The end-to-end
+speedup of DoGS over systematic scan, including setup and optimization time, as a function of the number of sample points we
+draw.
+
+5.2. End-to-end wall clock time performance
+In this experiment, we demonstrate that using DoGS to
+optimize a scan can result in dramatic inferential speed-ups.
+This effect is particularly pronounced for targets with a large
+number of variables and in settings that require repeated
+sampling from a low-bias Gibbs sampler. The setting is
+the exactly same as in the previous experiment, with the
+exception of model size: here we simulate a 103 ⇥ 103 Ising
+model, with 1 million variables in total. We target a single
+marginal X1 with d = e1 and take a systematic scan of
+length T = 2 ⇥ 106 as our input scan. After measuring
+the Dobrushin variation ✏ of the systematic scan, we use
+an efficient length-doubling scheme to select a DoGS scan:
+(0) initialize T̃ = 2; (1) run Algorithm 2 with the first T̃
+steps of the systematic scan as input; (2) if the resulting
+DoGS scan has Dobrushin variation less than ✏, we keep it;
+otherwise we double T̃ and return to step (1). The resulting
+DoGS scan has length T̃ = 16.
+
+5000 10000 15000 20000 25000 30000
+Total number of sampling steps
+
+Figure 3. Comparison of parameter estimation error in MCMC
+maximum likelihood estimation of the 3 ⇥ 3 (top) and a 4 ⇥ 4
+(bottom) Ising models of Domke (2015). Each MCMC gradient
+estimate is obtained either from the uniform random scan suggested
+by Domke or from DoGS initialized with the uniform random scan,
+using Algorithm 2 to achieve a target total variation of 0.01 (see
+Section 5.3). Five runs are shown in each case.
+
+We repeatedly draw independent sample points from either
+the length T systematic scan Gibbs sampler or the length T̃
+DoGS scan Gibbs sampler. Figure 2 evaluates the bias of
+the resulting Monte Carlo estimates of E⇡ [X1 ] as a function
+of time, including the 15s of setup time for DoGS on this 1
+million variable model. In comparison, Levine et al. (2005)
+report 10 minutes of setup time for their adaptive Gibbs
+scans when processing a 64 variable Ising model. The bottom plot of Figure 2 uses the average measured time for a
+single step1 , the measured setup time for DoGS and the size
+of the two scan sequences to give an estimate of the speedup
+as a function of the number of sample points drawn. Additional timing experiments are deferred to Appendix B.2.
+5.3. Accelerated MCMC maximum likelihood
+estimation
+We next illustrate how DoGS can be used to accelerate
+MCMC maximum likelihood estimation, while providing
+guarantees on parameter estimation quality. We replicate
+1
+
+Each Gibbs step took 12.65µs on a 2015 Macbook Pro.
+
+5.4. Customized scans for fast marginal mixing
+In this section we demonstrate how DoGS can be used to
+dramatically speed up marginal inference while providing
+target-dependent guarantees. We use a 40 ⇥ 40 non-toroidal
+Ising model and set our feature to be the top left variable
+with d = e1 . Figure 4 compares guarantees for a uniform
+random scan and a systematic scan; we also see how we can
+further improve the total variation guarantees by feeding a
+systematic scan into Algorithm 2. Again we see that a single
+run of Algorithm 2 yields the bulk of the improvement, and
+iterated applications only provide small further benefits. For
+the DoGS sequence, the figure also shows a histogram of
+the distance of sampled variables from the target variable,
+X1 , at the top left corner of the grid.
+Figure 5 shows that optimizing our objective actually improves performance by reducing the marginal bias much
+more quickly than systematic scan. For completeness, we
+include additional experiments on a toroidal Ising model in
+Appendix B.3.
+5.5. Targeted image segmentation and object
+recognition
+The Markov field aspect model (MFAM) of Verbeek &
+Triggs (2007) is a generative model for images designed
+to automatically divide an image into its constituent parts
+(image segmentation) and label each part with its semantic
+object class (object recognition). For each test image k,
+the MFAM extracts a discrete feature descriptor from each
+image patch i, assigns a latent object class label Xi 2 X to
+
+100
+
+10
+
+1
+
+10
+
+2
+
+10
+
+3
+
+Uniform (1.208E-01)
+Systematic scan (6.401E-02)
+DoGS (9.626E-03)
+Iterated DoGS (7.405E-03)
+
+0
+
+Frequency
+
+the Ising model maximum likelihood estimation experiment
+of (Domke, 2015, Sec. 6) and show how we can provide
+the same level of accuracy faster. Our aim is to learn the
+parameters of binary MRFs based on training samples with
+independent Rademacher entries. On each step of MCMCMLE, Domke uses Gibbs sampling with a uniform random
+scan to produce an estimate of the gradient of the log likelihood. Our DoGS variant employs Algorithm 2 with d = 1,
+early stopping parameter ✏ = 0.01, and a Dobrushin influence bound constructed from the latest parameter estimate
+✓ˆ using Theorem 11. We set the number of gradient steps,
+MC steps per gradient, and independent runs of Gibbs sampling to the suggested values in (Domke, 2015). After each
+gradient update, we record the distance between the optimal
+and estimated parameters. Figure 3 displays the estimation
+error of five independent replicates of this experiment using
+each of two scans (uniform or DoGS) for two models (a
+3 ⇥ 3 and a 4 ⇥ 4 Ising model). The results show that DoGS
+consistently achieves the desired parameter accuracy much
+more quickly than standard Gibbs.
+
+Marginal TV guarantee
+
+Improving Gibbs Sampler Scan Quality with DoGS
+
+5000
+10000
+15000
+Length of Markov chain, T
+
+0.007
+0.006
+0.005
+0.004
+0.003
+0.002
+0.001
+0.000
+0
+500
+1000
+1500
+Variable sorted by distance to top left corner
+
+Figure 4. (top) Marginal TV guarantees provided by Dobrushin
+variation for various Gibbs sampler scans when targeting the top
+left corner variable on a 40 ⇥ 40 non-toroidal Ising model with
+✓ij ⇡ 1/3.915 (see Section 5.4). DoGS is initialized with the
+systematic scan. (bottom) Frequency with which each variable
+is sampled in the DoGS sequence of length 16000, sorted by
+Manhattan distance to target variable.
+
+each patch, and induces the posterior distribution
+P
+⇡(X|y; k) / exp( (i,j) spatial neighbors I{Xi = Xj } (4)
+P
+P
++ i log( a2X ✓k,a a,yi I{Xi = a})),
+
+over the configuration of patch levels X. When the Potts
+parameter = 0, this model reduces to probabilistic latent semantic analysis (PLSA) (Hofmann, 2001), while a
+positive value of encourages nearby patches to belong to
+similar classes. Using the Microsoft Research Cambridge
+(MSRC) pixel-wise labeled image database v12 , we follow
+the weakly supervised setup of Verbeek & Triggs (2007)
+to fit the PLSA parameters ✓ and to a training set of images and then, for each test image k, use Gibbs sampling to
+generate patch label configurations X targeting the MFAM
+posterior (4) with = 0.48. We generate a segmentation by
+assigning each patch the most frequent label encountered
+during Gibbs sampling and evaluate the accuracy of this
+labeling using the Hamming error described in (Verbeek &
+Triggs, 2007). This experiment is repeated over 20 indepen2
+
+http://research.microsoft.com/vision/cambridge/recognition/
+
+1.3
+1.2
+1.1
+1.0
+0.9
+0.8
+0.7
+0.6
+0.5
+0.4
+
+Systematic (9.159E-01)
+DoGS (4.186E-01)
+
+Figure 6. (left) Example test image from MSRC dataset. (right)
+Segmentation produced by DoGS Markov field aspect model targeting the center region outlined in white (see Section 5.5).
+
+Measured bias, |Ê[X1T ]
+
+E⇡ [X1 ]|
+
+0
+
+500 1000 1500 2000 2500 3000
+Length of Markov chain, T
+18
+
+1.2
+Systematic (4.053E-01)
+DoGS (1.329E-02)
+
+1.0
+0.8
+0.6
+0.4
+
+Hamming error
+
+Marginal TV guarantee
+
+Improving Gibbs Sampler Scan Quality with DoGS
+
+17
+16
+15
+PLSA
+Systematic scan
+DoGS
+
+14
+13
+
+0.2
+0.0
+
+0
+
+0.2
+0
+
+500 1000 1500 2000 2500 3000
+Length of Markov chain, T
+
+Figure 5. (top) Marginal TV guarantees provided by Dobrushin
+variation for systematic scan and DoGS initialized with systematic
+scan when targeting the top left corner variable on a 40 ⇥ 40
+toroidal Ising model with ✓ij = 0.25 (see Section 5.4). (bottom)
+Measured bias and standard errors from 300 independent samples
+of X1T .
+
+dently generated 90% training / 10% test partitions of the
+240 image dataset.
+We select our DoGS scan to target a 12 ⇥ 8 marginal patch
+rectangle at the center of each image (the {0,1} entries of d
+indicate whether a patch is in the marginal rectangle highlighted in Figure 6) and compare its segmentation accuracy
+and efficiency with that of a standard systematic scan of
+length T = 620. We initialize DoGS with the systematic
+scan, the influence bound C̄ of Theorem 10, and a target
+accuracy ✏ equal to the marginal Dobrushin variation guarantee of the systematic scan. In 11.5ms, the doubling scheme
+described in Section 5.2 produced a DoGS sequence of
+length 110 achieving the Dobrushin variation guarantee ✏ on
+marginal TV. Figure 7 shows that DoGS achieves a slightly
+better average Hamming error than systematic scan using a
+5.5⇥ shorter sequence. Systematic scan takes 1.2s to resample each variable of interest, while DoGS consumes 0.37s.
+Moreover, the 11.5ms DoGS scan selection was performed
+only once and then used to segment all test images. For
+
+200
+400
+600
+800 1000
+Number of sampling steps
+
+1200
+
+Figure 7. Average test image segmentation error under the Markov
+field aspect model of Section 5.5. PLSA represents the maximum a
+posteriori patch labeling under the MFAM (4) with = 0. Errors
+are averaged over 20 MSRC test sets of 24 images.
+
+each chain, X 0 was initialized to the maximum a posteriori
+patch labeling under the PLSA model (obtained by setting
+= 0 in the MFAM).
+
+6. Discussion
+We introduced a practical quality measure – Dobrushin variation – for evaluating and comparing existing Gibbs sampler
+scans and efficient procedures – DoGS – for developing
+customized fast-mixing scans tailored to marginals or distributional features of interest. We deployed DoGS for three
+common Gibbs sampler applications – joint image segmentation and object recognition, MCMC maximum likelihood
+estimation, and Ising model inference – and in each case
+achieved higher quality inferences with significantly smaller
+sampling budgets than standard Gibbs samplers. In the future, we aim to enlist DoGS for additional applications in
+computer vision and natural language processing, extend the
+reach of DoGS to models containing continuous variables,
+and integrate DoGS into large inference engines built atop
+Gibbs sampling.
+
+Improving Gibbs Sampler Scan Quality with DoGS
 
 References
-Bruna, Joan, Szlam, Arthur, and LeCun, Yann. Learning
-stable group invariant representations with convolutional
-networks. arXiv preprint arXiv:1301.3537, 2013.
-Chen, Liang-Chieh, Papandreou, George, Kokkinos, Iasonas, Murphy, Kevin, and Yuille, Alan L. Semantic image segmentation with deep convolutional nets and fully
-connected CRFs. In Proceedings of the 2015 International Conference on Learning Representations, 2015.
-Cohen, Taco and Welling, Max. Learning the Irreducible
-Representations of Commutative Lie Groups. In Proceedings of the 31st International Conference on Machine Learning, 2014.
-Cohen, Taco and Welling, Max. Group equivariant convolutional networks. In Proceedings of the 33rd International Conference on Machine Learning, 2016.
-Dieleman, Sander, Willett, Kyle W, and Dambre, Joni.
-Rotation-invariant convolutional neural networks for
-galaxy morphology prediction. Monthly notices of the
-royal astronomical society, 450(2):1441–1459, 2015.
-Folland, Gerald B. A course in abstract harmonic analysis.
-CRC Press, 1995.
-Goodfellow, Ian, Bengio, Yoshua, and Courville, Aaron.
-Deep learning. MIT Press, 2016.
-Heckbert, Paul S. Fundamentals of texture mapping and
-image warping. Master’s thesis, University of California,
-Berkeley, 1989.
-Heitz, Geremy and Koller, Daphne. Learning spatial context: Using stuff to find things. In European Conference
-on Computer Vision, pp. 30–43. Springer, 2008.
-Henriques, J. F., Martins, P., Caseiro, R., and Batista, J.
-Fast training of pose detectors in the fourier domain.
-In Advances in Neural Information Processing Systems,
-2014.
-Hyvärinen, Aapo, Hurri, Jarmo, and Hoyer, Patrick O. Natural Image Statistics: A Probabilistic Approach to Early
-Computational Vision., volume 39. Springer Science &
-Business Media, 2009.
-Jaderberg, Max, Simonyan, Karen, Zisserman, Andrew,
-et al. Spatial transformer networks. In Advances in
-Neural Information Processing Systems, pp. 2017–2025,
-2015.
-Kanazawa, Angjoo, Sharma, Abhishek, and Jacobs, David.
-Locally scale-invariant convolutional neural networks.
-arXiv preprint arXiv:1412.5104, 2014.
-
-Kingma, Diederik P and Ba, Jimmy Lei. Adam: A method
-for stochastic optimization. In Proceedings of the 2015
-International Conference on Learning Representations,
-2015.
-Koestinger, Martin, Wohlhart, Paul, Roth, Peter M., and
-Bischof, Horst. Annotated facial landmarks in the wild:
-A large-scale, real-world database for facial landmark
-localization. In IEEE International Workshop on Benchmarking Facial Image Analysis Technologies, 2011.
-Lavin, Andrew. Fast algorithms for convolutional neural
-networks. arXiv preprint arXiv:1509.09308, 2015.
-Li, Yingzhou and Yang, Haizhao. Interpolative butterfly
-factorization. arXiv preprint arXiv:1605.03616, 2016.
-Liu, Kun, Skibbe, Henrik, Schmidt, Thorsten, Blein,
-Thomas, Palme, Klaus, Brox, Thomas, and Ronneberger, Olaf. Rotation-Invariant HOG Descriptors Using Fourier Analysis in Polar and Spherical Coordinates.
-International Journal of Computer Vision, 106(3):342–
-364, February 2014. ISSN 0920-5691, 1573-1405. doi:
-10.1007/s11263-013-0634-z.
-Lyons, Richard G. Understanding digital signal processing. Pearson Education, 2010.
-Marcos, Diego, Volpi, Michele, and Tuia, Devis. Learning
-rotation invariant convolutional filters for texture classification. arXiv preprint arXiv:1604.06720, 2016.
-Reddy, B. Srinivasa and Chatterji, Biswanath N. An
-FFT-based technique for translation, rotation, and scaleinvariant image registration. IEEE Transactions on Image Processing, 5(8):1266–1271, 1996.
-Schmidt, Uwe and Roth, Stefan. Learning rotation-aware
-features: From invariant priors to equivariant descriptors. In Computer Vision and Pattern Recognition
-(CVPR), 2012 IEEE Conference on, pp. 2050–2057,
-2012.
-Tygert, Mark. Fast algorithms for spherical harmonic expansions, iii. Journal of Computational Physics, 229
-(18):6181–6192, 2010.
-Tzimiropoulos, Georgios, Argyriou, Vasileios, Zafeiriou,
-Stefanos, and Stathaki, Tania. Robust FFT-based scaleinvariant image registration with image gradients. IEEE
-Transactions on Pattern Analysis and Machine Intelligence, 32(10):1899–1906, 2010.
-Vedaldi, A. and Lenc, K. MatConvNet – Convolutional
-Neural Networks for MATLAB. In Proceeding of the
-ACM Int. Conf. on Multimedia, 2015.
-Acknowledgements. This research was funded by ERC
-677195-IDIU.
+De Sa, Christopher, Olukotun, Kunle, and Ré, Christopher. Ensuring rapid mixing and low bias for asynchronous Gibbs sampling.
+arXiv preprint arXiv:1602.07415, 2016.
+Dobrushin, Roland Lvovich and Shlosman, Senya B. Constructive
+criterion for the uniqueness of Gibbs field. In Statistical physics
+and dynamical systems, pp. 347–370. Springer, 1985.
+Domke, Justin. Maximum likelihood learning with arbitrary
+treewidth via fast-mixing parameter sets. In Advances in Neural
+Information Processing Systems, pp. 874–882, 2015.
+Feng, Weiming, Sun, Yuxin, and Yin, Yitong. What can be sampled
+locally? arXiv preprint arXiv:1702.00142, 2017.
+Geman, Stuart and Geman, Donald. Stochastic relaxation, Gibbs
+distributions, and the bayesian restoration of images. Pattern
+Analysis and Machine Intelligence, IEEE Transactions on, (6):
+721–741, 1984.
+Geyer, C. J. Markov chain Monte Carlo maximum likelihood.
+Computer Science and Statistics: Proc. 23rd Symp. Interface,
+pp. 156–163, 1991.
+Hayes, Thomas P. A simple condition implying rapid mixing of
+single-site dynamics on spin systems. In Foundations of Computer Science, 2006. FOCS’06. 47th Annual IEEE Symposium
+on, pp. 39–46. IEEE, 2006.
+He, Bryan D, De Sa, Christopher M, Mitliagkas, Ioannis, and Ré,
+Christopher. Scan order in gibbs sampling: Models in which
+it matters and bounds on how much. In Advances in Neural
+Information Processing Systems, pp. 1–9, 2016.
+Hofmann, Thomas. Unsupervised learning by probabilistic latent
+semantic analysis. Machine learning, 42(1-2):177–196, 2001.
+Janke, Wolfhard. Monte Carlo methods in classical statistical
+physics. In Computational Many-Particle Physics, pp. 79–140.
+Springer, 2008.
+Lacoste-Julien, Simon, Huszár, Ferenc, and Ghahramani, Zoubin.
+Approximate inference for the loss-calibrated bayesian. In
+AISTATS, pp. 416–424, 2011.
+Latuszynski, Krzysztof, Roberts, Gareth O., and Rosenthal,
+Jeffrey S. Adaptive Gibbs samplers and related MCMC
+methods. Ann. Appl. Probab., 23(1):66–98, 02 2013. doi:
+10.1214/11-AAP806. URL http://dx.doi.org/10.
+1214/11-AAP806.
+Levine, R. A. and Casella, G. Optimizing random scan Gibbs
+samplers. Journal of Multivariate Analysis, 97(10):2071–2100,
+2006.
+Levine, Richard A, Yu, Zhaoxia, Hanley, William G, and Nitao,
+John J. Implementing random scan Gibbs samplers. Computational Statistics, 20(1):177–196, 2005.
+Liu, Jun S, Wong, Wing H, and Kong, Augustine. Covariance
+structure and convergence rate of the Gibbs sampler with various scans. Journal of the Royal Statistical Society. Series B
+(Methodological), pp. 157–169, 1995.
+Liu, Xianghang and Domke, Justin. Projecting markov random
+field parameters for fast mixing. In Advances in Neural Information Processing Systems, pp. 1377–1385, 2014.
+Lunn, David J, Thomas, Andrew, Best, Nicky, and Spiegelhalter,
+David. WinBUGS-a bayesian modelling framework: concepts,
+structure, and extensibility. Statistics and computing, 10(4):
+325–337, 2000.
+Rebeschini, Patrick and van Handel, Ramon. Comparison theorems
+for gibbs measures. Journal of Statistical Physics, 157(2):234–
+281, 2014.
+Verbeek, Jakob and Triggs, Bill. Region classification with markov
+field aspect models. In Computer Vision and Pattern Recognition, 2007. CVPR’07. IEEE Conference on, pp. 1–8. IEEE,
+2007.
 
 

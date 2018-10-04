@@ -1,1472 +1,1021 @@
-Deep Transfer Learning with Joint Adaptation Networks
+Latent Intention Dialogue Models
 
-Mingsheng Long 1 Han Zhu 1 Jianmin Wang 1 Michael I. Jordan 2
+Tsung-Hsien Wen 1 * Yishu Miao 2 * Phil Blunsom 2 Steve Young 1
 
 Abstract
-Deep networks have been successfully applied to
-learn transferable features for adapting models
-from a source domain to a different target domain.
-In this paper, we present joint adaptation networks
-(JAN), which learn a transfer network by aligning
-the joint distributions of multiple domain-specific
-layers across domains based on a joint maximum
-mean discrepancy (JMMD) criterion. Adversarial
-training strategy is adopted to maximize JMMD
-such that the distributions of the source and target
-domains are made more distinguishable. Learning
-can be performed by stochastic gradient descent
-with the gradients computed by back-propagation
-in linear-time. Experiments testify that our model
-yields state of the art results on standard datasets.
+Developing a dialogue agent that is capable of
+making autonomous decisions and communicating by natural language is one of the long-term
+goals of machine learning research. Traditional
+approaches either rely on hand-crafting a small
+state-action set for applying reinforcement learning that is not scalable or constructing deterministic models for learning dialogue sentences that
+fail to capture natural conversational variability.
+In this paper, we propose a Latent Intention Dialogue Model (LIDM) that employs a discrete latent variable to learn underlying dialogue intentions in the framework of neural variational inference. In a goal-oriented dialogue scenario, these
+latent intentions can be interpreted as actions
+guiding the generation of machine responses,
+which can be further refined autonomously by reinforcement learning. The experimental evaluation of LIDM shows that the model out-performs
+published benchmarks for both corpus-based and
+human evaluation, demonstrating the effectiveness of discrete latent variable models for learning goal-oriented dialogues.
 
 1. Introduction
-Deep networks have significantly improved the state of the
-arts for diverse machine learning problems and applications.
-Unfortunately, the impressive performance gains come only
-when massive amounts of labeled data are available for
-supervised learning. Since manual labeling of sufficient
-training data for diverse application domains on-the-fly is
-often prohibitive, for a target task short of labeled data,
-there is strong motivation to build effective learners that can
-leverage rich labeled data from a different source domain.
-However, this learning paradigm suffers from the shift in
-data distributions across different domains, which poses a
-major obstacle in adapting predictive models for the target
-task (Quionero-Candela et al., 2009; Pan & Yang, 2010).
-Learning a discriminative model in the presence of the shift
-between training and test distributions is known as transfer
-learning or domain adaptation (Pan & Yang, 2010). Previous
-1
+Recurrent neural networks (RNNs) have shown impressive results in modeling generation tasks that have a sequential structured output form, such as machine translation (Sutskever et al., 2014; Bahdanau et al., 2015), caption
+generation (Karpathy & Fei-Fei, 2015; Xu et al., 2015),
+and natural language generation (Wen et al., 2015; Kiddon et al., 2016). These discriminative models are trained
+to learn only a conditional output distribution over strings
+and despite the sophisticated architectures and condition*
 
-Key Lab for Information System Security, MOE; Tsinghua National Lab for Information Science and Technology (TNList); NELBDS; School of Software, Tsinghua University, Beijing 100084,
-China 2 University of California, Berkeley, Berkeley 94720. Correspondence to: Mingsheng Long <mingsheng@tsinghua.edu.cn>.
+Equal contribution 1 Department of Engineering, University of
+Cambridge, Cambridge, United Kingdom 2 Department of Computer Science, University of Oxford, Oxford, United Kingdom.
+Correspondence to: Tsung-Hsien Wen <thw28@cam.ac.uk>,
+Yishu Miao <yishu.miao@cs.ox.ac.uk>.
 Proceedings of the 34 th International Conference on Machine
-Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017 by
-the author(s).
+Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
+by the author(s).
 
-shallow transfer learning methods bridge the source and target domains by learning invariant feature representations or
-estimating instance importance without using target labels
-(Huang et al., 2006; Pan et al., 2011; Gong et al., 2013). Recent deep transfer learning methods leverage deep networks
-to learn more transferable representations by embedding
-domain adaptation in the pipeline of deep learning, which
-can simultaneously disentangle the explanatory factors of
-variations behind data and match the marginal distributions
-across domains (Tzeng et al., 2014; 2015; Long et al., 2015;
-2016; Ganin & Lempitsky, 2015; Bousmalis et al., 2016).
-Transfer learning becomes more challenging when domains
-may change by the joint distributions of input features and
-output labels, which is a common scenario in practical applications. First, deep networks generally learn the complex
-function from input features to output labels via multilayer
-feature transformation and abstraction. Second, deep features in standard CNNs eventually transition from general to
-specific along the network, and the transferability of features
-and classifiers decreases when the cross-domain discrepancy
-increases (Yosinski et al., 2014). Consequently, after feedforwarding the source and target domain data through deep
-networks for multilayer feature abstraction, the shifts in the
-joint distributions of input features and output labels still
-linger in the network activations of multiple domain-specific
-higher layers. Thus we can use the joint distributions of the
-activations in these domain-specific layers to approximately
-reason about the original joint distributions, which should
-be matched across domains to enable domain adaptation. To
-date, this problem has not been addressed in deep networks.
-In this paper, we present Joint Adaptation Networks (JAN)
-to align the joint distributions of multiple domain-specific
-layers across domains for unsupervised domain adaptation.
-JAN largely extends the ability of deep adaptation networks
-(Long et al., 2015) to reason about the joint distributions
-as mentioned above, while keeping the training procedure
-even simpler. Specifically, JAN admits a simple transfer
-pipeline, which processes the source and target domain data
-by convolutional neural networks (CNN) and then aligns
-the joint distributions of activations in multiple task-specific
-layers. To learn parameters and enable alignment, we derive
-joint maximum mean discrepancy (JMMD), which measures
-the Hilbert-Schmidt norm between kernel mean embedding
-of empirical joint distributions of source and target data.
+ing mechanisms used to ensure salience, they are not able
+to model the underlying actions needed to generate natural
+dialogues. As a consequence, these sequence-to-sequence
+models are limited in their ability to exhibit the intrinsic
+variability and stochasticity of natural dialogue. For example both goal-oriented dialogue systems (Wen et al., 2017;
+Bordes & Weston, 2017) and sequence-to-sequence learning chatbots (Vinyals & Le, 2015; Shang et al., 2015; Serban et al., 2015) struggle to generate diverse yet causal responses (Li et al., 2016a; Serban et al., 2016). In addition,
+there is often insufficient training data for goal-oriented dialogues which results in over-fitting and prevents deterministic models from learning effective and scalable interactions. In this paper, we propose a latent variable model –
+Latent Intention Dialogue Model (LIDM) – for learning the
+complex distribution of communicative intentions in goaloriented dialogues. Here, the latent variable representing
+dialogue intention can be considered as the autonomous
+decision-making center of a dialogue agent for composing
+appropriate machine responses.
+Recent advances in neural variational inference (Kingma
+& Welling, 2014; Mnih & Gregor, 2014) have sparked a
+series of latent variable models applied to NLP (Bowman
+et al., 2015; Serban et al., 2016; Miao et al., 2016; Cao &
+Clark, 2017). For models with continuous latent variables,
+the reparameterisation trick (Kingma & Welling, 2014) is
+commonly used to build an unbiased and low-variance gradient estimator for updating the models. However, since a
+continuous latent space is hard to interpret, the major benefits of these models are the stochasticity and the regularisation brought by the latent variable. In contrast, models with
+discrete latent variables are able to not only produce interpretable latent distributions but also provide a principled
+framework for semi-supervised learning (Kingma et al.,
+2014). This is critical for NLP tasks, especially where additional supervision and external knowledge can be utilized
+for bootstrapping (Faruqui et al., 2015; Miao & Blunsom,
+2016; Kočiský et al., 2016). However, variational inference
+with discrete latent variables is relatively difficult due to the
+problem of high variance during sampling. Hence we introduce baselines, as in the REINFORCE (Williams, 1992)
+algorithm, to mitigate the high variance problem, and carry
+out efficient neural variational inference (Mnih & Gregor,
+2014) for the latent variable model.
 
-Deep Transfer Learning with Joint Adaptation Networks
+Latent Intention Dialogue Models
 
-Thanks to a linear-time unbiased estimate of JMMD, we can
-easily draw a mini-batch of samples to estimate the JMMD
-criterion, and implement it efficiently via back-propagation.
-We further maximize JMMD using adversarial training strategy such that the distributions of source and target domains
-are made more distinguishable. Empirical study shows that
-our models yield state of the art results on standard datasets.
+In the LIDM, the latent intention is inferred from user input utterances. Based on the dialogue context, the agent
+draws a sample as the intention which then guides the natural language response generation. Firstly, in the framework
+of neural variational inference (Mnih & Gregor, 2014), we
+construct an inference network to approximate the posterior
+distribution over the latent intention. Then, by sampling the
+intentions for each response, we are able to directly learn
+a basic intention distribution on a human-human dialogue
+corpus by optimising the variational lower bound. To further reduce the variance, we utilise a labeled subset of the
+corpus in which the labels of intentions are automatically
+generated by clustering. Then, the latent intention distribution can be learned in a semi-supervised fashion, where
+the learning signals are either from the direct supervision
+(labeled set) or the variational lower bound (unlabeled set).
+From the perspective of reinforcement learning, the latent
+intention distribution can be interpreted as the intrinsic policy that reflects human decision-making under a particular
+conversational scenario. Based on the initial policy (latent intention distribution) learnt from the semi-supervised
+variational inference framework, the model can refine its
+strategy easily against alternative objectives using policy
+gradient-based reinforcement learning. This is somewhat
+analogous to the training process used in AlphaGo (Silver
+et al., 2016) for the game of Go. Based on LIDM, we show
+that different learning paradigms can be brought together
+under the same framework to bootstrap the development of
+a dialogue agent (Li et al., 2016c; Weston, 2016).
 
-the problem tractable (Zhang et al., 2013). As it is not easy
-to justify which components of the joint distribution are
-changing in practice, our work is transparent to diverse scenarios by directly manipulating the joint distribution without
-assumptions on the marginal and conditional distributions.
-Furthermore, it remains unclear how to account for the shift
-in joint distributions within the regime of deep architectures.
-
-2. Related Work
-
-3. Preliminary
-
-Transfer learning (Pan & Yang, 2010) aims to build learning
-machines that generalize across different domains following
-different probability distributions (Sugiyama et al., 2008;
-Pan et al., 2011; Duan et al., 2012; Gong et al., 2013; Zhang
-et al., 2013). Transfer learning finds wide applications in
-computer vision (Saenko et al., 2010; Gopalan et al., 2011;
-Gong et al., 2012; Hoffman et al., 2014) and natural language processing (Collobert et al., 2011; Glorot et al., 2011).
-
-3.1. Hilbert Space Embedding
-
-The main technical problem of transfer learning is how
-to reduce the shifts in data distributions across domains.
-Most existing methods learn a shallow representation model
-by which domain discrepancy is minimized, which cannot
-suppress domain-specific exploratory factors of variations.
-Deep networks learn abstract representations that disentangle the explanatory factors of variations behind data (Bengio
-et al., 2013) and extract transferable factors underlying different populations (Glorot et al., 2011; Oquab et al., 2013),
-which can only reduce, but not remove, the cross-domain
-discrepancy (Yosinski et al., 2014). Recent work on deep
-domain adaptation embeds domain-adaptation modules into
-deep networks to boost transfer performance (Tzeng et al.,
-2014; 2015; 2017; Ganin & Lempitsky, 2015; Long et al.,
-2015; 2016). These methods mainly correct the shifts in
-marginal distributions, assuming conditional distributions
-remain unchanged after the marginal distribution adaptation.
-Transfer learning will become more challenging as domains
-may change by the joint distributions P (X, Y) of input features X and output labels Y. The distribution shifts may
-stem from the marginal distributions P (X) (a.k.a. covariate shift (Huang et al., 2006; Sugiyama et al., 2008)), the
-conditional distributions P (Y|X) (a.k.a. conditional shift
-(Zhang et al., 2013)), or both (a.k.a. dataset shift (QuioneroCandela et al., 2009)). Another line of work (Zhang et al.,
-2013; Wang & Schneider, 2014) correct both target and conditional shifts based on the theory of kernel embedding of
-conditional distributions (Song et al., 2009; 2010; Sriperumbudur et al., 2010). Since the target labels are unavailable,
-adaptation is performed by minimizing the discrepancy between marginal distributions instead of conditional distributions. In general, the presence of conditional shift leads
-to an ill-posed problem, and an additional assumption that
-the conditional distribution may only change under locationscale transformations on X is commonly imposed to make
-
-We begin by providing an overview of Hilbert space embeddings of distributions, where each distribution is represented
-by an element in a reproducing kernel Hilbert space (RKHS).
-Denote by X a random variable with domain Ω and distribution P (X), and by x the instantiations of X. A reproducing
-kernel Hilbert space (RKHS) H on Ω endowed by a kernel
-k (x, x0 ) is a Hilbert space of functions f : Ω 7→ R with
-inner product h·, ·iH . Its element k (x, ·) satisfies the reproducing property: hf (·) , k (x, ·)iH = f (x). Alternatively,
-k (x, ·) can be viewed as an (infinite-dimensional) implicit
-feature map φ (x) where k (x, x0 ) = hφ (x) , φ (x0 )iH . Kernel functions can be defined on vector space, graphs, time
-series and structured objects to handle diverse applications.
-The kernel embedding represents a probability distribution
-P by an element in RKHS endowed by a kernel k (Smola
-et al., 2007; Sriperumbudur et al., 2010; Gretton et al., 2012)
-Z
-µX (P ) , EX [φ (X)] =
-
-φ (x) dP (x),
+parse the input into actionable commands Q and access the
+KB to search for useful information in order to answer the
+query. Based on the search result, the model needs to summarise its findings and reply with an appropriate response
+mt in natural language.
+2.1. Model
+The LIDM is based on the end-to-end system architecture
+described in (Wen et al., 2017). It comprises three components: (1) Representation Construction; (2) Policy Network; and (3) Generator, as shown in Figure 1. To capture
+the user’s intent and match it against the system’s knowledge, a dialogue state vector st = ut ⊕ bt ⊕ xt is derived
+from the user input ut and the knowledge base KB: ut is
+the distributed utterance representation, which is formed
+by encoding the user utterance2 ut with a bidirectional
+LSTM (Hochreiter & Schmidhuber, 1997) and concatenating the final stage hidden states together,
+ut = biLSTMΘ (ut ).
 
 (1)
 
-Ω
-
-where the distribution is mapped to the expected feature map,
-i.e. to a point in the RKHS, given that EX [k (x, x0 )] 6 ∞.
-The mean embedding µX has the property that the expectation of any RKHS function f can be evaluated as an inner
-product in H, hµX , f iH , EX [f (X)] , ∀f ∈ H. This kind
-of kernel mean embedding provides us a nonparametric perspective on manipulating distributions by drawing samples
-from them. We will require a characteristic kernel k such
-that the kernel embedding µX (P ) is injective, and that the
-embedding of distributions into infinite-dimensional feature
-spaces can preserve all of the statistical features of arbitrary
-distributions, which removes the necessity of density estimation of P . This technique has been widely applied in many
-tasks, including feature extraction, density estimation and
-two-sample test (Smola et al., 2007; Gretton et al., 2012).
-While the true distribution P (X) is rarely accessible, we
-can estimate its embedding using a finite sample (Gretton
-et al., 2012). Given a sample DX = {x1 , . . . , xn } of size n
-drawn i.i.d. from P (X), the empirical kernel embedding is
-n
-
-µ
-bX =
-
-1X
-φ (xi ).
-n i=1
+The belief vector bt , which is a concatenation of a set
+of probability distributions over domain specific slot-value
+pairs, is extracted by a set of pre-trained RNN-CNN belief
+trackers (Wen et al., 2017; Mrkšić et al., 2017), in which ut
+and mt−1 are processed by two different CNNs as shown
+in Figure 1,
+bt = RNN-CNN(ut , mt−1 , bt−1 )
 
 (2)
 
-Deep Transfer Learning with Joint Adaptation Networks
+In summary, the contribution of this paper is two-fold:
+firstly, we show that the neural variational inference framework is able to discover discrete, interpretable intentions
+from data to form the decision-making basis of a dialogue
+agent; secondly, the agent is capable of revising its conversational strategy based on an external reward within
+the same framework. This is important because it provides a stepping stone towards building an autonomous dialogue agent that can continuously improve itself through
+interaction with users. The experimental results demonstrate the effectiveness of our latent intention model which
+achieves state-of-the-art performance on both automatic
+corpus-based evaluation and human evaluation.
 
-This empirical estimate converges to its population counter1
-part in RKHS norm kµX − µ
-bX kH with a rate of O(n− 2 ).
+where mt−1 is the preceding machine response and bt−1
+is the preceding belief vector. They are included to model
+the current turn of the discourse and the long-term dialogue
+context, respectively. Based on the belief vector, a query Q
+is formed by taking the union of the maximum values of
+each slot. Q is then used to search the internal KB and return a vector xt representing the degree of matching in the
+KB. This is produced by counting all the matching venues
+and re-structuring it into a six-bin one-hot vector. Among
+the three vectors that comprise the dialogue state st , ut is
+completely trainable from data, bt is pre-trained using a
+separate objective function, and xt is produced by a discrete database accessing operation. For more details about
+the belief trackers and database operation refer to Wen et
+al (2016; 2017).
 
-In practice, an estimate of the MMD compares the square
-distance between the empirical kernel mean embeddings as
+2. Latent Intention Dialogue Model for
+Goal-oriented Dialogue
 
-Kernel embeddings can be readily generalized to joint distributions of two or more variables using tensor product feature
-spaces (Song et al., 2009; 2010; Song & Dai, 2013). A joint
-distribution P of variables X1 , . . . , Xm can be embedded
-`
-into an m-th order tensor product feature space ⊗m
-`=1 H by
-
-
-`
-`
-CX1:m (P ) , EX1:m ⊗m
-`=1 φ X
-Z
-
-
-`
-`
-=
-⊗m
-dP x1 , . . . , xm ,
-`=1 φ x
+Conditioning on the state st , the policy network parameterises the latent intention zt by a single layer MLP,
 
-ns X
-ns
-X
-
-b H (P, Q) = 1
-D
-k xsi , xsj
+Goal-oriented dialogue1 (Young et al., 2013) aims at building models that can help users to complete certain tasks via
+natural language interaction. Given a user input utterance
+ut at turn t and a knowledge base (KB), the model needs to
+1
+
+Like most of the goal-oriented dialogue research, we focus
+on information seek type dialogues.
+
+πΘ (zt |st ) = softmax(W2| · tanh(W1| st + b1 ) + b2 ) (3)
+where W1 , b1 , W2 , b2 are model parameters. Since
+πΘ (zt |st ) is a discrete conditional probability distribution
 2
-ns i=1 j=1
 
-(3)
-where X1:m denotes the set of m variables {X1 , . . . , Xm }
-`
-1
-m
-`
-on domain ×m
-`=1 Ω = Ω × . . . × Ω , φ is the feature
-`
-`
-map endowed
-H for variable X` ,
- with1 kernel
- k in RKHS
-m
-`
-`
-1
-m
-m
-⊗`=1 φ x = φ x ⊗. . .⊗φ (x ) is the feature map
-in the tensor product Hilbert space, where the inner product
-Qm ` ` 0 `
-` `
-m
-` 0`
-satisfies h⊗m
-`=1 φ (x ), ⊗`=1 φ (x )i =
-`=1 k (x , x ).
-The joint embeddings can be viewed as an uncentered crosscovariance operator CX1:m by the standard equivalence between tensor and linear map (Song et al., 2010). That is,
-1
-m
-given a set of functions
-can be
-Qfm , . . .` , f ` ,their
- covariance
-m
-`
-1:m
-computed by EX
-`=1 f (X ) = ⊗`=1 f , CX1:m .
+All sentences are pre-processed by delexicalisation (Henderson et al., 2014) where slot-value specific words are replaced with
+their corresponding generic tokens based on an ontology.
 
-b H (P, Q) is an unbiased estimator of DH (P, Q).
-where D
+Latent Intention Dialogue Models
 
-+
+Figure 1. LIDM for Goal-oriented Dialogue Modeling
 
-nt X
-nt
-
-1 X
-k xti , xtj
-2
-nt i=1 j=1
+based on dialogue state, we can also interpret the policy
+network here as a latent dialogue management component
+in the traditional POMDP-based framework (Young et al.,
+(n)
+2013; Gašić et al., 2013). A latent intention zt (or an
+action in the reinforcement learning literature) can then be
+sampled from the conditional distribution,
+(n)
 
-−
+zt
 
-ns X
-nt
-
-2 X
-k xsi , xtj ,
-ns nt i=1 j=1
-
-(6)
-
-`
-×m
-`=1 Ω
-
-When the true distribution P (X1 , . . . , Xm ) is unknown, we
-can estimate its embedding using a finite sample (Song et al.,
-1:m
-2013). Given a sample DX1:m = {x1:m
-1 , . . . , xn } of size
-1
-m
-n drawn i.i.d. from P (X , . . . , X ), the empirical joint
-embedding (the cross-covariance operator) is estimated as
-n
-
-1 X m ` `
-CbX1:m =
-⊗ φ xi .
-n i=1 `=1
+∼ πΘ (zt |st ).
 
 (4)
 
-This empirical estimate converges to its population counterpart with a similar convergence rate as marginal embedding.
-3.2. Maximum Mean Discrepancy
-Let DXs = {xs1 , . . . , xsns } and DXt = {xt1 , . . . , xtnt } be
-the sets of samples from distributions P (Xs ) and Q(Xt ),
-respectively. Maximum Mean Discrepancy (MMD) (Gretton et al., 2012) is a kernel two-sample test which rejects or
-accepts the null hypothesis P = Q based on the observed
-samples. The basic idea behind MMD is that if the generating distributions are identical, all the statistics are the same.
-Formally, MMD defines the following difference measure:
-
-
-DH (P, Q) , sup EXs [f (Xs )] − EXt f Xt
-, (5)
-f ∈H
+(n)
 
-where H is a class of functions. It is shown that the class
-of functions in an universal RKHS H is rich enough to
-distinguish any two distributions and MMD is expressed as
-the distance between their mean embeddings: DH (P, Q) =
-2
-kµXs (P ) − µXt (Q)kH . The main theoretical result is that
-P = Q if and only if DH (P, Q) = 0 (Gretton et al., 2012).
+This sampled intention (or action) zt and the state vector
+st can then be combined into a control vector dt , which is
+used to govern the generation of the system response based
+on a conditional LSTM language model,
+dt = W4| zt ⊕ [sigmoid(W3| zt + b3 ) · W5| st ]
 
-4. Joint Adaptation Networks
-In unsupervised domain adaptation, we are given a source
-s
-domain Ds = {(xsi , yis )}ni=1
-of ns labeled examples and
-t nt
-a target domain Dt = {xj }j=1 of nt unlabeled examples.
-The source domain and target domain are sampled from
-joint distributions P (Xs , Ys ) and Q(Xt , Yt ) respectively,
-P 6= Q. The goal of this paper is to design a deep neural
-network y = f (x) which formally reduces the shifts in
-the joint distributions across domains and enables learning
-both transferable features and classifiers, such that the target
-risk Rt (f ) = E(x,y)∼Q [f (x) 6= y] can be minimized by
-jointly minimizing the source risk and domain discrepancy.
-Recent studies reveal that deep networks (Bengio et al.,
-2013) can learn more transferable representations than traditional hand-crafted features (Oquab et al., 2013; Yosinski
-et al., 2014). The favorable transferability of deep features
-leads to several state of the art deep transfer learning methods (Ganin & Lempitsky, 2015; Tzeng et al., 2015; Long
-et al., 2015; 2016). This paper also tackles unsupervised
-domain adaptation by learning transferable features using
-deep neural networks. We extend deep convolutional neural
-networks (CNNs), including AlexNet (Krizhevsky et al.,
-2012) and ResNet (He et al., 2016), to novel joint adaptation
-networks (JANs) as shown in Figure 1. The empirical error
-of CNN classifier f (x) on source domain labeled data Ds is
-min
-f
+(5)
 
-ns
-1 X
-J (f (xsi ) , yis ),
-ns i=1
+terised form with parameter set Θ,
+X
+pΘ (mt |st ) =
+pΘ (mt |zt , st )πΘ (zt |st ).
 
 (7)
 
-where J(·, ·) is the cross-entropy loss function. Based on the
-quantification study of feature transferability in deep convolutional networks (Yosinski et al., 2014), convolutional
-layers can learn generic features that are transferable across
-domains (Yosinski et al., 2014). Thus we opt to fine-tune
-the features of convolutional layers when transferring pretrained deep models from source domain to target domain.
-However, the literature findings also reveal that the deep
-features can reduce, but not remove, the cross-domain distribution discrepancy (Yosinski et al., 2014; Long et al., 2015;
+zt
 
-Deep Transfer Learning with Joint Adaptation Networks
-Xs
-AlexNet
-VGGnet
-GoogLeNet
-ResNet
-……
-t
+2.2. Inference
+To carry out inference for the LIDM, we introduce an inference network qΦ (zt |st , mt ) to approximate the posterior
+distribution p(zt |st , mt ) so that we can optimise the variational lower bound of the joint probability in a neural variational inference framework (Miao et al., 2016). We can
+then derive the variational lower bound as,
+L = EqΦ (zt ) [log pΘ (mt |zt , st )] − λDKL (qΦ (zt )||πΘ (zt |st ))
 X
+≤ log
+pΘ (mt |zt , st )πΘ (zt |st )
+zt
 
-Zs1
-
-Zs|L|
-
-φ1
-tied
-
-✖
-
-φL
-
-✖
-
-φL
-
-t1
-Z
-
-t|L|
-Z
-
-Xs
-
-Zs1
-
-AlexNet
-VGGnet
-GoogLeNet
-ResNet
-……
-
-tied
-
-JMMD
-
-φ1
-
-Ys
-
-t
-Y
-
-(a) Joint Adaptation Network (JAN)
-
-Xt
-
-θ
-tied
-
-φ1
-
-✖
-
-φL
-
-Zs|L|
-
-θ
-tied
-
-JMMD
-
-θ
-
-Ys
-
-θ
-φ1 ✖ φ L
-
-Zt1
-
-Zt|L|
-
-Yt
-
-(b) Adversarial Joint Adaptation Network (JAN-A)
-
-Figure 1. The architectures of Joint Adaptation Network (JAN) (a) and its adversarial version (JAN-A) (b). Since deep features eventually
-transition from general to specific along the network, activations in multiple domain-specific layers L are not safely transferable. And the
-joint distributions of the activations P (Zs1 , . . . , Zs|L| ) and Q(Zt1 , . . . , Zt|L| ) in these layers should be adapted by JMMD minimization.
-
-2016). The deep features in standard CNNs must eventually
-transition from general to specific along the network, and the
-transferability of features and classifiers decreases when the
-cross-domain discrepancy increases (Yosinski et al., 2014).
-In other words, even feed-forwarding the source and target
-domain data through the deep network for multilayer feature
-abstraction, the shifts in the joint distributions P (Xs , Ys )
-and Q(Xt , Yt ) still linger in the activations Z1 , . . . , Z|L| of
-the higher network layers L. Taking AlexNet (Krizhevsky
-et al., 2012) as an example, the activations in the higher fullyconnected layers L = {f c6, f c7, f c8} are not safely transferable for domain adaptation (Yosinski et al., 2014). Note
-that the shift in the feature distributions P (Xs ) and Q(Xt )
-mainly lingers in the feature layers f c6, f c7 while the shift
-in the label distributions P (Ys ) and Q(Yt ) mainly lingers
-in the classifier layer f c8. Thus we can use the joint distributions of the activations in layers L, i.e. P (Zs1 , . . . , Zs|L| )
-and Q(Zt1 , . . . , Zt|L| ) as good surrogates of the original
-joint distributions P (Xs , Ys ) and Q(Xt , Yt ), respectively.
-To enable unsupervised domain adaptation, we should find
-a way to match P (Zs1 , . . . , Zs|L| ) and Q(Zt1 , . . . , Zt|L| ).
-
-Q(Zt1 , . . . , Zt|L| ). The resulting measure is called Joint
-Maximum Mean Discrepancy (JMMD), which is defined as
-2
-
-DL (P, Q) , kCZs,1:|L| (P ) − CZt,1:|L| (Q)k⊗|L| H` . (8)
-`=1
-
-Based on the virtue of the kernel two-sample test theory
-(Gretton et al., 2012), we will have P (Zs1 , . . . , Zs|L| ) =
-Q(Zt1 , . . . , Zt|L| ) if and only if DL (P, Q) = 0. Given
-source domain Ds of ns labeled points and target domain
-Dt of nt unlabeled points drawn i.i.d. from P and Q respectively, the deep networks will generate activations in layers
-s|L| ns
-t|L| nt
-L as {(zs1
-)}i=1 and {(zt1
-)}j=1 . The
-i , . . . , zi
-j , . . . , zj
-empirical estimate of DL (P, Q) is computed as the squared
-distance between the empirical kernel mean embeddings as
-ns X
-ns Y
-X
-
-s`
-b L (P, Q) = 1
-k ` zs`
-D
-i , zj
-2
-ns i=1 j=1
-`∈L
-
-+
-
-−
-4.1. Joint Maximum Mean Discrepancy
-
-1
-n2t
-
-nt X
-nt
-X
+pΘ (mt |st , zt ) =
 
 Y
 
-t`
-k ` zt`
-i , zj
+t
+p(wj+1
+|wjt , htj−1 , dt )
 
-i=1 j=1 `∈L
-ns X
-nt Y
-X
+(6)
 
-2
-ns nt
+= log pΘ (mt |st )
 
-
+(8)
+
+j
+
+where b3 and W3∼5 are parameters, zt is the 1-hot repre(n)
+sentation of zt , wjt is the last output token (i.e. a word,
+a delexicalised2 slot name or a delexicalised2 slot value),
+and htj−1 is the decoder’s last hidden state. Note in Equation 5 the degree of information flow from the state vector is
+controlled by a sigmoid gate whose input signal is the sam(n)
+pled intention zt . This prevents the decoder from overfitting to the deterministic state information and forces it
+to take the sampled stochastic intention into account. The
+LIDM can then be formally written down in its parame-
+
+where qΦ (zt ) is a shorthand for qΦ (zt |st , mt ). Note that
+we use a modified version of the lower bound here by incorporating a trade-off factor λ (Higgins et al., 2017). The
+inference network qΦ (zt |st , mt ) is then constructed by
+qΦ (zt |st , mt ) = Multi(ot ) = softmax(W6 ot )
 
 (9)
 
-
-t`
-k ` zs`
-i , zj .
-
-i=1 j=1 `∈L
-
-Many existing methods address transfer learning by bounding the target error with the source error plus a discrepancy
-between the marginal distributions P (Xs ) and Q(Xt ) of
-the source and target domains (Ben-David et al., 2010). The
-Maximum Mean Discrepancy (MMD) (Gretton et al., 2012),
-as a kernel two-sample test statistic, has been widely applied to measure the discrepancy in marginal distributions
-P (Xs ) and Q(Xt ) (Tzeng et al., 2014; Long et al., 2015;
-2016). To date MMD has not been used to measure the
-discrepancy in joint distributions P (Zs1 , . . . , Zs|L| ) and
-Q(Zt1 , . . . , Zt|L| ), possibly because MMD has not been directly defined for joint distributions by (Gretton et al., 2012)
-while in conventional shallow domain adaptation methods
-the joint distributions are not easy to manipulate and match.
-
-Remark: Taking a close look on the objectives of MMD (6)
-and JMMD (9), we can find some interesting connections.
-The difference is that, for the activations Z` in each layer ` ∈
-L, instead of putting uniform weights on the kernel function
-k ` (z`i , z`j ) as in MMD, JMMD applies non-uniform weights,
-reflecting the influence of other variables in other layers
-L\`. This captures the full interactions between different
-variables in the joint distributions P (Zs1 , . . . , Zs|L| ) and
-Q(Zt1 , . . . , Zt|L| ), which is crucial for domain adaptation.
-All previous deep transfer learning methods (Tzeng et al.,
-2014; Long et al., 2015; Ganin & Lempitsky, 2015; Tzeng
-et al., 2015; Long et al., 2016) have not addressed this issue.
-
-Following the virtue of MMD (5), we use the Hilbert space
-embeddings of joint distributions (3) to measure the discrepancy of two joint distributions P (Zs1 , . . . , Zs|L| ) and
-
-Denote by L the domain-specific layers where the activations are not safely transferable. We will formally reduce
-the discrepancy in the joint distributions of the activations
-
-4.2. Joint Adaptation Networks
-
-Deep Transfer Learning with Joint Adaptation Networks
-
-in layers L, i.e. P (Zs1 , . . . , Zs|L| ) and Q(Zt1 , . . . , Zt|L| ).
-Note that the features in the lower layers of the network
-are transferable and hence will not require a further distribution matching. By integrating the JMMD (9) over the
-domain-specific layers L into the CNN error (7), the joint
-distributions are matched end-to-end with network training,
-min
-f
-
-ns
-1 X
-b L (P, Q) ,
-J (f (xsi ) , yis ) + λD
-ns i=1
-
-network as shown in Figure 1(b). We maximize JMMD with
-respect to these new parameters θ to approach the virtue of
-the original MMD (5), that is, maximizing the test power of
-JMMD such that distributions of source and target domains
-are made more distinguishable (Sriperumbudur et al., 2009).
-This leads to a new adversarial joint adaptation network as
+ot = MLPΦ (bt , xt , ut , mt )
 
 (10)
 
-min max
-f
-
-where λ > 0 is a tradeoff parameter of the JMMD penalty.
-As shown in Figure 1(a), we set L = {f c6, f c7, f c8} for
-the JAN model based on AlexNet (last three layers) while
-we set L = {pool5, f c} for the JAN model based on ResNet
-(last two layers), as these layers are tailored to task-specific
-structures, which are not safely transferable and should be
-jointly adapted by minimizing CNN error and JMMD (9).
-
-Learning deep features by minimizing this more powerful
-JMMD, intuitively any shift in the joint distributions will be
-more easily identified by JMMD and then adapted by CNN.
-Remark: This version of JAN shares the idea of domainadversarial training with (Ganin & Lempitsky, 2015), but
-differs in that we use the JMMD as the domain adversary
-while (Ganin & Lempitsky, 2015) uses logistic regression.
-As pointed out in a very recent study (Arjovsky et al., 2017),
-our JMMD-adversarial network can be trained more easily.
-
-A limitation of JMMD (9) is its quadratic complexity, which
-is inefficient for scalable deep transfer learning. Motivated
-by the unbiased estimate of MMD (Gretton et al., 2012), we
-derive a similar linear-time estimate of JMMD as follows,
-n/2
-X
-b L (P, Q) = 2
-D
-n i=1
-n/2
-2X
-−
-n i=1
-
-θ
-
-ns
-1 X
-b L (P, Q; θ) . (12)
-J (f (xsi ) , yis ) + λD
-ns i=1
-
-5. Experiments
-
-!
-Y
-
-s`
-k` (zs`
-2i−1 , z2i ) +
-
-Y
-
-`∈L
-
-`∈L
-
-Y
-
-Y
-
-We evaluate the joint adaptation networks with state of the
-art transfer learning and deep learning methods. Codes and
-datasets are available at http://github.com/thuml.
-
-t`
-k` (zt`
-2i−1 , z2i )
-
-!
-`∈L
-
-k
-
-`
-
-t`
-(zs`
-2i−1 , z2i )
-
-+
-
-k
-
-`
-
-s`
-(zt`
-2i−1 , z2i )
-
-`∈L
+ut = biLSTMΦ (ut ), mt = biLSTMΦ (mt )
 
 (11)
 
-where n = ns . This linear-time estimate well fits the minibatch stochastic gradient descent (SGD) algorithm. In each
-mini-batch, we sample the same number of source points
-and target points to eliminate the bias caused by domain size.
-This enables our models to scale linearly to large samples.
-4.3. Adversarial Training for Optimal MMD
-The MMD defined using the RKHS (6) has the advantage of
-not requiring a separate network to approximately maximize
-the original definition of MMD (5). But the original MMD
-(5) reveals that, in order to maximize the test power such
-that any two distributions can be distinguishable, we require
-the class of functions f ∈ H to be rich enough. Although
-(Gretton et al., 2012) shows that an universal RKHS is rich
-enough, such kernel-based MMD may suffer from vanishing
-gradients for low-bandwidth kernels. Moreover, it may be
-possible that some widely-used kernels are unable to capture
-very complex distances in high dimensional spaces such as
-natural images (Reddi et al., 2015; Arjovsky et al., 2017).
-To circumvent the issues of vanishing gradients and non-rich
-function class of kernel-based MMD (6), we are enlightened
-by the original MMD (5) which fits the adversarial training
-in GANs (Goodfellow et al., 2014). We add multiple fullyconnected layers parametrized by θ to the proposed JMMD
-(9) to make the function class of JMMD richer using neural
+where ot is the joint representation, and both ut and mt are
+modeled by a bidirectional LSTM network. Although both
 
-,
+Latent Intention Dialogue Models
 
-5.1. Setup
-Office-31 (Saenko et al., 2010) is a standard benchmark for
-domain adaptation in computer vision, comprising 4,652
-images and 31 categories collected from three distinct domains: Amazon (A), which contains images downloaded
-from amazon.com, Webcam (W) and DSLR (D), which
-contain images respectively taken by web camera and digital SLR camera under different settings. We evaluate all
-methods across three transfer tasks A → W, D → W and W
-→ D, which are widely adopted by previous deep transfer
-learning methods (Tzeng et al., 2014; Ganin & Lempitsky,
-2015), and another three transfer tasks A → D, D → A and
-W → A as in (Long et al., 2015; 2016; Tzeng et al., 2015).
-ImageCLEF-DA1 is a benchmark dataset for ImageCLEF
-2014 domain adaptation challenge, which is organized by
-selecting the 12 common categories shared by the following three public datasets, each is considered as a domain:
-Caltech-256 (C), ImageNet ILSVRC 2012 (I), and Pascal
-VOC 2012 (P). There are 50 images in each category and
-600 images in each domain. We use all domain combinations and build 6 transfer tasks: I → P, P → I, I → C, C
-→ I, C → P, and P → C. Different from Office-31 where
-different domains are of different sizes, the three domains
-in ImageCLEF-DA are of equal size, which makes it a good
-complement to Office-31 for more controlled experiments.
-1
+qΦ (zt |st , mt ) and πΘ (zt |st ) are modelled as parameterised
+multinomial distributions, the approximation qΦ (zt |st , mt )
+only functions during inference by producing samples to
+compute the stochastic gradients, while πΘ (zt |st ) is the
+generative distribution that generates the required samples
+for composing the machine response.
+(n)
+zt
 
-http://imageclef.org/2014/adaptation
+Based on the samples
+∼ qΦ (zt |st , mt ), we use different strategies to alternately optimise the parameters Θ
+and Φ against the variational lower bound (Equation 8). To
+do this, we further divide Θ into two sets Θ = {Θ1 , Θ2 }.
+Parameters Θ1 on the decoder side are directly updated by
+back-propagating the gradients,
+∂ log pΘ1 (mt |zt , st )
+∂L
+= EqΦ (zt |st ,mt ) [
+]
+∂Θ1
+∂Θ1
+(n)
+1 X ∂ log pΘ1 (mt |zt , st )
+≈
+.
+N n
+∂Θ1
 
-Deep Transfer Learning with Joint Adaptation Networks
+(12)
 
-We compare with conventional and state of the art transfer
-learning and deep learning methods: Transfer Component
-Analysis (TCA) (Pan et al., 2011), Geodesic Flow Kernel
-(GFK) (Gong et al., 2012), Convolutional Neural Networks
-AlexNet (Krizhevsky et al., 2012) and ResNet (He et al.,
-2016), Deep Domain Confusion (DDC) (Tzeng et al., 2014),
-Deep Adaptation Network (DAN) (Long et al., 2015), Reverse Gradient (RevGrad) (Ganin & Lempitsky, 2015), and
-Residual Transfer Network (RTN) (Long et al., 2016). TCA
-is a transfer learning method based on MMD-regularized
-Kernel PCA. GFK is a manifold learning method that interpolates across an infinite number of intermediate subspaces
-to bridge domains. DDC is the first method that maximizes
-domain invariance by regularizing the adaptation layer of
-AlexNet using linear-kernel MMD (Gretton et al., 2012).
-DAN learns transferable features by embedding deep features of multiple task-specific layers to reproducing kernel
-Hilbert spaces (RKHSs) and matching different distributions
-optimally using multi-kernel MMD. RevGrad improves domain adaptation by making the source and target domains
-indistinguishable for a domain discriminator by adversarial
-training. RTN jointly learns transferable features and adaptive classifiers by deep residual learning (He et al., 2016).
-We examine the influence of deep representations for domain adaptation by employing the breakthrough AlexNet
-(Krizhevsky et al., 2012) and the state of the art ResNet (He
-et al., 2016) for learning transferable deep representations.
-For AlexNet, we follow DeCAF (Donahue et al., 2014) and
-use the activations of layer f c7 as image representation. For
-ResNet (50 layers), we use the activations of the last feature
-layer pool5 as image representation. We follow standard
-evaluation protocols for unsupervised domain adaptation
-(Long et al., 2015; Ganin & Lempitsky, 2015). For both
-Office-31 and ImageCLEF-DA datasets, we use all labeled
-source examples and all unlabeled target examples. We
-compare the average classification accuracy of each method
-on three random experiments, and report the standard error
-of the classification accuracies by different experiments of
-the same transfer task. We perform model selection by tuning hyper-parameters using transfer cross-validation (Zhong
-et al., 2010). For MMD-based methods and JAN, we adopt
-Gaussian kernel with bandwidth set to median pairwise
-squared distances on the training data (Gretton et al., 2012).
-We implement all deep methods based on the Caffe framework, and fine-tune from Caffe-provided models of AlexNet
-(Krizhevsky et al., 2012) and ResNet (He et al., 2016), both
-are pre-trained on the ImageNet 2012 dataset. We fine-tune
-all convolutional and pooling layers and train the classifier
-layer via back propagation. Since the classifier is trained
-from scratch, we set its learning rate to be 10 times that
-of the other layers. We use mini-batch stochastic gradient
-descent (SGD) with momentum of 0.9 and the learning rate
-annealing strategy in RevGrad (Ganin & Lempitsky, 2015):
+Parameters Θ2 in the generative network, however, are updated by minimising the KL divergence,
+∂λDKL (qΦ (zt |st , mt )||πΘ2 (zt |st ))
+∂L
+=−
+∂Θ2
+∂Θ2
+X
+∂ log πΘ2 (zt |st )
+= −λ
+qΦ (zt |st , mt )
+∂Θ2
+z
 
-the learning rate is not selected by a grid search due to high
-computational cost—it is adjusted during SGD using the
-η0
-following formula: ηp = (1+αp)
-β , where p is the training
-progress linearly changing from 0 to 1, η0 = 0.01, α = 10
-and β = 0.75, which is optimized to promote convergence
-and low error on the source domain. To suppress noisy activations at the early stages of training, instead of fixing the
-adaptation factor λ, we gradually change it from 0 to 1 by a
-2
-progressive schedule: λp = 1+exp(−γp)
-− 1, and γ = 10 is
-fixed throughout experiments (Ganin & Lempitsky, 2015).
-This progressive strategy significantly stabilizes parameter
-sensitivity and eases model selection for JAN and JAN-A.
-5.2. Results
-The classification accuracy results on the Office-31 dataset
-for unsupervised domain adaptation based on AlexNet and
-ResNet are shown in Table 1. As fair comparison with identical evaluation setting, the results of DAN (Long et al., 2015),
-RevGrad (Ganin & Lempitsky, 2015), and RTN (Long et al.,
-2016) are directly reported from their published papers. The
-proposed JAN models outperform all comparison methods
-on most transfer tasks. It is noteworthy that JANs promote
-the classification accuracies substantially on hard transfer
-tasks, e.g. D → A and W → A, where the source and target
-domains are substantially different and the source domain
-is smaller than the target domain, and produce comparable
-classification accuracies on easy transfer tasks, D → W and
-W → D, where the source and target domains are similar
-(Saenko et al., 2010). The encouraging results highlight the
-key importance of joint distribution adaptation in deep neural networks, and suggest that JANs are able to learn more
-transferable representations for effective domain adaptation.
-The results reveal several interesting observations. (1) Standard deep learning methods either outperform (AlexNet) or
-underperform (ResNet) traditional shallow transfer learning
-methods (TCA and GFK) using deep features (AlexNet-fc7
-and ResNet-pool5) as input. And traditional shallow transfer learning methods perform better with more transferable
-deep features extracted by ResNet. This confirms the current
-practice that deep networks learn abstract feature representations, which can only reduce, but not remove, the domain
-discrepancy (Yosinski et al., 2014). (2) Deep transfer learning methods substantially outperform both standard deep
-learning methods and traditional shallow transfer learning
-methods. This validates that reducing the domain discrepancy by embedding domain-adaptation modules into deep
-networks (DDC, DAN, RevGrad, and RTN) can learn more
-transferable features. (3) The JAN models outperform previous methods by large margins and set new state of the art
-record. Different from all previous deep transfer learning
-methods that only adapt the marginal distributions based
-on independent feature layers (one layer for RevGrad and
-multilayer for DAN and RTN), JAN adapts the joint distribu-
+(13)
 
-Deep Transfer Learning with Joint Adaptation Networks
-Table 1. Classification accuracy (%) on Office-31 dataset for unsupervised domain adaptation (AlexNet and ResNet)
-Method
-A→W
-D→W
-W→D
-A→D
-D→A
-W→A
-AlexNet (Krizhevsky et al., 2012)
-61.6±0.5
-95.4±0.3
-99.0±0.2
-63.8±0.5
-51.1±0.6
-49.8±0.4
-TCA (Pan et al., 2011)
-61.0±0.0
-93.2±0.0
-95.2±0.0
-60.8±0.0
-51.6±0.0
-50.9±0.0
-GFK (Gong et al., 2012)
-60.4±0.0
-95.6±0.0
-95.0±0.0
-60.6±0.0
-52.4±0.0
-48.1±0.0
-DDC (Tzeng et al., 2014)
-61.8±0.4
-95.0±0.5
-98.5±0.4
-64.4±0.3
-52.1±0.6
-52.2±0.4
-DAN (Long et al., 2015)
-68.5±0.5
-96.0±0.3
-99.0±0.3
-67.0±0.4
-54.0±0.5
-53.1±0.5
-RTN (Long et al., 2016)
-73.3±0.3
-96.8±0.2
-99.6±0.1
-71.0±0.2
-50.5±0.3
-51.0±0.1
-RevGrad (Ganin & Lempitsky, 2015)
-73.0±0.5
-96.4±0.3
-99.2±0.3
-72.3±0.3
-53.4±0.4
-51.2±0.5
-JAN (ours)
-74.9±0.3
-96.6±0.2
-99.5±0.2
-71.8±0.2
-58.3±0.3
-55.0±0.4
-JAN-A (ours)
-75.2±0.4
-96.6±0.2
-99.6±0.1
-72.8±0.3
-57.5±0.2
-56.3±0.2
-ResNet (He et al., 2016)
-68.4±0.2
-96.7±0.1
-99.3±0.1
-68.9±0.2
-62.5±0.3
-60.7±0.3
-TCA (Pan et al., 2011)
-72.7±0.0
-96.7±0.0
-99.6±0.0
-74.1±0.0
-61.7±0.0
-60.9±0.0
-GFK (Gong et al., 2012)
-72.8±0.0
-95.0±0.0
-98.2±0.0
-74.5±0.0
-63.4±0.0
-61.0±0.0
-DDC (Tzeng et al., 2014)
-75.6±0.2
-96.0±0.2
-98.2±0.1
-76.5±0.3
-62.2±0.4
-61.5±0.5
-DAN (Long et al., 2015)
-80.5±0.4
-97.1±0.2
-99.6±0.1
-78.6±0.2
-63.6±0.3
-62.8±0.2
-RTN (Long et al., 2016)
-84.5±0.2
-96.8±0.1
-99.4±0.1
-77.5±0.3
-66.2±0.2
-64.8±0.3
-RevGrad (Ganin & Lempitsky, 2015)
-82.0±0.4
-96.9±0.2
-99.1±0.1
-79.7±0.4
-68.2±0.4
-67.4±0.5
-JAN (ours)
-85.4±0.3
-97.4±0.2
-99.8±0.2
-84.7±0.3
-68.6±0.3
-70.0±0.4
-JAN-A (ours)
-86.0±0.4
-96.7±0.3
-99.7±0.1
-85.1±0.4
-69.2±0.4
-70.7±0.5
+t
 
-Avg
-70.1
-68.8
-68.7
-70.6
-72.9
-73.7
-74.3
-76.0
-76.3
-76.1
-77.6
-77.5
-78.3
-80.4
-81.6
-82.2
-84.3
-84.6
+where the entropy derivative ∂H[qΦ (zt |st , mt )]/∂Θ2 = 0
+and therefore can be ignored. Finally, for the parameters
+Φ in the inference network, we firstly define the learning
+(n)
+signal r(mt , zt , st ),
+(n)
+r(mt ,zt , st )
 
-Table 2. Classification accuracy (%) on ImageCLEF-DA for unsupervised domain adaptation (AlexNet and ResNet)
-Method
-I→P
-P→I
-I→C
-C→I
-C→P
-P→C
-AlexNet (Krizhevsky et al., 2012)
-66.2±0.2
-70.0±0.2
-84.3±0.2
-71.3±0.4
-59.3±0.5
-84.5±0.3
-DAN (Long et al., 2015)
-67.3±0.2
-80.5±0.3
-87.7±0.3
-76.0±0.3
-61.6±0.3
-88.4±0.2
-RTN (Long et al., 2016)
-67.4±0.3
-81.3±0.3
-89.5±0.4
-78.0±0.2
-62.0±0.2
-89.1±0.1
-JAN (ours)
-67.2±0.5
-82.8±0.4
-91.3±0.5
-80.0±0.5
-63.5±0.4
-91.0±0.4
-ResNet (He et al., 2016)
-74.8±0.3
-83.9±0.1
-91.5±0.3
-78.0±0.2
-65.5±0.3
-91.2±0.3
-DAN (Long et al., 2015)
-74.5±0.4
-82.2±0.2
-92.8±0.2
-86.3±0.4
-69.2±0.4
-89.8±0.4
-RTN (Long et al., 2016)
-74.6±0.3
-85.8±0.1
-94.3±0.1
-85.9±0.3
-71.7±0.3
-91.2±0.4
-JAN (ours)
-76.8±0.4
-88.0±0.2
-94.7±0.2
-89.5±0.3
-74.2±0.3
-91.7±0.3
+(n)
+= log pΘ1 (mt |zt , st )−
+(n)
+(n)
+λ(log qΦ (zt |st , mt ) − log πΘ2 (zt |st )).
 
-Avg
-73.9
-76.9
-77.9
-79.3
-80.7
-82.5
-83.9
-85.8
+(14)
 
-tions of network activations in all domain-specific layers to
-fully correct the shifts in joint distributions across domains.
-Although both JAN and DAN (Long et al., 2015) adapt multiple domain-specific layers, the improvement from DAN to
-JAN is crucial for the domain adaptation performance: JAN
-uses a JMMD penalty to reduce the shift in the joint distributions of multiple task-specific layers, which reflects the shift
-in the joint distributions of input features and output labels;
-DAN needs multiple MMD penalties, each independently
-reducing the shift in the marginal distribution of each layer,
-assuming feature layers and classifier layer are independent.
-By going from AlexNet to extremely deep ResNet, we can
-attain a more in-depth understanding of feature transferability. (1) ResNet-based methods outperform AlexNet-based
-methods by large margins. This validates that very deep
-convolutional networks, e.g. VGGnet (Simonyan & Zisserman, 2015), GoogLeNet (Szegedy et al., 2015), and ResNet,
-not only learn better representations for general vision tasks
-but also learn more transferable representations for domain
-adaptation. (2) The JAN models significantly outperform
-ResNet-based methods, revealing that even very deep networks can only reduce, but not remove, the domain discrepancy. (3) The boost of JAN over ResNet is more significant
-than the improvement of JAN over AlexNet. This implies
+Then the parameters Φ are updated by,
+∂ log qΦ (zt |st , mt )
+∂L
+= EqΦ (zt |st ,mt ) [r(mt , zt , st )
+]
+∂Φ
+∂Φ
+(n)
+1 X
+∂ log qΦ (zt |st , mt )
+(n)
+≈
+r(mt , zt , st )
+. (15)
+N n
+∂Φ
+However, this gradient estimator has a large variance be(n)
+cause the learning signal r(mt , zt , st ) relies on samples
+from the proposal distribution qΦ (zt |st , mt ). To reduce the
+variance during inference, we follow the REINFORCE algorithm (Mnih et al., 2014; Mnih & Gregor, 2014) and
+introduce two baselines b and b(st ), the centered learning signal and input dependent baseline respectively to
+help reduce the variance. b is a learnable constant and
+b(st ) = MLP(st ). During training, the two baselines are
+updated by minimising the distance,
+h
+i2
+(n)
+Lb = r(mt , zt , st ) − b − b(st )
+(16)
 
-that JAN can benefit from more transferable representations.
-The great aspect of JAN is that via the kernel trick there is
-no need to train a separate network to maximize the MMD
-criterion (5) for the ball of a RKHS. However, this has the
-disadvantage that some kernels used in practice are unsuitable for capturing very complex distances in high dimensional spaces such as natural images (Arjovsky et al., 2017).
-The JAN-A model significantly outperforms the previous domain adversarial deep network (Ganin & Lempitsky, 2015).
-The improvement from JAN to JAN-A also demonstrates the
-benefit of adversarial training for optimizing the JMMD in
-a richer function class. By maximizing the JMMD criterion
-with respect to a separate network, JAN-A can maximize the
-distinguishability of source and target distributions. Adapting domains against deep features where their distributions
-maximally differ, we can enhance the feature transferability.
-The three domains in ImageCLEF-DA are more balanced
-than those of Office-31. With these more balanced transfer
-tasks, we are expecting to testify whether transfer learning
-improves when domain sizes do not change. The classification accuracy results based on both AlexNet and ResNet are
-shown in Table 2. The JAN models outperform comparison
-methods on most transfer tasks, but by less improvements.
-This means the difference in domain sizes may cause shift.
+and the gradient w.r.t. Φ can be rewritten as
+(n)
+∂L
+1 X
+∂ log qΦ (zt |st , mt )
+(n)
+≈
+[r(mt , zt , st )−b−b(st )]
+.
+∂Φ
+N n
+∂Φ
+(17)
 
-Deep Transfer Learning with Joint Adaptation Networks
+2.3. Semi-Supervision
+Despite the steps described above for reducing the variance,
+there remain two major difficulties in learning latent intentions in a completely unsupervised manner: (1) the high
+variance of the inference network prevents it from generating sensible intention samples in the early stages of training, and (2) the overly strong discriminative power of the
+LSTM language model is prone to the disconnection phenomenon between the LSTM decoder and the rest of the
+components whereby the decoder learns to ignore the samples and focuses solely on optimising the language model.
+To ensure more stable training and prevent disconnection,
+a semi-supervised learning technique is introduced.
+Inferring the latent intentions underlying utterances is similar to an unsupervised clustering task. Standard clustering
+algorithms can therefore be used to pre-process the corpus
+and generate automatic labels zˆt for part of the training examples (mt , st , zˆt ) ∈ L. Then when the model is trained
+on the unlabeled examples (mt , st ) ∈ U, we optimise it
+against the modified variational lower bound given in Equation 8
+X
+L1 =
+Eqφ (zt |st ,mt ) [log pθ (mt |zt , st )]
+(mt ,st )∈U
 
-(a) DAN: Source=A
+− λDKL (qφ (zt |st , mt )||πθ (zt |st )) (18)
+However, when the model is updated based on examples
+from the labeled set (mt , st , zˆt ) ∈ L, we treat the labeled
+intention zˆt as an observed variable and train the model by
+maximising the joint log-likelihood,
+X
+L2 =
+log [pΘ (mt |zˆt , st )πΘ (zˆt |st )qΦ (zˆt |st , mt )]
+(mt ,zˆt ,st )∈L
 
-(b) DAN: Target=W
+(19)
+The final joint objective function can then be written as
+L0 = αL1 + L2 , where α controls the trade-off between
+the supervised and unsupervised examples.
+2.4. Reinforcement Learning
+One of the main purposes of learning interpretable, discrete
+latent intention inside a dialogue system is to be able to
+control and refine the model’s behaviour with operational
+experience. The learnt generative network πΘ (zt |st ) encodes the policy discovered from the underlying data distribution but this is not necessarily optimal for any specific
+task. Since πΘ (zt |st ) is a parameterised policy network
+itself, any policy gradient-based reinforcement learning algorithm (Williams, 1992; Konda & Tsitsiklis, 2003) can be
 
-(c) JAN: Source=A
+Latent Intention Dialogue Models
 
-(d) JAN: Target=W
+used to fine-tune the initial policy against other objective
+functions that we are more interested in.
+Based on the initial policy πΘ (zt |st ), we revisit the training dialogues and update parameters based on the following strategy: when encountering unlabeled examples U at
+turn t the system samples an action from the learnt policy
+(n)
+(n)
+zt ∼ πΘ (zt |st ) and receives a reward rt . Conditioning
+on these, we can directly fine-tune a subset of the model
+parameters Θ0 by the policy gradient method,
+(n)
+1 X (n) ∂ log πΘ (zt |st )
+∂J
+≈
+r
+∂Θ0
+N n t
+∂Θ0
 
-Figure 2. The t-SNE visualization of network activations (ResNet) generated by DAN (a)(b) and JAN (c)(d), respectively.
-0.06
+(20)
 
-JMMD
+where Θ0 = {W1 , b1 , W2 , b2 } is the MLP that parameterises the policy network (Equation 3). However, when a
+labeled example ∈ L is encountered we force the model to
+(n)
+take the labeled action zt = zˆt and update the parameters
+by Equation 20 as well. Unlike Li et al (2016c) where the
+whole model is refined end-to-end using RL, updating only
+Θ0 effectively allows us to refine only the decision-making
+of the system and avoid the problem of over-fitting.
 
-A-Distance
+3. Experiments
+3.1. Dataset & Setup for Goal-oriented Dialogue
+We explored the properties of the LIDM model3 using the
+CamRest676 corpus4 collected by Wen et al (2017), in
+which the task of the system is to assist users to find a
+restaurant in the Cambridge, UK area. The corpus was collected based on a modified Wizard of Oz (Kelley, 1984)
+online data collection. Workers were recruited on Amazon
+Mechanical Turk and asked to complete a task by carrying
+out a conversation, alternating roles between a user and a
+wizard. There are three informable slots (food, pricerange,
+area) that users can use to constrain the search and six requestable slots (address, phone, postcode plus the three
+informable slots) that the user can ask a value for once a
+restaurant has been offered. There are 676 dialogues in the
+dataset (including both finished and unfinished dialogues)
+and approximately 2750 conversational turns in total. The
+database contains 99 unique restaurants.
+To make a direct comparison with prior work we follow
+the same experimental setup as in Wen et al (2016; 2017).
+The corpus was partitioned into training, validation, and
+test sets in the ratio 3:1:1. The LSTM hidden layer sizes
+were set to 50, and the vocabulary size is around 500 after
+pre-processing, to remove rare words and words that can
+be delexicalised2 . All the system components were trained
+jointly by fixing the pre-trained belief trackers and the discrete database operator with the model’s latent intention
+3
+4
 
-1.8
-1.6
-1.4
+Will be available at https://github.com/shawnwun/NNDIAL
+https://www.repository.cam.ac.uk/handle/1810/260970
 
-0.4
+ID
 
-90
-CNN (AlexNet)
-DAN (AlexNet)
-JAN (AlexNet)
+#
 
-0.04
-
-0.02
-
-Test Error
-
-CNN (AlexNet)
-DAN (AlexNet)
-JAN (AlexNet)
-
-2
-
-Accuracy (%)
-
-2.2
-
-80
-
-70
-A
-A
-
-1.2
-1
-
-A->W
-
-W->D
-
-Transfer Task
-
-(a) A-distance
+content words
 
 0
-
-A->W
-
-W->D
-
-W (AlexNet)
-W (ResNet)
-
-60
-0.01 0.02 0.05 0.1
-
-0.2
-
-0.5
-
-Transfer Task
-
-(b) JMMD
-
-(c) Accuracy w.r.t. λ
-
 1
+3
+14
+31
+34
+46
+85
 
-RevGrad (ResNet)
-JAN (ResNet)
-JAN-A (ResNet)
+138
+91
+42
+17
+9
+9
+7
+4
 
-0.3
+thank, goodbye
+welcome, goodbye
+phone, address, [v.phone],[v.address]
+address, [v.address]
+located, area, [v.area]
+area, would, like
+food, serving, restaurant, [v.food]
+help, anything, else
 
-0.2
+Table 1. An example of the automatically labeled response seed
+set for semi-supervised learning during variational inference.
 
-0.1
-0.1
+size I set to 50, 70, and 100, respectively. The trade-off
+constants λ and α were both set to 0.1. To produce selflabeled response clusters for semi-supervised learning of
+the intentions, we firstly removed function words from all
+the responses and clustered them according to their content
+words. We then assigned the responses in the i-th frequent
+cluster to the i-th latent dimension as its supervised set.
+This results in about 35% (I = 50) to 43% (I = 100)
+labeled responses across the whole dataset. An example
+of the resulting seed set is shown in Table 1. During inference we carried out stochastic estimation by taking one
+sample for estimating the stochastic gradients. The model
+is trained by Adam (Kingma & Ba, 2014) and tuned (early
+stopping, hyper-parameters) on the held-out validation set.
+We alternately optimised the generative model and the inference network by fixing the parameters of one while updating the parameters of the other.
+During reinforcement fine-tuning, we generated a sentence
+mt from the model to replace the ground truth m̂t at each
+turn and define an immediate reward as whether mt can
+improve the dialogue success (Su et al., 2015) relative to
+m̂t , plus the sentence BLEU score (Auli & Gao, 2014),
+
+
+1
+rt = η · sBLEU(mt , m̂t ) + −1
+
+
+0
 
-0.5
+mt improves
+mt degrades
+otherwise
 
-1
+(21)
 
-1.5
+where the constant η was set to 0.5. We fine-tuned the
+model parameters using RL for only 3 epochs. During testing, we greedily selected the most probable intention and
+applied beam search with the beamwidth set to 10 when decoding the response. The decoding criterion was the average log-probability of tokens in the response. We then evaluated our model on task success rate (Su et al., 2015) and
+BLEU score (Papineni et al., 2002) as in Wen et al (2016;
+2017) in which the model is used to predict each system
+response in the held-out test set.
 
-2
+Latent Intention Dialogue Models
 
-Number of Iterations ( 104)
+Model
+Ground Truth
+Ground Truth
 
-(d) Convergence
+Success (%)
 
-Figure 3. Analysis: (a) A-distance; (b) JMMD; (c) parameter sensitivity of λ; (d) convergence (dashed lines show best baseline results).
+BLEU
 
-5.3. Analysis
-Feature Visualization: We visualize in Figures 2(a)–2(d)
-the network activations of task A → W learned by DAN and
-JAN respectively using t-SNE embeddings (Donahue et al.,
-2014). Compared with the activations given by DAN in Figure 2(a)–2(b), the activations given by JAN in Figures 2(c)–
-2(d) show that the target categories are discriminated much
-more clearly by the JAN source classifier. This suggests that
-the adaptation of joint distributions of multilayer activations
-is a powerful approach to unsupervised domain adaptation.
-Distribution Discrepancy: The theory of domain adaptation (Ben-David et al., 2010; Mansour et al., 2009) suggests
-A-distance as a measure of distribution discrepancy, which,
-together with the source risk, will bound the target risk. The
-proxy A-distance is defined as dA = 2 (1 − 2), where 
-is the generalization error of a classifier (e.g. kernel SVM)
-trained on the binary problem of discriminating the source
-and target. Figure 3(a) shows dA on tasks A → W, W → D
-with features of CNN, DAN, and JAN. We observe that dA
-using JAN features is much smaller than dA using CNN and
-DAN features, which suggests that JAN features can close
-the cross-domain gap more effectively. As domains W and
-D are very similar, dA of task W → D is much smaller than
-that of A → W, which explains better accuracy of W → D.
-A limitation of the A-distance is that it cannot measure the
-cross-domain discrepancy of joint distributions, which is
-addressed by the proposed JMMD (9). We compute JMMD
-(9) across domains using CNN, DAN and JAN activations
-respectively, based on the features in f c7 and ground-truth
-labels in f c8 (the target labels are not used for model training). Figure 3(b) shows that JMMD using JAN activations is
-much smaller than JMMD using CNN and DAN activations,
+91.6
 
-which validates that JANs successfully reduce the shifts in
-joint distributions to learn more transferable representations.
-Parameter Sensitivity: We check the sensitivity of JMMD
-parameter λ, i.e. the maximum value of the relative weight
-for JMMD. Figure 3(c) demonstrates the transfer accuracy
-of JAN based on AlexNet and ResNet respectively, by varying λ ∈ {0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1} on task A → W.
-The accuracy of JAN first increases and then decreases as
-λ varies and shows a bell-shaped curve. This confirms the
-motivation of deep learning and joint distribution adaptation,
-as a proper trade-off between them enhance transferability.
-Convergence Performance: As JAN and JAN-A involve
-adversarial training procedures, we testify their convergence
-performance. Figure 3(d) demonstrates the test errors of
-different methods on task A → W, which suggests that JAN
-converges fastest due to nonparametric JMMD while JAN-A
-has similar convergence speed as RevGrad with significantly
-improved accuracy in the whole procedure of convergence.
+1.000
+
+Published Models (Wen et al., 2016)
+NDM
+76.1
+NDM+Att
+79.0
+NDM+Att+SS
+81.8
+
+0.212
+0.224
+0.240
+
+LIDM Models
+LIDM, I = 50
+LIDM, I = 70
+LIDM, I = 100
+
+66.9
+61.0
+63.2
+
+0.238
+0.246
+0.242
+
+LIDM Models + RL
+LIDM, I = 50, +RL
+LIDM, I = 70, +RL
+LIDM, I = 100, +RL
+
+82.4
+81.6
+84.6
+
+0.231
+0.230
+0.240
+
+Table 2. Corpus-based Evaluation.
+
+3.2. Experiments on Goal-oriented Dialogue
+Table 2 presents the results of the corpus-based evaluation.
+The Ground Truth block shows the two metrics when we
+compute them on the human-authored responses. This sets
+a gold standard for the task. In the Published Models block,
+the results for the three baseline models were borrowed
+from Wen et al (2016), they are: (1) the vanilla neural dialogue model (NDM), (2) NDM plus an attention mechanism on the belief trackers, and (3) the attentive NDM
+with self-supervised sub-task neurons. The results of the
+LIDM model with and without RL fine-tuning are shown
+in the LIDM Models and the LIDM Models + RL blocks,
+respectively. As can be seen, the initial policy learned by
+fitting the latent intention to the underlying data distribution yielded reasonably good results on BLEU but did not
+perform well on task success when compared to their deterministic counterparts (block 2 v.s. 3). This may be due to
+the fact that the variational lower bound of the dataset was
+optimised rather than task success during variational inference. However, once RL was applied to optimise the success rate as part of the reward function (Equation 21) during the fine-tuning phase, the resulting LIDM+RL models
+outperformed the three baselines in terms of task success
+without significantly sacrificing BLEU (block 2 v.s. 4)5 .
+In order to assess the human perceived performance, we
+evaluated the three models (1) NDM, (2) LIDM, and (3)
+LIDM+RL by recruiting paid subjects on Amazon Mechanical Turk. Each judge was asked to follow a task and
+carried out a conversation with the machine. At the end of
+each conversation the judges were asked to rate and compare the model’s performance. We assessed the subjective
+5
+
+Note that both NDM+Att+SS and LIDM use self-supervised
+information
+
+Metrics
+
+NDM
+
+LIDM
+
+LIDM+RL
+
+Success
+Comprehension
+Naturalness
+# of Turns
+* p <0.05
+
+91.5%
+4.21
+4.08
+4.45
+
+92.0%
+4.40*
+4.29*
+4.54
+
+93.0%
+4.40
+4.28*
+4.29
+
+Table 3. Human evaluation. The significance test is based on a
+two-tailed student-t test, between NDM and LIDMs.
+
+success rate, the perceived comprehension ability and the
+naturalness of responses on a scale of 1 to 5. For each
+model, we collected 200 dialogues and averaged the scores.
+During human evaluation, we sampled from the top-5 intentions of the LIDM models and decoded a response based
+on the sample. The result is shown in Table 3. One interesting fact to note is that although the LIDM did not perform
+well on the corpus-based task success metric, the human
+judges rated its subjective success almost indistinguishably
+from the others. This discrepancy between the two experiments arises mainly from a flaw in the corpus-based success metric in that it favors greedy policies because the user
+side behaviours are fixed rather than interactional6 . Despite
+the fact that LIDMs are considered only marginally better
+than NDM on subjective success, the LIDMs do outperform NDM on both comprehension and naturalness scores.
+This is because the proposed LIDM models can better capture multiple modes in the communicative intention and
+thereby respond more naturally by sampling from the latent intention variable.
+Three example conversations are shown between a human
+judge and a machine, one from LIDM in Table 4 and two
+from LIDM+RL in Table 5, respectively. The results are
+displayed one exchange per block. Each induced latent intention is shown by a tuple (index, probability) followed
+by a decoded response, and the sample dialogues were produced by following the responses highlighted in bold. As
+can be seen, the LIDM shown in Table 4 clearly has multiple modes in the distribution over the learned intention
+latent variable, and what it represents can be easily interpreted by the response generated. However, some intentions (such as intent 0) can result in very different responses
+under different dialogue states even though they were supervised by a small response set as shown in Table 1. This
+is mainly because of the variance introduced during variational inference. Finally, when comparing Table 4 and
+Table 5, we can observe the difference between the two dialogue strategies: the LIDM, by inferring its policy from
+the supervised dataset, reflects the diverse set of modes in
+the underlying distribution; whereas the LIDM+RL, which
+6
+
+The system tries to provide as much information as possible
+in the early turns, in case the fixed user side behaviours a few
+turns later do not fit the scenario the system originally planned.
+
+Latent Intention Dialogue Models
+Human :
+Machine:
+
+Hi, I’m hungry for some Indonesian
+( 0 0.71) i am sorry , there are no indonesian restaurants in the area . would you like something else ?
+(46 0.19) there are no restaurants serving indonesian kind of food .
+(34 0.07) what location would you like ?
+
+Human :
+Machine:
+
+Oh no. How about Indian?
+( 0 0.59) there are 9 restaurants in the east side of town . would you like their address ?
+(30 0.15) curry prince serves indian cuisine .
+(34 0.10) what area would you like ?
+
+Human :
+Machine:
+
+East side please
+( 0 0.62) curry prince is a indian restaurant in the east side of town . would you like their telephone number ?
+(84 0.19) curry prince is an indian restaurant in the east of town and the number is 01223 566388 .
+(81 0.08) curry prince serves indian type of cuisine and is located in the east part of town .
+
+Human :
+Machine:
+
+yes , the address and phone number please
+( 3 0.46) the address is 451 newmarket road fen ditton and the phone is 01223 566388 .
+(11 0.16) the address for curry prince is 451 newmarket road fen ditton and the phone number is 01223 566388 .
+( 0 0.15) curry prince is located at 451 newmarket road fen ditton and their phone is 01223 566388 . is there
+anything else i can help you with ?
+
+Human :
+Machine:
+
+Okay, thank you goodbye
+( 0 0.57) thank you , goodbye .
+( 2 0.13) goodbye .
+( 1 0.11) you are welcome . goodbye .
+( 6 0.10) thank you for using the cambridge restaurant system . goodbye .
+
+Table 4. A sample dialogue from the LIDM, I=100 model, one exchange per block. Each latent intention is shown by a tuple (index,
+probability), followed by a decoded response. The sample dialogue was produced by following the responses highlighted in bold.
+
+refined its strategy using RL, exhibits a much greedier behavior in achieving task success (e.g. in Table 5 in block
+2 & 4 the LIDM+RL agent provides the address and phone
+number even before the user asks). This is also supported
+by the human evaluation in Table 3 where LIDM+RL has
+much shorter dialogues on average compared to the other
+two models.
+
+4. Discussion
+Learning an end-to-end dialogue system is appealing but
+challenging because of the credit assignment problem. Discrete latent variable dialogue models such as LIDM are attractive because the latent variable can serve as an interface for decomposing the learning of language and the internal dialogue decision-making. This decomposition can
+effectively help us resolve the credit assignment problem
+where different learning signals can be applied to different sub-modules to update the parameters. In variational
+inference for discrete latent variables, the latent distribution is basically updated by the reward from the variational
+lower bound. While in reinforcement learning, the latent
+distribution (i.e. policy network) is updated by the rewards
+from dialogue success and sentence BLEU score. Hence,
+the latent variable bridges the different learning paradigms
+such as Bayesian learning and reinforcement learning and
+brings them together under the same framework. This
+framework provides a more robust neural network-based
+approach than previous approaches because it does not depend solely on sequence-to-sequence learning but instead
+
+explicitly models the hidden dialogue intentions underlying the user’s utterances and allows the agent to directly
+learn a dialogue policy through interaction.
+
+5. Related work
+Modeling chat-based dialogues (Serban et al., 2015; Shang
+et al., 2015) as a sequence-to-sequence learning (Sutskever
+et al., 2014) problem is a common theme in the deep learning community. Vinyals and Le (2015) has demonstrated a
+seq2seq-based model trained on a huge amount of conversation corpora which learns interesting replies conditioned
+on different user queries. However, due to an inability
+to model dialogue context, these models generally suffer
+from the generic response problem (Li et al., 2016a; Serban et al., 2016). Several approaches have been proposed to
+mitigate this issue, such as modeling the persona (Li et al.,
+2016b), reinforcement learning (Li et al., 2016c), and introducing continuous latent variables (Serban et al., 2016; Cao
+& Clark, 2017). While in our case, we not only make use
+of the latent variable to inject stochasticity for generating
+natural and diverse machine responses but also model the
+hidden dialogue intentions explicitly. This combines the
+merits of reinforcement learning and generative models.
+At the other end of the spectrum, goal-oriented dialogue
+systems typically adopt the POMDP framework (Young
+et al., 2013) and break down the development of the dialogue systems into a pipeline of modules: natural language understanding (Henderson, 2015), dialogue manage-
+
+Latent Intention Dialogue Models
+Human :
+Machine:
+
+Hi, I’m hungry for some Indonesian .
+(0
+0.61) i am sorry , there are no indonesian restaurants in the area . would you like something else ?
+(46 0.17) no restaurants in the part of town .
+(34 0.14) what part of town would you like ?
+
+Human :
+Machine:
+
+Oh no. How about Indian?
+(93 0.51) the gandhi is located at 72 regent street city centre and their telephone number is 01223 353942 .
+(72 0.21) the gandhi serves indian kind of food and is in the centre of town and is in the cheap price range .
+(12 0.12) the gandhi is a indian restaurant in the centre location and is in the cheap price range .
+
+Human :
+Machine:
+
+Okay, thank you goodbye
+(6
+0.28) thank you for using the cambridge restaurant system . goodbye .
+(1
+0.24) you are welcome . goodbye .
+( 85 0.19) is there anything else i can help you with ?
+
+Human :
+Machine:
+
+hey can i have some chinese cruisine in the centre ? and a cheap one please
+(15 0.42) golden house is located at 12 lensfield road city centre and their number is 01842 753771 .
+(5
+0.38) golden house is located at 12 lensfield road city centre and the number is 01842 753771 . is there ...
+(93 0.10) golden house is located at 12 lensfield road city centre and their phone is 01842 753771 .
+
+Human :
+Machine:
+
+that is all
+(6
+0.57)
+(1
+0.20)
+(17 0.11)
+
+thank you for using the cambridge restaurant system . goodbye .
+you are welcome . goodbye .
+have a nice day !
+
+Table 5. Two sample dialogues from the LIDM+RL, I=100 model, one exchange per block. Comparing to Table 4, the RL agent
+demonstrates a much greedier behavior toward task success. This can be seen in block 2 & block 4 in which the agent provides the
+address and phone number even before the user asks.
+
+ment (Gašić et al., 2013), and natural language generation (Wen et al., 2015). These system modules communicate through a dialogue act formalism (Traum, 1999),
+which in effect constitute a fixed set of handcrafted intentions. This limits the ability of such systems to scale to
+more complex tasks. In contrast, the LIDM directly infers
+all underlying dialogue intentions from data and can handle
+intention distributions with long tails by measuring similarities against the existing ones during variational inference.
+Modeling of end-to-end goal-oriented dialogue systems has
+also been studied recently (Wen et al., 2016; 2017; Bordes
+& Weston, 2017), however, these models are typically deterministic and rely on decoder supervision signals to finetune a large set of model parameters.
+Much research has focused on combining different learning paradigms and signals to bootstrap performance. For
+example, semi-supervised learning (Kingma et al., 2014)
+has been applied in the sample-based neural variational inference framework as a way to reduce sample variance. In
+practice, this relies on a discrete latent variable (Miao &
+Blunsom, 2016; Kočiský et al., 2016) as the vehicle for the
+supervision labels. As in reinforcement learning, which has
+been a very common learning paradigm in dialogue systems (Gašić et al., 2013; Su et al., 2016; Li et al., 2017),
+the policy is also parameterised by a discrete set of actions.
+As a consequence, the LIDM, which parameterises the intention space via a discrete latent variable, can automatically enjoy the benefit of bootstrapping from signals coming from different learning paradigms. In addition, selfsupervised learning (Snow et al., 2004) (or distant, weak
+
+supervision) as a simple way to generate automatic labels
+by heuristics is popular in many NLP tasks and has been
+applied to memory networks (Hill et al., 2016) and neural
+dialogue systems (Wen et al., 2016) recently. Since there
+is no additional effort required in labeling, it can also be
+viewed as a method for bootstrapping.
 
 6. Conclusion
-This paper presented a novel approach to deep transfer learning, which enables end-to-end learning of transferable representations. Unlike previous methods that match the marginal
-distributions of features across domains, the proposed approach reduces the shift in joint distributions of the network
-activations of multiple task-specific layers, which approximates the shift in the joint distributions of input features and
-output labels. The discrepancy between joint distributions
-can be computed by embedding the joint distributions in a
-tensor-product Hilbert space, which can be scaled linearly
-to large samples and be implemented in most deep networks.
-Experiments testified the efficacy of the proposed approach.
+In this paper, we have proposed a framework for learning
+dialogue intentions via discrete latent variable models and
+introduced the Latent Intention Dialogue Model (LIDM)
+for goal-oriented dialogue modeling. We have shown that
+the LIDM can discover an effective initial policy from the
+underlying data distribution and is capable of revising its
+strategy based on an external reward using reinforcement
+learning. We believe this is a promising step forward for
+building autonomous dialogue agents since the learnt discrete latent variable interface enables the agent to perform
+learning using several differing paradigms. The experiments showed that the proposed LIDM is able to communicate with human subjects and outperforms previous published results.
 
-Deep Transfer Learning with Joint Adaptation Networks
+Acknowledgements
+Tsung-Hsien Wen is supported by Toshiba Research Europe Ltd, Cambridge Research Laboratory. The authors
+would like to thank the members of the Cambridge Dialogue Systems Group for their valuable comments.
 
-Acknowledgments
-We thank Zhangjie Cao for conducting part of experiments.
-This work was supported by NSFC (61502265, 61325008),
-National Key R&D Program of China (2016YFB1000701,
-2015BAF32B01), and Tsinghua TNList Lab Key Projects.
+Latent Intention Dialogue Models
 
 References
-Arjovsky, Martin, Chintala, Soumith, and Bottou, Léon.
-Wasserstein gan. arXiv preprint arXiv:1701.07875, 2017.
-Ben-David, S., Blitzer, J., Crammer, K., Kulesza, A.,
-Pereira, F., and Vaughan, J. W. A theory of learning from
-different domains. Machine Learning, 79(1-2):151–175,
-2010.
-Bengio, Y., Courville, A., and Vincent, P. Representation
-learning: A review and new perspectives. IEEE Transactions on Pattern Analysis and Machine Intelligence
-(TPAMI), 35(8):1798–1828, 2013.
-Bousmalis, Konstantinos, Trigeorgis, George, Silberman,
-Nathan, Krishnan, Dilip, and Erhan, Dumitru. Domain
-separation networks. In Advances in Neural Information
-Processing Systems (NIPS), pp. 343–351, 2016.
-Collobert, R., Weston, J., Bottou, L., Karlen, M.,
-Kavukcuoglu, K., and Kuksa, P. Natural language processing (almost) from scratch. Journal of Machine Learning Research (JMLR), 12:2493–2537, 2011.
-Donahue, J., Jia, Y., Vinyals, O., Hoffman, J., Zhang, N.,
-Tzeng, E., and Darrell, T. Decaf: A deep convolutional
-activation feature for generic visual recognition. In International Conference on Machine Learning (ICML),
-2014.
-Duan, L., Tsang, I. W., and Xu, D. Domain transfer multiple
-kernel learning. IEEE Transactions on Pattern Analysis
-and Machine Intelligence (TPAMI), 34(3):465–479, 2012.
-
-International Conference on Machine Learning (ICML),
-2013.
-Goodfellow, I., Pouget-Abadie, J., Mirza, M., Xu, B.,
-Warde-Farley, D., Ozair, S., Courville, A., and Bengio,
-Y. Generative adversarial nets. In Advances in Neural
-Information Processing Systems (NIPS), 2014.
-Gopalan, R., Li, R., and Chellappa, R. Domain adaptation for object recognition: An unsupervised approach.
-In IEEE International Conference on Computer Vision
-(ICCV), 2011.
-Gretton, A., Borgwardt, K., Rasch, M., Schölkopf, B., and
-Smola, A. A kernel two-sample test. Journal of Machine
-Learning Research (JMLR), 13:723–773, 2012.
-He, K., Zhang, X., Ren, S., and Sun, J. Deep residual
-learning for image recognition. In IEEE Conference on
-Computer Vision and Pattern Recognition (CVPR), 2016.
-Hoffman, J., Guadarrama, S., Tzeng, E., Hu, R., Donahue,
-J., Girshick, R., Darrell, T., and Saenko, K. LSDA: Large
-scale detection through adaptation. In Advances in Neural
-Information Processing Systems (NIPS), 2014.
-Huang, J., Smola, A. J., Gretton, A., Borgwardt, K. M., and
-Schölkopf, B. Correcting sample selection bias by unlabeled data. In Advances in Neural Information Processing
-Systems (NIPS), 2006.
-Krizhevsky, A., Sutskever, I., and Hinton, G. E. Imagenet
-classification with deep convolutional neural networks.
-In Advances in Neural Information Processing Systems
-(NIPS), 2012.
-Long, Mingsheng, Cao, Yue, Wang, Jianmin, and Jordan,
-Michael I. Learning transferable features with deep adaptation networks. In International Conference on Machine
-Learning (ICML), 2015.
-
-Ganin, Y. and Lempitsky, V. Unsupervised domain adaptation by backpropagation. In International Conference on
-Machine Learning (ICML), 2015.
-
-Long, Mingsheng, Zhu, Han, Wang, Jianmin, and Jordan,
-Michael I. Unsupervised domain adaptation with residual
-transfer networks. In Advances in Neural Information
-Processing Systems (NIPS), pp. 136–144, 2016.
-
-Glorot, X., Bordes, A., and Bengio, Y. Domain adaptation
-for large-scale sentiment classification: A deep learning approach. In International Conference on Machine
-Learning (ICML), 2011.
-
-Mansour, Y., Mohri, M., and Rostamizadeh, A. Domain
-adaptation: Learning bounds and algorithms. In Conference on Computational Learning Theory (COLT), 2009.
-
-Gong, B., Shi, Y., Sha, F., and Grauman, K. Geodesic
-flow kernel for unsupervised domain adaptation. In IEEE
-Conference on Computer Vision and Pattern Recognition
-(CVPR), 2012.
-
-Oquab, M., Bottou, L., Laptev, I., and Sivic, J. Learning
-and transferring mid-level image representations using
-convolutional neural networks. In IEEE Conference on
-Computer Vision and Pattern Recognition (CVPR), 2013.
-
-Gong, B., Grauman, K., and Sha, F. Connecting the
-dots with landmarks: Discriminatively learning domaininvariant features for unsupervised domain adaptation. In
-
-Pan, S. J. and Yang, Q. A survey on transfer learning.
-IEEE Transactions on Knowledge and Data Engineering
-(TKDE), 22(10):1345–1359, 2010.
-
-Deep Transfer Learning with Joint Adaptation Networks
-
-Pan, S. J., Tsang, I. W., Kwok, J. T., and Yang, Q. Domain adaptation via transfer component analysis. IEEE
-Transactions on Neural Networks (TNN), 22(2):199–210,
-2011.
-Quionero-Candela, J., Sugiyama, M., Schwaighofer, A., and
-Lawrence, N. D. Dataset shift in machine learning. The
-MIT Press, 2009.
-Reddi, Sashank J, Ramdas, Aaditya, Póczos, Barnabás,
-Singh, Aarti, and Wasserman, Larry A. On the high
-dimensional power of a linear-time two sample test under mean-shift alternatives. In Artificial Intelligence and
-Statistics Conference (AISTATS), 2015.
-Saenko, K., Kulis, B., Fritz, M., and Darrell, T. Adapting
-visual category models to new domains. In European
-Conference on Computer Vision (ECCV), 2010.
-Simonyan, K. and Zisserman, A. Very deep convolutional
-networks for large-scale image recognition. In International Conference on Learning Representations (ICLR),
-2015 (arXiv:1409.1556v6), 2015.
-Smola, Alex, Gretton, Arthur, Song, Le, and Schölkopf,
-Bernhard. A hilbert space embedding for distributions.
-In International Conference on Algorithmic Learning
-Theory (ALT), pp. 13–31. Springer, 2007.
-Song, L., Huang, J., Smola, A., and Fukumizu, K. Hilbert
-space embeddings of conditional distributions with applications to dynamical systems. In International Conference on Machine Learning (ICML), 2009.
-Song, Le and Dai, Bo. Robust low rank kernel embeddings
-of multivariate distributions. In Advances in Neural Information Processing Systems (NIPS), pp. 3228–3236,
-2013.
-Song, Le, Boots, Byron, Siddiqi, Sajid M, Gordon, Geoffrey J, and Smola, Alex. Hilbert space embeddings of
-hidden markov models. In International Conference on
-Machine Learning (ICML), 2010.
-Song, Le, Fukumizu, Kenji, and Gretton, Arthur. Kernel
-embeddings of conditional distributions: A unified kernel
-framework for nonparametric inference in graphical models. IEEE Signal Processing Magazine, 30(4):98–111,
-2013.
-Sriperumbudur, B. K., Fukumizu, K., Gretton, A., Lanckriet,
-G., and Schölkopf, B. Kernel choice and classifiability for
-rkhs embeddings of probability distributions. In Advances
-in Neural Information Processing Systems (NIPS), 2009.
-Sriperumbudur, Bharath K, Gretton, Arthur, Fukumizu,
-Kenji, Schölkopf, Bernhard, and Lanckriet, Gert RG.
-
-Hilbert space embeddings and metrics on probability measures. Journal of Machine Learning Research (JMLR),
-11(Apr):1517–1561, 2010.
-Sugiyama, M., Nakajima, S., Kashima, H., Buenau, P. V.,
-and Kawanabe, M. Direct importance estimation with
-model selection and its application to covariate shift adaptation. In Advances in Neural Information Processing
-Systems (NIPS), 2008.
-Szegedy, C., Liu, W., Jia, Y., Sermanet, P., Reed, S.,
-Anguelov, D., Erhan, D., Vanhoucke, V., and Rabinovich,
-A. Going deeper with convolutions. In IEEE Conference
-on Computer Vision and Pattern Recognition (CVPR),
+Auli, Michael and Gao, Jianfeng. Decoder integration and
+expected bleu training for recurrent neural network language models. In ACL. Association for Computational
+Linguistics, 2014.
+Bahdanau, Dzmitry, Cho, Kyunghyun, and Bengio,
+Yoshua. Neural machine translation by jointly learning
+to align and translate. ICLR, 2015.
+Bordes, Antoine and Weston, Jason. Learning end-to-end
+goal-oriented dialog. In ICLR, 2017.
+Bowman, Samuel R., Vilnis, Luke, Vinyals, Oriol, Dai, Andrew M., Józefowicz, Rafal, and Bengio, Samy. Generating sentences from a continuous space. arXiv preprint:,
 2015.
-Tzeng, E., Hoffman, J., Zhang, N., Saenko, K., and Darrell,
-T. Deep domain confusion: Maximizing for domain
-invariance. CoRR, abs/1412.3474, 2014.
-Tzeng, E., Hoffman, J., Zhang, N., Saenko, K., and Darrell,
-T. Simultaneous deep transfer across domains and tasks.
-In IEEE International Conference on Computer Vision
-(ICCV), 2015.
-Tzeng, Eric, Hoffman, Judy, Saenko, Kate, and Darrell,
-Trevor. Adversarial discriminative domain adaptation.
-arXiv preprint arXiv:1702.05464, 2017.
-Wang, X. and Schneider, J. Flexible transfer learning under
-support and model shift. In Advances in Neural Information Processing Systems (NIPS), 2014.
-Yosinski, J., Clune, J., Bengio, Y., and Lipson, H. How
-transferable are features in deep neural networks? In Advances in Neural Information Processing Systems (NIPS),
+Cao, Kris and Clark, Stephen. Latent variable dialogue
+models and their diversity. In EACL, 2017.
+Faruqui, Manaal, Dodge, Jesse, Jauhar, Sujay Kumar,
+Dyer, Chris, Hovy, Eduard, and Smith, Noah A.
+Retrofitting word vectors to semantic lexicons. In
+NAACL-HLT, pp. 1606–1615, Denver, Colorado, May–
+June 2015. Association for Computational Linguistics.
+Gašić, Milica, Breslin, Catherine, Henderson, Matthew,
+Kim, Dongho, Szummer, Martin, Thomson, Blaise, Tsiakoulis, Pirros, and Young, Steve. On-line policy optimisation of bayesian spoken dialogue systems via human
+interaction. In ICASSP, 2013.
+Henderson, Matthew. Machine learning for dialog state
+tracking: A review. In Machine Learning in Spoken Language Processing Workshop, 2015.
+Henderson, Matthew, Thomson, Blaise, and Young, Steve.
+Word-based dialog state tracking with recurrent neural
+networks. In SigDial, pp. 292–299, Philadelphia, PA,
+U.S.A., June 2014. Association for Computational Linguistics.
+Higgins, Irina, Matthey, Loic, Pal, Arka, Burgess, Christopher, Glorot, Xavier, Botvinick, Matthew, Mohamed,
+Shakir, and Lerchner, Alexander. beta-vae: Learning basic visual concepts with a constrained variational framework. In ICLR, 2017.
+Hill, Felix, Bordes, Antoine, Chopra, Sumit, and Weston,
+Jason. The goldilocks principle: Reading children’s
+books with explicit memory representations. In ICLR,
+2016.
+Hochreiter, Sepp and Schmidhuber, Jürgen. Long shortterm memory. Neural Computation, 1997.
+
+Karpathy, Andrej and Fei-Fei, Li. Deep visual-semantic
+alignments for generating image descriptions. In CVPR,
+2015.
+Kelley, John F. An iterative design methodology for userfriendly natural language office information applications. ACM Transaction on Information Systems, 1984.
+Kiddon, Chloé, Zettlemoyer, Luke, and Choi, Yejin. Globally coherent text generation with neural checklist models. In EMNLP, pp. 329–339, Austin, Texas, November
+2016. Association for Computational Linguistics.
+Kingma, Diederik P. and Ba, Jimmy. Adam: A method
+for stochastic optimization. arXiv preprint: 1412.6980,
+abs/1412.6980, 2014.
+Kingma, Diederik P. and Welling, Max. Stochastic backpropagation and approximate inference in deep generative models. In ICML, 2014.
+Kingma, Diederik P., Mohamed, Shakir, Rezende,
+Danilo J., and Welling, Max. Semi-supervised learning
+with deep generative models. In NIPS, pp. 3581–3589.
+Curran Associates, Inc., 2014.
+Konda, Vijay R. and Tsitsiklis, John N. On actorcritic algorithms. SIAM J. Control Optim., 42(4):
+1143–1166, April 2003.
+ISSN 0363-0129.
+doi:
+10.1137/S0363012901385691.
+Kočiský, Tomáš, Melis, Gábor, Grefenstette, Edward,
+Dyer, Chris, Ling, Wang, Blunsom, Phil, and Hermann,
+Karl Moritz. Semantic parsing with semi-supervised
+sequential autoencoders. In EMNLP, pp. 1078–1087,
+Austin, Texas, November 2016. Association for Computational Linguistics.
+Li, Jiwei, Galley, Michel, Brockett, Chris, Gao, Jianfeng,
+and Dolan, Bill. A diversity-promoting objective function for neural conversation models. In NAACL-HLT,
+pp. 110–119, San Diego, California, June 2016a. Association for Computational Linguistics.
+Li, Jiwei, Galley, Michel, Brockett, Chris, Spithourakis,
+Georgios, Gao, Jianfeng, and Dolan, Bill. A personabased neural conversation model. In ACL, pp. 994–1003,
+Berlin, Germany, August 2016b. Association for Computational Linguistics.
+Li, Jiwei, Monroe, Will, Ritter, Alan, Jurafsky, Dan, Galley, Michel, and Gao, Jianfeng. Deep reinforcement
+learning for dialogue generation. In EMNLP, pp. 1192–
+1202, Austin, Texas, November 2016c. Association for
+Computational Linguistics.
+Li, Jiwei, Miller, Alexander H., Chopra, Sumit, Ranzato,
+Marc’Aurelio, and Weston, Jason. Dialogue learning
+with human-in-the-loop. In ICLR, 2017.
+
+Latent Intention Dialogue Models
+
+Miao, Yishu and Blunsom, Phil. Language as a latent variable: Discrete generative models for sentence compression. In EMNLP, pp. 319–328, Austin, Texas, November
+2016. Association for Computational Linguistics.
+Miao, Yishu, Yu, Lei, and Blunsom, Phil. Neural variational inference for text processing. In ICML, 2016.
+
+Su, Pei-Hao, Gasic, Milica, Mrkšić, Nikola, Rojas Barahona, Lina M., Ultes, Stefan, Vandyke, David, Wen,
+Tsung-Hsien, and Young, Steve. On-line active reward
+learning for policy optimisation in spoken dialogue systems. In ACL, pp. 2431–2441, Berlin, Germany, August
+2016. Association for Computational Linguistics.
+
+Mnih, Andriy and Gregor, Karol. Neural variational inference and learning in belief networks. In ICML, 2014.
+
+Sutskever, Ilya, Vinyals, Oriol, and Le, Quoc V. Sequence
+to sequence learning with neural networks. In NIPS,
 2014.
-Zhang, K., Schölkopf, B., Muandet, K., and Wang, Z. Domain adaptation under target and conditional shift. In
-International Conference on Machine Learning (ICML),
-2013.
-Zhong, E., Fan, W., Yang, Q., Verscheure, O., and Ren,
-J. Cross validation framework to choose amongst models and datasets for transfer learning. In Joint European
-Conference on Machine Learning and Knowledge Discovery in Databases (ECML/PKDD), pp. 547–562. Springer,
-2010.
+
+Mnih, Volodymyr, Heess, Nicolas, Graves, Alex, and
+kavukcuoglu, koray. Recurrent models of visual attention. In NIPS, 2014.
+
+Traum, David R. Foundations of Rational Agency, chapter
+Speech Acts for Dialogue Agents. Springer, 1999.
+
+Mrkšić, Nikola, Ó Séaghdha, Diarmuid, Wen, TsungHsien, Thomson, Blaise, and Young, Steve. Neural belief tracker: Data-driven dialogue state tracking. In ACL,
+Vancouver, Canada, August 2017. Association for Computational Linguistics.
+Papineni, Kishore, Roukos, Salim, Ward, Todd, and Zhu,
+Wei-Jing. Bleu: a method for automatic evaluation of
+machine translation. In ACL, pp. 311–318, Philadelphia,
+Pennsylvania, USA, July 2002. Association for Computational Linguistics.
+Serban, Iulian V., Sordoni, Alessandro, Lowe, Ryan, Charlin, Laurent, Pineau, Joelle, Courville, Aaron, and Bengio, Yoshua. A hierarchical latent variable encoderdecoder model for generating dialogues. arXiv preprint:
+1605.06069, 2016.
+Serban, Iulian Vlad, Sordoni, Alessandro, Bengio, Yoshua,
+Courville, Aaron C., and Pineau, Joelle. Hierarchical
+neural network generative models for movie dialogues.
+In AAAI, 2015.
+Shang, Lifeng, Lu, Zhengdong, and Li, Hang. Neural responding machine for short-text conversation. In ACL,
+2015.
+Silver, David, Huang, Aja, Maddison, Chris J, Guez,
+Arthur, Sifre, Laurent, Van Den Driessche, George,
+Schrittwieser, Julian, Antonoglou, Ioannis, Panneershelvam, Veda, Lanctot, Marc, et al. Mastering the game of
+go with deep neural networks and tree search. Nature,
+529(7587):484–489, 2016.
+Snow, Rion, Jurafsky, Daniel, and Ng, Andrew Y. Learning
+syntactic patterns for automatic hypernym discovery. In
+NIPS, 2004.
+Su, Pei-Hao, Vandyke, David, Gasic, Milica, Kim,
+Dongho, Mrksic, Nikola, Wen, Tsung-Hsien, and
+Young, Steve. Learning from real users: Rating dialogue
+success with neural networks for reinforcement learning
+in spoken dialogue systems. In Interspeech, 2015.
+
+Vinyals, Oriol and Le, Quoc V. A neural conversational
+model. In ICML Deep Learning Workshop, 2015.
+Wen, Tsung-Hsien, Gasic, Milica, Mrkšić, Nikola, Su,
+Pei-Hao, Vandyke, David, and Young, Steve. Semantically conditioned lstm-based natural language generation for spoken dialogue systems. In EMNLP, pp. 1711–
+1721, Lisbon, Portugal, September 2015. Association
+for Computational Linguistics.
+Wen, Tsung-Hsien, Gasic, Milica, Mrkšić, Nikola, Rojas Barahona, Lina M., Su, Pei-Hao, Ultes, Stefan,
+Vandyke, David, and Young, Steve. Conditional generation and snapshot learning in neural dialogue systems.
+In EMNLP, pp. 2153–2162, Austin, Texas, November
+2016. Association for Computational Linguistics.
+Wen, Tsung-Hsien, Vandyke, David, Mrkšić, Nikola,
+Gašić, Milica, M. Rojas-Barahona, Lina, Su, Pei-Hao,
+Ultes, Stefan, and Young, Steve. A network-based endto-end trainable task-oriented dialogue system. In EACL,
+2017.
+Weston, Jason E. Dialog-based language learning. In NIPS,
+pp. 829–837. Curran Associates, Inc., 2016.
+Williams, Ronald J. Simple statistical gradient-following
+algorithms for connectionist reinforcement learning.
+Machine Learning, 8(3-4):229–256, May 1992. ISSN
+0885-6125. doi: 10.1007/BF00992696.
+Xu, Kelvin, Ba, Jimmy, Kiros, Ryan, Cho, Kyunghyun,
+Courville, Aaron, Salakhutdinov, Ruslan, Zemel,
+Richard, and Bengio, Yoshua. Show, attend and tell:
+Neural image caption generation with visual attention.
+In ICML, 2015.
+Young, Steve, Gašić, Milica, Thomson, Blaise, and
+Williams, Jason D. Pomdp-based statistical spoken dialog systems: A review. Proceedings of the IEEE, 2013.
 
 

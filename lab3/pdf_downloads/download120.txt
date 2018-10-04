@@ -1,1068 +1,1024 @@
-Sliced Wasserstein Kernel for Persistence Diagrams
+Forward and Reverse Gradient-Based Hyperparameter Optimization
 
-Mathieu Carrière 1 Marco Cuturi 2 Steve Oudot 1
+Luca Franceschi 1 2 Michele Donini 1 Paolo Frasconi 3 Massimiliano Pontil 1 2
 
 Abstract
-Persistence diagrams (PDs) play a key role in
-topological data analysis (TDA), in which they
-are routinely used to describe topological properties of complicated shapes. PDs enjoy strong
-stability properties and have proven their utility
-in various learning contexts. They do not, however, live in a space naturally endowed with a
-Hilbert structure and are usually compared with
-non-Hilbertian distances, such as the bottleneck
-distance. To incorporate PDs in a convex learning pipeline, several kernels have been proposed
-with a strong emphasis on the stability of the resulting RKHS distance w.r.t. perturbations of the
-PDs. In this article, we use the Sliced Wasserstein approximation of the Wasserstein distance
-to define a new kernel for PDs, which is not only
-provably stable but also discriminative (with a
-bound depending on the number of points in the
-PDs) w.r.t. the first diagram distance between
-PDs. We also demonstrate its practicality, by developing an approximation technique to reduce
-kernel computation time, and show that our proposal compares favorably to existing kernels for
-PDs on several benchmarks.
+We study two procedures (reverse-mode and
+forward-mode) for computing the gradient of the
+validation error with respect to the hyperparameters of any iterative learning algorithm such as
+stochastic gradient descent. These procedures
+mirror two methods of computing gradients for
+recurrent neural networks and have different
+trade-offs in terms of running time and space requirements. Our formulation of the reverse-mode
+procedure is linked to previous work by Maclaurin et al. (2015) but does not require reversible
+dynamics. The forward-mode procedure is suitable for real-time hyperparameter updates, which
+may significantly speed up hyperparameter optimization on large datasets. We present experiments on data cleaning and on learning task interactions. We also present one large-scale experiment where the use of previous gradient-based
+methods would be prohibitive.
 
 1. Introduction
-Topological Data Analysis (TDA) is an emerging trend in
-data science, grounded on topological methods to design
-descriptors for complex data—see e.g. (Carlsson, 2009) for
-an introduction to the subject. The descriptors of TDA can
-be used in various contexts, in particular statistical learning and geometric inference, where they provide useful insight into the structure of data. Applications of TDA can
-be found in a number of scientific areas, including computer vision (Li et al., 2014), materials science (Hiraoka
-et al., 2016), and brain science (Singh et al., 2008), to name
+The increasing complexity of machine learning algorithms
+has driven a large amount of research in the area of hyperparameter optimization (HO) — see, e.g., (Hutter et al.,
+2015) for a review. The core idea is relatively simple: given
+a measure of interest (e.g. the misclassification error) HO
+methods use a validation set to construct a response function of the hyperparameters (such as the average loss on
+the validation set) and explore the hyperparameter space to
+seek an optimum.
+Early approaches based on grid search quickly become impractical as the number of hyperparameters grows and are
+even outperformed by random search (Bergstra & Bengio,
+2012). Given the high computational cost of evaluating the
 1
 
-INRIA Saclay 2 CREST, ENSAE, Université Paris
-Saclay.
-Correspondence to: Mathieu Carrière <mathieu.carriere@inria.fr>.
+Computational Statistics and Machine Learning, Istituto Italiano di Tecnologia, Genoa, Italy 2 Department of Computer Science, University College London, UK 3 Department of Information Engineering, Università degli Studi di Firenze, Italy. Correspondence to: Luca Franceschi <luca.franceschi@iit.it>.
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-a few. The tools developed in TDA are built upon persistent homology theory (Edelsbrunner & Harer, 2010; Oudot,
-2015), and their main output is a descriptor called persistence diagram (PD), which encodes the topology of a space
-at all scales in the form of a point cloud with multiplicities
-in the plane R2 —see Section 2.1 for more details.
-PDs as features. The main strength of PDs is their stability with respect to perturbations of the data (Chazal et al.,
-2009b; 2013). On the downside, their use in learning tasks
-is not straightforward. Indeed, a large class of learning
-methods, such as SVM or PCA, requires a Hilbert structure on the descriptors space, which is not the case for the
-space of PDs. Actually, many simple operators of Rn , such
-as addition, average or scalar product, have no analogues
-in that space. Mapping PDs to vectors in Rn or in some
-infinite-dimensional Hilbert space is one possible approach
-to facilitate their use in discriminative settings.
-Related work. A series of recent contributions have proposed kernels for PDs, falling into two classes. The first
-class of methods builds explicit feature maps: One can,
-for instance, compute and sample functions extracted from
-PDs (Bubenik, 2015; Adams et al., 2017; Robins & Turner,
-2016); sort the entries of the distance matrices of the
-PDs (Carrière et al., 2015); treat the PD points as roots
-of a complex polynomial, whose coefficients are concatenated (Fabio & Ferri, 2015). The second class of methods, which is more relevant to our work, defines implicitly
-feature maps by focusing instead on building kernels for
-PDs. For instance, Reininghaus et al. (2015) use solutions
-of the heat differential equation in the plane and compare
-them with the usual L2 (R2 ) dot product. Kusano et al.
-(2016) handle a PD as a discrete measure on the plane, and
-follow by using kernel mean embeddings with Gaussian
-kernels—see Section 4 for precise definitions. Both kernels are provably stable, in the sense that the metric they
-induce in their respective reproducing kernel Hilbert space
-(RKHS) is bounded above by the distance between PDs.
-Although these kernels are injective, there is no evidence
-that their induced RKHS distances are discriminative and
-therefore follow the geometry of the bottleneck distances,
-which are more widely accepted distances to compare PDs.
-Contributions. In this article, we use the sliced Wasserstein (SW) distance (Rabin et al., 2011) to define a new ker-
+response function, Bayesian optimization approaches provide a natural framework and have been extensively studied
+in this context (Snoek et al., 2012; Swersky et al., 2013;
+Snoek et al., 2015). Related and faster sequential modelbased optimization methods have been proposed using random forests (Hutter et al., 2011) and tree Parzen estimators (Bergstra et al., 2011), scaling up to a few hundreds of
+hyperparameters (Bergstra et al., 2013).
+In this paper, we follow an alternative direction, where
+gradient-based algorithms are used to optimize the performance on a validation set with respect to the hyperparameters (Bengio, 2000; Larsen et al., 1996). In this setting, the
+validation error should be evaluated at a minimizer of the
+training objective. However, in many current learning systems such as deep learning, the minimizer is only approximate. Domke (2012) specifically considered running an iterative algorithm, like gradient descent or momentum, for
+a given number of steps, and subsequently computing the
+gradient of the validation error by a back-optimization algorithm. Maclaurin et al. (2015) considered reverse-mode
+differentiation of the response function. They suggested the
+idea of reversing parameter updates to achieve space efficiency, proposing an approximation capable of addressing
+the associated loss of information due to finite precision
+arithmetics. Pedregosa (2016) proposed the use of inexact gradients, allowing hyperparameters to be updated before reaching the minimizer of the training objective. Both
+(Maclaurin et al., 2015) and (Pedregosa, 2016) managed to
+optimize a number of hyperparameters in the order of one
+thousand.
+In this paper, we illustrate two alternative approaches to
+compute the hypergradient (i.e., the gradient of the response function), which have different trade-offs in terms
+of running time and space requirements. One approach
+is based on a Lagrangian formulation associated with
+the parameter optimization dynamics. It encompasses
+the reverse-mode differentiation (RMD) approach used by
+Maclaurin et al. (2015), where the dynamics corresponds
+to stochastic gradient descent with momentum. We do
+not assume reversible parameter optimization dynamics. A
+well-known drawback of RMD is its space complexity: we
+need to store the whole trajectory of training iterates in order to compute the hypergradient. An alternative approach
+that we consider overcomes this problem by computing
 
-Sliced Wasserstein Kernel for Persistence Diagrams
+Forward and Reverse Gradient-Based Hyperparameter Optimization
 
-nel for PDs, which we prove to be both stable and discriminative. Specifically, we provide distortion bounds on the
-SW distance that quantify its ability to mimic bottleneck
-distances between PDs. This is in contrast to other kernels
-for PDs, which only focus on stability. We also propose
-a simple approximation algorithm to speed up the computation of that kernel, confirm experimentally its discriminative power and show that it outperforms experimentally
-both proposals of (Kusano et al., 2016) and (Reininghaus
-et al., 2015) in several supervised classification problems.
+the hypergradient in forward-mode and it is efficient when
+the number of hyperparameters is much smaller than the
+number of parameters. To the best of our knowledge, the
+forward-mode has not been studied before in this context.
+As we shall see, these two approaches have a direct correspondence to two classic alternative ways of computing gradients for recurrent neural networks (RNN) (Pearlmutter, 1995): the Lagrangian (reverse) way corresponds
+to back-propagation through time (Werbos, 1990), while
+the forward way corresponds to real-time recurrent learning (RTRL) (Williams & Zipser, 1989). As RTRL allows
+one to update parameters after each time step, the forward
+approach is suitable for real-time hyperparameter updates,
+which may significantly speed up the overall hyperparameter optimization procedure in the presence of large datasets.
+We give experimental evidence that the real-time approach
+is efficient enough to allow for the automatic tuning of crucial hyperparameters in a deep learning model. In our experiments, we also explore constrained hyperparameter optimization, showing that it can be used effectively to detect
+noisy examples and to discover the relationships between
+different learning tasks.
+The paper is organized in the following manner. In Section 2 we introduce the problem under study. In Section 3.1
+we derive the reverse-mode computation. In Section 3.2 we
+present the forward-mode computation of the hypergradient, and in Section 3.3 we introduce the idea of real-time
+hyperparameter updates. In Section 4 we discuss the time
+and space complexity of these methods. In Section 5 we
+present empirical results with both algorithms. Finally in
+Section 6 we discuss our findings and highlight directions
+of future research.
 
-2. Background on TDA and Kernels
-We briefly review in this section relevant material on TDA,
-notably persistence diagrams, and technical properties of
-positive and negative definite kernel functions.
-
-P
-P
-is defined as: c(Γ) := ( x c(x) + y c0 (y))1/p . We then
-define the pth diagram distance dp as the cost of the best
-partial bijection between the PDs:
-dp (Dg1 , Dg2 ) = inf c(Γ).
-Γ
-
-In the particular case p = +∞, the cost of Γ is defined
-as c(Γ) := max{maxx δ(x) + maxy δ 0 (y)}. The corresponding distance d∞ is often called the bottleneck distance. One can show that dp → d∞ when p → +∞. A
-fundamental property of PDs is their stability with respect
-to (small) perturbations of their originating functions. Indeed, the stability theorem (Bauer & Lesnick, 2015; Chazal
-et al., 2009a; 2016; Cohen-Steiner et al., 2007) asserts that
-for any f, g : X → R, we have
-d∞ (Dg f, Dg g) ≤ kf − gk∞ ,
+2. Hyperparameter Optimization
+We focus on training procedures based on the optimization of an objective function J(w) with respect to w (e.g.
+the regularized average training loss for a neural network
+with weights w). We see the training procedure by stochastic gradient descent (or one of its variants like momentum,
+RMSProp, Adam, etc.) as a dynamical system with a state
+st ∈ Rd that collects weights and possibly accessory variables such as velocities and accumulated squared gradients.
+The dynamics are defined by the system of equations
+st = Φt (st−1 , λ) t = 1, . . . , T
 
 (1)
 
-2.1. Persistent Homology
+where T is the number of iterations, s0 contains initial
+weights and initial accessory variables, and, for every t ∈
+{1, . . . , T },
+Φt : (Rd × Rm ) → Rd
+is a smooth mapping that represents the operation performed by the t-th step of the optimization algorithm (i.e.
 
-See again Figure 1 for an illustration.
+on mini-batch t). Finally, λ ∈ Rm is the vector of hyperparameters that we wish to tune.
+As simple example of these dynamics occurs when training a neural network by gradient descent with momentum
+(GDM), in which case st = (vt , wt ) and
+vt
+wt
 
-Persistent homology (Zomorodian & Carlsson, 2005;
-Edelsbrunner & Harer, 2008; Oudot, 2015) is a technique
-inherited from algebraic topology for computing stable signatures on real-valued functions. Given f : X → R as
-input, persistent homology outputs a planar point set with
-multiplicities, called the persistence diagram of f and denoted by Dg f . See Figure 1 for an example. To understand the meaning of each point in this diagram, it suffices
-to know that, to compute Dg f , persistent homology considers the family of sublevel sets of f , i.e. the sets of the
-form f −1 ((−∞, t]) for t ∈ R, and it records the topological events (e.g. creation or merge of a connected component, creation or filling of a loop, void, etc.) that occur in f −1 ((−∞, t]) as t ranges from −∞ to +∞. Then,
-each point p ∈ Dg f represents the lifespan of a particular topological feature (connected component, loop, void,
-etc.), with its creation and destruction times as coordinates.
-See again Figure 1 for an illustration.
-
-In practice, PDs can be used as descriptors for data via the
-choice of appropriate filtering functions f , e.g. distance to
-the data in the ambient space, eccentricity, curvature, etc.
-The main strengths of the obtained descriptors are: (a) to
-be provably stable as mentioned previously; (b) to be invariant under reparametrization of the data; and (c) to encode information about the topology of the data, which is
-complementary and of an essentially different nature compared to geometric or statistical quantities. These properties have made persistence diagrams useful in a variety of
-contexts, including the ones mentioned in the introduction
-of the paper. For further details on persistent homology and
-on applications of PDs, the interested reader can refer e.g.
-to (Oudot, 2015) and the references therein.
-
-For the interested reader, we point out that the mathematical tool used by persistent homology to track the topological events in the family of sublevel sets is homological
-algebra, which turns the parametrized family of sublevel
-sets into a parametrized family of vector spaces and linear
-maps. Computing persistent homology then boils down to
-computing a family of bases for the vector spaces, which
-are compatible with the linear maps.
-Distance between PDs. We now define the pth diagram
-distance between PDs. Let p ∈ N and Dg1 , Dg2 be two
-PDs. Let Γ : Dg1 ⊇ A → B ⊆ Dg2 be a partial bijection
-between Dg1 and Dg2 . Then, for any point x ∈ A, the
-cost of x is defined as c(x) := kx − Γ(x)kp∞ , and for any
-point y ∈ (Dg1 t Dg2 ) \ (A t B), the cost of y is defined
-as c0 (y) := ky − π∆ (y)kp∞ , where π∆ is the projection
-onto the diagonal ∆ = {(x, x) | x ∈ R}. The cost c(Γ)
-
-2.2. Kernel Methods
-Positive Definite Kernels. Given a set X, a function
-k : X × X → R is called a positive definite kernel if
-for all integers n, for all families x1 , ..., xn of points in
-X, the matrix [k(xi , xj )]i,j is itself positive semi-definite.
-For brevity we will refer to positive definite kernels as
-kernels in the rest of the paper. It is known that kernels
-generalize scalar products, in the sense that, given a kernel k, there exists a Reproducing Kernel Hilbert Space
-(RKHS) Hk and a feature map φ : X → Hk such that
-k(x1 , x2 ) = hφ(x1 ), φ(x2 )iHk . A kernel k also induces a
-distance dk on X that can be computed as the Hilbert norm
-of the difference between two embeddings:
-def.
-
-d2k (x1 , x2 ) = k(x1 , x1 ) + k(x2 , x2 ) − 2 k(x1 , x2 ).
-We will be particularly interested in this distance, since one
-of the goals we will aim for will be that of designing a kernel k for persistence diagrams such that dk has low distortion with respect to d1 .
-
-Sliced Wasserstein Kernel for Persistence Diagrams
-R
-
-+∞
-
-R
-
-s0
-
-s
-
-f (s)
-
-p
-p0
-q
-
-q0
-X
-
-(a)
-
-X
-
--∞
-
-f (p)
-
-(b)
-
-+∞
-
-(c)
-
-Figure 1. Sketch of persistent homology: (a) the horizontal lines are the boundaries of sublevel sets f ((−∞, t]), which are colored in
-decreasing shades of grey. The vertical dotted lines are the boundaries of their different connected components. For instance, a new
-connected component is created in the sublevel set f −1 ((−∞, t]) when t = f (p), and it is merged (destroyed) when t = f (s); its
-lifespan is represented by a copy of the point with coordinates (f (p), f (s)) in the persistence diagram of f (Figure (c)); (b) a piecewiselinear approximation g (blue) of the function f (red) from sampled values; (c) superposition of Dg f (red) and Dg g (blue), showing the
-partial matching of minimum cost (magenta) between the two persistence diagrams.
-
-Negative Definite and RBF Kernels. A standard way
-to construct a kernel is to exponentiate the negative of a
-Euclidean distance. Indeed, the Gaussian kernel for vectors with parameter σ >0 does follow
-that template ap
-kx−yk2
-proach: kσ (x, y) = exp − 2σ2 . An important theorem of Berg et al. (1984) (Theorem 3.2.2, p.74) states that
-such an approach to build kernels, namely setting
-
-
-f (x, y)
-def.
-kσ (x, y) = exp −
-,
-2σ 2
-for an arbitrary function f can only yield a valid positive
-definite kernel for all σ > 0 if and only if f is a negative semi-definite function, namely that, for allP
-integers n,
-n
-∀x
-,
-...,
-x
-∈
-X,
-∀a
-,
-...,
-a
-∈
-R
-such
-that
-1
-n
-1
-n
-i ai = 0,
-P
-a
-a
-f
-(x
-,
-x
-)
-≤
-0.
-i
-j
-i
-j
-i,j
-Unfortunately, as observed in Appendix A of Reininghaus
-et al. (2014), d1 is not negative semi-definite (it only suffices to sample a family of point clouds to observe experimentally that more often than not the inequality above will
-be violated for a particular weight vector a). In this article,
-we use an approximation of d1 with the Sliced Wasserstein
-distance, which is provably negative semi-definite, and we
-use it to define a RBF kernel that can be easily tuned thanks
-to its bandwidth parameter σ.
-2.3. Wasserstein distance for unnormalized measures
-on R
-The Wasserstein distance (Villani, 2009, §6) is a distance
-between probability measures. For reasons that will become clear in the next section, we will focus on a variant of
-that distance: the 1-Wasserstein distance for nonnegative,
-not necessarily normalized, measures on the real line (Santambrogio, 2015, §2). Let µ and ν be two nonnegative mea-
-
-sures on the real line such that |µ| = µ(R) and |ν| = ν(R)
-are equal to the same number r. We define the three following objects:
-
-W(µ, ν) =
-
-ZZ
-
-inf
-|x − y|P (dx, dy)
-R×R
-Z
-Qr (µ, ν) = r |M −1 (x) − N −1 (x)|dx
-R
-Z
-L(µ, ν) =
-inf
-f (x)[µ(dx) − ν(dx)]
-P ∈Π(µ,ν)
-
-f ∈1−Lipschitz
+= µvt−1 + ∇Jt (wt−1 )
+= wt−1 − η(µvt−1 − ∇Jt (wt−1 ))
 
 (2)
+
+where Jt is the objective associated with the t-th minibatch, µ is the rate and η is the momentum. In this example,
+λ = (µ, η).
+Note that the iterates s1 , . . . , sT implicitly depend on the
+vector of hyperparameters λ. Our goal is to optimize the
+hyperparameters according to a certain error function E
+evaluated at the last iterate sT . Specifically, we wish to
+solve the problem
+min f (λ)
 (3)
+λ∈Λ
+
+d
+
+where the set Λ ⊂ R incorporates constraints on the hyperparameters, and the response function f : Rm → R is
+defined at λ ∈ Rm as
+f (λ) = E(sT (λ)).
+
 (4)
 
-R
+We highlight the generality of the framework. The vector of hyperparameters λ may include components associated with the training objective, and components associated with the iterative algorithm. For example, the training
+objective may depend on hyperparameters used to design
+the loss function as well as multiple regularization parameters. Yet other components of λ may be associated with
+the space of functions used to fit the training objective (e.g.
+number of layers and weights of a neural network, parameters associated with the kernel function used within a kernel
+based method, etc.). The validation error E can in turn be
+of different kinds. The simplest example is to choose E as
+the average of a loss function over a validation set. We may
+however consider multiple validation objectives, in that the
+hyperparameters associated with the iterative algorithm (µ
+and γ in the case of momentum mentioned above) may
+be optimized using the training set, whereas the regularization parameters would typically require a validation set,
+which is distinct from the training set (in order to avoid
+over-fitting).
 
-where Π(µ, ν) is the set of measures on R2 with marginals
-µ and ν, and M −1 and N −1 the generalized quantile functions of the probability measures µ/r and ν/r respectively.
-Proposition 2.1. We have W = Qr = L. Additionally (i)
-Qr is negative definite on the space of measures of mass r;
-(ii) for any three positive measures µ, ν, γ such that |µ| =
-|ν|, we have L(µ + γ, ν + γ) = L(µ, ν).
-Equation (2) is the generic Kantorovich formulation of optimal transport, which is easily generalized to other cost
-functions and spaces, the variant being that we consider an
-unnormalized mass by reflecting it directly in the set Π.
-The equality between (2) and (3) is only valid for probability measures on the real line. Because the cost function
-| · | is homogeneous, we see that the scaling factor r can be
-removed when considering the quantile function and multiplied back. The equality between (2) and (4) is due to the
-well known Kantorovich duality for a distance cost (Villani, 2009, Particular case 5.4) which can also be trivially
-generalized to unnormalized measures, proving therefore
-the main statement of the proposition. The definition of
-Qr shows that the Wasserstein distance is the l1 norm of
+3. Hypergradient Computation
+In this section, we review the reverse-mode computation
+of the gradient of the response function (or hypergradient)
+under a Lagrangian perspective and introduce a forwardmode strategy. These procedures correspond to the reversemode and the forward-mode algorithmic differentiation
+schemes (Griewank & Walther, 2008). We finally introduce a real-time version of the forward-mode procedure.
 
-Sliced Wasserstein Kernel for Persistence Diagrams
+Forward and Reverse Gradient-Based Hyperparameter Optimization
 
-rM −1 − rN −1 , and is therefore a negative definite kernel
-(as the l1 distance between two direct representations of µ
-and ν as functions rM −1 and rN −1 ), proving point (i).
-The second statement is immediate.
-We conclude with an important practical remark:Pfor two
-n
-unnormalized
-Pn uniform empirical measures µ = i=1 δxi
-and ν =
-i=1 δyi of the same size, with ordered x1 ≤
-·P
-· · ≤ xn and y1 ≤ · · · ≤ yn , one has: L(µ, ν) =
-n
-n
-i=1 |xi −yi | = kX −Y k1 , where X = (x1 , ..., xn ) ∈ R
-n
-and Y = (y1 , ..., yn ) ∈ R .
+Algorithm 1 R EVERSE -HG
 
-3. The Sliced Wasserstein Kernel
-In this section we define a new kernel between PDs, called
-the Sliced Wasserstein (SW) kernel, based on the Sliced
-Wasserstein metric of Rabin et al. (2011). The idea underlying this metric is to slice the plane with lines passing
-through the origin, to project the measures onto these lines
-where W is computed, and to integrate those distances over
-all possible lines. Formally:
-Definition 3.1. Given θ ∈ R2 with kθk2 = 1, let L(θ)
-denote the line {λ θ | λ ∈ R}, and let πθ : R2 → L(θ)
-be the orthogonal projectionPonto L(θ). Let Dg1 , Dg2
-θ
-be two PDs, and let µθ1 :=
-p∈Dg1 δπθ (p) and µ1∆ :=
-P
-θ
-p∈Dg1 δπθ ◦π∆ (p) , and similarly for µ2 , where π∆ is the
-orthogonal projection onto the diagonal. Then, the Sliced
-Wasserstein distance is defined as:
-Z
-def. 1
-W(µθ1 + µθ2∆ , µθ2 + µθ1∆ )dθ.
-SW(Dg1 , Dg2 ) =
-2π S1
-Note that, by symmetry, one can restrict on the half-circle
-[− π2 , π2 ] and normalize by π instead of 2π. Since Qr is negative semi-definite, we can deduce that SW itself is negative semi-definite:
-Lemma 3.2. Let X be the set of bounded and finite PDs.
-Then, SW is negative semi-definite on X.
-P
-Proof. Let n ∈ N∗ , a1 , ..., an ∈ R such that i ai = 0 and
-θ
-θ
-Dg1 , ..., Dgn ∈ X. Given 1 ≤ i ≤
-P
-Pn, we let µ̃i := µi +
-θ
-δ
-, µ̃
-:=
-q∈Dgk ,k6
-p∈Dgk ,k6=i,j δπθ ◦π∆ (p)
-P=i πθ ◦π∆ (q) ij∆
-and d = i |Dgi |. Then:
-X
-ai aj W(µθi + µθj∆ , µθj + µθi∆ )
-i,j
+Algorithm 2 F ORWARD -HG
 
-=
-
-X
-
-=
-
-X
-
-i,j
-
-i,j
-
-=
-
-X
-i,j
-
-ai aj L(µθi + µθj∆ , µθj + µθi∆ )
-ai aj L(µθi + µθj∆ + µθij∆ , µθj + µθi∆ + µθij∆ )
-ai aj L(µ̃θi , µ̃θj ) =
-
-X
-i,j
-
-ai aj Qd (µ̃θi , µ̃θj ) ≤ 0
-
-The result follows by linearity of integration.
-
-Hence, the theorem of Berg et al. (1984) allows us to define
-a valid kernel with:
-
-
-SW(Dg1 , Dg2 )
-def.
-kSW (Dg1 , Dg2 ) = exp −
-.
-(5)
-2σ 2
-Metric equivalence. We now give the main theoretical
-result of this article, which states that SW is equivalent
-to d1 . This has to be compared with (Reininghaus et al.,
-2015) and (Kusano et al., 2016), which only prove stability and injectivity. Our equivalence result states that the
-kSW , in addition to be stable and injective, also preserves
-the metric between PDs, which should intuitively lead to
-an improvement of the classification power. This intuition
-is illustrated in Section 4 and Figure 4, where we show an
-improvement of classification accuracies on several benchmark applications.
-Theorem 3.3. Let X be the set of bounded PDs with cardinalities bounded by N ∈ N∗ . Let Dg1 , Dg2 ∈ X. Then,
-one has:
-√
-d1 (Dg1 , Dg2 )
-≤ SW(Dg1 , Dg2 ) ≤ 2 2d1 (Dg1 , Dg2 ),
-2M
-where M = 1 + 2N (2N − 1).
-Proof. Let sθ : Dg1 ∪ π∆ (Dg2 ) → Dg2 ∪ π∆ (Dg1 ) be the
-one-to-one bijection between Dg1 ∪ π∆ (Dg2 ) and Dg2 ∪
-π∆ (Dg1 ) induced by W(µθ1 + µθ2∆ , µθ2 + µθ1∆ ), and let s
-be the one-to-one bijection between Dg1 ∪ π∆ (Dg2 ) and
-Dg2 ∪ π∆ (Dg1 ) induced by the partial bijection achieving
-d1 (Dg1 , Dg2 ).
-Upper bound. Recall that kθk2 = 1. We have:
-X
-W(µθ1 + µθ2∆ , µθ2 + µθ1∆ ) =
-|hp − sθ (p), θi|
-X
-√ X
-kp − s(p)k∞
-≤
-|hp − s(p), θi| ≤ 2
-√
-≤ 2 2d1 (Dg1 , Dg2 ),
-where the sum is taken over all p ∈ Dg1 ∪ π∆ (Dg2 ). The
-upper bound follows by linearity.
-Lower bound. The idea is to use the fact that sθ is a
-piecewise-constant function of θ, and that it has at most
-2 + 2N (2N − 1) critical values Θ0 , ..., ΘM in [− π2 , π2 ]. Indeed, it suffices to look at all θ such that hp1 −p2 , θi = 0 for
-some p1 , p2 in Dg1 ∪ π∆ (Dg2 ) or Dg2 ∪ π∆ (Dg1 ). Then:
-Z Θi+1 X
-|hp − sθ (p), θi|dθ
-Θi
-
-=
-≥
-
-X
-X
-
-Θi
-
-kp − s (p)k2
-
-Z
-
-Θi+1
-
-Θi
-
-|cos(∠(p − sΘi (p), θ))|dθ
-
-kp − sΘi (p)k2 (Θi+1 − Θi )2 /2π
-
-≥ (Θi+1 − Θi )2 d1 (Dg1 , Dg2 )/2π,
-
-Sliced Wasserstein Kernel for Persistence Diagrams
-
-where the sum is again taken over all p ∈ Dg1 ∪ π∆ (Dg2 ),
-and where the inequality used to lower bound the integral
-of the cosine is obtained by concavity. The lower bound
-follows then from the Cauchy-Schwarz inequality.
-Note that the lower bound depends on the cardinalities of
-the PDs, and it becomes close to 0 if the PDs have a large
-number of points. On the other hand, the upper bound is
-oblivious to the cardinality. A corollary of Theorem 3.3
-is that dkSW , the distance induced by kSW in its RKHS, is
-also equivalent to d1 in a broader sense: there exist continuous, positive and monotone functions g, h such that
-g(0) = h(0) = 0 and g ◦ d1 ≤ dkSW ≤ h ◦ d1 .
-When the condition on the cardinalities of PDs is relaxed, e.g. when we only assume the PDs to be finite and
-bounded, with no uniform bound, the feature map φSW associated to kSW remains continuous and injective w.r.t. d1 .
-This means that kSW can be turned into a universal kernel
-by considering exp(kSW ) (cf Theorem 1 in (Kwitt et al.,
-2015)). This can be useful in a variety of tasks, including
-tests on distributions of PDs.
-Computation. In practice, we propose to approximate
-kSW in O(N log(N )) time using Algorithm 1. This algorithm first samples M directions in the half-circle S+
-1 ; it
-then computes, for each sample θi and for each PD Dg,
-the scalar products between the points of Dg and θi , to sort
-them next in a vector Vθi (Dg). Finally, the `1 -norm between the vectors is averaged
-PM over the sampled directions:
-1
-SWM (Dg1 , Dg2 ) = M
-i=1 kVθi (Dg1 ) − Vθi (Dg2 )k1 .
-Note that one can easily adapt the proof of Lemma 3.2 to
-show that SWM is negative semi-definite by using the linearity of the sum. Hence, this approximation remains a
-kernel. If the two PDs have cardinalities bounded by N ,
-then the running time of this procedure is O(M N log(N )).
-This approximation of kSW is useful since, as shown in
-Section 4, we have observed empirically that just a few
-directions are sufficient to get good classification accuracies. Note that the exact computation of kSW is also possible in O(N 2 log(N )) time using the algorithm described
-in (Carrière et al., 2017).
-
-4. Experiments
-In this section, we compare kSW to kPSS and kPWG on
-several benchmark applications for which PDs have been
-proven useful. We compare these kernels in terms of classification accuracies and computational cost. We review
-first our experimental setting, and then all our tasks.
-Experimental setting All kernels are handled with
-the LIBSVM (Chang & Lin, 2011) implementation
-of C-SVM, and results are averaged over 10 runs
-on a 2.4GHz Intel Xeon E5530 Quad Core.
-The
-
-Algorithm 1 Computation of SWM
-Input: Dg1 = {p11 ... p1N1 }, Dg2 = {p21 ... p2N2 }, M .
-Add π∆ (Dg1 ) to Dg2 and vice-versa.
-Let SWM = 0; θ = −π/2; s = π/M ;
-for i = 1 ... M do
-Store the products hp1k , θi in an array V1 ;
-Store the products hp2k , θi in an array V2 ;
-Sort V1 and V2 in ascending order;
-SWM = SWM + skV1 − V2 k1 ;
-θ = θ + s;
+Input: λ current values of the hyperparameters, s0 initial optimization state
+Output: Gradient of validation error w.r.t. λ
+for t = 1 to T do
+st = Φt (st−1 , λ)
 end for
-Output: (1/π)SWM ;
+αT = ∇E(sT )
+g =0
+for t = T − 1 downto 1 do
+g = g + αt+1 Bt+1
+αt = αt+1 At+1
+end for
+return g
 
-TASK
-O RBIT
-T EXTURE
-H UMAN
-A IRPLANE
-A NT
-B IRD
-F OUR L EG
-O CTOPUS
-F ISH
+Input: λ current values of the hyperparameters, s0 initial optimization state
+Output: Gradient of validation error w.r.t. λ
+Z0 = 0
+for t = 1 to T do
+st = Φt (st−1 , λ)
+Zt = At Zt−1 + Bt
+end for
+return ∇E(s)ZT
 
-T RAINING
-175
-240
-415
-300
-364
-257
-438
-334
-304
+where for every t ∈ {1, . . . , T }, we define the matrices
+At =
 
-T EST
-75
-240
-1618
-980
-1141
-832
-1097
-1447
-905
+∂Φt (st−1 , λ)
+∂Φt (st−1 , λ)
+, Bt =
+.
+∂st−1
+∂λ
 
-L ABELS
-5
-24
-8
-4
-5
-4
-6
+(11)
+
+3.1. Reverse-Mode
+The reverse-mode computation leads to an algorithm
+closely related to the one presented in (Maclaurin et al.,
+2015). A major difference with respect to their work is that
+we do not require the mappings Φt defined in Eq. (1) to
+be invertible. We also note that the reverse-mode calculation is structurally identical to back-propagation through
+time (Werbos, 1990).
+We start by reformulating problem (3) as the constrained
+optimization problem
+min
+
+λ,s1 ,...,sT
+
+E(sT )
+
+subject to st = Φt (st−1 , λ), t ∈ {1, . . . , T }.
+
+(5)
+
+This formulation closely follows a classical Lagrangian approach used to derive the back-propagation algorithm (LeCun, 1988). Furthermore, the framework naturally allows
+one to incorporate constraints on the hyperparameters.
+The Lagrangian of problem (5) is
+L(s, λ, α) = E(sT ) +
+
+T
+X
+
+αt (Φt (st−1 , λ) − st )
+
+(6)
+
+t=1
+d
+
+where, for each t ∈ {1, . . . , T }, αt ∈ R is a row vector
+of Lagrange multipliers associated with the t-th step of the
+dynamics.
+
+Note that At ∈ Rd×d and Bt ∈ Rd×m .
+The optimality conditions are then obtained by setting each
+derivative to zero. In particular, setting the right hand side
+of Equations (8) and (9) to zero gives
+
+
+if t = T,
+∇E(sT )
+αt =
+
+
+∇E(sT )AT · · · At+1 if t ∈ {1, . . . , T −1}.
+Combining these equations with Eq. (10) we obtain that
+!
+T
+T
+X
+Y
+∂L
+= ∇E(sT )
+As B t .
+∂λ
+t=1 s=t+1
+As we shall see this coincides with the expression for
+the gradient of f in Eq. (15) derived in the next section.
+Pseudo-code of R EVERSE -HG is presented in Algorithm
+1.
+3.2. Forward-Mode
+The second approach to compute the hypergradient appeals
+to the chain rule for the derivative of composite functions,
+to obtain that the gradient of f at λ satisfies1
+∇f (λ) = ∇E(sT )
+
+The partial derivatives of the Lagrangian are given by
+∂L
+= Φt (st−1 , λ) − st , t ∈ {1, . . . , T }
+∂αt
+∂L
+= αt+1 At+1 − αt , t ∈ {1, . . . , T −1}
+∂st
+∂L
+= ∇E(sT ) − αT
+∂sT
+T
+X
+∂L
+=
+αt Bt ,
+∂λ
+t=1
+
+(7)
+(8)
+(9)
+(10)
+
+dsT
+dλ
+
+(12)
+
+T
+where ds
+dλ is the d×m matrix formed by the total derivative
+of the components of sT (regarded as rows) with respect to
+the components of λ (regarded as columns).
+
+Recall that st = Φt (st−1 , λ). The operators Φt depends on
+the hyperparameter λ both directly by its expression and
+indirectly through the state st−1 . Using again the chain
+1
+
+tor.
+
+Remember that the gradient of a scalar function is a row vec-
+
+Forward and Reverse Gradient-Based Hyperparameter Optimization
+
+rule we have, for every t ∈ {1, . . . , T }, that
+dst
+∂Φt (st−1 , λ) dst−1
+∂Φt (st−1 , λ)
+=
++
+.
+dλ
+∂st−1
+dλ
+∂λ
+
+(13)
+
+t
+Defining Zt = ds
+dλ for every t ∈ {1, . . . , T } and recalling
+Eq. (11), we can rewrite Eq. (13) as the recursion
+
+Zt = At Zt−1 + Bt , t ∈ {1, . . . , T }.
+
+(14)
+
+∇f (λ) = ∇E(sT )ZT
+= ∇E(sT )(AT ZT −1 + BT )
+= ∇E(sT )(AT AT −1 ZT −2 + AT BT −1 + BT )
+..
+.
+!
+T
+T
+X
+Y
+= ∇E(sT )
+As B t .
+(15)
+s=t+1
+
+Note that the recurrence (14) on the Jacobian matrix is
+structurally identical to the recurrence in the RTRL procedure described in (Williams & Zipser, 1989, eq. (2.10)).
+From the above derivation it is apparent that ∇f (λ) can be
+computed by an iterative algorithm which runs in parallel
+to the training algorithm. Pseudo-code of F ORWARD -HG
+is presented in Algorithm 2. At first sight, the computation of the terms in the right hand side of Eq. (14) seems
+prohibitive. However, in Section 4 we observe that if m
+is much smaller than d, the computation can be done efficiently.
+3.3. Real-Time Forward-Mode
+For every t ∈ {1, . . . , T } let ft : Rm → R be the response function at time t: ft (λ) = E(st (λ)). Note that
+fT coincides with the definition of the response function
+in Eq. (4). A major difference between R EVERSE -HG and
+F ORWARD -HG is that the partial hypergradients
+∇ft (λ) =
+
+dE(st )
+= ∇E(st )Zt
+dλ
+
+4. Complexity Analysis
+We discuss the time and space complexity of Algorithms 1
+and 2. We begin by recalling some basic results from the
+algorithmic differentiation (AD) literature.
+
+Using Eq. (14), we obtain that
+
+t=1
+
+has been processed. Algorithm 2 can be easily modified
+to yield a partial hypergradient when t mod ∆ = 0 (for
+some hyper-batch size ∆) and letting t run from 1 to ∞,
+reusing examples in a circular or random way. We use this
+strategy in the phone recognition experiment reported in
+Section 5.3.
+
+(16)
+
+are available in the second procedure at each time step t
+and not only at the end.
+The availability of partial hypergradients is significant
+since we are allowed to update hyperparameters several
+times in a single optimization epoch, without having to
+wait until time T . This is reminiscent of the real-time updates suggested by Williams & Zipser (1989) for RTRL.
+The real-time approach may be suitable in the case of a
+data stream (i.e. T = ∞), where R EVERSE -HG would
+be hardly applicable. Even in the case of finite (but large)
+datasets it is possible to perform one hyperparameter update after a hyper-batch of data (i.e. a set of minibatches)
+
+Let F : Rn 7→ Rp be a differentiable function and suppose it can be evaluated in time c(n, p) and requires space
+s(n, p). Denote by JF the p × n Jacobian matrix of F .
+Then the following facts hold true (Griewank & Walther,
+2008) (see also Baydin et al. (2015) for a shorter account):
+(i) For any vector r ∈ Rn , the product JF r can be evaluated in time O(c(n, p)) and requires space O(s(n, p))
+using forward-mode AD.
+(ii) For any vector q ∈ Rp , the product JF| q has time and
+space complexities O(c(n, p)) using reverse-mode
+AD.
+(iii) As a corollary of item (i), the whole JF can be
+computed in time O(nc(n, p)) and requires space
+O(s(n, p)) using forward-mode AD (just use unitary
+vectors r = ei for i = 1, . . . , n).
+(iv) Similarly, JF can be computed in time O(pc(n, p))
+and requires space O(c(n, p)) using reverse-mode
+AD.
+Let g(d, m) and h(d, m) denote time and space, respectively, required to evaluate the update map Φt defined by
+Eq. (1). Then the response function f : Rm 7→ R defined
+in Eq. (3) can be evaluated in time O(T g(d, m)) (assuming
+the time required to compute the validation error E(λ) does
+not affect the bound2 ) and requires space O(h(d, m)) since
+variables st may be overwritten at each iteration. Then, a
+direct application of Fact (i) above shows that Algorithm 2
+runs in time O(T mg(d, m)) and space O(h(d, m)). The
+same results can also be obtained by noting that in Algorithm 2 the product At Zt−1 requires m Jacobian-vector
+products, each costing O(g(d, m)) (from Fact (i)), while
+computing the Jacobian Bt takes time O(mg(d, m)) (from
+Fact (iii)).
+Similarly, a direct application of Fact (ii) shows that
+Algorithm 1 has both time and space complexities
+O(T g(d, m)). Again the same results can be obtained by
 2
+This is indeed realistic since the number of validation examples is typically lower than the number of training iterations.
+
+Forward and Reverse Gradient-Based Hyperparameter Optimization
+
+noting that αt+1 At1 and αt Bt are transposed-Jacobianvector products that in reverse-mode take both time
+O(g(d, m)) (from Fact (ii)). Unfortunately in this case
+variables st cannot be overwritten, explaining the much
+higher space requirement.
+As an example, consider training a neural network with
+k weights3 , using classic iterative optimization algorithms
+such as SGD (possibly with momentum) or Adam, where
+the hyperparameters are just learning rate and momentum
+terms. In this case, d = O(k) and m = O(1). Moreover,
+g(d, m) and h(d, m) are both O(k). As a result, Algorithm 1 runs in time and space O(T k), while Algorithm 2
+runs in time O(T k) and space O(k), which would typically
+make a dramatic difference in terms of memory requirements.
+
+5. Experiments
+In this section, we present numerical simulations with
+the proposed methods. All algorithms were implemented
+in TensorFlow and the software package used to reproduce our experiments is available at https://github.
+com/lucfra/RFHO. In all the experiments, hypergradients were used inside the Adam algorithm (Kingma & Ba,
+2014) in order to minimize the response function.
+5.1. Data Hyper-cleaning
+The goal of this experiment is to highlight one potential advantage of constraints on the hyperparameters. Suppose we
+have a dataset with label noise and due to time or resource
+constraints we can only afford to cleanup (by checking and
+correcting the labels) a subset of the available data. Then
+we may use the cleaned data as the validation set, the rest
+as the training set, and assign one hyperparameter to each
+training example. By putting a sparsity constraint on the
+vector of hyperparameters λ, we hope to bring to zero the
+influence of noisy examples, in order to generate a better
+model. While this is the same kind of data sparsity observed in support vector machines (SVM), our setting aims
+to get rid of erroneously labeled examples, in contrast to
+SVM which puts zero weight on redundant examples. Although this experimental setup does not necessarily reflect
+a realistic scenario, it aims to test the ability of our HO
+method to effectively make use of constraints on the hyperparameters4
+We instantiated the above setting with a balanced subset of
+N = 20000 examples from the MNIST dataset, split into
+three subsets: Dtr of Ntr = 5000 training examples, V of
 3
+This includes linear SVM and logistic regression as special
+cases.
+4
+We note that a related approach based on reinforcement learning is presented in (Fan et al., 2017).
 
-Table 1. Number of instances in the training set, the test set and
-number of labels of the different applications.
+Nval = 5000 validation examples and a test set containing
+the remaining samples. Finally, we corrupted the labels of
+2500 training examples, selecting a random subset Df ⊂
+Dtr .
+We considered a plain softmax regression model with parameters W (weights) and b (bias). The error of a model
+(W, b) on an example x was evaluated by using the crossentropy `(W, b, x) both in the training objective function, Etr , and in the validation one, Eval . We added in
+Etr an hyperparameter vector λ ∈ [0, 1]Ntr that weights
+eachPexample in the training phase, i.e. Etr (W, b) =
+1
+i∈Dtr λi `(W, b, xi ).
+Ntr
+According to the general HO framework, we fit the parameters (W, b) to minimize the training loss and the hyperparameters λ to minimize the validation error. The sparsity
+constraint was implemented by bounding the L1-norm of
+λ, resulting in the optimization problem
+min Eval (WT , bT )
+λ∈Λ
 
-cost factor C is cross-validated in the following grid:
-{0.001, 0.01, 0.1, 1, 10, 100, 1000}. Table 1 summarizes
-the number of labels, and the number of training and test instances for each task. Figure 2 illustrate how we use PDs to
-represent complex data. We first describe the two baselines
-we considered, along with their parameterization, followed
-by our proposal.
-PSS. The Persistence Scale Space kernel kPSS (Reininghaus et al., 2015) is defined as the scalar product of
-the two solutions of the heat diffusion equation with initial Dirac sources located at the PD points. It has the
-following closed form expression:
-kPSS (Dg
- 1 , Dg2 )2 =
-
+(PHO )
+
+where Λ = {λ : λ ∈ [0, 1]Ntr , kλk1 ≤ R} and (WT , bT )
+are the parameters obtained after T iterations of gradient
+descent on the training objective. Given the high dimensionality of λ, we solved (PHO ) iteratively computing the
+hypergradients with R EVERSE -HG method and projecting
+Adam updates on the set Λ.
+We are interested in comparing the following three test set
+accuracies:
+• Oracle: the accuracy of the minimizer of Etr trained
+on clean examples only, i.e. (Dtr \Df )∪V; this setting
+is effectively taking advantage of an oracle that tells
+which examples have a wrong label;
+• Baseline: the accuracy of the minimizer of Etr trained
+on all available data D ∪ V;
+• DH-R: the accuracy of the data hyper-cleaner with
+a given value of the L1 radius, R. In this case, we
+first optimized hyperparameters and then constructed
+a cleaned training set Dc ⊂ Dtr (keeping examples
+with λi > 0); we finally trained on Dc ∪ V.
+We are also interested in evaluating the ability of the hypercleaner to detect noisy samples. Results are shown in Table 1. The data hyper-cleaner is robust with respect to the
+choice of R and is able to identify corrupted examples, recovering a model that has almost the same accuracy as a
+model produced with the help of an oracle.
+Figure 1 shows how the accuracy of DH-1000 improves
+with the number of hyper-iterations and the progression of
+the amount of discarded examples. The data hyper-cleaner
+starts by discarding mainly corrupted examples, and while
+
+Forward and Reverse Gradient-Based Hyperparameter Optimization
+Table 1: Test accuracies for the baseline, the oracle, and DH-R
+for four different values of R. The reported F1 measure is the
+performance of the hyper-cleaner in correctly identifying the corrupted training examples.
+
+Accuracy %
+
+F1
+
+90.46
+87.74
+90.07
+90.06
+90.00
+90.09
+
+1.0000
+0.9137
+0.9244
+0.9211
+0.9217
+
+Accuracy and sparsity of λ
+
+3500
+3000
+
+ΩC,ρ (W ) =
+
+92
+
+88
+
+2000
+
+86
+
+1500
+
+Validation
+Test
+TP
+FP
+
+1000
+500
+0
+
+100
+
+200
+
+300
+
+400
+
+84
+
+K
+X
+j,k=1
+
+90
+
+2500
+
+0
+
+The choice of small training set sizes is due to the strong
+discriminative power of the selected features. In fact, using
+larger sample sizes would not allow to appreciate the advantage of MTL. In order to leverage information among
+the different classes, we employed a multitask learning
+(MTL) regularizer (Evgeniou et al., 2005)
+
+Accuracy
+
+Number of discarded examples
+
+Oracle
+Baseline
+DH-1000
+DH-1500
+DH-2000
+DH-2500
+
+examples as training set, different 50 examples as validation set and the remaining for testing. From CIFAR-100,
+we selected 300 examples as training set, 300 as validation
+set and the remaining for testing. Finally, we used a onehot encoder of the labels obtaining a set of labels in {0, 1}K
+(K = 10 or K = 100).
+
+82
+80
+500
+
+Hyper-iterations
+
+Figure 1: Right vertical axis: accuracies of DH-1000 on validation and test sets. Left vertical axis: number of discarded examples among noisy (True Positive, TP) and clean (False Positive,
+FP) ones.
+
+Cj,k kwj −
+
+wk k22
+
++ρ
+
+K
+X
+
+kwk k2 ,
+
+k=1
+
+where wk are the weights for class k, K is the number of classes, and the symmetric non-negative matrix C
+models the interactions between the classes/tasks. We
+used
+P a regularized training error defined as Etr (W ) =
+i∈Dtr `(W xi + b, yi ) + ΩC,ρ (W ) where `(·, ·) is the categorical cross-entropy and b = (b1 , . . . , bK ) is the vector
+of thresholds associated with each linear model. We wish
+solve the following optimization problem:
+
+	
+min Eval (WT , bT ) subject to ρ ≥ 0, C = C | , C ≥ 0 ,
+where (WT , bT ) is the T -th iteration obtained by running
+gradient descent with momentum (GDM) on the training
+objective. We solve this problem using R EVERSE -HG and
+optimizing the hyperparameters by projecting Adam updates on the set {(ρ, C) : ρ ≥ 0, C = C | , C ≥ 0}.
+We compare the following methods:
+
+the optimization proceeds, it begins to remove also a portion of cleaned one. Interestingly, the test set accuracy continues to improve even when some of the clean examples
+are discarded.
+
+• SLT: single task learning, i.e. C = 0, using a validation set to tune the optimal value of ρ for each task;
+
+5.2. Learning Task Interactions
+
+• NMTL: we considered the naive MTL scenario in
+which the tasks are equally related, that is Cj,k = a
+for every 1 ≤ j, k ≤ K. In this case we learn the two
+non-negative hyperparameters a and ρ;
+
+This second set of experiments is in the multitask learning
+(MTL) context, where the goal is to find simultaneously
+the model of multiple related tasks. Many MTL methods
+require that a task interaction matrix is given as input to
+the learning algorithm. However, in real applications, this
+matrix is often unknown and it is interesting to learn it from
+data. Below, we show that our framework can be naturally
+applied to learning the task relatedness matrix.
+We used CIFAR-10 and CIFAR-100 (Krizhevsky & Hinton, 2009), two object recognition datasets with 10 and 100
+classes, respectively. As features we employed the preactivation of the second last layer of Inception-V3 model
+trained on ImageNet5 . From CIFAR-10, we extracted 50
+5
+
+Available at tinyurl.com/h2x8wws
+
+• HMTL: our hyperparameter optimization method
+R EVERSE -HG to tune C and ρ;
+• HMTL-S: Learning the matrix C with only few examples per class could bring the discovery of spurious relationships. We tryPto remove this effect by imposing
+the constraint that j,k Cj,k ≤ R, where6 R = 10−3 .
+In this case, Adam updates are projected
+P onto the set
+{(ρ, C) : ρ ≥ 0, C = C | , C ≥ 0,
+j,k Cj,k ≤ R}.
+Results of five repetitions with different splits are presented
+in Table 2. Note that HMTL gives a visible improvement in
+6
+
+We observed that R = 10−4 yielded very similar results.
+
+Forward and Reverse Gradient-Based Hyperparameter Optimization
+Table 3: Frame level phone-state classification accuracy on standard TIMIT test set and execution time in minutes on one Titan X
+GPU. For RS, we set a time budget of 300 minutes.
+
+Accuracy %
+Figure 2: Relationship graph of CIFAR-10 classes. Edges represent interaction strength between classes.
+Table 2: Test accuracy±standard deviation on CIFAR-10 and
+CIFAR-100 for single task learning (STL), naive MTL (NMTL)
+and our approach without (HMTL) and with (HMTL-S) the L1norm constraint on matrix C.
+
+STL
+NMTL
+HMTL
+HMTL-S
+
+CIFAR-10
+
+CIFAR-100
+
+67.47±2.78
+69.41±1.90
+70.85±1.87
+71.62±1.34
+
+18.99±1.12
+19.19±0.75
+21.15±0.36
+22.09±0.29
+
 P
-P
-kp−qk2
-1
-− exp − kp−q̄k
-,
-p∈Dg1
-q∈Dg2 exp −
-8πt
-8t
-8t
+performance, and adding the constraint that j,k Cj,k ≤ R
+further improves performance in both datasets. The matrix
+C can been interpreted as an adjacency matrix of a graph,
+highlighting the relationships between the classes. Figure
+2 depicts the graph for CIFAR-10 extracted from the algorithm HMTL-S. Although this result is strongly influenced
+by the choice of the data representations, we can note that
+animals tends to be more related to themselves than to vehicles and vice versa.
+5.3. Phone Classification
+The aim of the third set of experiments is to assess the efficacy of the real-time F ORWARD -HG algorithm (RTHO).
+We run experiments on phone recognition in the multitask framework proposed in (Badino, 2016, and references therein). Data for all experiments was obtained from
+the TIMIT phonetic recognition dataset (Garofolo et al.,
+1993). The dataset contains 5040 sentences corresponding to around 1.5 million speech acoustic frames. Training,
+validation and test sets contain respectively 73%, 23% and
+4% of the data. The primary task is a frame-level phone
+state classification with 183 classes and it consists in learning a mapping fP from acoustic speech vectors to hidden
+Markov model monophone states. Each 25ms speech frame
+is represented by a 123-dimensional vector containing 40
+Mel frequency scale cepstral coefficients and energy, augmented with their deltas and delta-deltas. We used a window of eleven frames centered around the prediction target
+to create the 1353-dimensional input to fP . The secondary
+(or auxiliary) task consists in learning a mapping fS from
+acoustic vectors to 300-dimensional real vectors of contextdependent phonetic embeddings defined in (Badino, 2016).
 
-where q̄ = (y, x) is the symmetric of q = (x, y) along the
-diagonal. Since there is no clear heuristic on how to tune
-t, this parameter is chosen in the applications by ten-fold
-cross-validation with random 50%-50% training-test splits
-and with the following set of NPSS = 13 values: 0.001,
-0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10, 50, 100, 500 and 1000.
-PWG. Let K, p, ρ be positive parameters.
-Let kρ
-be the Gaussian kernel with parameter ρ and associated RKHS
-P Hρ . Let Dg1 , Dg2 be ptwo PDs, and let
-µ1 :=
-x∈Dg1 arctan(Kd∞ (x, ∆) )kρ (·, x) ∈ Hρ
-be the kernel mean embedding of Dg1 weigthed by
-the diagonal distances. Let µ2 be defined similarly.
+Vanilla
+RS
+RTHO
+RTHO-NT
 
-Sliced Wasserstein Kernel for Persistence Diagrams
-TASK
-kPSS (10−3 ) kPWG (103 ) kSW (6)
-kPSS (10−3 )
-kPWG (103 )
-kSW (6) −N C
-O RBIT
-63.6 ± 1.2
-77.7 ± 1.2
-83.7 ± 0.5
-N (124 ± 8.4) N (144 ± 14)
-415 ± 7.9
-T EXTURE 98.8 ± 0.0
-95.8 ± 0.0
-96.1 ± 0.4
-N (165 ± 27)
-N (101 ± 9.6) 482 ± 68
-TASK
-kPSS
-kPWG
-kSW
-kPSS
-kPWG
-kSW − N C kSW (10) −N C
-H UMAN
-68.5 ± 2.0 64.2 ± 1.2
-74.0 ± 0.2
-N (29 ± 0.3)
-N (318 ± 22)
-2270 ± 336 107 ± 14
-A IRPLANE 65.4 ± 2.4 61.3 ± 2.9
-72.6 ± 0.2
-N (0.8 ± 0.03)
-N (5.6 ± 0.02) 44 ± 5.4
-10 ± 1.6
-A NT
-86.3 ± 1.0 87.4 ± 0.5
-92.3 ± 0.2
-N (1.7 ± 0.01)
-N (12 ± 0.5)
-92 ± 2.8
-16 ± 0.4
-B IRD
-67.7 ± 1.8 72.0 ± 1.2 67.0 ± 0.5
-N (0.5 ± 0.01)
-N (3.6 ± 0.02) 27 ± 1.6
-6.6 ± 0.8
-F OUR L EG
-67.0 ± 2.5 64.0 ± 0.6
-73.0 ± 0.4
-N (10 ± 0.07)
-N (113 ± 13)
-604 ± 25
-52 ± 3.2
-O CTOPUS
-77.6 ± 1.0 78.6 ± 1.3
-85.2 ± 0.5
-N (1.4 ± 0.01)
-N (11 ± 0.8)
-75 ± 1.4
-14 ± 2.1
-F ISH
-76.1 ± 1.6 79.8 ± 0.5 75.0 ± 0.4
-N (1.2 ± 0.004) N (9.6 ± 0.03) 72 ± 4.8
-12 ± 1.1
-Table 2. Classification accuracies (%) and Gram matrices computation time (s) for the benchmark applications. As explained in the
-text, N represents the size of the set of possible parameters, and we have N = 13 for kPSS , N = 5 × 5 × 5 = 125 for kPWG and
-N = 3 × 5 = 15 for kSW . C is a constant that depends only on the training size. In all our applications, it is less than 0.1s.
+59.81
+60.36
+61.97
+61.38
 
-Label = 1
+Time (min)
+12
+300
+164
+289
 
-Label = Head
-Label = Canvas
+As in previous work, we assume that the two mappings fP
+and fS share inputs and an intermediate representation, obtained by four layers of a feed-forward neural network with
+2000 units on each layer. We denote by W the parameter
+vector of these four shared layers. The network has two
+different output layers with parameter vectors W P and W S
+each relative to the primary and secondary task. The network is trained to jointly minimize Etot (W, W P , W S ) =
+EP (W, W P ) + ρES (W, W S ), where the primary error EP
+is the average cross-entropy loss on the primary task, the
+secondary error ES is given by mean squared error on the
+embedding vectors and ρ ≥ 0 is a design hyperparameter. Since we are ultimately interested in learning fP , we
+formulate the hyperparameter optimization problem as
+
+	
+min Eval (WT , WTP ) subject to ρ, η ≥ 0, 0 ≤ µ ≤ 1 ,
+where Eval is the cross entropy loss computed on a validation set after T iterations of stochastic GDM, and η and
+µ are defined in (2). In all the experiments we fix a minibatch size of 500. We compare the following methods:
+1. Vanilla: the secondary target is ignored (ρ = 0); η and
+µ are set to 0.075 and 0.5 respectively as in (Badino,
+2016).
+2. RS: random search with ρ ∼ U(0, 4), η ∼ E(0.1) (exponential distribution with scale parameter 0.1) and
+µ ∼ U(0, 1) (Bergstra & Bengio, 2012).
+3. RTHO: real-time hyperparameter optimization with
+initial learning rate and momentum factor as in Vanilla
+and initial ρ set to 1.6 (best value obtained by gridsearch in Badino (2016)).
+4. RTHO-NT: RTHO with “null teacher,” i.e. when the
+initial values of ρ, η and µ are set to 0. We regard
+this experiment as particularly interesting: this initial
+setting, while clearly not optimal, does not require any
+background knowledge on the task at hand.
+We also tried to run F ORWARD -HG for a fixed number of
+epochs, not in real-time mode. Results are not reported
 
-Label = 2
+Forward and Reverse Gradient-Based Hyperparameter Optimization
 
-Label = Carpet
+since the method could not make any appreciable progress
+after running 24 hours on a Titan X GPU.
+Test accuracies and execution times are reported in Table 3.
+Figure 3 shows learning curves and hyperparameter evolutions for RTHO-NT. In Experiments 1 and 2 we employ a
+standard early stopping procedure on the validation accuracy, while in Experiments 3 and 4 a natural stopping time
+is given by the decay to 0 of the learning rate (see Figure 3
+left-bottom plot). In Experiments 3 and 4 we used a hyperbatch size of ∆ = 200 (see Eq. (16)) and a hyper-learning
+rate of 0.005.
+100
 
-Label = Foot
+Training and validation accuracies
 
-Figure 2. Examples of PDs computed on orbits, texture images and 3D shapes.
+Validation error
 
-Let τ > 0. The Persistence Weighted Gaussian kernel kPWG (Kusano et al., 2016; 2017) is defined as
-kµ1 −µ2 kHρ
-kPWG (Dg1 , Dg2 ) = exp −
-, i.e.
-the
-2τ 2
-Gaussian kernel with parameter τ on Hρ . The authors
-in (Kusano et al., 2016) provide heuristics to compute
-K, ρ and τ and give a rule of thumb to tune p. Hence,
-in the applications we select p according to the rule of
-thumb, and we use ten-fold cross-validation with random
-50%-50% training-test splits to chose K, ρ and τ . The
-ranges of possible values is obtained by multiplying the
-values computed with the heuristics with the following
-range of 5 factors: 0.01, 0.1, 1, 10 and 100, leading to
-NPWG = 5 × 5 × 5 = 125 different sets of parameters.
+6
 
-Parameter Tuning. The bandwidth of kSW is, in practice,
-easier to tune than the parameters of its two competitors
-when using grid search. Indeed, as is the case for all infinitely divisible kernels, the Gram matrix does not need to
-be recomputed for each choice of σ, since it only suffices
-to compute all the Sliced Wasserstein distances between
-PDs in the training set once. On the contrary, neither kPSS
-nor kPWG share this property, and require recomputations
-for each hyperparameter choice. Note however that this
-improvement may no longer hold if one uses other methods to tune parameters. For instance, using kPWG without
-cross-validation is possible with the heuristics given by the
-authors in (Kusano et al., 2016), and leads to smaller training times, but also to worse accuracies.
+80
+60
 
-Parameters for kSW . The kernel we propose has only
-one parameter, the bandwidth σ in Eq. (5), which we
-choose using ten-fold cross-validation with random 50%50% training-test splits. The range of possible values is
-obtained by computing the squareroot of the median, the
-first and the last deciles of all SW(Dgi , Dgj ) in the training set, then by multiplying these values by the following
-range of 5 factors: 0.01, 0.1, 1, 10 and 100, leading to
-NSW = 5 × 3 = 15 possible values.
+4
 
-4.1. 3D shape segmentation
-Our first task, whose goal is to produce point classifiers for
-3D shapes, follows that presented in (Carrière et al., 2015).
-Data. We use some categories of the mesh segmentation
-benchmark of Chen et al. (Chen et al., 2009), which contains 3D shapes classified in several categories (“airplane”,
-“human”, “ant”...). For each category, our goal is to design
-a classifier that can assign, to each point in the shape, a
+40
+Training
+Validation
 
-log( SW approx / SW exact )
-
-Sliced Wasserstein Kernel for Persistence Diagrams
-2
-1.5
-1
-0.5
-0
-1 2 3 4 5 6 7 8 9 10 11 12100
-
-log( SW approx / SW exact )
-
-Number of directions
-0.5
-0
--0.5
--1
--1.5
-1 2 3 4 5 6 7 8 9 10 11 12100
-
-Number of directions
-
-Figure 3. The first row corresponds to the orbit recognition and the texture classification while the second row corresponds to 3D shape
-segmentation. On each row, the left plot shows the dependence of the accuracy on the number of directions, the middle plot shows the
-dependence of a single Gram matrix computation time, and the right plot shows the dependence of the ratio of the approximation of SW
-and the exact SW. Since the box plot of the ratio for orbit recognition is very similar to that of 3D shape segmentation, we only give the
-box plot of texture classification in the first row.
-
-label that describes the relative location of that point in the
-shape. For instance, possible labels are, for the human category, “head”, “torso”, “arm”... To train classifiers, we compute a PD per point using the geodesic distance function to
-this point—see (Carrière et al., 2015) for details. We use
-1-dimensional persistent homology (0-dimensional would
-not be informative since the shapes are connected, leading
-to solely one point with coordinates (0, +∞) per PD). For
-each category, the training set contains one hundredth of
-the points of the first five 3D shapes, and the test set contains one hundredth of the points of the remaining shapes
-in that category. Points in training and test sets are evenly
-sampled. See Figure 2. Here, we focus on comparison
-between PDs, and not on achieving state-of-the-art results.
-It has been proven that PDs bring complementary information to classical descriptors in this task—see (Carrière
-et al., 2015), hence reinforcing their discriminative power
-with appropriate kernels is of great interest. Finally, since
-data points are in R3 , we set the p parameter of kPWG to 5.
-
-other competitors. Moreover, according to Figure 3, using
-even less directions would slightly decrease the accuracies,
-but still outperform the competitors performances, while
-decreasing even more the training times.
-
-Results. Classification accuracies are given in Table 2. For
-most categories, kSW outperforms competing kernels by a
-significant margin. The variance of the results over the run
-is also less than that of its competitors. However, training times are not better in general. Hence, we also provide
-the results for an approximation of kSW with 10 directions.
-As one can see from Table 2 and from Figure 3, this approximation leaves the accuracies almost unchanged, while
-the training times become comparable with the ones of the
-
-Depending on the values of r, the orbits may exhibit
-very different behaviors. For instance, as one can see in
-Figure 2, when r is 2, there seems to be no interesting
-topological features in the orbit, while voids form when r
-is 1. Following (Adams et al., 2017), we use 5 different
-parameters r = 2.5, 3.5, 4, 4.1, 4.3, that act as labels. For
-each parameter, we generate 100 orbits with 1000 points
-and random initial positions. We then compute the PDs of
-the distance functions to the point clouds with the GUDHI
-
-4.2. Orbit recognition
-In our second experiment, we use synthetized data. The
-goal is to retrieve parameters of dynamical system orbits,
-following an experiment proposed in (Adams et al., 2017).
-Data. We study the linked twist map, a discrete dynamical
-system modeling fluid flow. It was used in (Hertzsch et al.,
-2007) to model flows in DNA microarrays. Its orbits can
-be computed given a parameter r > 0 and initial positions
-(x0 , y0 ) ∈ [0, 1] × [0, 1] as follows:
-
-
-xn+1 = xn + ryn (1 − yn )
-mod 1
-yn+1 = yn + rxn+1 (1 − xn+1 ) mod 1
-
-Sliced Wasserstein Kernel for Persistence Diagrams
-
-Results. Since the PDs contain thousands of points, we use
-kernel approximations to speed up the computation of the
-Gram matrices. In order for the approximation error to be
-bounded by 10−3 , we use an approximation of kSW with 6
-directions (as one can see from Figure 3, this has a small
-impact on the accuracy), we approximate kPWG with 1000
-random Fourier features (Rahimi & Recht, 2008), and we
-approximate kPSS using Fast Gauss Transform (Morariu
-et al., 2009) with a normalized error of 10−10 . One can see
-from Table 2 that the accuracy is increased a lot with kSW .
-Concerning training times, there is also a large improvement since we tune the parameters with grid search. Indeed, each Gram matrix needs not be recomputed for each
-parameter when using kSW .
-
-2.5
-PSS
-PWG
-SW
-exp(-d1)
+20
 
 2
 
-1.5
+0
+0
 
-Distance in RKHS
+50
 
-library (The GUDHI Project, 2015) and we use them (in all
-homological dimensions) to produce an orbit classifier that
-predicts the parameter values, by training over a 70%-30%
-training-test split of the data. Since data points are in R2 ,
-we set the p parameter of kPWG to 4.
+100
 
-1
+150
 
-0.5
+200
+
+250
+
+Plot of η, µ
+
+0.3
 
 0
 
--0.5
+50
 
--1
+150
+
+200
+
+250
+
+200
+
+250
+
+Plot of ρ
+
+0.3
+
 0.2
 
-0.4
+100
 
-0.6
+0.2
 
-0.8
+0.1
 
-1
+0.1
 
-1.2
+η
+µ
 
-1.4
+0.0
 
-First Diagram Distance
+0.0
+0
 
-Figure 4. We show how the metric d1 is distorted. Each point represents a pair of PDs and its abscissae is the first diagram distance
-between them. Depending on the point color, its ordinate is the
-logarithm of the distance between PDs in the RKHS induced by
-either kPSS (blue points), kPWG (green points), kSW (red points)
-and a Gaussian kernel on d1 (black points).
+50
 
-4.3. Texture classification
-Our last experiment is inspired from (Reininghaus et al.,
-2015) and (Li et al., 2014). We use the OUTEX00000 data
-base (Ojala et al., 2002) for texture classification.
-Data. PDs are obtained for each texture image by computing first the sign component of CLBP descriptors (Guo
-et al., 2010) with radius R = 1 and P = 8 neighbors
-for each image, and then compute the persistent homology
-of this descriptor using the GUDHI library (The GUDHI
-Project, 2015). See Figure 2. Note that, contrary to the
-experiment of (Reininghaus et al., 2015), we do not downsample the images to 32 × 32 images, but keep the original
-128 × 128 images. Following (Reininghaus et al., 2015),
-we restrict the focus to 0-dimensional persistent homology.
-We also use the first 50%-50% training-test split given in
-the database to produce classifiers. Since data points are in
-R2 , we set the p parameter of kPWG to 4.
-Results We use the same approximation procedure as in
-Section 4.2. According to Figure 3, even though the approximation of SW is rough, this has again a small impact
-on the accuracy, while reducing the training time by a significant margin. As one can see from Table 2, using kPSS
-leads to almost state-of-the-art results (Ojala et al., 2002;
-Guo et al., 2010), closely followed by the accuracies of
-kSW and kPWG . The best timing is given by kSW , again
-because we use grid search. Hence, kSW almost achieves
-the best result, and its training time is better than the ones
-of its competitors, due to the grid search parameter tuning.
-Metric Distortion. To illustrate the equivalence theorem,
-we also show in Figure 4 a scatter plot where each point
+100
 
-represents the comparison of two PDs taken from the Airplane segmentation data set. Similar plots can be obtained
-with the other datasets considered here. For all points, the
-x-axis quantifies the first diagram distance d1 for that pair,
-while the y-axis is the logarithm of the RKHS distance induced by either kSW , kPSS , kPWG or a Gaussian kernel
-directly applied to d1 , to obtain comparable quantities. We
-use the parameters given by the cross-validation procedure
-described above. One can see that the distances induced
-by kSW are less spread than the others, suggesting that the
-metric induced by kSW is more discriminative. Moreover
-the distances given by kSW and the Gaussian kernel on d1
-exhibit the same behavior, suggesting that kSW is the best
-natural equivalent of a Gaussian kernel for PDs.
+150
 
-5. Conclusion
-In this article, we introduce the Sliced Wasserstein kernel,
-a new kernel for PDs that is provably equivalent to the first
-diagram distance between PDs. We provide fast algorithms
-to approximate it, and show on several datasets substantial
-improvements in accuracy and training times (when tuning
-parameters is done with grid search) over competing kernels. A particularly appealing property of that kernel is that
-it is infinitely divisible, substantially facilitating the tuning
-of parameters through cross validation.
-Acknowledgements. We thank the anonymous referees
-for their insightful comments. SO was supported by ERC
-grant Gudhi and by ANR project TopData. MC was supported by a chaire de l’IDEX Paris Saclay.
+200
 
-Sliced Wasserstein Kernel for Persistence Diagrams
+250
+
+0
+
+50
+
+100
+
+150
+
+Figure 3: Learning curves and hyperparameter evolutions for
+RTHO-NT: the horizontal axis runs with the hyper-batches. Topleft: frame level accuracy on mini-batches (Training) and on a
+randomly selected subset of the validation set (Validation). Topright: validation error Eval on the same subset of the validation
+set. Bottom-left: evolution of optimizer hyperparameters η and
+µ. Bottom-right: evolution of design hyperparameter ρ.
+
+The best results in Table 3 are very similar to those obtained in state-of-the-art recognizers using multitask learning (Badino, 2016; 2017). In spite of the small number of
+hyperparameters, random search yields results only slightly
+better than the vanilla network (the result reported in Table 3 are an average over 5 trials, with a minimum and maximum accuracy of 59.93 and 60.86, respectively). Within
+the same time budget of 300 minutes, RTHO-NT is able
+to find hyperparameters yielding a substantial improvement
+over the vanilla version, thus effectively exploiting the auxiliary task. Note that the model trained has more that
+15 × 106 parameters for a corresponding state of more than
+30 × 106 variables. To the best of our knowledge, reversemode (Maclaurin et al., 2015) or approximate (Pedregosa,
+2016) methods have not been applied to models of this size.
+
+6. Discussion
+We studied two alternative strategies for computing the hypergradients of any iterative differentiable learning dynam-
+
+ics. Previous work has mainly focused on the reverse-mode
+computation, attempting to deal with its space complexity,
+that becomes prohibitive for very large models such as deep
+networks.
+Our first contribution is the definition and the application of
+forward-mode computation to HO. Our analysis suggests
+that for large models the forward-mode computation may
+be a preferable alternative to reverse-mode if the number of
+hyperparameters is small. Additionally, forward-mode is
+amenable to real-time hyperparameter updates, which we
+showed to be an effective strategy for large datasets (see
+Section 5.3). We showed experimentally that even starting
+from a far-from-optimal value of the hyperparameters (the
+null teacher), our RTHO algorithm finds good values at a
+reasonable cost, whereas other gradient-based algorithms
+could not be applied in this context.
+Our second contribution is the Lagrangian derivation of the
+reverse-mode computation. It provides a general framework to tackle hyperparameter optimization problems involving a wide class of response functions, including those
+that take into account the whole parameter optimization dynamics. We have also presented in Sections 5.1 and 5.2 two
+non-standard learning problems where we specifically take
+advantage of a constrained formulation of the HO problem.
+We close by highlighting some potential extensions of our
+framework and direction of future research. First, the relatively low cost of our RTHO algorithm could suggest to
+make it a standard tool for the optimization of real-valued
+critical hyperparameters (such as learning rates, regularization factors and error function design coefficient), in
+context where no previous or expert knowledge is available (e.g. novel domains). Yet, RTHO must be thoroughly validated on diverse datasets and with different
+models and settings to empirically asses its robustness and
+its ability to find good hyperparameter values. Second,
+in order to perform gradient-based hyperparameter optimization, it is necessary to set a descent procedure over
+the hyperparameters. In our experiments we have always
+used Adam with a manually adjusted value for the hyperlearning rate. Devising procedures which are adaptive in
+these hyper-hyperparameters is an important direction of
+future research. Third, extensions of gradient-based HO
+techniques to integer or nominal hyperparameters (such as
+the depth and the width of a neural network) require additional design efforts and may not arise naturally in our
+framework. Future research should instead focus on the integration of gradient-based algorithm with Bayesian optimization and/or with emerging reinforcement learning hyperparameter optimization approaches (Zoph & Le, 2016).
+A final important problem is to study the converge properties of RTHO. Results in Pedregosa (2016) may prove
+useful in this direction.
+
+Forward and Reverse Gradient-Based Hyperparameter Optimization
 
 References
-Adams, H., Emerson, T., Kirby, M., Neville, R., Peterson,
-C., Shipman, P., Chepushtanova, S., Hanson, E., Motta,
-F., and Ziegelmeier, L. Persistence Images: A Stable
-Vector Representation of Persistent Homology. Journal
-Machine Learning Research, 18(8):1–35, 2017.
-Bauer, U. and Lesnick, M. Induced matchings and the algebraic stability of persistence barcodes. Journal of Computational Geometry, 6(2):162–191, 2015.
-Berg, C., Christensen, J., and Ressel, P. Harmonic Analysis
-on Semigroups: Theory of Positive Definite and Related
-Functions. Springer, 1984.
-Bubenik, P. Statistical Topological Data Analysis using
-Persistence Landscapes. Journal Machine Learning Research, 16:77–102, 2015.
-Carlsson, G. Topology and data. Bulletin American Mathematical Society, 46:255–308, 2009.
-Carrière, M., Oudot, S., and Ovsjanikov, M. Stable Topological Signatures for Points on 3D Shapes. In Proceedings 13th Symposium Geometry Processing, 2015.
-Carrière, M., Cuturi, M., and Oudot, S.
-Sliced
-Wasserstein Kernel for Persistence Diagrams. CoRR,
-abs/1706.03358, 2017.
-Chang, C. and Lin, C. LIBSVM: A library for support vector machines. ACM Transactions on Intelligent Systems and Technology, 2:27:1–27:27, 2011. Software available at http://www.csie.ntu.edu.
-tw/˜cjlin/libsvm.
-Chazal, F., Cohen-Steiner, D., Glisse, M., Guibas, L., and
-Oudot, S. Proximity of persistence modules and their diagrams. In Proceedings 25th Symposium Computational
-Geometry, pp. 237–246, 2009a.
-Chazal, F., Cohen-Steiner, D., Guibas, L., Mémoli, F.,
-and Oudot, S. Gromov-Hausdorff Stable Signatures for
-Shapes using Persistence. Computer Graphics Forum,
-pp. 1393–1403, 2009b.
-Chazal, F., de Silva, V., and Oudot, S. Persistence stability
-for geometric complexes. Geometriae Dedicata, pp. 1–
-22, 2013.
-Chazal, F., de Silva, V., Glisse, M., and Oudot, S. The
-structure and stability of persistence modules. Springer,
-2016.
-Chen, X., Golovinskiy, A., and Funkhouser, T. A Benchmark for 3D Mesh Segmentation. ACM Trans. Graph.,
-28(3):73:1–73:12, 2009.
+Badino, Leonardo. Phonetic context embeddings for dnnhmm phone recognition. In Proceedings of Interspeech,
+pp. 405–409, 2016.
+Badino, Leonardo. Personal communication, 2017.
+Baydin, Atilim Gunes, Pearlmutter, Barak A., Radul,
+Alexey Andreyevich, and Siskind, Jeffrey Mark. Automatic differentiation in machine learning: a survey.
+arXiv preprint arXiv:1502.05767, 2015.
+Bengio, Yoshua. Gradient-based optimization of hyperparameters. Neural computation, 12(8):1889–1900, 2000.
+Bergstra, James and Bengio, Yoshua. Random search
+for hyper-parameter optimization. Journal of Machine
+Learning Research, 13:281–305, 2012.
+Bergstra, James, Yamins, Daniel, and Cox, David D. Making a Science of Model Search: Hyperparameter Optimization in Hundreds of Dimensions for Vision Architectures. ICML, 28:115–123, 2013.
+Bergstra, James S., Bardenet, Rémi, Bengio, Yoshua, and
+Kégl, Balázs. Algorithms for hyper-parameter optimization. In Advances in Neural Information Processing Systems, pp. 2546–2554, 2011.
+Domke, Justin. Generic methods for optimization-based
+modeling. In AISTATS, volume 22, pp. 318–326, 2012.
+Evgeniou, Theodoros, Micchelli, Charles A, and Pontil,
+Massimiliano. Learning multiple tasks with kernel methods. J. Mach. Learn. Res., 6:615–637, 2005.
+Fan, Yang, Tian, Fei, Qin, Tao, Bian, Jiang, and Liu,
+Tie-Yan. Learning what data to learn. arXiv preprint
+arXiv:1702.08635, 2017.
+Garofolo, John S., Lamel, Lori F., Fisher, William M., Fiscus, Jonathon G., and Pallett, David S. DARPA TIMIT
+acoustic-phonetic continous speech corpus CD-ROM.
+NIST speech disc 1-1.1. NASA STI/Recon technical report, 93, 1993.
+Griewank, Andreas and Walther, Andrea. Evaluating
+Derivatives: Principles and Techniques of Algorithmic
+Differentiation. Society for Industrial and Applied Mathematics, second edition, 2008.
+Hutter, Frank, Hoos, Holger H., and Leyton-Brown, Kevin.
+Sequential model-based optimization for general algorithm configuration. In Int. Conf. on Learning and Intelligent Optimization, pp. 507–523. Springer, 2011.
+Hutter, Frank, Lücke, Jörg, and Schmidt-Thieme, Lars. Beyond Manual Tuning of Hyperparameters. KI - Künstliche Intelligenz, 29(4):329–337, 2015.
 
-Cohen-Steiner, D., Edelsbrunner, H., and Harer, J. Stability
-of persistence diagrams. Discrete Computational Geometry, 37(1):103–120, 2007.
-Edelsbrunner, H. and Harer, J. Computational Topology:
-an introduction. AMS Bookstore, 2010.
-Edelsbrunner, Herbert and Harer, John.
-Persistent
-homology-a survey. Contemporary mathematics, 453:
-257–282, 2008.
-Fabio, B. Di and Ferri, M. Comparing persistence diagrams
-through complex vectors. CoRR, abs/1505.01335, 2015.
-Guo, Z., Zhang, L., and Zhang, D. A completed modeling
-of local binary pattern operator for texture classification.
-IEEE Trans. Image Processing, pp. 1657–1663, 2010.
-Hertzsch, J.-M., Sturman, R., and Wiggins, S. DNA microarrays: design principles for maximizing ergodic,
-chaotic mixing. In Small, volume 3, pp. 202–218, 2007.
-Hiraoka, Y., Nakamura, T., Hirata, A., Escolar, E., Matsue,
-K., and Nishiura, Y. Hierarchical structures of amorphous solids characterized by persistent homology. In
-Proceedings National Academy of Science, volume 26,
-2016.
-Kusano, G., Fukumizu, K., and Hiraoka, Y. Persistence
-Weighted Gaussian Kernel for Topological Data Analysis. In Proceedings 33rd International Conference on
-Machine Learning, pp. 2004–2013, 2016.
-Kusano, G., Fukumizu, K., and Hiraoka, Y. Kernel
-method for persistence diagrams via kernel embedding
-and weight factor. CoRR, abs/1706.03472, 2017.
-Kwitt, Roland, Huber, Stefan, Niethammer, Marc, Lin,
-Weili, and Bauer, Ulrich. Statistical Topological Data
-Analysis - A Kernel Perspective. In Advances in Neural Information Processing Systems 28, pp. 3070–3078,
+Kingma, Diederik and Ba, Jimmy. Adam: A Method for
+Stochastic Optimization. arXiv:1412.6980, 2014.
+Krizhevsky, Alex and Hinton, Geoffrey. Learning multiple
+layers of features from tiny images. 2009.
+Larsen, Jan, Hansen, Lars Kai, Svarer, Claus, and Ohlsson,
+M. Design and regularization of neural networks: the
+optimal use of a validation set. In Neural Networks for
+Signal Processing, pp. 62–71. IEEE, 1996.
+LeCun, Yann.
+A Theoretical Framework for BackPropagation. In Hinton, Geoffrey and Sejnowski, Terrence (eds.), Proc. of the 1988 Connectionist models
+summer school, pp. 21–28. Morgan Kaufmann, 1988.
+Maclaurin, Dougal, Duvenaud, David K, and Adams,
+Ryan P. Gradient-based hyperparameter optimization
+through reversible learning. In ICML, pp. 2113–2122,
 2015.
-Li, C., Ovsjanikov, M., and Chazal, F. PersistenceBased Structural Recognition. In Proceedings Conference Computer Vision Pattern Recognition, pp. 2003–
-2010, 2014.
-Morariu, V., Srinivasan, B., Raykar, V., Duraiswami, R.,
-and Davis, L. Automatic online tuning for fast Gaussian
-summation. In Advances Neural Information Processing
-Systems 21, pp. 1113–1120, 2009.
-Ojala, T., Mäenpää, T., Pietikäinen, M., Viertola, J.,
-Kyllönen, J., and Huovinen, S. Outex - new framework
-for empirical evaluation of texture analysis algorithms.
-In Proceedings 16th International Conference Pattern
-Recognition, pp. 701–706, 2002.
-
-Sliced Wasserstein Kernel for Persistence Diagrams
-
-Oudot, S. Persistence Theory: From Quiver Representations to Data Analysis. American Mathematical Society,
-2015.
-Rabin, J., Peyré, G., Delon, J., and Bernot, M. Wasserstein
-barycenter and its application to texture mixing. In International Conference Scale Space Variational Methods
-Computer Vision, pp. 435–446, 2011.
-Rahimi, A. and Recht, B. Random Features for Large-Scale
-Kernel Machines. In Advances Neural Information Processing Systems 20, pp. 1177–1184, 2008.
-Reininghaus, J., Huber, S., Bauer, U., and Kwitt, R. A Stable Multi-Scale Kernel for Topological Machine Learning. CoRR, abs/1412.6821, 2014.
-Reininghaus, J., Huber, S., Bauer, U., and Kwitt, R. A Stable Multi-Scale Kernel for Topological Machine Learning. In Proceedings Conference Computer Vision Pattern
-Recognition, 2015.
-Robins, V. and Turner, K. Principal Component Analysis of
-Persistent Homology Rank Functions with case studies
-of Spatial Point Patterns, Sphere Packing and Colloids.
-Physica D: Nonlinear Phenomena, 334:1–186, 2016.
-Santambrogio, Filippo. Optimal transport for applied mathematicians. Birkäuser, 2015.
-Singh, G., Memoli, F., Ishkhanov, T., Sapiro, G., Carlsson,
-G., and Ringach, D. Topological analysis of population
-activity in visual cortex. Journal of Vision, 8, 2008.
-The GUDHI Project. GUDHI User and Reference Manual.
-GUDHI Editorial Board, 2015. URL http://gudhi.
-gforge.inria.fr/doc/latest/.
-Villani, C. Optimal transport : old and new. Springer,
-2009.
-Zomorodian, Afra and Carlsson, Gunnar. Computing persistent homology. Discrete & Computational Geometry,
-33(2):249–274, 2005.
+Pearlmutter, Barak A. Gradient calculations for dynamic
+recurrent neural networks: A survey. IEEE Transactions
+on Neural networks, 6(5):1212–1228, 1995.
+Pedregosa, Fabian. Hyperparameter optimization with approximate gradient. In ICML, pp. 737–746, 2016.
+Snoek, Jasper, Larochelle, Hugo, and Adams, Ryan P.
+Practical bayesian optimization of machine learning algorithms. In Advances in Neural Information Processing
+Systems, pp. 2951–2959, 2012.
+Snoek, Jasper, Rippel, Oren, Swersky, Kevin, Kiros, Ryan,
+Satish, Nadathur, Sundaram, Narayanan, Patwary, Md
+Mostofa Ali, Prabhat, Mr, and Adams, Ryan P. Scalable
+Bayesian Optimization Using Deep Neural Networks. In
+ICML, pp. 2171–2180, 2015.
+Swersky, Kevin, Snoek, Jasper, and Adams, Ryan P. Multitask bayesian optimization. In Advances in Neural Information Processing Systems, pp. 2004–2012, 2013.
+Werbos, Paul J. Backpropagation through time: what it
+does and how to do it. Proceedings of the IEEE, 78(10):
+1550–1560, 1990.
+Williams, Ronald J. and Zipser, David. A learning algorithm for continually running fully recurrent neural networks. Neural computation, 1(2):270–280, 1989.
+Zoph, Barret and Le, Quoc V.
+Neural architecture
+search with reinforcement learning. arXiv preprint
+arXiv:1611.01578, 2016.
 
 

@@ -1,1225 +1,1523 @@
-Forward and Reverse Gradient-Based Hyperparameter Optimization
+Confident Multiple Choice Learning
 
-Luca Franceschi 1 2 Michele Donini 1 Paolo Frasconi 3 Massimiliano Pontil 1 2
+Kimin Lee 1 Changho Hwang 1 KyoungSoo Park 1 Jinwoo Shin 1
 
 Abstract
-We study two procedures (reverse-mode and
-forward-mode) for computing the gradient of the
-validation error with respect to the hyperparameters of any iterative learning algorithm such as
-stochastic gradient descent. These procedures
-mirror two methods of computing gradients for
-recurrent neural networks and have different
-trade-offs in terms of running time and space requirements. Our formulation of the reverse-mode
-procedure is linked to previous work by Maclaurin et al. (2015) but does not require reversible
-dynamics. The forward-mode procedure is suitable for real-time hyperparameter updates, which
-may significantly speed up hyperparameter optimization on large datasets. We present experiments on data cleaning and on learning task interactions. We also present one large-scale experiment where the use of previous gradient-based
-methods would be prohibitive.
+Ensemble methods are arguably the most trustworthy techniques for boosting the performance
+of machine learning models. Popular independent ensembles (IE) relying on naı̈ve averaging/voting scheme have been of typical choice
+for most applications involving deep neural networks, but they do not consider advanced collaboration among ensemble models. In this paper,
+we propose new ensemble methods specialized
+for deep neural networks, called confident multiple choice learning (CMCL): it is a variant of
+multiple choice learning (MCL) via addressing
+its overconfidence issue. In particular, the proposed major components of CMCL beyond the
+original MCL scheme are (i) new loss, i.e., confident oracle loss, (ii) new architecture, i.e., feature sharing and (iii) new training method, i.e.,
+stochastic labeling. We demonstrate the effect of
+CMCL via experiments on the image classification on CIFAR and SVHN, and the foregroundbackground segmentation on the iCoseg. In particular, CMCL using 5 residual networks provides 14.05% and 6.60% relative reductions in
+the top-1 error rates from the corresponding IE
+scheme for the classification task on CIFAR and
+SVHN, respectively.
 
 1. Introduction
-The increasing complexity of machine learning algorithms
-has driven a large amount of research in the area of hyperparameter optimization (HO) — see, e.g., (Hutter et al.,
-2015) for a review. The core idea is relatively simple: given
-a measure of interest (e.g. the misclassification error) HO
-methods use a validation set to construct a response function of the hyperparameters (such as the average loss on
-the validation set) and explore the hyperparameter space to
-seek an optimum.
-Early approaches based on grid search quickly become impractical as the number of hyperparameters grows and are
-even outperformed by random search (Bergstra & Bengio,
-2012). Given the high computational cost of evaluating the
+Ensemble methods have played a critical role in the
+machine learning community to obtain better predictive
+performance than what could be obtained from any of
+the constituent learning models alone, e.g., Bayesian
+model/parameter averaging (Domingos, 2000), boosting
+(Freund et al., 1999) and bagging (Breiman, 1996). Recently, they have been successfully applied to enhancing
+the power of many deep neural networks, e.g., 80% of
 1
 
-Computational Statistics and Machine Learning, Istituto Italiano di Tecnologia, Genoa, Italy 2 Department of Computer Science, University College London, UK 3 Department of Information Engineering, Università degli Studi di Firenze, Italy. Correspondence to: Luca Franceschi <luca.franceschi@iit.it>.
+School of Electrical Engineering, Korea Advanced Institute
+of Science and Technology (KAIST), Daejeon, Repulic of Korea.
+Correspondence to: Jinwoo Shin <jinwoos@kaist.ac.kr>.
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-response function, Bayesian optimization approaches provide a natural framework and have been extensively studied
-in this context (Snoek et al., 2012; Swersky et al., 2013;
-Snoek et al., 2015). Related and faster sequential modelbased optimization methods have been proposed using random forests (Hutter et al., 2011) and tree Parzen estimators (Bergstra et al., 2011), scaling up to a few hundreds of
-hyperparameters (Bergstra et al., 2013).
-In this paper, we follow an alternative direction, where
-gradient-based algorithms are used to optimize the performance on a validation set with respect to the hyperparameters (Bengio, 2000; Larsen et al., 1996). In this setting, the
-validation error should be evaluated at a minimizer of the
-training objective. However, in many current learning systems such as deep learning, the minimizer is only approximate. Domke (2012) specifically considered running an iterative algorithm, like gradient descent or momentum, for
-a given number of steps, and subsequently computing the
-gradient of the validation error by a back-optimization algorithm. Maclaurin et al. (2015) considered reverse-mode
-differentiation of the response function. They suggested the
-idea of reversing parameter updates to achieve space efficiency, proposing an approximation capable of addressing
-the associated loss of information due to finite precision
-arithmetics. Pedregosa (2016) proposed the use of inexact gradients, allowing hyperparameters to be updated before reaching the minimizer of the training objective. Both
-(Maclaurin et al., 2015) and (Pedregosa, 2016) managed to
-optimize a number of hyperparameters in the order of one
-thousand.
-In this paper, we illustrate two alternative approaches to
-compute the hypergradient (i.e., the gradient of the response function), which have different trade-offs in terms
-of running time and space requirements. One approach
-is based on a Lagrangian formulation associated with
-the parameter optimization dynamics. It encompasses
-the reverse-mode differentiation (RMD) approach used by
-Maclaurin et al. (2015), where the dynamics corresponds
-to stochastic gradient descent with momentum. We do
-not assume reversible parameter optimization dynamics. A
-well-known drawback of RMD is its space complexity: we
-need to store the whole trajectory of training iterates in order to compute the hypergradient. An alternative approach
-that we consider overcomes this problem by computing
+top-5 best-performing teams on ILSVRC challenge 2016
+(Krizhevsky et al., 2012) employ ensemble methods. They
+are easy and trustworthy to apply for most scenarios.
+While there exists a long history on ensemble methods,
+the progress on developing more advanced ensembles specialized for deep neural networks has been slow. Despite continued efforts that apply various ensemble methods such as bagging and boosting to deep models, it has
+been observed that traditional independent ensembles (IE)
+which train models independently with random initialization achieve the best performance (Ciregan et al., 2012; Lee
+et al., 2015). In this paper, we focus on developing more
+advanced ensembles for deep models utilizing the concept
+of multiple choice learning (MCL).
+The MCL concept was originally proposed in (GuzmanRivera et al., 2012) under the scenario when inference procedures are cascaded:
+(a) First, generate a set of plausible outputs.
+(b) Then, pick the correct solution form the set.
+For example, (Park & Ramanan, 2011; Batra et al., 2012)
+proposed human-pose estimation methods which produce
+multiple predictions and then refine them by employing a
+temporal model, and (Collins & Koo, 2005) proposed a
+sentence parsing method which re-ranks the output of an
+initial system which produces a set of plausible outputs
+(Huang & Chiang, 2005). In such scenarios, the goal of
+the first stage (a) is generating a set of plausible outputs
+such that at least one of them is correct for the second stage
+(b), e.g., human operators. Under this motivation, MCL has
+been studied (Guzman-Rivera et al., 2014; 2012; Lee et al.,
+2016), where various applications have been demonstrated,
+e.g., image classification (Krizhevsky & Hinton, 2009), semantic segmentation (Everingham et al., 2010) and image
+captioning (Lin et al., 2014b). It trains an ensemble of
+multiple models by minimizing the so-called oracle loss,
+only focusing on the most accurate prediction produced by
+them. Consequently, it makes each model specialized for
+a certain subset of data, not for the entire one similarly as
+mixture-of-expert schemes (Jacobs et al., 1991).
+Although MCL focuses on the first stage (a) in cascaded
+scenarios and thus can produce diverse/plausible outputs, it
+might be not useful if one does not have a good scheme for
 
-Forward and Reverse Gradient-Based Hyperparameter Optimization
+Confident Multiple Choice Learning
 
-the hypergradient in forward-mode and it is efficient when
-the number of hyperparameters is much smaller than the
-number of parameters. To the best of our knowledge, the
-forward-mode has not been studied before in this context.
-As we shall see, these two approaches have a direct correspondence to two classic alternative ways of computing gradients for recurrent neural networks (RNN) (Pearlmutter, 1995): the Lagrangian (reverse) way corresponds
-to back-propagation through time (Werbos, 1990), while
-the forward way corresponds to real-time recurrent learning (RTRL) (Williams & Zipser, 1989). As RTRL allows
-one to update parameters after each time step, the forward
-approach is suitable for real-time hyperparameter updates,
-which may significantly speed up the overall hyperparameter optimization procedure in the presence of large datasets.
-We give experimental evidence that the real-time approach
-is efficient enough to allow for the automatic tuning of crucial hyperparameters in a deep learning model. In our experiments, we also explore constrained hyperparameter optimization, showing that it can be used effectively to detect
-noisy examples and to discover the relationships between
-different learning tasks.
-The paper is organized in the following manner. In Section 2 we introduce the problem under study. In Section 3.1
-we derive the reverse-mode computation. In Section 3.2 we
-present the forward-mode computation of the hypergradient, and in Section 3.3 we introduce the idea of real-time
-hyperparameter updates. In Section 4 we discuss the time
-and space complexity of these methods. In Section 5 we
-present empirical results with both algorithms. Finally in
-Section 6 we discuss our findings and highlight directions
-of future research.
+the second stage (b). One can use a certain average/voting
+scheme of the predictions made by models for (b), but MCL
+using deep neural networks often fails to make a correct
+decision since each network tends to be overconfident in
+its prediction. Namely, the oracle error/loss of MCL is low,
+but its top-1 error rate might be very high.
+Contribution. To address the issue, we develop the concept of confident MCL (CMCL) that does not lose any benefit of the original MCL, while its target loss and architecture are redesigned for making the second stage (b) easier.
+Specifically, it targets to generate a set of diverse/plausible
+confident predictions from which one can pick the correct
+one using a simple average/voting scheme. To this end, we
+first propose a new loss function, called confident oracle
+loss, for relaxing the overconfidence issue of MCL. Our
+key idea is to additionally minimize the Kullback-Leibler
+divergence from a predictive distribution to the uniform
+one in order to give confidence to non-specialized models.
+Then, CMCL that minimizes the new loss can be efficiently
+trained like the original MCL for certain classes of models
+including neural networks, via stochastic alternating minimization (Lee et al., 2016). Furthermore, when CMCL is
+applied to deep models, we propose two additional regularization techniques for boosting its performance: feature
+sharing and stochastic labeling. Despite the new components, we note that the training complexity of CMCL is
+almost same to that of MCL or IE.
+We apply the new ensemble model trained by the new
+training scheme for several convolutional neural networks (CNNs) including VGGNet (Simonyan & Zisserman, 2015), GoogLeNet (Szegedy et al., 2015), and ResNet
+(He et al., 2016) for image classification on the CIFAR
+(Krizhevsky & Hinton, 2009) and SVHN (Netzer et al.,
+2011) datasets, and fully-convolutional neural networks
+(FCNs) (Long et al., 2015) for foreground-background segmentation on the iCoseg dataset (Batra et al., 2010). First,
+for the image classification task, CMCL outperforms all
+baselines, i.e., the traditional IE and the original MCL,
+in top-1 error rates. In particular, CMCL of 5 ResNet
+with 20 layers provides 14.05% and 6.60% relative reductions in the top-1 error rates from the corresponding IE
+on CIFAR-10 and SVHN, respectively. Second, for the
+foreground-background segmentation task, CMCL using
+multiple FCNs with 4 layers also outperforms all baselines
+in top-1 error rates. Each model trained by CMCL generates high-quality solutions by specializing for specific images while each model trained by IE does not. We believe that our new approach should be of broader interest
+for many deep learning tasks requiring high accuracy.
+Organization. In Section 2, we introduce necessary backgrounds for multiple choice learning and the corresponding
+loss function. We describe the proposed loss and the corre-
 
-2. Hyperparameter Optimization
-We focus on training procedures based on the optimization of an objective function J(w) with respect to w (e.g.
-the regularized average training loss for a neural network
-with weights w). We see the training procedure by stochastic gradient descent (or one of its variants like momentum,
-RMSProp, Adam, etc.) as a dynamical system with a state
-st ∈ Rd that collects weights and possibly accessory variables such as velocities and accumulated squared gradients.
-The dynamics are defined by the system of equations
-st = Φt (st−1 , λ) t = 1, . . . , T
+sponding training scheme in Section 3. Section 4 provides
+additional techniques for the proposed ensemble model.
+Experimental results are reported in Section 5.
+
+2. Preliminaries
+2.1. Multiple Choice Learning
+In this section, we describe the basic concept of multiple choice learning (MCL) (Guzman-Rivera et al., 2014;
+2012). Throughout this paper, we denote the set {1, . . . , n}
+by [n] for positive integer n. The MCL scheme is a type
+of ensemble learning that produces diverse outputs of high
+quality. Formally, given a training dataset D = {(xi , yi ) |
+i ∈ [N ], xi ∈ X , yi ∈ Y}, we consider an ensemble of M
+models f , i.e., (f1 , . . . , fM ). For some task-specific loss
+function ` (y, f (x)), the oracle loss over the dataset D is
+defined as follows:
+LO (D) =
+
+N
+X
+i=1
+
+min ` (yi , fm (xi )) ,
+
+m∈[M ]
 
 (1)
 
-where T is the number of iterations, s0 contains initial
-weights and initial accessory variables, and, for every t ∈
-{1, . . . , T },
-Φt : (Rd × Rm ) → Rd
-is a smooth mapping that represents the operation performed by the t-th step of the optimization algorithm (i.e.
+while the traditional independent ensemble (IE) loss is
+LE (D) =
 
-on mini-batch t). Finally, λ ∈ Rm is the vector of hyperparameters that we wish to tune.
-As simple example of these dynamics occurs when training a neural network by gradient descent with momentum
-(GDM), in which case st = (vt , wt ) and
-vt
-wt
+N
+X
+X
 
-= µvt−1 + ∇Jt (wt−1 )
-= wt−1 − η(µvt−1 − ∇Jt (wt−1 ))
+` (yi , fm (xi )) .
 
 (2)
 
-where Jt is the objective associated with the t-th minibatch, µ is the rate and η is the momentum. In this example,
-λ = (µ, η).
-Note that the iterates s1 , . . . , sT implicitly depend on the
-vector of hyperparameters λ. Our goal is to optimize the
-hyperparameters according to a certain error function E
-evaluated at the last iterate sT . Specifically, we wish to
-solve the problem
-min f (λ)
-(3)
-λ∈Λ
+i=1 m∈[M ]
 
-d
+If all models have the same capacity and one can obtain
+the (global) optimum of the IE loss with respect to the
+model parameters, then all trained models should produce
+the same outputs, i.e., f1 = . . . = fM . On the other hand,
+the oracle loss makes the most accurate model optimize the
+loss function ` (y, f (x)) for each data x. Therefore, MCL
+produces diverse outputs of high quality by forcing each
+model to be specialized on a part of the entire dataset.
+Minimizing the oracle loss (1) is harder than minimizing
+the independent ensemble loss (2) since the min function is
+a non-continuous function. To address the issue, (GuzmanRivera et al., 2012) proposed an iterative block coordinate
+decent algorithm and (Dey et al., 2015) reformulated this
+problem as a submodular optimization task in which ensemble models are trained sequentially in a boosting-like
+manner. However, when one considers an ensemble of
+deep neural networks, it is challenging to apply these methods since they require either costly retraining or sequential
+training. Recently, (Lee et al., 2016) overcame this issue
+by proposing a stochastic gradient descent (SGD) based
+algorithm. Throughout this paper, we primarily focus on
+ensembles of deep neural networks and use the SGD algorithm for optimizing the oracle loss (1) or its variants.
+2.2. Oracle Loss for Top-1 Choice
+The oracle loss (1) used for MCL is useful for producing diverse/plausible outputs, but it is often inappropriate for ap-
 
-where the set Λ ⊂ R incorporates constraints on the hyperparameters, and the response function f : Rm → R is
-defined at λ ∈ Rm as
-f (λ) = E(sT (λ)).
+Confident Multiple Choice Learning
+Airplane
 
-(4)
+0.0 %
 
-We highlight the generality of the framework. The vector of hyperparameters λ may include components associated with the training objective, and components associated with the iterative algorithm. For example, the training
-objective may depend on hyperparameters used to design
-the loss function as well as multiple regularization parameters. Yet other components of λ may be associated with
-the space of functions used to fit the training objective (e.g.
-number of layers and weights of a neural network, parameters associated with the kernel function used within a kernel
-based method, etc.). The validation error E can in turn be
-of different kinds. The simplest example is to choose E as
-the average of a loss function over a validation set. We may
-however consider multiple validation objectives, in that the
-hyperparameters associated with the iterative algorithm (µ
-and γ in the case of momentum mentioned above) may
-be optimized using the training set, whereas the regularization parameters would typically require a validation set,
-which is distinct from the training set (in order to avoid
-over-fitting).
+0.0 %
 
-3. Hypergradient Computation
-In this section, we review the reverse-mode computation
-of the gradient of the response function (or hypergradient)
-under a Lagrangian perspective and introduce a forwardmode strategy. These procedures correspond to the reversemode and the forward-mode algorithmic differentiation
-schemes (Griewank & Walther, 2008). We finally introduce a real-time version of the forward-mode procedure.
+93.6 %
 
-Forward and Reverse Gradient-Based Hyperparameter Optimization
+0.0 %
 
-Algorithm 1 R EVERSE -HG
+0.0 %
 
-Algorithm 2 F ORWARD -HG
+95.8%
 
-Input: λ current values of the hyperparameters, s0 initial optimization state
-Output: Gradient of validation error w.r.t. λ
-for t = 1 to T do
-st = Φt (st−1 , λ)
-end for
-αT = ∇E(sT )
-g =0
-for t = T − 1 downto 1 do
-g = g + αt+1 Bt+1
-αt = αt+1 At+1
-end for
-return g
+0.0%
 
-Input: λ current values of the hyperparameters, s0 initial optimization state
-Output: Gradient of validation error w.r.t. λ
-Z0 = 0
-for t = 1 to T do
-st = Φt (st−1 , λ)
-Zt = At Zt−1 + Bt
-end for
-return ∇E(s)ZT
+4.4%
 
-where for every t ∈ {1, . . . , T }, we define the matrices
-At =
+12.2%
 
-∂Φt (st−1 , λ)
-∂Φt (st−1 , λ)
-, Bt =
-.
-∂st−1
-∂λ
+2.2%
 
-(11)
+86.6%
 
-3.1. Reverse-Mode
-The reverse-mode computation leads to an algorithm
-closely related to the one presented in (Maclaurin et al.,
-2015). A major difference with respect to their work is that
-we do not require the mappings Φt defined in Eq. (1) to
-be invertible. We also note that the reverse-mode calculation is structurally identical to back-propagation through
-time (Werbos, 1990).
-We start by reformulating problem (3) as the constrained
-optimization problem
-min
+85.5%
 
-λ,s1 ,...,sT
+86.4%
 
-E(sT )
+85.7%
 
-subject to st = Φt (st−1 , λ), t ∈ {1, . . . , T }.
+86.0%
 
-(5)
+Automobile
 
-This formulation closely follows a classical Lagrangian approach used to derive the back-propagation algorithm (LeCun, 1988). Furthermore, the framework naturally allows
-one to incorporate constraints on the hyperparameters.
-The Lagrangian of problem (5) is
-L(s, λ, α) = E(sT ) +
+0.0 %
 
-T
-X
+0.0 %
 
-αt (Φt (st−1 , λ) − st )
+96.1 %
 
-(6)
+0.0 %
 
-t=1
-d
+0.0 %
 
-where, for each t ∈ {1, . . . , T }, αt ∈ R is a row vector
-of Lagrange multipliers associated with the t-th step of the
-dynamics.
+0.0%
 
-Note that At ∈ Rd×d and Bt ∈ Rd×m .
-The optimality conditions are then obtained by setting each
-derivative to zero. In particular, setting the right hand side
-of Equations (8) and (9) to zero gives
-
-
-if t = T,
-∇E(sT )
-αt =
-
-
-∇E(sT )AT · · · At+1 if t ∈ {1, . . . , T −1}.
-Combining these equations with Eq. (10) we obtain that
-!
-T
-T
-X
-Y
-∂L
-= ∇E(sT )
-As B t .
-∂λ
-t=1 s=t+1
-As we shall see this coincides with the expression for
-the gradient of f in Eq. (15) derived in the next section.
-Pseudo-code of R EVERSE -HG is presented in Algorithm
-1.
-3.2. Forward-Mode
-The second approach to compute the hypergradient appeals
-to the chain rule for the derivative of composite functions,
-to obtain that the gradient of f at λ satisfies1
-∇f (λ) = ∇E(sT )
+0.0%
 
-The partial derivatives of the Lagrangian are given by
-∂L
-= Φt (st−1 , λ) − st , t ∈ {1, . . . , T }
-∂αt
-∂L
-= αt+1 At+1 − αt , t ∈ {1, . . . , T −1}
-∂st
-∂L
-= ∇E(sT ) − αT
-∂sT
-T
-X
-∂L
-=
-αt Bt ,
-∂λ
-t=1
+0.8%
 
-(7)
-(8)
-(9)
-(10)
+98.6%
 
-dsT
-dλ
+9.0%
 
-(12)
+90.7%
 
-T
-where ds
-dλ is the d×m matrix formed by the total derivative
-of the components of sT (regarded as rows) with respect to
-the components of λ (regarded as columns).
+90.3%
 
-Recall that st = Φt (st−1 , λ). The operators Φt depends on
-the hyperparameter λ both directly by its expression and
-indirectly through the state st−1 . Using again the chain
+90.5%
+
+90.6%
+
+90.5%
+
+Bird
+
+99.9 %
+
+0.0 %
+
+0.0 %
+
+0.0 %
+
+0.0 %
+
+0.1%
+
+0.3%
+
+2.4%
+
+4.1%
+
+94.0%
+
+75.4%
+
+75.9%
+
+74.5%
+
+76.3%
+
+76.5%
+
+Cat
+
+0.0 %
+
+0.0 %
+
+95.6 %
+
+0.0 %
+
+0.0 %
+
+94.5%
+
+2.6%
+
+0.0%
+
+0.0%
+
+0.2%
+
+68.5%
+
+66.5%
+
+66.1%
+
+67.1%
+
+67.1%
+
+Deer
+
+0.0 %
+
+0.0 %
+
+0.0 %
+
+97.5 %
+
+0.0 %
+
+0.0%
+
+23.6%
+
+1.2%
+
+98.7%
+
+4.5%
+
+85.8%
+
+86.3%
+
+86.1%
+
+86.1%
+
+86.2%
+
+Dog
+
+0.0 %
+
+97.0 %
+
+0.0 %
+
+0.0 %
+
+0.0 %
+
+15.8%
+
+8.0%
+
+2.9%
+
+4.7%
+
+91.7%
+
+76.3%
+
+75.6%
+
+77.5%
+
+75.0%
+
+76.5%
+
+Frog
+
+0.0 %
+
+0.0 %
+
+0.0 %
+
+0.0 %
+
+97.7 %
+
+7.1%
+
+0.9%
+
+99.2%
+
+2.7%
+
+0.0%
+
+90.1%
+
+90.7%
+
+90.3%
+
+91.4%
+
+90.6%
+
+Horse
+
+0.0 %
+
+0.0 %
+
+0.0 %
+
+0.0 %
+
+97.2 %
+
+0.0%
+
+0.0%
+
+98.1%
+
+0.0%
+
+0.0%
+
+87.3%
+
+86.9%
+
+86.6%
+
+86.3%
+
+87.2%
+
+Ship
+
+0.0 %
+
+0.0 %
+
+0.0 %
+
+97.2 %
+
+0.0 %
+
+0.0%
+
+97.3%
+
+0.0%
+
+0.0%
+
+0.0%
+
+91.6%
+
+91.6%
+
+91.4%
+
+91.7%
+
+90.7%
+
+Truck
+
+0.0 %
+
+97.4 %
+
+0.0 %
+
+0.0 %
+
+0.0 %
+
+96.1%
+
 1
 
-tor.
-
-Remember that the gradient of a scalar function is a row vec-
-
-Forward and Reverse Gradient-Based Hyperparameter Optimization
-
-rule we have, for every t ∈ {1, . . . , T }, that
-dst
-∂Φt (st−1 , λ) dst−1
-∂Φt (st−1 , λ)
-=
-+
-.
-dλ
-∂st−1
-dλ
-∂λ
-
-(13)
-
-t
-Defining Zt = ds
-dλ for every t ∈ {1, . . . , T } and recalling
-Eq. (11), we can rewrite Eq. (13) as the recursion
-
-Zt = At Zt−1 + Bt , t ∈ {1, . . . , T }.
-
-(14)
-
-∇f (λ) = ∇E(sT )ZT
-= ∇E(sT )(AT ZT −1 + BT )
-= ∇E(sT )(AT AT −1 ZT −2 + AT BT −1 + BT )
-..
-.
-!
-T
-T
-X
-Y
-= ∇E(sT )
-As B t .
-(15)
-s=t+1
-
-Note that the recurrence (14) on the Jacobian matrix is
-structurally identical to the recurrence in the RTRL procedure described in (Williams & Zipser, 1989, eq. (2.10)).
-From the above derivation it is apparent that ∇f (λ) can be
-computed by an iterative algorithm which runs in parallel
-to the training algorithm. Pseudo-code of F ORWARD -HG
-is presented in Algorithm 2. At first sight, the computation of the terms in the right hand side of Eq. (14) seems
-prohibitive. However, in Section 4 we observe that if m
-is much smaller than d, the computation can be done efficiently.
-3.3. Real-Time Forward-Mode
-For every t ∈ {1, . . . , T } let ft : Rm → R be the response function at time t: ft (λ) = E(st (λ)). Note that
-fT coincides with the definition of the response function
-in Eq. (4). A major difference between R EVERSE -HG and
-F ORWARD -HG is that the partial hypergradients
-∇ft (λ) =
-
-dE(st )
-= ∇E(st )Zt
-dλ
-
-4. Complexity Analysis
-We discuss the time and space complexity of Algorithms 1
-and 2. We begin by recalling some basic results from the
-algorithmic differentiation (AD) literature.
-
-Using Eq. (14), we obtain that
-
-t=1
-
-has been processed. Algorithm 2 can be easily modified
-to yield a partial hypergradient when t mod ∆ = 0 (for
-some hyper-batch size ∆) and letting t run from 1 to ∞,
-reusing examples in a circular or random way. We use this
-strategy in the phone recognition experiment reported in
-Section 5.3.
-
-(16)
-
-are available in the second procedure at each time step t
-and not only at the end.
-The availability of partial hypergradients is significant
-since we are allowed to update hyperparameters several
-times in a single optimization epoch, without having to
-wait until time T . This is reminiscent of the real-time updates suggested by Williams & Zipser (1989) for RTRL.
-The real-time approach may be suitable in the case of a
-data stream (i.e. T = ∞), where R EVERSE -HG would
-be hardly applicable. Even in the case of finite (but large)
-datasets it is possible to perform one hyperparameter update after a hyper-batch of data (i.e. a set of minibatches)
-
-Let F : Rn 7→ Rp be a differentiable function and suppose it can be evaluated in time c(n, p) and requires space
-s(n, p). Denote by JF the p × n Jacobian matrix of F .
-Then the following facts hold true (Griewank & Walther,
-2008) (see also Baydin et al. (2015) for a shorter account):
-(i) For any vector r ∈ Rn , the product JF r can be evaluated in time O(c(n, p)) and requires space O(s(n, p))
-using forward-mode AD.
-(ii) For any vector q ∈ Rp , the product JF| q has time and
-space complexities O(c(n, p)) using reverse-mode
-AD.
-(iii) As a corollary of item (i), the whole JF can be
-computed in time O(nc(n, p)) and requires space
-O(s(n, p)) using forward-mode AD (just use unitary
-vectors r = ei for i = 1, . . . , n).
-(iv) Similarly, JF can be computed in time O(pc(n, p))
-and requires space O(c(n, p)) using reverse-mode
-AD.
-Let g(d, m) and h(d, m) denote time and space, respectively, required to evaluate the update map Φt defined by
-Eq. (1). Then the response function f : Rm 7→ R defined
-in Eq. (3) can be evaluated in time O(T g(d, m)) (assuming
-the time required to compute the validation error E(λ) does
-not affect the bound2 ) and requires space O(h(d, m)) since
-variables st may be overwritten at each iteration. Then, a
-direct application of Fact (i) above shows that Algorithm 2
-runs in time O(T mg(d, m)) and space O(h(d, m)). The
-same results can also be obtained by noting that in Algorithm 2 the product At Zt−1 requires m Jacobian-vector
-products, each costing O(g(d, m)) (from Fact (i)), while
-computing the Jacobian Bt takes time O(mg(d, m)) (from
-Fact (iii)).
-Similarly, a direct application of Fact (ii) shows that
-Algorithm 1 has both time and space complexities
-O(T g(d, m)). Again the same results can be obtained by
 2
-This is indeed realistic since the number of validation examples is typically lower than the number of training iterations.
 
-Forward and Reverse Gradient-Based Hyperparameter Optimization
-
-noting that αt+1 At1 and αt Bt are transposed-Jacobianvector products that in reverse-mode take both time
-O(g(d, m)) (from Fact (ii)). Unfortunately in this case
-variables st cannot be overwritten, explaining the much
-higher space requirement.
-As an example, consider training a neural network with
-k weights3 , using classic iterative optimization algorithms
-such as SGD (possibly with momentum) or Adam, where
-the hyperparameters are just learning rate and momentum
-terms. In this case, d = O(k) and m = O(1). Moreover,
-g(d, m) and h(d, m) are both O(k). As a result, Algorithm 1 runs in time and space O(T k), while Algorithm 2
-runs in time O(T k) and space O(k), which would typically
-make a dramatic difference in terms of memory requirements.
-
-5. Experiments
-In this section, we present numerical simulations with
-the proposed methods. All algorithms were implemented
-in TensorFlow and the software package used to reproduce our experiments is available at https://github.
-com/lucfra/RFHO. In all the experiments, hypergradients were used inside the Adam algorithm (Kingma & Ba,
-2014) in order to minimize the response function.
-5.1. Data Hyper-cleaning
-The goal of this experiment is to highlight one potential advantage of constraints on the hyperparameters. Suppose we
-have a dataset with label noise and due to time or resource
-constraints we can only afford to cleanup (by checking and
-correcting the labels) a subset of the available data. Then
-we may use the cleaned data as the validation set, the rest
-as the training set, and assign one hyperparameter to each
-training example. By putting a sparsity constraint on the
-vector of hyperparameters λ, we hope to bring to zero the
-influence of noisy examples, in order to generate a better
-model. While this is the same kind of data sparsity observed in support vector machines (SVM), our setting aims
-to get rid of erroneously labeled examples, in contrast to
-SVM which puts zero weight on redundant examples. Although this experimental setup does not necessarily reflect
-a realistic scenario, it aims to test the ability of our HO
-method to effectively make use of constraints on the hyperparameters4
-We instantiated the above setting with a balanced subset of
-N = 20000 examples from the MNIST dataset, split into
-three subsets: Dtr of Ntr = 5000 training examples, V of
 3
-This includes linear SVM and logistic regression as special
-cases.
+
 4
-We note that a related approach based on reinforcement learning is presented in (Fan et al., 2017).
 
-Nval = 5000 validation examples and a test set containing
-the remaining samples. Finally, we corrupted the labels of
-2500 training examples, selecting a random subset Df ⊂
-Dtr .
-We considered a plain softmax regression model with parameters W (weights) and b (bias). The error of a model
-(W, b) on an example x was evaluated by using the crossentropy `(W, b, x) both in the training objective function, Etr , and in the validation one, Eval . We added in
-Etr an hyperparameter vector λ ∈ [0, 1]Ntr that weights
-eachPexample in the training phase, i.e. Etr (W, b) =
-1
-i∈Dtr λi `(W, b, xi ).
-Ntr
-According to the general HO framework, we fit the parameters (W, b) to minimize the training loss and the hyperparameters λ to minimize the validation error. The sparsity
-constraint was implemented by bounding the L1-norm of
-λ, resulting in the optimization problem
-min Eval (WT , bT )
-λ∈Λ
-
-(PHO )
-
-where Λ = {λ : λ ∈ [0, 1]Ntr , kλk1 ≤ R} and (WT , bT )
-are the parameters obtained after T iterations of gradient
-descent on the training objective. Given the high dimensionality of λ, we solved (PHO ) iteratively computing the
-hypergradients with R EVERSE -HG method and projecting
-Adam updates on the set Λ.
-We are interested in comparing the following three test set
-accuracies:
-• Oracle: the accuracy of the minimizer of Etr trained
-on clean examples only, i.e. (Dtr \Df )∪V; this setting
-is effectively taking advantage of an oracle that tells
-which examples have a wrong label;
-• Baseline: the accuracy of the minimizer of Etr trained
-on all available data D ∪ V;
-• DH-R: the accuracy of the data hyper-cleaner with
-a given value of the L1 radius, R. In this case, we
-first optimized hyperparameters and then constructed
-a cleaned training set Dc ⊂ Dtr (keeping examples
-with λi > 0); we finally trained on Dc ∪ V.
-We are also interested in evaluating the ability of the hypercleaner to detect noisy samples. Results are shown in Table 1. The data hyper-cleaner is robust with respect to the
-choice of R and is able to identify corrupted examples, recovering a model that has almost the same accuracy as a
-model produced with the help of an oracle.
-Figure 1 shows how the accuracy of DH-1000 improves
-with the number of hyper-iterations and the progression of
-the amount of discarded examples. The data hyper-cleaner
-starts by discarding mainly corrupted examples, and while
-
-Forward and Reverse Gradient-Based Hyperparameter Optimization
-Table 1: Test accuracies for the baseline, the oracle, and DH-R
-for four different values of R. The reported F1 measure is the
-performance of the hyper-cleaner in correctly identifying the corrupted training examples.
-
-Accuracy %
-
-F1
-
-90.46
-87.74
-90.07
-90.06
-90.00
-90.09
-
-1.0000
-0.9137
-0.9244
-0.9211
-0.9217
-
-Accuracy and sparsity of λ
-
-3500
-3000
-
-ΩC,ρ (W ) =
-
-92
-
-88
-
-2000
-
-86
-
-1500
-
-Validation
-Test
-TP
-FP
-
-1000
-500
-0
-
-100
-
-200
-
-300
-
-400
-
-84
-
-K
-X
-j,k=1
-
-90
-
-2500
-
-0
-
-The choice of small training set sizes is due to the strong
-discriminative power of the selected features. In fact, using
-larger sample sizes would not allow to appreciate the advantage of MTL. In order to leverage information among
-the different classes, we employed a multitask learning
-(MTL) regularizer (Evgeniou et al., 2005)
-
-Accuracy
-
-Number of discarded examples
-
-Oracle
-Baseline
-DH-1000
-DH-1500
-DH-2000
-DH-2500
-
-examples as training set, different 50 examples as validation set and the remaining for testing. From CIFAR-100,
-we selected 300 examples as training set, 300 as validation
-set and the remaining for testing. Finally, we used a onehot encoder of the labels obtaining a set of labels in {0, 1}K
-(K = 10 or K = 100).
-
-82
-80
-500
-
-Hyper-iterations
-
-Figure 1: Right vertical axis: accuracies of DH-1000 on validation and test sets. Left vertical axis: number of discarded examples among noisy (True Positive, TP) and clean (False Positive,
-FP) ones.
-
-Cj,k kwj −
-
-wk k22
-
-+ρ
-
-K
-X
-
-kwk k2 ,
-
-k=1
-
-where wk are the weights for class k, K is the number of classes, and the symmetric non-negative matrix C
-models the interactions between the classes/tasks. We
-used
-P a regularized training error defined as Etr (W ) =
-i∈Dtr `(W xi + b, yi ) + ΩC,ρ (W ) where `(·, ·) is the categorical cross-entropy and b = (b1 , . . . , bK ) is the vector
-of thresholds associated with each linear model. We wish
-solve the following optimization problem:
-
-	
-min Eval (WT , bT ) subject to ρ ≥ 0, C = C | , C ≥ 0 ,
-where (WT , bT ) is the T -th iteration obtained by running
-gradient descent with momentum (GDM) on the training
-objective. We solve this problem using R EVERSE -HG and
-optimizing the hyperparameters by projecting Adam updates on the set {(ρ, C) : ρ ≥ 0, C = C | , C ≥ 0}.
-We compare the following methods:
-
-the optimization proceeds, it begins to remove also a portion of cleaned one. Interestingly, the test set accuracy continues to improve even when some of the clean examples
-are discarded.
-
-• SLT: single task learning, i.e. C = 0, using a validation set to tune the optimal value of ρ for each task;
-
-5.2. Learning Task Interactions
-
-• NMTL: we considered the naive MTL scenario in
-which the tasks are equally related, that is Cj,k = a
-for every 1 ≤ j, k ≤ K. In this case we learn the two
-non-negative hyperparameters a and ρ;
-
-This second set of experiments is in the multitask learning
-(MTL) context, where the goal is to find simultaneously
-the model of multiple related tasks. Many MTL methods
-require that a task interaction matrix is given as input to
-the learning algorithm. However, in real applications, this
-matrix is often unknown and it is interesting to learn it from
-data. Below, we show that our framework can be naturally
-applied to learning the task relatedness matrix.
-We used CIFAR-10 and CIFAR-100 (Krizhevsky & Hinton, 2009), two object recognition datasets with 10 and 100
-classes, respectively. As features we employed the preactivation of the second last layer of Inception-V3 model
-trained on ImageNet5 . From CIFAR-10, we extracted 50
 5
 
-Available at tinyurl.com/h2x8wws
+0.5%
+1
 
-• HMTL: our hyperparameter optimization method
-R EVERSE -HG to tune C and ρ;
-• HMTL-S: Learning the matrix C with only few examples per class could bring the discovery of spurious relationships. We tryPto remove this effect by imposing
-the constraint that j,k Cj,k ≤ R, where6 R = 10−3 .
-In this case, Adam updates are projected
-P onto the set
-{(ρ, C) : ρ ≥ 0, C = C | , C ≥ 0,
-j,k Cj,k ≤ R}.
-Results of five repetitions with different splits are presented
-in Table 2. Note that HMTL gives a visible improvement in
-6
+0.0%
+3
 
-We observed that R = 10−4 yielded very similar results.
-
-Forward and Reverse Gradient-Based Hyperparameter Optimization
-Table 3: Frame level phone-state classification accuracy on standard TIMIT test set and execution time in minutes on one Titan X
-GPU. For RS, we set a time budget of 300 minutes.
-
-Accuracy %
-Figure 2: Relationship graph of CIFAR-10 classes. Edges represent interaction strength between classes.
-Table 2: Test accuracy±standard deviation on CIFAR-10 and
-CIFAR-100 for single task learning (STL), naive MTL (NMTL)
-and our approach without (HMTL) and with (HMTL-S) the L1norm constraint on matrix C.
-
-STL
-NMTL
-HMTL
-HMTL-S
-
-CIFAR-10
-
-CIFAR-100
-
-67.47±2.78
-69.41±1.90
-70.85±1.87
-71.62±1.34
-
-18.99±1.12
-19.19±0.75
-21.15±0.36
-22.09±0.29
-
-P
-performance, and adding the constraint that j,k Cj,k ≤ R
-further improves performance in both datasets. The matrix
-C can been interpreted as an adjacency matrix of a graph,
-highlighting the relationships between the classes. Figure
-2 depicts the graph for CIFAR-10 extracted from the algorithm HMTL-S. Although this result is strongly influenced
-by the choice of the data representations, we can note that
-animals tends to be more related to themselves than to vehicles and vice versa.
-5.3. Phone Classification
-The aim of the third set of experiments is to assess the efficacy of the real-time F ORWARD -HG algorithm (RTHO).
-We run experiments on phone recognition in the multitask framework proposed in (Badino, 2016, and references therein). Data for all experiments was obtained from
-the TIMIT phonetic recognition dataset (Garofolo et al.,
-1993). The dataset contains 5040 sentences corresponding to around 1.5 million speech acoustic frames. Training,
-validation and test sets contain respectively 73%, 23% and
-4% of the data. The primary task is a frame-level phone
-state classification with 183 classes and it consists in learning a mapping fP from acoustic speech vectors to hidden
-Markov model monophone states. Each 25ms speech frame
-is represented by a 123-dimensional vector containing 40
-Mel frequency scale cepstral coefficients and energy, augmented with their deltas and delta-deltas. We used a window of eleven frames centered around the prediction target
-to create the 1353-dimensional input to fP . The secondary
-(or auxiliary) task consists in learning a mapping fS from
-acoustic vectors to 300-dimensional real vectors of contextdependent phonetic embeddings defined in (Badino, 2016).
-
-Vanilla
-RS
-RTHO
-RTHO-NT
-
-59.81
-60.36
-61.97
-61.38
-
-Time (min)
-12
-300
-164
-289
-
-As in previous work, we assume that the two mappings fP
-and fS share inputs and an intermediate representation, obtained by four layers of a feed-forward neural network with
-2000 units on each layer. We denote by W the parameter
-vector of these four shared layers. The network has two
-different output layers with parameter vectors W P and W S
-each relative to the primary and secondary task. The network is trained to jointly minimize Etot (W, W P , W S ) =
-EP (W, W P ) + ρES (W, W S ), where the primary error EP
-is the average cross-entropy loss on the primary task, the
-secondary error ES is given by mean squared error on the
-embedding vectors and ρ ≥ 0 is a design hyperparameter. Since we are ultimately interested in learning fP , we
-formulate the hyperparameter optimization problem as
-
-	
-min Eval (WT , WTP ) subject to ρ, η ≥ 0, 0 ≤ µ ≤ 1 ,
-where Eval is the cross entropy loss computed on a validation set after T iterations of stochastic GDM, and η and
-µ are defined in (2). In all the experiments we fix a minibatch size of 500. We compare the following methods:
-1. Vanilla: the secondary target is ignored (ρ = 0); η and
-µ are set to 0.075 and 0.5 respectively as in (Badino,
-2016).
-2. RS: random search with ρ ∼ U(0, 4), η ∼ E(0.1) (exponential distribution with scale parameter 0.1) and
-µ ∼ U(0, 1) (Bergstra & Bengio, 2012).
-3. RTHO: real-time hyperparameter optimization with
-initial learning rate and momentum factor as in Vanilla
-and initial ρ set to 1.6 (best value obtained by gridsearch in Badino (2016)).
-4. RTHO-NT: RTHO with “null teacher,” i.e. when the
-initial values of ρ, η and µ are set to 0. We regard
-this experiment as particularly interesting: this initial
-setting, while clearly not optimal, does not require any
-background knowledge on the task at hand.
-We also tried to run F ORWARD -HG for a fixed number of
-epochs, not in real-time mode. Results are not reported
-
-Forward and Reverse Gradient-Based Hyperparameter Optimization
-
-since the method could not make any appreciable progress
-after running 24 hours on a Titan X GPU.
-Test accuracies and execution times are reported in Table 3.
-Figure 3 shows learning curves and hyperparameter evolutions for RTHO-NT. In Experiments 1 and 2 we employ a
-standard early stopping procedure on the validation accuracy, while in Experiments 3 and 4 a natural stopping time
-is given by the decay to 0 of the learning rate (see Figure 3
-left-bottom plot). In Experiments 3 and 4 we used a hyperbatch size of ∆ = 200 (see Eq. (16)) and a hyper-learning
-rate of 0.005.
-100
-
-Training and validation accuracies
-
-Validation error
-
-6
-
-80
-60
-
+0.0%
 4
 
-40
-Training
-Validation
+28.0%
+5
 
-20
+90.4%
+1
+
+89.3%
+2
+
+89.8%
+3
+
+90.0%
+4
+
+90.0%
+5
+
+(a) Multiple choice learning (MCL)
 
 2
 
-0
-0
+(b) Confident MCL (CMCL)
 
-50
+(c) Independent ensemble (IE)
 
-100
+Figure 1. Class-wise test set accuracy of each ensemble model trained by various ensemble methods. One can observe that most models
+trained by MCL and CMCL become specialists for certain classes while they are generalized in case of traditional IE.
 
-150
+plications requiring a single choice, i.e., top-1 error. This
+is because ensembles of deep neural networks tend to be
+overconfident in their predictions, and it is hard to judge a
+better solution from their outputs. To explain this in more
+detail, we evaluate the performance of ensembles of convolutional neural networks (CNNs) for the image classification task on the CIFAR-10 dataset (Krizhevsky & Hinton,
+2009). We train ensembles of 5 CNNs (two convolutional
+layers followed by a fully-connected layer) using MCL.
+We also train the models using traditional IE which trains
+each model independently under different random initializations. Figure 1 summarizes the class-wise test set accuracy of each ensemble member. In the case of MCL, most
+models become specialists for certain classes (see Figure
+1(a)), while they are generalized in the case of traditional
+IE as shown in Figure 1(c). However, as expected, each
+model trained by MCL significantly outperforms for its
+specialized classes than that trained by IE. For choosing
+a single output, similar to (Wan et al., 2013; Ciregan et al.,
+2012), one can average the output probabilities from ensemble members trained by MCL, but the corresponding
+top-1 classification error rate is often very high (e.g., see
+Table 1 in Section 5). This is because each model trained
+by MCL is overconfident for its non-specialized classes.
+To quantify this, we also compute the entropy of the predictive distribution on the test data and use this to evaluate the quality of confidence/uncertainty level. Figure 2(a)
+reports the entropy extracted from the predictive distribution of one of ensemble models trained by MCL. One can
+observe that it has low entropy as expected for its specialized classes (i.e., classes that the model has a test accuracy higher than 90%). However, even for non-specialized
+classes, it also has low entropy. Due to this, with respect
+to top-1 error rates, simple averaging of models trained by
+MCL performs much worse than that of IE. Such issue typically occurs in deep neural networks since it is well known
+that they are poor at quantifying predictive uncertainties,
+and tend to be easily overconfident (Nguyen et al., 2015).
 
-200
+3. Confident Multiple Choice Learning
+3.1. Confident Oracle Loss
+In this section, we propose a modified oracle loss for relaxing the issue of MCL described in the previous section.
+Suppose that the m-th model outputs the predictive distribution Pθm (y | x) given input x, where θm denotes the
+model parameters. Then, we define the confident oracle
+loss as the following integer programming variant of (1):
 
-250
+LC (D) = min
+m
+vi
 
-Plot of η, µ
+M
+N X
+X
 
-0.3
+vim ` (yi , Pθm (y | xi ))
 
-0
+i=1 m=1
 
-50
+!
++ β (1 − vim ) DKL (U (y) k Pθm (y | xi ))
+(3a)
+subject to
 
-150
+M
+X
 
-200
+vim = 1,
 
-250
+m=1
+vim ∈
 
-200
+{0, 1},
 
-250
+∀i,
 
-Plot of ρ
+(3b)
 
-0.3
+∀i, m
 
+(3c)
+
+where DKL denotes the Kullback-Leibler (KL) divergence,
+U (y) is the uniform distribution, β is a penalty parameter,
+and vim is a flag variable to decide the assignment of xi to
+the m-th model. By minimizing the KL divergence from
+the predictive distribution to the uniform one, the new loss
+forces the predictive distribution to be closer to the uniform
+one, i.e., zero confidence, on non-specialized data, while
+those for specialized data still follow the correct one. For
+example, for classification tasks, the most accurate model
+for each data is allowed to optimize the classification loss,
+while others are forced to give less confident predictions by
+minimizing the KL divergence. We remark that although
+we optimize the KL divergence only for non-specialized
+data, one can also do it even for specialized data to regularize each model (Pereyra et al., 2017).
+
+Confident Multiple Choice Learning
+CIFAR-10 (specialized)
+CIFAR-10 (non-specialized)
+SVHN (unseen)
+
+0.4
 0.2
 
-100
-
+0.6
+0.4
 0.2
 
-0.1
+0
+0.5
 
-0.1
+1.0
 
-η
-µ
+1.5
 
-0.0
+2.0
 
-0.0
+2.5
+
+0.6
+
+Masked
+Feature 𝐵1
+
+Shared Feature
+𝐴 + 𝐵1
+
+Masked
+Feature 𝐴1
+
+Shared Feature
+𝐵 + 𝐴1
+
++
+
+0.4
+0.2
+
+0
 0
 
-50
+Hidden
+Feature 𝐴
 
-100
+CIFAR-10 (seen)
+SVHN (unseen)
 
-150
+0.8
+Fraction
 
-200
+0.6
 
-250
+CIFAR-10 (specialized)
+CIFAR-10 (non-specialized)
+SVHN (unseen)
+
+0.8
+Fraction
+
+Fraction
+
+0.8
+
++
+
+0
+0
+
+Entropy
+
+(a) MCL
+
+0.5
+
+1.0
+
+1.5
+
+2.0
+
+2.5
+
+Entropy
+
+(b) CMCL
 
 0
 
-50
+0.5
 
-100
+1.0
 
-150
+1.5
 
-Figure 3: Learning curves and hyperparameter evolutions for
-RTHO-NT: the horizontal axis runs with the hyper-batches. Topleft: frame level accuracy on mini-batches (Training) and on a
-randomly selected subset of the validation set (Validation). Topright: validation error Eval on the same subset of the validation
-set. Bottom-left: evolution of optimizer hyperparameters η and
-µ. Bottom-right: evolution of design hyperparameter ρ.
+2.0
 
-The best results in Table 3 are very similar to those obtained in state-of-the-art recognizers using multitask learning (Badino, 2016; 2017). In spite of the small number of
-hyperparameters, random search yields results only slightly
-better than the vanilla network (the result reported in Table 3 are an average over 5 trials, with a minimum and maximum accuracy of 59.93 and 60.86, respectively). Within
-the same time budget of 300 minutes, RTHO-NT is able
-to find hyperparameters yielding a substantial improvement
-over the vanilla version, thus effectively exploiting the auxiliary task. Note that the model trained has more that
-15 × 106 parameters for a corresponding state of more than
-30 × 106 variables. To the best of our knowledge, reversemode (Maclaurin et al., 2015) or approximate (Pedregosa,
-2016) methods have not been applied to models of this size.
+2.5
 
-6. Discussion
-We studied two alternative strategies for computing the hypergradients of any iterative differentiable learning dynam-
+Entropy
 
-ics. Previous work has mainly focused on the reverse-mode
-computation, attempting to deal with its space complexity,
-that becomes prohibitive for very large models such as deep
-networks.
-Our first contribution is the definition and the application of
-forward-mode computation to HO. Our analysis suggests
-that for large models the forward-mode computation may
-be a preferable alternative to reverse-mode if the number of
-hyperparameters is small. Additionally, forward-mode is
-amenable to real-time hyperparameter updates, which we
-showed to be an effective strategy for large datasets (see
-Section 5.3). We showed experimentally that even starting
-from a far-from-optimal value of the hyperparameters (the
-null teacher), our RTHO algorithm finds good values at a
-reasonable cost, whereas other gradient-based algorithms
-could not be applied in this context.
-Our second contribution is the Lagrangian derivation of the
-reverse-mode computation. It provides a general framework to tackle hyperparameter optimization problems involving a wide class of response functions, including those
-that take into account the whole parameter optimization dynamics. We have also presented in Sections 5.1 and 5.2 two
-non-standard learning problems where we specifically take
-advantage of a constrained formulation of the HO problem.
-We close by highlighting some potential extensions of our
-framework and direction of future research. First, the relatively low cost of our RTHO algorithm could suggest to
-make it a standard tool for the optimization of real-valued
-critical hyperparameters (such as learning rates, regularization factors and error function design coefficient), in
-context where no previous or expert knowledge is available (e.g. novel domains). Yet, RTHO must be thoroughly validated on diverse datasets and with different
-models and settings to empirically asses its robustness and
-its ability to find good hyperparameter values. Second,
-in order to perform gradient-based hyperparameter optimization, it is necessary to set a descent procedure over
-the hyperparameters. In our experiments we have always
-used Adam with a manually adjusted value for the hyperlearning rate. Devising procedures which are adaptive in
-these hyper-hyperparameters is an important direction of
-future research. Third, extensions of gradient-based HO
-techniques to integer or nominal hyperparameters (such as
-the depth and the width of a neural network) require additional design efforts and may not arise naturally in our
-framework. Future research should instead focus on the integration of gradient-based algorithm with Bayesian optimization and/or with emerging reinforcement learning hyperparameter optimization approaches (Zoph & Le, 2016).
-A final important problem is to study the converge properties of RTHO. Results in Pedregosa (2016) may prove
-useful in this direction.
+(c) IE with AT
 
-Forward and Reverse Gradient-Based Hyperparameter Optimization
+Hidden
+Feature 𝐵
 
-References
-Badino, Leonardo. Phonetic context embeddings for dnnhmm phone recognition. In Proceedings of Interspeech,
-pp. 405–409, 2016.
-Badino, Leonardo. Personal communication, 2017.
-Baydin, Atilim Gunes, Pearlmutter, Barak A., Radul,
-Alexey Andreyevich, and Siskind, Jeffrey Mark. Automatic differentiation in machine learning: a survey.
-arXiv preprint arXiv:1502.05767, 2015.
-Bengio, Yoshua. Gradient-based optimization of hyperparameters. Neural computation, 12(8):1889–1900, 2000.
-Bergstra, James and Bengio, Yoshua. Random search
-for hyper-parameter optimization. Journal of Machine
-Learning Research, 13:281–305, 2012.
-Bergstra, James, Yamins, Daniel, and Cox, David D. Making a Science of Model Search: Hyperparameter Optimization in Hundreds of Dimensions for Vision Architectures. ICML, 28:115–123, 2013.
-Bergstra, James S., Bardenet, Rémi, Bengio, Yoshua, and
-Kégl, Balázs. Algorithms for hyper-parameter optimization. In Advances in Neural Information Processing Systems, pp. 2546–2554, 2011.
-Dinuzzo, Francesco, Ong, Cheng S, Pillonetto, Gianluigi,
-and Gehler, Peter V. Learning output kernels with block
-coordinate descent. In ICML, pp. 49–56, 2011.
-Domke, Justin. Generic methods for optimization-based
-modeling. In AISTATS, volume 22, pp. 318–326, 2012.
-Evgeniou, Theodoros, Micchelli, Charles A, and Pontil,
-Massimiliano. Learning multiple tasks with kernel methods. J. Mach. Learn. Res., 6:615–637, 2005.
-Fan, Yang, Tian, Fei, Qin, Tao, Bian, Jiang, and Liu,
-Tie-Yan. Learning what data to learn. arXiv preprint
-arXiv:1702.08635, 2017.
+(d) Feature sharing
 
-Hutter, Frank, Lücke, Jörg, and Schmidt-Thieme, Lars. Beyond Manual Tuning of Hyperparameters. KI - Künstliche Intelligenz, 29(4):329–337, 2015.
-Jawanpuria, Pratik, Lapin, Maksim, Hein, Matthias, and
-Schiele, Bernt. Efficient output kernel learning for multiple tasks. In Advances in Neural Information Processing
-Systems, pp. 1189–1197, 2015.
-Kang, Zhuoliang, Grauman, Kristen, and Sha, Fei. Learning with whom to share in multi-task feature learning.
-In Proceedings of the 28th International Conference on
-Machine Learning, pp. 521–528, 2011.
-Kingma, Diederik and Ba, Jimmy. Adam: A Method for
-Stochastic Optimization. arXiv:1412.6980, 2014.
-Krizhevsky, Alex and Hinton, Geoffrey. Learning multiple
-layers of features from tiny images. 2009.
-Larsen, Jan, Hansen, Lars Kai, Svarer, Claus, and Ohlsson,
-M. Design and regularization of neural networks: the
-optimal use of a validation set. In Neural Networks for
-Signal Processing, pp. 62–71. IEEE, 1996.
-LeCun, Yann.
-A Theoretical Framework for BackPropagation. In Hinton, Geoffrey and Sejnowski, Terrence (eds.), Proc. of the 1988 Connectionist models
-summer school, pp. 21–28. Morgan Kaufmann, 1988.
-Maclaurin, Dougal, Duvenaud, David K, and Adams,
-Ryan P. Gradient-based hyperparameter optimization
-through reversible learning. In ICML, pp. 2113–2122,
-2015.
-Pearlmutter, Barak A. Gradient calculations for dynamic
-recurrent neural networks: A survey. IEEE Transactions
-on Neural networks, 6(5):1212–1228, 1995.
-Pedregosa, Fabian. Hyperparameter optimization with approximate gradient. In ICML, pp. 737–746, 2016.
+Figure 2. Histogram of the predictive entropy of model trained by (a) MCL (b) CMCL and (c) IE on CIFAR-10 and SVHN test data. In
+the case of MCL and CMCL, we separate the classes of CIFAR-10 into specialized (i.e., classes that model has a class-wise test accuracy
+higher than 90%) and non-specialized (others) classes. In the case of IE, we follow the proposed method by (Lakshminarayanan et al.,
+2016): train an ensemble of 5 models with adversarial training (AT) and measure the entropy using the averaged probability, i.e.,
+averaging output probabilities from 5 models. (d) Detailed view of feature sharing between two models. Grey units indicate that they
+are currently dropped. Masked features passed to a model are all added to generate the shared features.
 
-Garofolo, John S., Lamel, Lori F., Fisher, William M., Fiscus, Jonathon G., and Pallett, David S. DARPA TIMIT
-acoustic-phonetic continous speech corpus CD-ROM.
-NIST speech disc 1-1.1. NASA STI/Recon technical report, 93, 1993.
+3.2. Stochastic Alternating Minimization for Training
+In order to minimize the confident oracle loss (3) efficiently, we use the following procedure (Guzman-Rivera
+et al., 2012), which optimizes model parameters {θm } and
+assignment variables {vim } alternatively:
+1. Fix {θm } and optimize {vim }.
+Under fixed model parameters {θm }, the objective
+(3a) is decomposable with respect to assignments
+{vim } and it is easy to find optimal {vim }.
+2. Fix
 
-Snoek, Jasper, Larochelle, Hugo, and Adams, Ryan P.
-Practical bayesian optimization of machine learning algorithms. In Advances in Neural Information Processing
-Systems, pp. 2951–2959, 2012.
+{vim }
 
-Griewank, Andreas and Walther, Andrea. Evaluating
-Derivatives: Principles and Techniques of Algorithmic
-Differentiation. Society for Industrial and Applied Mathematics, second edition, 2008.
+and optimize {θm }.
 
-Snoek, Jasper, Rippel, Oren, Swersky, Kevin, Kiros, Ryan,
-Satish, Nadathur, Sundaram, Narayanan, Patwary, Md
-Mostofa Ali, Prabhat, Mr, and Adams, Ryan P. Scalable
-Bayesian Optimization Using Deep Neural Networks. In
-ICML, pp. 2171–2180, 2015.
+Under fixed assignments {vim }, the objective (3a)
+is decomposable with respect to model parameters
+{θm }, and it requires each model to be trained independently.
+The above scheme iteratively assigns each data to a particular model and then independently trains each model only
+using its assigned data. Even though it monotonically decreases the objective, it is still highly inefficient since it
+requires training each model multiple times until assignments {vim } converge. To address the issue, we propose
+deciding assignments and update model parameters to the
+gradient directions once per each batch, similarly to (Lee
+et al., 2016). In other words, we perform a single gradientupdate on parameters in Step 2, without waiting for their
+convergence to a (local) optimum. In fact, (Lee et al., 2016)
+show that such stochastic alternating minimization works
+well for the oracle loss (1). We formally describe a detailed training procedure as the ‘version 0’ of Algorithm 1,
+and we will introduce the alternative ‘version 1’ later. This
+direction is complementary to ours, and we do not explore
+in this paper.
 
-Hutter, Frank, Hoos, Holger H., and Leyton-Brown, Kevin.
-Sequential model-based optimization for general algorithm configuration. In Int. Conf. on Learning and Intelligent Optimization, pp. 507–523. Springer, 2011.
+Algorithm 1 Confident MCL (CMCL)
+Input: Dataset D = {(xi , yi ) | xi ∈ X , yi ∈ Y} and
+penalty parameter β
+Output: Ensemble of M trained models
+repeat
+Let U (y) be a uniform distribution
+Sample random batch B ⊂ D
+for m = 1 to M do
+Compute the loss of the m-th model:
+Lm
+i ←β
 
-Swersky, Kevin, Snoek, Jasper, and Adams, Ryan P. Multitask bayesian optimization. In Advances in Neural Information Processing Systems, pp. 2004–2012, 2013.
+X
 
-Forward and Reverse Gradient-Based Hyperparameter Optimization
+DKL (U (y) k Pθm
+(y | xi ))
+c
 
-Werbos, Paul J. Backpropagation through time: what it
-does and how to do it. Proceedings of the IEEE, 78(10):
-1550–1560, 1990.
-Williams, Ronald J. and Zipser, David. A learning algorithm for continually running fully recurrent neural networks. Neural computation, 1(2):270–280, 1989.
-Zoph, Barret and Le, Quoc V.
-Neural architecture
-search with reinforcement learning. arXiv preprint
-arXiv:1611.01578, 2016.
+m6
+b =m
 
-Table 4: Test accuracy±standard deviation on CIFAR-10. Hyperparameters of MTL algorithms were validated by grid-search
-with the same experimental setting of Section 5.2. Jawanpuria
-et al. (2015)’s algorithm contains a p-norm regularizer for the task
-interaction matrix C, for p ∈ (1, 2]. The value of p used in the
-experiment is specified in the third column.
++ ` (yi , Pθm (yi | xi )) ,
 
-Dinuzzo et al. (2011)
-Jawanpuria et al. (2015)
-Jawanpuria et al. (2015)
-HMTL-S
+∀(xi , yi ) ∈ B
+
+end for
+for m = 1 to M do
+for i = 1 to |B| do
+if the m-th model has the lowest loss then
+Compute the gradient of the training loss
+` (yi , Pθm (yi | xi )) w.r.t θm
+else
+/∗ version 0: exact gradient ∗/
+Compute the gradient of the KL divergence
+βDKL (U (y) k Pθm (y | xi )) w.r.t θm
+/∗ version 1: stochastic labeling ∗/
+Compute the gradient of the cross entropy loss
+−β log Pθm (b
+yi | xi ) using ybi w.r.t θm where
+ybi ∼ U (y)
+end if
+end for
+Update the model parameters
+end for
+until convergence
+
+Confident Multiple Choice Learning
+
+3.3. Effect of Confident Oracle Loss
+Similar to Section 2.2, we evaluate the performance of the
+proposed training scheme using 5 CNNs for image classification on the CIFAR-10 dataset. As shown in Figure
+1(b), ensemble models trained by CMCL using the exact
+gradient (i.e., version 0 of Algorithm 1) become specialists for certain classes. For specialized classes, they show
+the similar performance compared to the models trained by
+MCL, i.e., minimizing the oracle loss (1), which considers
+only specialization (see Figure 1(a)). For non-specialized
+classes, ensemble members of CMCL are not overconfident, which makes it easy to pick a correct output via simple voting/averaging. We indeed confirm that each model
+trained by CMCL has not only low entropy for its specialized classes, but also exhibits high entropy for nonspecialized classes as shown in Figure 2(b).
+We also evaluate the quality of confidence/uncertainty level
+on unseen data using SVHN (Netzer et al., 2011). Somewhat surprisingly, each model trained by CMCL only using
+CIFAR-10 training data exhibits high entropy for SVHN
+test data, whereas models trained by MCL and IE are overconfident on it (see Figure 2(a) and 2(c)). We emphasize that our method can produce confident predictions significantly better than the proposed method by (Lakshminarayanan et al., 2016), which uses the averaged probability of ensemble models trained by IE to obtain high quality
+uncertainty estimates (see Figure 2(c)).
+
+4. Regularization Techniques
+In this section, we introduce advanced techniques for reducing the overconfidence and improving the performance.
+4.1. Feature Sharing
+We first propose a feature sharing scheme that stochastically shares the features among member models of CMCL
+to further address the overconfidence issue. The primary
+reason why deep learning models are overconfident is that
+they do not always extract general features from data. For
+examples, assume that some deep model only trains frogs
+and roses for classifying them. Although there might exist
+many kinds of features on their images, the model might
+make a decision based only on some specific features, e.g.,
+colors. In this case, ‘red’ apples can be classified as rose
+with high confidence. Such an issue might be more severe
+in CMCL (and MCL) compared to IE since members of
+CMCL are specialized to certain data. To address the issue,
+we suggest the feature ensemble approach that encourages
+each model to generate meaningful abstractions from rich
+features extracted from other models.
+Formally, consider an ensemble of M neural networks with
+L hidden layers. We denote the weight matrix for layer
+
+` of model m ∈ [M ] and `-th hidden feature of model
+`
+m by Wm
+and h`m , respectively. Instead of sharing the
+whole units of a hidden feature, we introduce random binary masks determining which units to be shared with other
+models. We denote the mask for layer ` from model n to
+m as σ `nm ∼ Bernoulli(λ), which has the same dimension with h`n (we use λ = 0.7 in all experiments). Then,
+the `-th hidden feature of model m with sharing (` − 1)-th
+hidden features is defined as follows:
+
+
+
+X
+`  `−1
+h`m (x) = φ Wm
+hm (x) +
+σ `nm ? h`−1
+(x) ,
+n
+n6=m
+
+where ? denotes element-wise multiplication and φ is the
+activation function. Figure 2(d) illustrates the proposed
+feature sharing scheme in an ensemble of deep neural networks. It makes each model learn more generalized features by sharing the features among them. However, one
+might expect that it might make each model overfitted due
+to the increased number of parameters that induces a single
+prediction, i.e., the statistical dependencies among outputs
+of models increase, which would hurt the ensemble effect.
+In order to handle this issue, we introduce the randomness
+in sharing across models in a similar manner to DropOut
+(Srivastava et al., 2014) using the random binary masks
+σ . In addition, we propose sharing features at lower layers
+since sharing the higher layers might overfit the overall networks more. For example, in all experiments with CNNs in
+this paper, we commonly apply feature sharing for hidden
+features just before the first pooling layer. We also remark
+that such feature sharing strategies for better generalization
+have also been investigated in the literature for different
+purposes (Misra et al., 2016; Rusu et al., 2016).
+4.2. Stochastic Labeling
+For more efficiency in minimizing the confident oracle loss,
+we also consider a noisy unbiased estimator of gradients of
+the KL divergence with Monte Carlo samples from the uniform distribution. The KL divergence from the predictive
+distribution to the uniform distribution can be written as
+follows:
+DKL (U (y) k Pθ (y | x))
+X
+U (y)
+=
+U (y) log
+Pθ (y | x)
+y
+X
+X
+=
+U (y) log U (y) −
+U (y) log Pθ (y | x).
+y
+
+y
+
+Hence, the gradient of the above KL divergence with respect to the model parameter θ becomes
+5θ DKL (U (y) k Pθ (y | x)) = −EU (y) [5θ log Pθ (y | x)].
+
+Confident Multiple Choice Learning
+
+From the above, we induce the following noisy unbiased
+estimator of gradients with Monte Carlo samples from the
+uniform distribution:
+− EU (y) [5θ log Pθ (y | x)] w −
+
+1X
+5θ log Pθ (y s | x),
+S s
+
+where y s ∼ U (y) and S is the number of samples. This
+random estimator takes samples from the uniform distribution U (y) and constructs estimates of the gradient using
+them. In other words, 5θ log Pθ (y s | x) is the gradient of
+the cross entropy loss under assigning a random label to x.
+This stochastic labeling provides efficiency in implementation/computation and stochastic regularization effects. We
+formally describe detailed procedures, as the version 1 of
+Algorithm 1.
+
+5. Experiments
+We evaluate our algorithm for both classification and
+foreground-background segmentation tasks using CIFAR10 (Krizhevsky & Hinton, 2009), SVHN (Netzer et al.,
+2011) and iCoseg (Batra et al., 2010) datasets. In all experiments, we compare the performance of CMCL with those
+of traditional IE and MCL using deep models. We provide
+the more detailed experimental setups including model architectures in the supplementary material.1
+5.1. Image Classification
+Setup. The CIFAR-10 dataset consists of 50,000 training
+and 10,000 test images with 10 image classes where each
+image consists of 32 × 32 RGB pixels. The SVHN dataset
+consists of 73,257 training and 26,032 test images.2 We
+pre-process the images with global contrast normalization
+and ZCA whitening following (Ian J. Goodfellow & Bengio, 2013; Zagoruyko & Komodakis, 2016), and do not use
+any data augmentation. Using these datasets, we train various CNNs, e.g., VGGNet (Simonyan & Zisserman, 2015),
+GoogLeNet (Szegedy et al., 2015), and ResNet (He et al.,
+2016). Similar to (Zagoruyko & Komodakis, 2016), we use
+the softmax classifier, and train each model by minimizing
+the cross-entropy loss using the stochastic gradient descent
+method with Nesterov momentum.
+For evaluation, we measure the top-1 and oracle error rates
+on the test dataset. The top-1 error rate is calculated by averaging output probabilities from all models and predicting
+the class of the highest probability. The oracle error rate is
+the rate of classification failure over all outputs of individual ensemble members for a given input, i.e., it measures
+whether none of the members predict the correct class for
+1
+
+Our code is available at https://github.com/
+chhwang/cmcl.
+2
+We do not use the extra SVHN dataset for training.
+
+Ensemble
+Method
+IE
+MCL
+CMCL
+
+Feature
+Sharing
+X
+X
+
+Stochastic
+Labeling
+X
+
+Oracle
+Error Rate
+10.65%
+4.40%
+4.49%
+5.12%
+3.32%
+
+Top-1
+Error Rate
+15.34%
+60.40%
+15.65%
+14.83%
+14.78%
+
+Table 1. Classification test set error rates on CIFAR-10 using various ensemble methods.
+
+an input. While a lower oracle error rate suggests higher
+diversity, a lower oracle error rate does not always bring
+a higher top-1 accuracy as this metric does not reveal the
+level of overconfidence of each model. By collectively
+measuring the top-1 and oracle error rates, one can grasp
+the level of specialization and confidence of a model.
+Contribution by each technique. Table 1 validates contributions of our suggested techniques under comparison
+with other ensemble methods IE and MCL. We evaluate an
+ensemble of five simple CNN models where each model
+has two convolutional layers followed by a fully-connected
+layer. We incrementally apply our optimizations to gauge
+the stepwise improvement by each component. One can
+note that CMCL significantly outperforms MCL in the top1 error rate even without feature sharing or stochastic labeling while it still provides a comparable oracle error rate.
+By sharing the 1st ReLU activated features, the top-1 error rates are improved compared to those that employ only
+confident oracle loss. Stochastic labeling further improves
+both error rates. This implies that stochastic labeling not
+only reduces computational burdens but also provides regularization effects.
+Overlapping. As a natural extension of CMCL, we also
+consider picking K specialized models instead of having
+only one specialized model, which was investigated for
+original MCL (Guzman-Rivera et al., 2012; Lee et al.,
+2016). This
+PMis easily achieved by modifying the constraint
+(3b) as m=1 vim = K, where K is an overlap parameter that controls training data overlap between the models.
+This simple but natural scheme brings extra gain in top-1
+performance by generalizing each model better. Table 2
+compares the performance of various ensemble methods
+with varying values of K. Under the choice of K = 4,
+CMCL of 10 CNNs provides 9.13% relative reduction in
+the top-1 error rates from the corresponding IE. Somewhat
+interestingly, IE has similar error rates on ensembles of
+both 5 and 10 CNNs, which implies that the performance
+of CMCL might be impossible to achieve using IE even if
+one increases the number of models in IE.
+Large-scale CNNs. We now evaluate the performance of
+our ensemble method when it is applied to larger-scale
+CNN models for image classification tasks on CIFAR-10
+
+Confident Multiple Choice Learning
+
+Ensemble Method
+
+K
+
+IE
+
+1
+2
+3
+4
+1
+2
+3
+4
+
+MCL
+
+CMCL
+
+Ensemble Size M = 5
+Oracle Error Rate Top-1 Error Rate
+10.65%
+15.34%
+4.40%
+60.40%
+3.75%
+20.66%
+4.73%
+16.24%
+5.83%
+15.65%
+3.32%
+14.78%
+3.69%
+14.25% (-7.11%)
+4.38%
+14.38%
+5.82%
+14.49%
+
+Ensemble Size M = 10
+Oracle Error Rate Top-1 Error Rate
+9.26%
+15.34%
+0.00%
+76.88%
+1.46%
+49.31%
+1.52%
+22.63%
+1.82%
+17.61%
+1.96%
+14.28%
+1.22%
+13.95%
+1.53%
+14.00%
+1.73%
+13.94% (-9.13%)
+
+Table 2. Classification test set error rates on CIFAR-10 with varying values of the overlap parameter K explained in Section 5.1. We
+use CMCL with both feature sharing and stochastic labeling. Boldface values in parentheses represent the relative reductions from the
+best results of MCL and IE.
+
+Model Name
+
+VGGNet-17
+
+GoogLeNet-18
+
+ResNet-20
+
+Ensemble
+Method
+- (single)
+IE
+MCL
+CMCL
+- (single)
+IE
+MCL
+CMCL
+- (single)
+IE
+MCL
+CMCL
 
 CIFAR-10
+Oracle Error Rate Top-1 Error Rate
+10.65%
+10.65%
+3.27%
+8.21%
+2.52%
+45.58%
+2.95%
+7.83% (-4.63%)
+10.15%
+10.15%
+3.37%
+7.97%
+2.41%
+52.03%
+2.78%
+7.51% (-5.77%)
+14.03%
+14.03%
+3.83%
+10.18%
+2.47%
+53.37%
+2.79%
+8.75% (-14.05%)
 
-p
+SVHN
+Oracle Error Rate Top-1 Error Rate
+5.22%
+5.22%
+1.99%
+4.10%
+1.45%
+45.30%
+1.65%
+3.92% (-4.39%)
+4.59%
+4.59%
+1.78%
+3.60%
+1.39%
+37.92%
+1.36%
+3.44% (-4.44%)
+5.31%
+5.31%
+1.82%
+3.94%
+1.29%
+40.91%
+1.42%
+3.68% (-6.60%)
 
-69.96±1.85
-70.30±1.05
-70.96±1.04
-71.62±1.34
+Table 3. Classification test set error rates on CIFAR-10 and SVHN for various large-scale CNN models. We train an ensemble of 5
+models, and use CMCL with both feature sharing and stochastic labeling. Boldface values in parentheses indicate relative error rate
+reductions from the best results of MCL and IE.
 
-2
-4/3
+and SVHN datasets. Specifically, we test VGGNet (Simonyan & Zisserman, 2015), GoogLeNet (Szegedy et al.,
+2015), and ResNet (He et al., 2016). We share the nonlinear activated features right before the first pooling layer,
+i.e., the 6th, 2nd, and 1st ReLU activations for ResNet
+with 20 layers, VGGNet with 17 layers, and GoogLeNet
+with 18 layers, respectively. This choice is for maximizing the regularization effect of feature sharing while
+minimizing the statistical dependencies among the ensemble models. For all models, we choose the best hyperparameters for confident oracle loss among the penalty parameter β ∈ {0.5, 0.75, 1, 1.25, 1.5} and the overlapping
+parameter K ∈ {2, 3, 4}. Table 3 shows that CMCL consistently outperforms all baselines with respect to the top-1
+error rate while producing comparable oracle error rates to
+those of MCL. We also apply the feature sharing to IE as reported in Figure 4(a). Even though the feature sharing also
+improves the performance of IE, CMCL still outperforms
+IE: CMCL provides 6.11% relative reduction of the top-1
 
-A. Empirical Validation Of Complexity
-Analysis
+error rate from the IE with feature sharing under the choice
+of M = 10. We also remark that IE with feature sharing has similar error rates as the ensemble size increases,
+while CMCL does not (i.e., the gain is more significant for
+CMCL). This implies that feature sharing is more effectively working for CMCL.
+5.2. Foreground-Background Segmentation
+In this section, we evaluate if ensemble models trained with
+CMCL produce high-quality segmentation of foreground
+and background of an image with the iCoseg dataset. The
+foreground-background segmentation is formulated as a
+pixel-level classification problem with 2 classes, i.e., 0
+(background) or 1 (foreground). To tackle the problem, we
+design fully convolutional networks (FCNs) model (Long
+et al., 2015) based on the decoder architecture presented in
+(Radford et al., 2016). The dataset consists of 38 groups of
+related images with pixel-level ground truth on foregroundbackground segmentation of each image. We only use im-
 
-140
-120
-100
-80
-60
-40
-20
-0
+Confident Multiple Choice Learning
 
-Time requirements
-Froward­HG
-Reverse­HG
+Input
 
-Memory requirements 5000
-Memory usage (Mb)
+IE model 1
 
-Running time (s)
+IE model 2
 
-To complement the complexity analysis in Section 4, we
-study empirically the running time per hyper-iteration and
-space requirements of Reverse-HG and Forward-HG algorithms. We trained three layers feed-forward neural networks on MNIST dataset with SGDM, for T = 1000 iterations. In a first set of experiments (Figure 4, left) we
-fixed the number of weights at 199210 and optimized the
-learning rate, momentum factor and a varying number of
-example weights in the training error, similar to the experiment in Section 5.1. As expected, the running time of
-Reverse-HG is essentially constant, while that of ForwardHG increases linearly. On the other hand, when fixing the
-number of hyperparameters (learning rate and momentum
-factor), the space complexity of Reverse-HG grows linearly
-with respect to the number of parameters (Figure 4, right),
-while that of Forward-HG remains constant.
+Prediction error rate:
 
-4000
-3000
-2000
-1000
+10.28 %
 
+10.99 %
+
+23.81 %
+
+8.34 %
+
+38.17 %
+
+8.71 %
+
+Prediction error rate:
+
+8.96 %
+
+9.79 %
+
+6.78 %
+
+34.12 %
+
+7.82 %
+
+33.39 %
+
+Ground truth
+
+CMCL model 1 CMCL model 2 MCL model 1 MCL model 2
+
+Figure 3. Prediction results of foreground-background segmentation for a few sample images. A test error rate is shown below each
+prediction. The ensemble models trained by CMCL and MCL generate high-quality predictions specialized for certain images.
+
+9.72
+
+9.5
+9.02
+
+9.0
+
+9
+
+8.75
+
+8.5
+
+13.5
+
+13.0
+
+MCL
+CMCL
+IE
+
+8.45
+
+12.5
 5
 
 10
 
-15
+Ensemble size M
 
-20
+Oracle error rate (%)
 
-Number of hyperparameters
+Top-1 error rate (%)
 
-200000 400000 600000
+10.0
 
-0
+14
 
-Number of weights
+14.0
+Top-1 error rate (%)
 
-Figure 4: Time (left) and space (right) requirements for the computation of the hypergradient with Forward-HG and Reverse-HG
-algorithms.
+CMCL
+IE with FS
+IE without FS
 
-Both methods improve over STL and NMTL but perform
-slightly worse than HMTL-S. The task interaction matrix
-is treated as a model parameter by these algorithms, which
-may lead to overfitting for such a small training set, further
-highlighting the advantages of considering C as an hyperparameter. Computation times are comparable in the order
-of 2-3 hours.
-Other approaches (e.g. (Kang et al., 2011) tackle the same
-problem in a similar framework, but a complete analysis of
-MTL is beyond the scope of this paper.
-Phone Classification
-In this section, we present additional experimental results on the phone classification task discussed in Section 5.3. We considered a sequential model-based optimization with Gaussian processes, using the Python package BayesianOptimization found at https://github.
-com/fmfn/BayesianOptimization/. We set the
-following definition intervals for the hyperparameters: η ∈
-[10−5 , 1], µ ∈ [0, 0.999] and ρ ∈ [0, 4]; we used expected improvement as acquisition function and initialized
-the method with 5 randomly chosen points. In Table 5 we
-report the validation accuracies at different times for this
-experiment (SMBO) as well as for those presented in Section 5.3.
-Table 5: Validation accuracy at different times and final test accuracy for phone classification experiments for various hyperparameter optimization methods.
+10.2
 
-B. Experiments
-Learning Task Interactions
-In Table 4, we report comparative results obtained with
-two state-of-the-art multitask learning methods (Dinuzzo
-et al. (2011) and Jawanpuria et al. (2015)) on the CIFAR10 dataset.
+1
 
-RS
-SMBO
-RHTO-NT
-RHTO
+13
+12
+11
+10
 
-50 min
+2
 
-100 min
+3
 
-300 min
+4
 
-Final TA
+5
 
-60.64
-60.83
-56.51
-59.45
+Ensemble size M
 
-60.86
-60.83
-60.91
-61.21
+(a)
 
-61.23
-61.39
-62.11
-62.88
+MCL
+CMCL
+IE
 
-60.36
-60.91
-61.38
-61.97
+(b)
 
-Forward and Reverse Gradient-Based Hyperparameter Optimization
+1
 
-C. On learning rate initialization in
-RTHO-NT
-In the RTHO-NT setting presented in Section 5.3, the hyperparameters are initially set to zero. While λ = 0 is,
-in general, a far from optimal point in the hyperparameter
-space, it has the advantage of not requiring any previous
-knowledge of the task at hand.
-Here we provide some insights on this particular initialization strategy. For simplicity, we consider the case that the
-learning dynamics is stochastic gradient descent, that is,
-Φt (wt−1 , η) = wt−1 − ηJt (wt−1 ). In the following, we
-observe that the first update on the learning rate performed
-by RTHO-NT is proportional to the scalar product between
-the gradient of the validation error at w0 and the average
-of stochastic gradients of the training error over the minibatches composing the first hyper-batch. Indeed, the partial
-derivatives of the learning dynamics (see Equation (11)) are
-given by
-At = I − ηHt (w0 ) = I;
+2
 
-Bt = −[∇Jt (w0 )]| ,
+3
 
-where the gradient is regarded as a row vector. Consequently,
-Zt = At Zt−1 + Bt = −
+4
 
-t
-X
-[∇Js (w0 )]T
-s=1
+5
 
-and the first hypergradient w.r.t. η at time step t = ∆,
-where ∆ is the hyper-batch size, is
-∇f∆ (η) = −∇E(w0 )
+Ensemble size M
 
-∆
-X
+(c)
 
-[∇Js (w0 )| .
+Figure 4. (a) Top-1 error rate on CIFAR-10. We train an ensemble of M ResNets with 20 layers, and apply feature sharing (FS) to IE
+and CMCL. (b) Top-1 error rate and (c) oracle error rate on iCoseg by varying the ensemble sizes. The ensemble models trained by
+CMCL consistently improves the top-1 error rate over baselines.
 
-s=1
+ages that are larger than 300 × 500 pixels. For each class,
+we randomly split 80% and 20% of the data into training
+and test sets, respectively. We train on 75 × 125 resized
+images using the bicubic interpolation (Keys, 1981). Similar to (Guzman-Rivera et al., 2012; Lee et al., 2016), we
+initialize the parameters of FCNs with those trained by IE
+for MCL and CMCL. For all experiments, CMCL is used
+with both feature sharing and stochastic labeling.
+Similar to (Guzman-Rivera et al., 2012), we define the percentage of incorrectly labeled pixels as prediction error
+rate. We measure the oracle error rate (i.e., the lowest error
+rate over all models for a given input) and the top-1 error
+rate. The top-1 error rate is measured by following the predictions of the member model that has a lower pixel-wise
+entropy, i.e., picking the output of a more confident model.
+For each ensemble method, we vary the number of ensemble models and measure the oracle error rate and test error
+rate. Figure 4(b) and 4(c) show both top-1 and oracle error rates for all ensemble methods. We remark that the ensemble models trained by CMCL consistently improves the
+top-1 error rate over baselines. In an ensemble of 5 models,
+we find that CMCL achieve up to 6.77% relative reduction
 
-Thus, the smaller the angle between the validation error
-gradient and the (unnormalized) stochastic training error
-gradient, the bigger the update. In particular, if the angle
-is negative, the learning rate would become negative, suggesting that w0 may be a bad parameter initialization point.
+in the top-1 error rate from the corresponding IE. As shown
+in Figure 3, an individual model trained by CMCL generates high-quality solutions by specializing itself in specific images (e.g., model 1 is specialized for ‘lobster’ while
+model 2 is specialized for ‘duck’) while each model trained
+by IE does not.
+
+6. Conclusion
+This paper proposes CMCL, a novel ensemble method of
+deep neural networks that produces diverse/plausible confident prediction of high quality. To this end, we address
+the over-confidence issues of MCL, and propose a new
+loss, architecture and training method. In our experiments,
+CMCL outperforms not only the known MCL, but also the
+traditional IE, with respect to the top-1 error rates in classification and segmentation tasks. The recent trend in the
+deep learning community tends to make models bigger and
+wider. We believe that our new ensemble approach brings a
+refreshing angle for developing advanced large-scale deep
+neural networks in many related applications.
+
+Confident Multiple Choice Learning
+
+Acknowledgements
+This work was supported in part by the ICT R&D Program
+of MSIP/IITP, Korea, under [2016-0-00563, Research on
+Adaptive Machine Learning Technology Development for
+Intelligent Autonomous Digital Companion], R0190-162012, [High Performance Big Data Analytics Platform Performance Acceleration Technologies Development], and
+by the National Research Council of Science & Technology (NST) grant by the Korea government (MSIP) (No.
+CRC-15-05-ETRI).
+
+References
+Batra, Dhruv, Kowdle, Adarsh, Parikh, Devi, Luo, Jiebo,
+and Chen, Tsuhan. icoseg: Interactive co-segmentation
+with intelligent scribble guidance. In Computer Vision
+and Pattern Recognition (CVPR), pp. 3169–3176. IEEE,
+2010.
+Batra, Dhruv, Yadollahpour, Payman, Guzman-Rivera, Abner, and Shakhnarovich, Gregory. Diverse m-best solutions in markov random fields. In European Conference
+on Computer Vision (ECCV), pp. 1–16. Springer, 2012.
+Breiman, Leo. Bagging predictors. Machine learning, 24
+(2):123–140, 1996.
+Ciregan, Dan, Meier, Ueli, and Schmidhuber, Jürgen.
+Multi-column deep neural networks for image classification. In Computer Vision and Pattern Recognition
+(CVPR), pp. 3642–3649. IEEE, 2012.
+
+multiple structured outputs. In Advances in neural information processing systems (NIPS), pp. 1799–1807,
+2012.
+Guzman-Rivera, Abner, Kohli, Pushmeet, Batra, Dhruv,
+and Rutenbar, Rob A. Efficiently enforcing diversity
+in multi-output structured prediction. In International
+Conference on Artificial Intelligence and Statistics (AISTATS), volume 2, pp. 3, 2014.
+He, Kaiming, Zhang, Xiangyu, Ren, Shaoqing, and Sun,
+Jian. Deep residual learning for image recognition.
+In Computer Vision and Pattern Recognition (CVPR),
+2016.
+Huang, Liang and Chiang, David. Better k-best parsing.
+In Proceedings of the Ninth International Workshop on
+Parsing Technology, pp. 53–64. Association for Computational Linguistics, 2005.
+Ian J. Goodfellow, David Warde-Farley, Mehdi Mirza
+Aaron Courville and Bengio, Yoshua. Maxout networks. In International Conference on Machine Learning (ICML), pp. 1319–1327, 2013.
+Ioffe, Sergey and Szegedy, Christian. Batch normalization:
+Accelerating deep network training by reducing internal
+covariate shift. In International Conference on Machine
+Learning (ICML), pp. 448–456, 2015.
+Jacobs, Robert A, Jordan, Michael I, Nowlan, Steven J, and
+Hinton, Geoffrey E. Adaptive mixtures of local experts.
+Neural computation, 1991.
+
+Collins, Michael and Koo, Terry. Discriminative reranking
+for natural language parsing. Computational Linguistics,
+31(1):25–70, 2005.
+
+Keys, Robert. Cubic convolution interpolation for digital image processing. IEEE transactions on acoustics,
+speech, and signal processing, 29(6):1153–1160, 1981.
+
+Dey, Debadeepta, Ramakrishna, Varun, Hebert, Martial,
+and Andrew Bagnell, J. Predicting multiple structured
+visual interpretations. In International Conference on
+Computer Vision (ICCV), pp. 2947–2955, 2015.
+
+Kingma, Diederik and Ba, Jimmy. Adam: A method for
+stochastic optimization. In International Conference on
+Learning Representations (ICLR), 2015.
+
+Domingos, Pedro. Bayesian averaging of classifiers and
+the overfitting problem. In International Conference on
+Machine Learning (ICML), volume 2000, pp. 223–230,
+2000.
+Everingham, Mark, Van Gool, Luc, Williams, Christopher KI, Winn, John, and Zisserman, Andrew. The pascal visual object classes (voc) challenge. International
+journal of computer vision, 88(2):303–338, 2010.
+Freund, Yoav, Schapire, Robert, and Abe, N. A short introduction to boosting. Journal-Japanese Society For Artificial Intelligence, 14(771-780):1612, 1999.
+Guzman-Rivera, Abner, Batra, Dhruv, and Kohli, Pushmeet. Multiple choice learning: Learning to produce
+
+Krizhevsky, Alex and Hinton, Geoffrey. Learning multiple
+layers of features from tiny images. 2009.
+Krizhevsky, Alex, Sutskever, Ilya, and Hinton, Geoffrey E.
+Imagenet classification with deep convolutional neural
+networks. In Advances in neural information processing
+systems (NIPS), pp. 1097–1105, 2012.
+Lakshminarayanan, Balaji, Pritzel, Alexander, and Blundell, Charles. Simple and scalable predictive uncertainty
+estimation using deep ensembles. NIPS Workshop on
+Bayesian Deep Learning, 2016.
+Lee, Stefan, Purushwalkam, Senthil, Cogswell, Michael,
+Crandall, David, and Batra, Dhruv. Why m heads are
+better than one: Training a diverse ensemble of deep networks. arXiv preprint arXiv:1511.06314, 2015.
+
+Confident Multiple Choice Learning
+
+Lee, Stefan, Prakash, Senthil Purushwalkam Shiva,
+Cogswell, Michael, Ranjan, Viresh, Crandall, David,
+and Batra, Dhruv. Stochastic multiple choice learning for
+training diverse deep ensembles. In Advances in neural
+information processing systems (NIPS), pp. 2119–2127,
+2016.
+
+Simonyan, Karen and Zisserman, Andrew. Very deep convolutional networks for large-scale image recognition. In
+International Conference on Learning Representations
+(ICLR), 2015.
+
+Lin, Min, Chen, Qiang, and Yan, Shuicheng. Network in
+network. In International Conference on Learning Representations (ICLR), 2014a.
+
+Srivastava, Nitish, Hinton, Geoffrey E, Krizhevsky, Alex,
+Sutskever, Ilya, and Salakhutdinov, Ruslan. Dropout:
+a simple way to prevent neural networks from overfitting. Journal of Machine Learning Research, 15(1):
+1929–1958, 2014.
+
+Lin, Tsung-Yi, Maire, Michael, Belongie, Serge, Hays,
+James, Perona, Pietro, Ramanan, Deva, Dollár, Piotr, and
+Zitnick, C Lawrence. Microsoft coco: Common objects
+in context. In European Conference on Computer Vision
+(ECCV), pp. 740–755. Springer, 2014b.
+
+Szegedy, Christian, Liu, Wei, Jia, Yangqing, Sermanet,
+Pierre, Reed, Scott, Anguelov, Dragomir, Erhan, Dumitru, Vanhoucke, Vincent, and Rabinovich, Andrew.
+Going deeper with convolutions. In Computer Vision and
+Pattern Recognition (CVPR), 2015.
+
+Long, Jonathan, Shelhamer, Evan, and Darrell, Trevor.
+Fully convolutional networks for semantic segmentation.
+In Computer Vision and Pattern Recognition (CVPR),
+pp. 3431–3440, 2015.
+
+Wan, Li, Zeiler, Matthew D., Zhang, Sixin, LeCun, Yann,
+and Fergus, Rob. Regularization of neural networks using dropconnect. In International Conference on Machine Learning (ICML), pp. 1058–1066, 2013.
+
+Misra, Ishan, Shrivastava, Abhinav, Gupta, Abhinav, and
+Hebert, Martial. Cross-stitch networks for multi-task
+learning. In Computer Vision and Pattern Recognition
+(CVPR), pp. 3994–4003, 2016.
+
+Zagoruyko, Sergey and Komodakis, Nikos. Wide residual networks. In British Machine Vision Conference
+(BMVC), 2016.
+
+Netzer, Yuval, Wang, Tao, Coates, Adam, Bissacco,
+Alessandro, Wu, Bo, and Ng, Andrew Y. Reading digits in natural images with unsupervised feature learning.
+NIPS Workshop on Deep Learning and Unsupervised
+Feature Learning, 2011(2):5, 2011.
+Nguyen, Anh, Yosinski, Jason, and Clune, Jeff. Deep neural networks are easily fooled: High confidence predictions for unrecognizable images. In Computer Vision
+and Pattern Recognition (CVPR), pp. 427–436, 2015.
+Park, Dennis and Ramanan, Deva. N-best maximal decoders for part models. In International Conference on
+Computer Vision (ICCV), pp. 2627–2634. IEEE, 2011.
+Pereyra, Gabriel, Tucker, George, Chorowski, Jan, Kaiser,
+Łukasz, and Hinton, Geoffrey. Regularizing neural networks by penalizing confident output distributions. In
+International Conference on Learning Representations
+(ICLR), 2017.
+Radford, Alec, Metz, Luke, and Chintala, Soumith. Unsupervised representation learning with deep convolutional
+generative adversarial networks. In International Conference on Learning Representations (ICLR), 2016.
+Rusu, Andrei A, Rabinowitz, Neil C, Desjardins, Guillaume, Soyer, Hubert, Kirkpatrick, James, Kavukcuoglu,
+Koray, Pascanu, Razvan, and Hadsell, Raia. Progressive neural networks. arXiv preprint arXiv:1606.04671,
+2016.
 
 

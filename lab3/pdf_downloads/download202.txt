@@ -1,947 +1,2039 @@
-Input Switched Affine Networks: An RNN Architecture Designed for
-Interpretability
-
-Jakob N. Foerster * 1 Justin Gilmer * 2 Jascha Sohl-Dickstein 3 Jan Chorowski 4 David Sussillo 3
+Conditional Accelerated Lazy Stochastic Gradient Descent
+Guanghui Lan * 1 Sebastian Pokutta * 1 Yi Zhou * 1 Daniel Zink * 1
 
 Abstract
-There exist many problem domains where the
-interpretability of neural network models is essential for deployment. Here we introduce a recurrent architecture composed of input-switched
-affine transformations – in other words an RNN
-without any explicit nonlinearities, but with inputdependent recurrent weights. This simple form
-allows the RNN to be analyzed via straightforward linear methods: we can exactly characterize
-the linear contribution of each input to the model
-predictions; we can use a change-of-basis to disentangle input, output, and computational hidden unit subspaces; we can fully reverse-engineer
-the architecture’s solution to a simple task. Despite this ease of interpretation, the input switched
-affine network achieves reasonable performance
-on a text modeling tasks, and allows greater computational efficiency than networks with standard
-nonlinearities.
+
+Compared to most other first-order methods, such as e.g.,
+gradient descent algorithms and accelerated gradient algorithms (Nesterov, 1983; 2004), the CG method is computationally cheaper in some cases, since it only requires the
+solution of a linear optimization subproblem (3) rather than
+an often costly projection onto the feasible region X.
+
+In this work we introduce a conditional accelerated lazy stochastic gradient descent algorithm
+with optimal number of calls to a stochastic firstorder oracle and convergence rate O( "12 ) improving over the projection-free, Online Frank-Wolfe
+based stochastic gradient descent of (Hazan and
+Kale, 2012) with convergence rate O( "14 ).
 
 1. Introduction
-1.1. The importance of interpretable machine learning
-As neural networks move into applications where the outcomes of human lives depend on their decisions, it is increasingly crucial that we are able to interpret the decisions
-they make. Indeed, the European Union is considering legislation with a clause that asserts that individuals have ’rights
-to explanation’, i.e. individuals should be able to understand how algorithms make decisions about them (Council
-of European Union, 2016). Example problem domains re*
-
-Equal contribution 1 This work was performed as an intern
-at Google Brain 2 Work done as a member of the Google Brain
-Residency program (g.co/brainresidency) 3 Google Brain,
-Mountain View, CA, USA 4 Work performed when author was
-a visiting faculty at Google Brain. Correspondence to: Jakob
-N. Foerster <jakob.foerster@cs.ox.ac.uk>, David Sussillo <sussillo@google.com>.
-th
-
-Proceedings of the 34 International Conference on Machine
-Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017 by
-the author(s).
-
-quiring interpretable ML include self-driving cars (Bojarski
-et al., 2016), air traffic control (Katz et al., 2017), power
-grid control (Siano et al., 2012), hiring and promotion decisions while preventing bias (Scarborough & Somers, 2006),
-automated sentencing decisions in US courts (Tashea, 2017;
-Berk et al., 2017), and medical diagnosis (Gulshan et al.,
-2016). For many of these applications, practitioners will not
-adopt ML models without fully understanding what drives
-their predictions, including understanding when and how
-these models fail (Ching et al., 2017; Deo, 2015).
-1.2. Post hoc analysis
-One approach to interpreting neural networks is to train
-the network as normal, and then apply analysis techniques
-after training. Often this approach yields systems that perform extremely well, but where interpretability is challenging. For example, Sussillo & Barak (2013) used linearization and nonlinear dynamical systems theory to understand
-RNNs solving a set of simple but varied tasks. Karpathy
-et al. (2015) analyzed an LSTM (Hochreiter & Schmidhuber, 1997) trained on a character-based language modeling
-task. They were able to break down LSTM language model
-errors into classes, such as e.g., “rare word” errors. Concurrently with our submission, Murdoch & Szlam (2017)
-decomposed LSTM outputs using telescoping sums of statistics computed from memory cells at different RNN steps.
-The decomposition is exact, but not unique and the authors
-justify it by demonstrating good performance of decision
-rules formed using the computed cell statistics.
-The community is also interested in post hoc interpretation
-of feed-forward networks. Examples include the use of
-linear probes in Alain & Bengio (2016), and a variety of
-techniques (most driven by back-propagation) to assign
-credit for activations to specific inputs or input patterns in
-feed-forward networks (Zeiler et al., 2010; Le et al., 2012;
-Mordvintsev et al., 2015).
-1.3. Building interpretability into the architecture
-A second approach is to build a neural network where interpretability is an explicit design constraint. In this approach,
-a typical outcome is a system that can be better understood,
-but at the cost of reduced performance. Model classes whose
-
-Interpretable RNNs with Input Switched Affine Networks
-
-decisions are naturally interpretable include logistic regression (Freedman, 2009), decision trees (Quinlan, 1987), and
-support vector machines with simple (e.g. linear) kernels
-(Andrew, 2013).
-In this work we follow this second approach and build interpretability into our network model, while maintaining
-good, though not always state-of-the-art, performance for
-the tasks we study. We focus on the commonly studied
-task of character based language modeling. We develop
-and analyze a model trained on a one-step-ahead prediction task of the Text8 dataset, which is 10 million characters of Wikipedia text (Mahoney, 2011), on the Billion
-Word Benchmark (Chelba et al., 2013), and finally on a toy
-multiple parentheses counting task which we fully reverse
-engineer.
-1.4. Switched affine systems
-The model we introduce is an Input Switched Affine Network (ISAN), where the input determines the switching
-behavior by selecting a transition matrix and bias as a function of that input, and there is no nonlinearity. Linear timevarying systems are standard material in undergraduate electrical engineering text books, and are closely related to our
-technique.
-Although the ISAN is deterministic, probabilistic versions of
-switching linear models with discrete latent variables have
-a history in the context of probabilistic graphical models. A
-recent example is the switched linear dynamical system in
-(Linderman et al., 2016). Focusing on language modeling,
-(Belanger & Kakade, 2015) defined a probabilistic linear
-dynamical system (LDS) as a generative language model
-for creating context-dependent token embeddings and then
-used steady-state Kalman filtering for inference over token
-sequences. They used singular value decomposition and
-discovered that the right and left singular vectors were semantically and syntactically related. A critical difference
-between the ISAN and the LDS is that the ISAN weight
-matrices are input token dependent (while the biases of both
-models are input dependent).
-Multiplicative neural networks (MRNNs) were proposed
-precisely for character based language modeling in
-(Sutskever et al., 2011; Martens & Sutskever, 2011). The
-MRNN architecture is similar to our own, in that the dynamics matrix switches as a function of the input character.
-However, the MRNN relied on a tanh nonlinearity, while
-the ISAN is explicitly linear. It is this property of our model
-which makes it both amenable to analysis, and computationally efficient.
-The Observable Operator Model (OOM) (Jaeger, 2000) is
-similar to the ISAN in that the OOM updates a latent state
-using a separate transition matrix for each input symbol
-
-and performs probabilistic sequence modeling. Unlike the
-ISAN, the OOM requires that a linear projection of the hidden state corresponds to a normalized sequence probability.
-This imposes strong constraints on both the model parameters and the model dynamics, and restricts the choice of
-training algorithms. In contrast, the ISAN applies an affine
-readout to the hidden state to obtain logits, which are then
-pushed through the softmax function to obtain probabilities.
-Therefore no constraints need to be imposed on the ISAN’s
-parameters and training is easy using backprop. Lastly, the
-ISAN is formulated as an affine, rather than linear model.
-While this doesn’t change the class of processes that can be
-modeled, it stabilizes training and greatly enhances interpretability, facilitating the analysis in Section 3.3.
-1.5. Paper structure
-In what follows, we define the ISAN architecture, demonstrate its performance on the one-step-ahead prediction task,
-and then analyze the model in a multitude of ways, most of
-which would be currently difficult or impossible to accomplish with modern nonlinear recurrent architectures.
-
-2. Methods
-2.1. Model definition
-In what follows Wx and bx respectively denote a transition
-matrix and a bias vector for a specific input x, the symbol
-xt is the input at time t, and ht is the hidden state at time t.
-Our ISAN model is defined as
-ht = Wxt ht−1 + bxt .
+The conditional gradient method (also known as: FrankWolfe algorithm) proposed in (Frank and Wolfe, 1956),
+gained much popularity in recent years due to its simple
+projection-free scheme and fast practical convergence rates.
+We consider the basic convex programming (CP) problem
+f ⇤ := min f (x),
 
 (1)
 
-The network also learns an initial hidden state h0 . We emphasize the intentional absence of any nonlinear activation
-function.
-2.2. Character level language modeling with ISAN
-We trained RNNs on the Text8 Wikipedia dataset and the billion word benchmark (BWB), for one-step-ahead character
-prediction. The Text8 dataset consists only of the 27 characters ‘a’-‘z’ and ‘_’ (space). The BWB dataset consist of
-Unicode text and was modelled as a sequence of bytes (256
-discrete tokens) that formed the UTF8-encoded data. Given
-a character sequence of x1 , ..., xt , the RNNs are trained to
-minimize the cross-entropy between the true next character,
-and the output prediction. We map from the hidden state,
-ht , into a logit space via an affine map. The probabilities
-are computed as
-p (xt+1 ) = softmax (lt )
-lt = Wro ht + bro ,
+x2X
+
+where X ✓ Rn is a closed convex set and f : X ! R is a
+smooth convex function such that 9L > 0,
+kf 0 (x)
+
+f 0 (y)k⇤  Lkx
+
+yk, 8 x, y 2 X.
 
 (2)
+
+The classic conditional gradient (CG) method solves (1) iteratively by minimizing a series of linear approximations of f
+over the feasible set X. More specifically, given xk 1 2 X
+at the k-th iteration, it updates xk according to the following
+steps:
+1) Call the first-order (FO) oracle to compute
+(f (xk 1 ), f 0 (xk 1 )) and set pk = f 0 (xk 1 ).
+2) Call the linear optimization (LO) oracle to compute
 (3)
 
-where Wro and bro are the readout weights and biases,
-and lt is the logit vector. For the Text8 dataset, we split
+yk 2 argminx2X hpk , xi.
+3) Set xk = (1
 
-Interpretable RNNs with Input Switched Affine Networks
-Table 1. The ISAN has similar performance to other RNN architectures on the Text8 dataset. Performance of RNN architectures
-on Text8 one-step-ahead prediction, measured as cross-entropy
-loss on a held-out test set, in bits per character. The loss is shown
-as a function of the maximum number of parameters a model is
-allowed. The values reported for all other architectures are taken
-from (Collins et al., 2016).
+k )xk 1
 
-Parameter count
++
 
-8e4
+k yk
 
-3.2e5
+for some
 
-1.28e6
+k
 
-RNN
-IRNN
-GRU
-LSTM
-ISAN
+2 [0, 1].
 
-1.88
-1.89
-1.83
-1.85
-1.92
+*
 
-1.69
-1.71
-1.66
-1.68
-1.71
+Equal contribution 1 ISyE, Georgia Institute of Technology, Atlanta, GA. Correspondence to: Daniel Zink
+<daniel.zink@gatech.edu>.
+Proceedings of the 34 th International Conference on Machine
+Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017 by
+the author(s).
 
-1.59
-1.58
-1.59
-1.59
-1.58
+There has been extensive and fruitful research on the general class of linear-optimization-based convex programming (LCP) methods (which covers the CG method and
+its variants) and their application in machine learning (e.g.,
+(Ahipasaoglu and Todd, 2013; Bach et al., 2012; Beck and
+Teboulle, 2004; Cox et al., 2013; Clarkson, 2010; Freund
+and Grigas, 2013; Hazan, 2008; Harchaoui et al., 2012;
+Jaggi, 2011; 2013; Jaggi and Sulovský, 2010; Luss and
+Teboulle, 2013; Shen et al., 2012; Hazan and Kale, 2012;
+Lan, 2013; Lan and Zhou, 2014; Braun et al., 2016)). It
+should be noted that even the computational cost for LO
+oracle to solve the linear optimization subproblem (3) is
+high for some complex feasible regions. Recently, several
+approaches have been considered to address this issue. Jaggi
+demonstrated practical speed up for the CG method by approximately solving (3) in (Jaggi, 2013). Braun, Pokutta,
+and Zink in (Braun et al., 2016) proposed a class of modified CG methods, namely the lazy conditional gradient
+(LCG) algorithms, which calls a weak separation oracle
+rather than solving the linear subproblem (3) in the classical
+CG method. In fact, the weak separation oracle is computationally more efficient than approximate minimization
+used in (Jaggi, 2013), at the expense of not providing any
+guarantee for function value improvement with respect to
+(3). Furthermore, as shown in (Jaggi, 2013; Lan, 2013), the
+total number of iterations for the LCP methods to find an
+✏-solution of (1) (i.e., a point x̄ 2 X, s.t. f (x̄) f ⇤  ✏)
+cannot be smaller than O(1/✏), which is not improvable
+even when the objective function f is strongly convex.
+Improved complexity results can only be obtained under
+stronger assumptions on the LO oracle or the feasible set
+(see, e.g., (Garber and Hazan, 2013; Lan, 2013)). However,
+the O(1/✏) bound does not preclude the existence of more
+efficient LCP algorithms for solving (1). Lan and Zhou in
+(Lan and Zhou, 2014) proposed a class of conditional gradient sliding methods (CGS), which significantly improve
+the complexity bounds in terms of the number of gradient
+evaluations while maintaining optimal complexity bounds
 
-the data into 90%, 5%, and 5% for train, validation, and
-test respectively, in line with (Mikolov et al., 2012). The
-network was trained with the same hyperparameter tuning
-infrastructure as in (Collins et al., 2016). For the BWB
-dataset, we used data splits and evaluation setup identical to
-(Józefowicz et al., 2016). Due to long experiment running
-times, we manually tuned the hyperparameters.
+Conditional Accelerated Lazy Stochastic Gradient Descent
 
-3. Results and analysis
-3.1. ISAN performance on Text8 prediction
-The results on Text8 are shown in Table 1. For the largest
-parameter count, the ISAN matches almost exactly the performance of all other nonlinear models with the same number of maximum parameters: RNN, IRNN, GRU, LSTM.
-However, we note that for small numbers of parameters the
-ISAN performs considerably worse than other architectures.
-All analyses use ISAN trained with 1.28e6 maximum parameters (1.58 bpc cross entropy). Samples of generated
-text from this model are relatively coherent. We show two
-examples, after priming with "annual reve", at inverse temperature of 1.5, and 2.0, respectively:
-• “annual revenue and producer of the telecommunications and former communist action and saving its new
-state house of replicas and many practical persons”
-• “annual revenue seven five three million one nine nine
-eight the rest of the country in the united states and
-south africa new”.
-As a preliminary, comparative analysis, we performed PCA
-on the state sequence over a large set of sequences for the
-vanilla RNN, GRU of varying sizes, and ISAN. This is
-shown in Figure 1. The eigenvalue spectra, in log of variance
-explained, was significantly flatter for the ISAN than the
-other architectures.
-We compared the ISAN performance to a fully linear RNN
+for the LO oracle calls required by the LCP methods.
 
-Figure 1. The ISAN makes fuller and more uniform use of its latent
-space than vanilla RNNs or GRUs. Figure shows explained variance ratio of the first 210 most significant PCA dimensions of the
-hidden states across several architectures for the Text8 dataset. The
-legend provides the number of latent units for each architecture.
+Contributions
 
-without input switched dynamics. This achieves a crossentropy of 3.1 bits / char, independent of network size. This
-perplexity is only slightly better than that of a Naive Bayes
-model on the task, at 3.3 bits / char. The output probability
-of the fully linear network is a product of contributions from
-each previous character, as in Naive Bayes. Those factorial
-contributions are learned however, giving the non-switched
-affine network a slight advantage. We also trained a fully
-linear network with a nonlinear readout. This achieves 2.15
-bits / char, independent of network size. Both of these
-comparisons illustrate the importance of the input switched
-dynamics for achieving good results.
-Lastly we also test to what extent the ISAN can deal with
-large dictionaries by running it on a byte-pair encoding of
-the text8 task, where the input dictionary consists of the 272
-different possible character combinations. We find that in
-this setup the LSTM consistently outperforms the ISAN for
-the same number of parameters. At 1.3m parameters the
-LSTM achieves a cross entropy of 3.4 bits / char-pair, while
-ISAN achieves 3.55. One explanation for this finding is that
-the matrices in ISAN are 27 times smaller than the matrices
-of the LSTMs. For very large numbers of parameters the
-performance of any architecture saturates in the number of
-parameters, at which point the ISAN can ‘catch-up’ with
-more parameter efficient architectures like LSTMs.
-3.2. ISAN performance on Billion Word Benchmark
-prediction
-We trained ISAN and LSTM models on the BWB dataset.
-All networks were trained using asynchronous gradient descent using the Adagrad learning rule. Our best LSTM
-model reached 1.1 bits per character, which matches published results (Hwang & Sung, 2016). The LSTM model
-had one layer of 8192 LSTM units whose outputs were
-projected onto 1024 dimensions (44e6 parameters). Our
-best ISAN models reached 1.4 bits per character and used
+Inspired by (Braun et al., 2016) and (Lan and Zhou, 2014),
+in this paper we focus on a class of modified LCP methods
+that require only improving solutions for a certain separation problem rather than solving the linear optimization
+subproblem (3) explicitly through LO oracle calls while
+simultaneously minimizing the number of gradient evaluations when performing weak separation over the feasible set
+X. At first these two objectives seem to be incompatible as
+(Braun et al., 2016) give up the dual guarantee to simplify
+the oracle, while the dual guarantee of CG iterations is at the
+core of the analysis in (Lan and Zhou, 2014). We overcome
+this impasse by carefully modifying both techniques.
 
-Interpretable RNNs with Input Switched Affine Networks
+Our main contributions can be briefly summarized as follows. We consider stochastic smooth optimization, where
+we have only access unbiased estimators of the gradients of
+f via a stochastic first-order (SFO) oracle. By incorporating a modified LCG procedure (Braun et al., 2016) into a
+modified CGS method (Lan and Zhou, 2014) we obtain a
+new conditional accelerated lazy stochastic gradient descent
+algorithm (CALSGD) and we show that the number of calls
+to the weak separation oracle can be optimally bounded by
+O(1/✏), while the optimal bound of O(1/✏2 ) on the total
+number of calls to the SFO oracle can be maintained. In
+addition, if the exact gradients of f can be accessed by a
+FO oracle,
+p the latter bound can be significantly improved to
+O(1/ ✏). In order to achieve the above we will present a
+modified lazy conditional gradient method, and show that
+the total number of iterations (or calls to the weak separation
+oracle) performed by it can be bounded by O(1/✏) under
+a stronger termination criterion, i.e., the primal-dual gap
+function.
 
-Figure 2. Using the linearity of the hidden state dynamics, predictions at step t can be broken out into contributions, κts , from previous
-steps. Accordingly, each row of the top panel corresponds to the propagated contribution (κts ) of the input character at time s, to the
-prediction at time t (summed to create the logit at time t). The penultimate row contains the output bias vector replicated at every time
-step. The last row contains the logits of the predicted next character, which is the sum of all rows above. The bottom panel contains the
-corresponding softmax probabilities at each time t for all characters (time is separated by gray lines). Labeled is the character with the
-maximum predicted probability. The time step boxed in red is examined in more detail in Figure 3.
+It should be mentioned that Hazan and Kale in (Hazan
+and Kale, 2012) proposed the online Frank-Wolfe (OFW)
+algorithm, which obtains O(1/✏4 ) rate of convergence for
+stochastic problems. Indeed, if we consider the objective
+function f (x) := E[F (x, ⇠)] for stochastic optimization,
+the OFW method can be applied to solve (1) by viewing the
+iteratively observed function ft as the current realization of
+the true objective function f , i.e., ft (·) = F (·, ⇠t ). Without
+re-evaluating the (sub)gradients at the updated points, the
+OFW obtains O(T 1/4 ) bound for any (smooth or nonsmooth) objective functions (see Theorem 4.4 in (Hazan and
+Kale, 2012)), which implies O(1/✏4 ) rate of convergence
+in terms of the number of (sub)gradient evaluations for
+stochastic optimization. However, we can show that our
+proposed algorithm obtains O(1/✏) (resp., O(1/✏2 )) rate
+of convergence for smooth (resp., non-smooth) stochastic
+problems, which is much better than the convergence rate of
+the OFW method. We would like to stress that the stochastic
+optimization bound in (Hazan and Kale, 2012, Theorem 4.1)
+which gives a guarantee of O(1/✏2 ), requires to re-evaluate
+all gradients at the current iterate and as such the number
+of gradient evaluations required grows quadratically in t.
+Moreover, Hazan and Luo (2016) proposed two methods for
+solving the special case of Problem (1) of the form
+m
 
-512 hidden units, a reduced set of most common 70 input
-tokens and 256 output tokens (18e6 parameters). Increasing
-ISAN’s hidden layer size to 768 units (41e6 parameters)
-yielded a perplexity improvement to 1.36 bits/char. Investigation of generated samples shows that the ISAN learned
-the distinction between lower- and upper-cased letters and is
-able to generate text which is coherent over short segments.
-To demonstrate sample variability we show continuations
-of the prompt "The [Pp]ol" generated using the ISAN:
-•
-•
-•
-•
-•
-•
-•
-•
+1 X
+min f (x) = min
+fi (x),
+x2X
+x2X m
+i=1
+which allows for a potentially smaller number of SFO evaluations than O(1/"2 ), the lower bound for the general
+problem. The two methods Stochastic Variance-Reduced
+Frank-Wolfe (SVRF) and Stochastic Variance-Reduced Conditional Gradient Sliding (STORC) are obtained by applying
+the variance reduction idea of Johnson and Zhang (2013)
+and Mahdavi et al. (2013) to the CG method and the Stochastic CGS method respectively. Both algorithms however need
+a certain number of exact (or full) gradient evaluations leading to a potentially undesirable dependence on the number
+of examples m.
 
-The Pol|ish pilgrims are as angry over the holiday trip
-The Pol|ice Department subsequently slipped toward
-The Pol|ice Federation has sought Helix also investors
-The Pol|itico is in a tight crowd ever to moderated the
-The pol|itical scientist in the Red Shirt Romance cannot
-The pol|icy for all Balanchine had formed when it set a
-The pol|l conducted when a suspected among Hispanic
-The pol|itical frenzy sparked primary care programs
+We also consider strongly convex and smooth functions and
+show that without enforcing any stronger assumptions on the
+weak separation oracle or the feasible set X, the total number of calls to the FO (resp., SFO) oracle can be optimally
+bounded by O(log 1/✏) (resp., O(1/✏)) for variants of the
+proposed method to solve deterministic (resp., stochastic)
+strongly convex and smooth problems. Furthermore, we
+also generalize the proposed algorithms to solve an important class of non-smooth convex programming problems
+with a saddle point structure. By adaptively approximating the original non-smooth problem via a class of smooth
+functions, we are able to show that the deterministic version
+of CALSGD can obtain an ✏-solution within O(1/✏) number of linear operator evaluations and O(1/✏2 ) number of
+calls to the weak separation oracle, respectively. The former
+bound will increase to O(1/✏2 ) for non-smooth stochastic
+optimization.
+Finally, we demonstrate practical speed ups of CALSGD
+through preliminary numerical experiments for the video
+co-localization problem, the structured regression problem
+and quadratic optimization over the standard spectrahedron;
+an extensive study is beyond the scope of this paper and
+left for future work. In all cases we report a substantial
+improvements in performance.
+In the main body of the paper we focus on the stochastic
+smooth case; several other results and their proofs have been
+relegated to the Supplementary Material.
+1.1. Notation and Terminology
+Let X ✓ Rn be a convex compact set, and k · kX be the
+norm associated with the inner product in Rn . For the sake
 
-time points s in the history of the input:
-!
-t
-t
-X
-Y
-ht =
-Wxs0 bxs ,
-s=0
+Conditional Accelerated Lazy Stochastic Gradient Descent
+
+of simplicity, we often skip the subscript in the norm k · kX .
+We define the diameter of the set X as
+DX ⌘ DX,k·k := max kx
+x,y2X
 
 (4)
 
-s0 =s+1
+yk.
 
-where the empty product when s + 1 > t is 1 by convention,
-and bx0 = h0 is the learned initial hidden state.
-Using this decomposition and the fact that matrix multiplication is a linear transformation we can also write the
-unnormalized logit-vector, lt , as a sum of terms linear in the
-biases,
-lt = bro +
-
-t
-X
-
-κts
+For a given norm k · k, we denote its conjugate by ksk⇤ =
+maxkxk1 hs, xi. For a linear operator A : Rn ! Rm , we
+use kAk to denote its operator norm defined as kAk :=
+maxkxk1 kAxk. Let f : X ! R be a convex function, we
+denote its linear approximation at x by
+lf (x; y) := f (x) + hf 0 (x), y
 
 (5)
 
-s=0
+xi.
 
-κts = Wro
+Clearly, if f satisfies (2), then
+f (y)  lf (x; y) +
 
-t
-Y
+xk2 , 8 x, y 2 X.
 
-!
-Wxs0
-
-bxs ,
+L
+2 ky
 
 (6)
 
-s0 =s+1
+Notice that the constant L in (2) and (6) depends on k · k.
+Moreover, we say f is smooth with curvature at most C, if
+f (y)  lf (x; y) +
 
-3.3. Decomposition of current predictions based on
-previous time steps
-Analysis in this paper is carried out on the best-performing
-Text8 ISAN model, which has 1, 271, 619 parameters, corresponding to 216 hidden units, and 27 dynamics matrices
-Wx and biases bx .
-With ISAN we can analyze which factors were important
-in the past for determining the current character prediction.
-Taking advantage of the linearity of the hidden state dynamics for any sequence of inputs, we decompose the current
-latent state ht into contributions originating from different
-
-where κts is the contribution from time step s to the logits at
-time step t, and κtt = bxt . For notational convenience we
-will sometimes replace the subscript s with the corresponding input character xs at step s when referring to κts . For
-example, κt‘q’ refers to the contribution from the character
-‘q’ in a string. Similarly, when discussing the summed contributions from a word or substring we will sometimes write
-κtword to mean the summed contributions
-of all the κts from
-P
-that source word. For example, s∈word κts – κt‘the’ refers
-to the total contribution from the word ‘the’ to the logit.
-While in standard RNNs the nonlinearity causes interdependence of the bias terms across time steps, in the ISAN
-the bias terms contribute to the state as independent linear
-
-Interpretable RNNs with Input Switched Affine Networks
-
-Figure 3. Detailed view of the prediction stack for the final ‘n’ in
-‘_annual_revenue’. In a) all κts are shown, in b) only the contributions to the ‘n’ logit and ‘r’ logits are shown, in orange and red
-respectively, from each earlier character in the string. This corresponds to a zoom in view of the columns highlighted in orange and
-red in a). In c) we show how the sum of the contributions from the
-string ‘_annual’, κt‘_annual’ , pushes the prediction at ‘_annual_reve’
-from ‘r’ to ‘n’. Without this contribution the model decodes based
-only on κt‘_reve’ , leading to a MAP prediction of ‘reverse’. With
-the contribution from κt‘_annual’ it instead predicts ‘revenue’. The
-contribution of κt‘_annual’ to the ‘n’ and ‘r’ logits is linear and exact.
-
-terms that are propagated and transformed through time. We
-emphasize that κts includes the multiplicative contributions
-from the Wxs0 for s < s0 ≤ t. It is however independent
-of prior inputs, xs0 for s0 < s. This is the main difference
-between the analysis we can carry out with the ISAN compared to a nonlinear RNN. In a general recurrent network
-the contribution of a specific character sequence will depend
-on the hidden state at the start of the sequence. Due to the
-linearity of the dynamics, this dependency does not exist in
-the ISAN.
-In Figure 2 we show an example of how this decomposition allows us to understand why a particular prediction is
-made at a given point in time, and how previous characters
-influence the decoding. For example, the sequence ‘_annual_revenue_’ is processed by the ISAN: Starting with an
-all-zero hidden state, we use equation (6) to accumulate
-a sequence of κt‘_0 , κt‘a0 , κt‘n0 , κt‘n0 , .... We then used these
-values to understand the prediction of the network at some
-time t, by simple addition across the s index.
-We provide a detailed view of how past characters contribute
-to the logits predicting the next character in Figure 3. There
-are two competing options for the next letter in the word
-stem ‘reve’: either ‘revenue’ or ‘reverse’. We show that
-without the contributions from ‘_annual’ the most likely
-decoding of the character after the second ‘e’ is ‘r’ (to form
-‘reverse’), while the contributions from ‘_annual’ tip the
-balance in favor of ‘n’, decoding to ‘revenue’.
-Using ISAN, we can investigate information timescales in
-the network. For example, we investigated how quickly the
-contributions of κts decay as a function of t − s on average.
-Figure 4a shows that this contribution decays on two different exponential timescales. We hypothesize that the first
-time scale corresponds to the decay within a word, while the
-
-Figure 4. The time decay of the contributions from each character
-a) Average norm of κts across training text,
- 
- tot prediction.
-
-
-
-
-E κs 2 , plotted as a function of t − s, and averaged across
-all source characters. The norm appears to decay exponentially at
-two rates, a faster rate for the first ten or so characters, and then
-a slower rate for more long term contributions. b) The median
-cross entropy as a function of the position in the word under three
-different circumstances: the red line uses all of the κts (baseline),
-the green line sets all κts apart from κt‘_’ to zero, while the blue line
-only sets κt‘_’ to zero. The results from panel b demonstrate the
-disproportionately large importance of ‘_’ in decoding, especially
-at the onset of a word. c) The cross-entropy as a function of history
-when artificially limiting the number of characters available for
-prediction. This corresponds to only considering the most recent
-n of the κ, where n is the length of the history.
-
-next corresponds to the decay of information across words
-and sentences. We also show the relevance of the κts contributions to the decoding of characters at different positions
-in the word (Figure 4b). For example, we observe that κt‘_’
-makes important contributions to the prediction of the next
-character at time t. We show that using only the κt‘_’ , the
-model can achieve a cross entropy of less than 1 bit / char
-when the position of the character is more than 3 letters from
-the beginning of the word. Finally, we link the norm-decay
-of κts to the importance of past characters for the decoding
-quality ( Figure 4c). By artificially limiting the number of
-past κ available for prediction we show that the prediction
-quality improves rapidly when extending the history from 0
-to 10 characters and then saturates. This rapid improvement
-aligns with the range of faster decay in Figure 4a.
-3.4. From characters to words
-The ISAN provides a natural means of moving from character level representation to word level. Using the linearity
-of the hidden state dynamics we can aggregate all of the
-κts belonging to a given word and visualize them as a single contribution to the prediction of the letters in the next
-word. This allows us to understand how each preceding
-word impacts the decoding for the letters of later words. In
-Figure 5 we show that the words ‘was’ and ‘higher’ make
-large contributions to the prediction of the characters in
-‘than’ as measured by the norm of the κt‘_was’ and κt‘_higher’ .
-
-Interpretable RNNs with Input Switched Affine Networks
-
-Figure 5. The ISAN architecture can be used to precisely characterize the relationship between words and characters. The top
-panel shows how exploiting the linearity of the network’s operation
-we can combine the κts1 ..κtsn in a word to a single contribution,
-κtword , for each word. Shown is the norm of κtword , a measure of
-the magnitude of the effect of the previous word on the selection
-of the current character (red corresponds to a norm of 10, blue
-to 0). The bottom panel shows the probabilities assigned by the
-network to the next sequence character. Lighter lines show predictions conditioned on a decreasing number of preceding words.
-For example, when predicting the characters of ‘than’ there is a
-large contribution from both κt‘was’ and κt‘higher’ , as shown in the
-top pane. The effect on the log probabilities can be seen in the
-bottom panel as the model becomes less confident when excluding
-κt‘was’ and significantly less confident when excluding both κt‘was’
-and κt‘higher’ . This word based representation clearly shows that the
-system leverages contextual information across multiple words.
-
-3.5. Change of basis
-We are free to perform a change of basis on the hidden state,
-and then to run the affine ISAN dynamics in that new basis.
-Note that this change of basis is not possible for other RNN
-architectures, since the action of the nonlinearity depends
-on the choice of basis.
-In particular we can construct a ‘readout basis’ that explicitly
-divides the latent space into a subspace Pro
-k spanned by
-the rows of the readout matrix Wro , and its orthogonal
-complement Pro
-⊥ . This representation explicitly divides
-the hidden state dynamics into a 27-dimensional ‘readout’
-subspace that is accessed by the readout matrix to make
-predictions, and a ‘computational’ subspace comprising the
-remaining 216 − 27 dimensions that are orthogonal to the
-readout matrix.
-We apply this change of basis to analyze an intriguing observation about the hidden offsets bx . As shown in Figure 6, the norm of the bx is strongly correlated to the
-log-probability of the unigram x in the training data. Reexpressing network parameters using the ‘readout basis’
-shows that this correlation is not related to reading out the
-next-step prediction. This is because the norm of the projection of bx into Pro
-⊥ remains strongly correlated with
-character frequency, while the projection into Pro
-k shows
-little correlation. This indicates that the information content
-or ’surprise’ of a letter is encoded through the norm of the
-
-Figure 6. By transforming the ISAN dynamics into a new basis, we
-can better understand the action of the input-dependent biases. a)
-We observe a strong correlation between the norms of the input dependent biases, bx , and the log-probability of the unigram x in the
-training data. We can begin to understand this correlation structure
-using a basis transform into the ‘readout basis’. Breaking out the
-ro
-norm into its components in Pro
-k and P⊥ in b) and c) respectively,
-shows that the correlation is due to the component orthogonal to
-Wro . This implies a connection between information or ‘surprise’
-and distance in the ’computational’ subspace of state space.
-
-Figure 7. By transforming ISAN dynamics into a new basis, we
-can better interpret structure in the input-dependent biases. In a) we
-show the cosine distance between the input dependent bias vectors,
-split between vowels and consonants (‘ ’ is first). In b) we show
-the correlation only considering the components in the subspace
-Pro
-k spanned by the rows of the readout matrix Wro . c) shows the
-correlation of the components in the orthogonal complement Pro
-⊥.
-In all plots white corresponds to 0 (aligned) and black to 2.
-
-component of bx in the computational space, rather than in
-the readout space.
-Similarly, in Figure 7 we illustrate that the structure in the
-correlations between the biases bx (across all x) is due to
-ro
-their components in Pro
-k , while the correlation in P⊥ is
-relatively uniform. We can clearly see two blocks of high
-correlations between the vowels and consonants respectively,
-while b‘_’ is uncorrelated to either.
-3.6. Comparison with n-gram model with back-off
-We compared the computation performed by n-gram language models and those performed by the ISAN. An n-gram
-model with back-off weights expresses the conditional probability p (xt |x1 ...xt−1 ) as a sum of smoothed count ratios of
-n-grams of different lengths, with the contribution of shorter
-n-grams down-weighted by back-off weights. On the other
-hand, the computations performed by the ISAN start with
-the contribution of bro to the logits, which as shown in Fig-
-
-Interpretable RNNs with Input Switched Affine Networks
-
-ure 8a, corresponds to the unigram log-probabilities. The
-logits are then additively updated with contributions from
-longer n-grams, represented by κts . This additive contribution to the logits corresponds to a multiplicative modification of the emission probabilities from histories of different
-length. For long time lags, the additive correction to logprobabilities becomes small (Figure 2), which corresponds
-to multiplication by a uniform distribution. Despite these
-differences in how n-gram history is incorporated, we nevertheless observe an agreement between empirical models
-estimated on the training set and model predictions for unigrams and bigrams. Figure 8 shows that the bias term bro
-gives the unigram probabilities of letters, while the addition
-of the offset terms bx accurately predict the bigram distribution of P (xt+1 |xt ). Shown in panel b is an example,
-P (x|‘_0 ), and in panel c, a summary plot for all 27 letters.
-We further explore the n-gram comparison by artificially
-limiting the length of the character history that is available
-to the ISAN for making predictions, as shown in Figure 4c).
-
-4. Analyses of a parentheses counting task
-To show the possibility of complete interpretability of the
-ISAN we train a model on a parenthesis counting task.
-Bringing together ideas from section 3.5 we re-express the
-transition dynamics in a new basis that fully reveals performed computations.
-We analyze the task of counting the nesting levels of multiple parentheses types, a simplified version of a task defined
-in (Collins et al., 2016). Briefly, a 35-unit ISAN is required
-to keep track of the nesting level of 2 different types of
-parentheses independently. The inputs are the one-hot encoding of the different opening and closing parentheses (e.g.
-‘(’, ‘)’, ‘[’, ‘]’) as well as a noise character (‘a’). The output
-is the one-hot encoding of the nesting level between (0-5),
-one set of counts for each parenthesis type (so the complete
-output vector is a 12 dimensional 2-hot vector). Furthermore, the target output is the nesting level at the previous
-time step. This artificial delay requires the model to develop
-a memory. One change from (Collins et al., 2016) is that
-we exchange the cross-entropy error with an L2 error. This
-leads to slightly cleaner figures, but does not qualitatively
-change the results.
-To elucidate the mechanism of ISAN’s operation we first reexpress the affine transitions ht+1 = Wht + b by their linear equivalents h0t+1 = W0 h0t , where W0 = [W b; 0T 1]
-and h0t = [ht ; 1]. Next, we used linear regression to find a
-change of basis for which all augmented character matrices
-and the hidden states are sparse. To do this we construct
-ro
-the ‘readout’ (Pro
-k ) and ‘computational’ ( P⊥ ) subspace
-decomposition as discussed in Section 3.5. We choose a
-basis for Pro
-⊥ which makes the projections of the hidden
-
-Figure 8. The predictions of ISAN for one and two characters well
-approximate the predictions of unigram and bigram models. In a)
-we compare softmax(bro ) to the empirical unigram distribution
-P (x). In b) we compare softmax(Wro b‘_’ + bro ) with the empirical distribution P (xt+1 |‘_’). In c) we show the correlation of
-softmax(Wro bx + bro ) with P (xt+1 |xt ) for all 27 characters
-(y-axis), and compare this to the correlation between the empirical unigram probabilities P (x) to P (xt+1 |xt ) (x-axis). The plot
-shows that the readout of the bias vector is a better predictor of the
-conditional distribution than the unigram probability.
-
-states into this computational subspace 2-hot vectors. With
-this subspace decomposition, the hidden states and character
-matrices have the form
- rr
-
-Wx Wxrc brx
-Wx0 =  Wxcr Wxcc bcx 
-0T 0T 1
-
- r
-ht
-h0t = hct 
-1
+C
+2,
 
 (7)
 
-and the update equation can be written as
+8 x, y 2 X.
 
-h0t+1
+2
+It is clear that if X is bounded, we have C  LDX
+. In
+the following we also use R++ to denote the set of strictly
+positive reals.
 
- rr r
-
-Wx ht + Wxrc hct + brx
-= Wx0 h0t =  Wxcr hrt + Wxcc hct + bcx  .
-1
+appearing in the accelerated gradient (AG) method, the
+CALSGD method utilizes a modified parameter-free LCG
+algorithm (see Section 2.2) to approximately solve the subproblem (x) defined in (16) and skips the computations
+of the stochastic gradient F 0 (z, ⇠) from time to time when
+performing weak separation over the feasible region X. The
+main advantages of our method are that it does not solve
+a traditional projection problem and achieves the optimal
+bounds on the number of calls to the SFO and LOsepX
+oracles (see Oracle 1 in Subsection 2.2) for solving problem
+(1)-(8). To the authors’ best knowledge, no such algorithms
+have been developed before in the literature; we present the
+algorithm below in Algorithm 1.
+Algorithm 1 Conditional Accelerated Lazy Stochastic Gradient Descent (CALSGD)
+Input: Initial point x0 2 X, iteration limit N , and weak
+separation oracle accuracy ↵ 1.
+Let k 2 R++ , k 2 [0, 1], and ⌘k 2 R+ , k = 1, 2, . . .,
+be given and set y0 = x0 .
+for k = 1, 2, . . . , N do
+zk = (1
+gk =
 
+2. Conditional Accelerated Lazy Stochastic
+Gradient Descent
+
+yk = (1
+
+We consider the stochastic optimization problem:
 (8)
 
-Here hrt and hct denote the readout and computational portions of ht , and Wxrr , Wxcr , Wxrc , Wxcc denote the readout
-to readout, readout to computation, computation to readout,
-and computation to computation blocks of the character
-matrix for character x, respectively.
-In Figure 9d we show the hidden states in the rotated basis as
-a sequence of column vectors. The 35 dimensional hidden
-states are all 4-hot. We can treat them as a concatenation of a
-readout hrt and a computation hct part. The 12-dimensional
-readout hrt corresponds to network’s output at time step
-t and encodes the counts from time step t − 1 as a 2-hot
-vector (one count per parenthesis type). The computational
-space hct is 35 − 12 = 23 dimensional, and encodes the
-current counts as another 2-hot vector. Note that in this
-basis the ISAN effectively uses only 24 dimensions and the
-remaining 11 dimensions have no noticeable effect on the
-computation. In Figure 9c we show W[0 in the rotated basis.
-We see from the leftmost 12 columns that W[rr and W[cr are
-both nearly 0. This means that hrt has no influence on ht+1 .
-Furthermore, the computation to readout block, W[rc , is
+x2X
 
-Interpretable RNNs with Input Switched Affine Networks
+where f (x) is a smooth convex function satisfying (2).
+
+Throughout this section, we assume that there exists a
+stochastic first-order (SFO) oracle, which for a search point
+zk 2 X outputs a stochastic gradient F 0 (zk , ⇠k ), s.t.
+E [F 0 (zk , ⇠k )] = f 0 (zk ),
+⇤
+E kF 0 (zk , ⇠k ) f 0 (zk )k2⇤  2 .
+
+(9)
+(10)
+
+If = 0, the stochastic gradient F (zk , ⇠k ) is the exact
+gradient at point zk , i.e., F 0 (zk , ⇠k ) = f 0 (zk ).
 0
 
-In this paper we motivated an input-switched affine recurrent
-network for the purpose of interpretability. We showed that a
-switched affine architecture achieves the same performance
-as LSTMs on the Text8 dataset for the same number of
-maximum parameters, and reasonable performance on the
-BWB. We performed a series of analyses, demonstrating
-the ability to understand how inputs at one point in the input
-sequence affect the outputs later in the output sequence. We
-showed further in the multiple parentheses counting task that
-the ISAN dynamics can be completely reverse engineered.
-In summary, this work provides evidence that the ISAN is
-able to express complex dynamical systems, yet its operation
-can in principle be fully understood, a prospect that remains
-out of reach for many popular recurrent architectures.
-5.1. Computational benefits
-Switched affine networks hold the potential to be massively
-more computationally and memory efficient for text processing than other recurrent architectures. First, input-dependent
-affine transitions reduce the number of parameters used at
-every step. For K possible inputs and N parameters,
-the
-
-N
-computational cost per update step is O K
-, a factor of
-K speedup over non-switched
-architectures.
-Similarly, the
-q
-
+Our algorithmic framework is inspired by the SCGS method
+by (Lan and Zhou, 2014). However, instead of applying
+the classic CG method to solve the projection subproblem
+
+k )yk
+
+(11)
+
+1,
+
+(12)
+(13)
+
+k , xk 1 , ↵, ⌘k ),
+1+
+
+(14)
+
+k xk ,
+
+where F 0 (zk , ⇠k,j ), j = 1, . . . , Bk , are stochastic gradients computed by the SFO at zk .
+end for
+Output: yN .
+
+We hasten to make some observations about the CALSGD
+method. Firstly, we apply mini-batches to estimate the
+gradient at point zk , where the parameter {Bk } denotes the
+batch sizes used to compute gk . It can be easily seen from
+(9), (10), and (12) that
+E[gk
+
+2.1. The Algorithm
+
+⇥
+
+k )yk 1 + k xk
+P Bk 0
+j=1 F (zk , ⇠k,j ),
+
+xk = LCG(gk ,
+
+We now present a new method for stochastic gradient descent that is based on the stochastic conditional gradient
+sliding (SCGS) method and the parameter-free lazy conditional gradient (LCG) procedure from Section 2.2, which
+we refer to as the Conditional Accelerated Lazy Stochastic
+Gradient Descent (CALSGD) method.
+
+f ⇤ := min{f (x) = E⇠ [F (x, ⇠)]},
+
+1
+Bk
+
+f 0 (zk )] = 0 and E[kgk
+
+f 0 (zk )k2⇤ ] 
+
+2
+
+Bk ,
+
+(15)
+
+and hence gk is an unbiased estimator of f 0 (zk ). In fact,
+P Bk
+letting SBk = j=1
+(F 0 (zk , ⇠k,j ) f 0 (zk )), from (9) and
+(10), by induction, we have
+⇥
+⇤
+⇥
+E kSBk k2⇤ = E kSBk
+⇥
+= E kSBk
+
 1
 
-N
++ F 0 (zk , ⇠k,Bk )
+
 2
-number of hidden units is O
-K , a factor of K memory improvement for storage of the latent state.
+1 k⇤
 
-Furthermore, the ISAN is unique in its ability to precompute affine transformations corresponding to input
-strings. This is possible because the composition of affine
-transformations is also an affine transformation. This property is used in Section 3.4 to evaluate the linear contributions
-of words, rather than characters. This means that the hidden
-state update corresponding to an entire input sequence can
-be computed with identical cost to the update for a single
-character (plus the dictionary look-up cost for the composed transformation). ISAN can therefore achieve very
-large speedups on input processing, at the cost of increased
-memory use, by accumulating large look-up tables of the
-Wx and bx corresponding to common input sequences. Of
-course, practical implementations will have to incorporate
+f 0 (zk )k2⇤
+
++ kF 0 (zk , ⇠k,Bk )
+
+⇤
+
+f 0 (zk )k2⇤
+
++2hSBk 1 , F 0 (zk , ⇠k,Bk ) f 0 (zk )i]
+⇥
+⇤
+= E kSBk 1 k2⇤
+⇥
+⇤
++ E kF 0 (zk , ⇠k,Bk ) f 0 (zk )k2⇤
+⇤
+P Bk ⇥ 0
+= j=1
+E kF (zk , ⇠k,j ) f 0 (zk )k2⇤  Bk
+
+2
+
+,
+
+Conditional Accelerated Lazy Stochastic Gradient Descent
+
+which together with the fact that gk
+f 0 (zk ) =
+P Bk
+1
+1
+0
+0
+f (zk )] = Bk SBk , implies the
+j=1 [F (zk , ⇠k,j )
+Bk
+second relationship in (15).
+
+Secondly, in view of the SCGS method in (Lan and Zhou,
+2014), xk obtained in (13) should be an approximate solution to the gradient sliding subproblem
+n
+o
+k
+min
+xk 1 k2 ,
+(16)
+k (x) := hgk , xi + 2 kx
+x2X
+
+such that for some ⌘k
+h
 
 0
-5
+k (xk ), xk
 
-10
+0 we have
 
-10
+xi = hgk +
 
-Hidden dimension
+xi  ⌘k ,
+(17)
+for all x 2 X. If we solve the subproblem (16) exactly
+(i.e., ⌘k = 0), then CALSGD will reduce to the accelerated stochastic approximation method by (Lan, 2009; 2012).
+However, by employing the LCG procedure (see Procedure 1 in Subsection 2.2), we only need to use a weak
+separation oracle, but still maintaining the optimal bounds
+on stochastic first-order oracle as in (Lan, 2009; 2012; Lan
+and Zhou, 2014).
+k (xk
 
-5
+xk
 
-15
-20
-25
+1 ), xk
 
-Hidden states in the original basis
+Thirdly, observe that the CALSGD method so far is conceptual only as we have not yet specified the LCG procedure
+and the parameters {Bk }, { k }, { k }, and {⌘k }. We will
+come back to this issue after introducing the LCG procedure
+and establishing its main convergence properties.
 
-15
-20
-25
-30
+Observe that the oracle has two output modes. In particular,
+Oracle 1 first verifies whether there exists an improving
+point y 2 P with the required guarantee and if so it outputs this point, which we refer it as a positive call. If no
+such point exists the oracle certifies this by providing the
+maximizer y, which then also provides a new duality gap.
+We refer to this case as a negative call. The computational
+advantages of this oracle are that it can reuse previously
+seen solutions y if they satisfy the improvement condition
+and even if LO oracle has to be called, the optimization can
+be terminated early once the improvement condition is satisfied. Finally, the parameter ↵ allows to only approximately
+satisfy the improvement condition making separation even
+easier; in our applications we set the parameter ↵ slightly
+larger than 1.
+We present the LCG procedure based on (Braun et al., 2016)
+below. We adapted the parameter-free version to remove
+any dependence on hard to estimate parameters. For any
+smooth convex function , we define its duality gap as
+gap
 
-30
+,X (x)
+
+⌘ gap (x) := max r (x)T (x
+y2X
+
+y).
+
+(18)
+
+Clearly, by convexity the duality gap is an upper bound on
+f (x⇤ ) f (x). Given any accuracy parameter ⌘
+0, the
+LCG procedure solves minx2X (x) approximately with
+accuracy ⌘, i.e., it outputs a point ū 2 X, s.t. gap (ū)  ⌘.
+
+We present the LOsep oracle in Oracle 1 below.
+
+Procedure 1 Parameter-free Lazy Conditional Gradients
+(LCG) procedure
+Input: access to gradients of smooth convex function ,
+u1 2 X vertex, LOsepX weak linear separation oracle,
+accuracy ↵ 1, duality gap bound ⌘
+Output: ū 2 X with bounded duality gap, i.e., gap (ū) 
+⌘
+1: 0
+maxu2X r (u1 )T (u1 u)
+2: for t = 1 to T
+1 do
+3:
+vt
+LOsepX (r (ut ), xt , t 1 , ↵)
+4:
+if not r (ut )T (ut vt ) > t 1 /↵ then
+5:
+if t 1 = ⌘ then
+6:
+return ū = ut
+7:
+end if
+8:
+else
+n
+o
+t 1
+9:
+max
+t
+2 , ⌘ {Update t }
+10:
+end if
+11:
+argmin ((1
+t
+t )ut + t vt )
+12:
+ut+1
+(1
+t )ut + t vt
+13: end for
+
+Oracle 1 Weak Separation Oracle LOsepP (c, x, , ↵)
+Input: c 2 Rn linear objective, x 2 P point, ↵ 1 accuracy, > 0 objective value;
+Output: y 2 P vertex with either (1) cT (x y) > /↵,
+or (2) y = argmaxy2P cT (x z)  .
+
+The LCG procedure is a parameter-free algorithm. Note
+that while line search can be expensive in general, for our
+subproblems, function evaluation is very cheap. The algorithm needs only one LO oracle call to estimate the
+initial functional value gap at Line 1. Alternatively, this
+
+2.2. The Parameter-free Lazy Conditional Gradient
+Procedure
+The classical CG method is a well-known projection-free
+algorithm, which requires only the solution of a linear optimization subproblem (3) rather than the projection over
+X per iteration. Therefore, it has computational advantages
+over many other first-order methods when projection over
+X being costly. The LCG procedure presented in this subsection, a modification of the vanilla LCG method in (Braun
+et al., 2016), goes several steps further than CG and even
+vanilla LCG method. Firstly, it replaces LO oracle by a
+weaker separation oracle LOsep, which is no harder than
+linear optimization and often much simpler. Secondly, it
+uses a stronger termination criterion, the Frank-Wolfe gap
+(cf. (18)), than vanilla LCG method. Finally, it maintains
+the same order of convergence rate as the CG and the vanilla
+LCG method.
+
+Conditional Accelerated Lazy Stochastic Gradient Descent
+
+2.3. The Convergence Properties of CALSGD
+
+can be also done approximately via binary search with
+LOsep. The algorithm maintains a sequence, { t }, that
+provides valid upper bounds for the functional value gap
+⇤
+at the current iterate, i.e., (ut )
+ 2 t 1 (see Theorem 5.1 of (Braun et al., 2016)), and it halves the value
+of t only when the current oracle call is negative. Finally,
+our LCG procedure exits at Line 5 whenever LOsepX returns a negative call and t 1 = ⌘, which ensures that
+gap (ū) = maxy2X hr (ū), ū yi  ⌘.
+
+This subsection is devoted to establishing the main convergence properties of the CALSGD method. Since the
+algorithm is stochastic, we will establish the convergence
+results for finding a stochastic ✏-solution, i.e., a point x̄ 2 X
+s.t. E[f (x̄) f (x⇤ )]  ✏. We first state a simple technical
+result from (Lan and Zhou, 2014, Lemma 2.1) that we will
+use.
+
+Theorem 2.1. Procedure 1 returns a point ū 2 X such that
+the duality gap at point ū is bounded by ⌘, i.e., gap (ū)  ⌘.
+Furthermore, the total number of iterations T (and hence
+LOsepX calls) performed by Procedure 1 is at most
+
+Suppose that Wt > 0 for all t
+{ t }t 0 satisfies
+
+Theorem 2.1 below provides a bound for the total number of iterations (or calls to the LOsepX oracle) that the
+LCG procedure requires to generate a point ū 2 X with
+gap (ū)  ⌘.
+
+T 
+
+(
+
++
+
+2
+
+8↵ C
+⌘
+
+ + 4↵ +
+
+l
+with  := 4↵ log
 
 0
 
+↵C
+
+m
+
++ 2,
+
+⌘ < ↵C ;
+
+4↵2 C
+⌘
+
++ log
+
++ 2,
 0
 
-5. Discussion
+⌘
 
-Transition matrix for '[' in original basis
+⌘
 
-5
+↵C ,
 
-10
+(19)
 
-15
+.
 
-20
+Proof. From the observations above, it is clear that the duality gap at the output point ū is bounded by ⌘.
+Also observe that the procedure calls LOsepX once per
+iteration. In order to demonstrate the bound in (19), we split
+the LCG procedure into two phases, and bound the number
+of iterations separately for each phase. Let C denote the
+curvature of the smooth convex function .
+We say Procedure 1 is in the first phase whenever t 1 > ⌘.
+In view of Theorem 5.1 in (Braun et al., 2016), it is clear that
+the number of iterations in the first phase can be bounded as
+l
 
-25
-
-( ( ( ( ( ( ( ( ( [ [ [ [ [ [ ) ) ) aaaaaa ] ] ] ] ] ] ] ] ] ( ) ( ) ( ) (
-
-30
-
-a)
-
-b)
-
-Transition matrix for '[' in rotated basis
-
-Hidden states in rotated basis
-
-0
-
-5
-
-5
-
-10
-
-10
-
-Hidden dimension
-
-identity on the first 12 dimensions, effectively implementing
-the lagging output hrt = hct−1 . The current counts are
-implemented as delay lines and identity sub-matrices in
-W[cc , which respectively has the effect of incrementing the
-count of ‘[’ by one, saturating at 5, and leaving the count of
-’()’ parentheses fixed. The matrices W] , W( , W) behave
-analogously. It is clear that this solution is general, in that
-retraining for increased numbers of parentheses types or an
-increased counting maximum, would have the analogous
-solution.
-
-15
-20
-25
-
-15
-20
-25
-30
-
-30
+T1  4↵ log
 
 0
 
-5
+↵C
+
+m
+
+T2 
+
+4↵2 C
+⌘
+
+t
+
+ (1
+
+wt )
+
+4↵ C
+⌘
+
++ log
+
+0
+
+⌘
+
+.
+
++ 1,
+4↵ + 1,
+
+⌘ < ↵C ;
+⌘ ↵C .
+
+Thus, our bound in (19) can be obtained from the above two
+bounds plus one more LO oracle call at Line 1.
+
+2 and that the sequence
+
++ Bt , t = 1, 2, . . . .
+
+t 1
+
+Then for any 1  l  k, we have
+⇣
+P k Bi ⌘
+1 wl
++
+k  Wk
+l
+1
+i=l Wi .
+Wl
+
+Theorem 2.3 describes the main convergence properties of
+the CALSGD method (cf. Algorithm 1). The proof of this
+theorem can be found in the Supplementary material A.
+
+Theorem 2.3. Let
+k
+
+:=
+
+Suppose that {
+satisfy
+
+k}
+
+1
+
+be defined as follows,
+
+k
+
+(
+
+1
+k 1 (1
+
+and {
+
+k=1
+k 2.
+
+k)
+
+(20)
+
+in the CALSGD algorithm
+
+k}
+
+= 1 and L
+
+k
+
+
+
+k
+
+1.
+
+(21)
+
+, k
+
+2,
+
+(22)
+
+k,
+
+a) If
+k
+
+k k
+
++
+
+2
+
+Procedure 1 enters the second phase when t 1  ⌘. Again
+with the argumentation in Theorem 5.1 in (Braun et al.,
+2016), we obtain that the total number of positive calls in
+4↵2 C
+this phase can be bounded by ⌘ , if ⌘ < ↵C , or by 4↵
+if ⌘ ↵C . Moreover, the procedure exits whenever the
+current LOsepX oracle call is a negative call. Hence, the
+number of iterations in the second phase can be bounded by
+(
+
+Lemma 2.2. Let wt 2 (0, 1], t = 1, 2, . . ., be given. Also
+let us denote
+(
+1
+t=1
+Wt :=
+(1 wt )Wt 1 t 2.
+
+k
+
+1 k
+k
+
+1
+
+1
+
+then under assumptions (9) and (10), we have
+E [f (yk )
+
+f (x⇤ )] 
++
+
+2
+DX
+k h
+X
+
+k k
+
+2
+k
+
+⌘i
+
+i
+i
+
++
+
+i
+
+2
+
+i=1
+
+2
+
+i Bi ( i
+
+L
+
+i)
+
+i
+
+,
+
+(23)
+
+where x⇤ is an arbitrary optimal solution of (8) and
+DX is defined in (4).
+b) If
+k k
+k
+
+
+
+k
+
+1 k
+k
+
+1
+
+1
+
+, k
+
+2,
+
+(24)
+
+(rather than (36)) is satisfied, then the result in part a)
+2
+holds by replacing k k DX
+with 1 k kx0 x⇤ k2 in
+the first term of the RHS of (37).
+
+Conditional Accelerated Lazy Stochastic Gradient Descent
+
+c) Under the assumptions in part a) or b), the number of
+inner iterations performed at the k-th outer iterations
+is bounded by
+Tk =
+
+(
+
++
+
+8↵2
+
+2
+k DX
+
+⌘k
+
+4↵2
+
+ + 4↵ +
+l
+
+with  := 4↵ log
+
++ 2,
+2
+k DX
+
+⌘k
+
+↵
+
+k
+0
+2
+k DX
+
+m
+
++ 2,
+k
+0
+
++ log
+
+⌘k
+
+⌘k < ↵
+
+2
+k DX ;
+
+⌘k
+
+2
+k DX ,
+
+↵
+
+(25)
+
+.
+
+Now we provide two different sets of parameters
+{ k }, { k }, {⌘k }, and {Bk }, which lead to optimal complexity bounds on the number of calls to the SFO and
+LOsepX oracles.
+Corollary 2.4. Suppose that { k }, {
+in the CALSGD method are set to
+k
+
+=
+
+4L
+k+2 ,
+
+k },
+
+3
+k+2 ,
+
+⌘k =
+m
+l 2
+(k+2)3
+and Bk = L2 D2
+, k
+k
+
+=
+
+{⌘k }, and {Bk }
+2
+LDX
+
+k(k+1) ,
+
+(26)
+
+1,
+
+X
+
+and we assume kf 0 (x⇤ )k is bounded for any optimal solution x⇤ of (8). Under assumptions (9) and (10), we have
+f (x⇤ )] 
+
+E [f (yk )
+
+2
+6LDX
+(k+2)2
+
+2
+9LDX
+2(k+1)(k+2) ,
+
+8k
+
+1.
+(27)
+As a consequence, the total number of calls to the SFO and
+LOsepX oracles performed by the CALSGD method for
+finding a stochastic ✏-solution of (1), respectively, can be
+bounded by
+⇢q
+2
+LDX
+
+O
+
+✏
+
++
+
++
+
+2
+
+2
+DX
+✏2
+
+(28)
+
+,
+
+and
+O
+
+⇢q
+
+2
+LDX
+✏
+
+log
+
+2
+LDX
+⇤✏
+
++
+
+2
+LDX
+✏
+
+with probability 1
+
+⇤.
+(29)
+
+Proof. It can be easily seen from (26) that (35) holds. Also
+note that by (26), we have
+k
+
+=
+
+(30)
+
+6
+k(k+1)(k+2) ,
+
+k k
+k
+
+=
+
+2Lk(k+1)
+,
+k+2
+
+which implies that (36) holds. It can also be easily checked
+from (30) and (26) that
+i=1
+
+PN
+
+k=1 Bk
+
+
+
+PN
+
+2
+
+k=1
+
+(k+2)3
+2
+L 2 DX
+
++N 
+
+2
+
+(N +3)4
+2
+4L2 DX
+
++ N.
+
+We now provide a good estimation for k0 (cf. Line 1 in
+LCG procedure) at the k-th outer iteration. In view of the
+definition of k0 and (·) (cf. (16)), we have,
+k
+0
+
+=h
+
+0
+k (xk 1 ), xk 1
+
+xi = hgk , xk 1 xi.
+q 2
+N
+Moreover, let Ak := kgk f 0 (zk )k⇤
+⇤Bk , by Chebyshev’s inequality and (15), we obtain,
+Prob{Ak } 
+
+E[kgk f 0 (zk )|2⇤ ]⇤Bk
+N 2
+
+
+
+⇤
+N,
+
+8⇤ < 1, k
+
+1,
+
+TN
+which implies that Prob{ k=1 Āk }  1 ⇤. Hence, by
+Cauchy-Schwarz and triangle inequalities, we have with
+probability 1 ⇤,
+k
+0
+
+= hgk f 0 (zk ), xk 1 xi + hf 0 (zk ), xk 1 xi}
+✓q
+◆
+0
+0 ⇤
+0 ⇤
+N 2
+
++
+kf
+(z
+)
+f
+(x
+)k
++
+kf
+(x
+)k
+k
+⇤
+⇤ DX
+⇤Bk
+✓q
+◆
+2
+N
+
++
+1
+LDX
++ kf 0 (x⇤ )k⇤ DX ,
+(31)
+⇤k3
+
+where the last inequality follows from (6) and (26).
+2
+Note that we always have ⌘k < ↵ k DX
+. Therefore, it
+follows from the bound in (39), (26), and (31) that the total
+number of inner iterations can be bounded by
+⌘
+k
+k
+PN
+PN h ⇣
+0
+T
+
+4↵
+log
++
+1
++ log ⌘k0
+2
+k
+k=1
+k=1
+↵ k DX
+i
+8↵2 D 2
++ ⌘kk X + 2
+✓
+✓q
+◆◆
+N 
+X
+kf 0 (x⇤ )k⇤
+N
+
+5↵ log 2k 2
++
+1
++
+⇤k3
+LDX
+k=1
+
+⇤
++32↵2 k + (4↵ + 2)N
+
+= O(N log
+
+N2
+⇤
+
++ N 2 + N ),
+
+which implies that our bound in (29).
+
+and hence
+
+Pk
+
+bound in (28) then immediately follows from this observation and the fact that the number of calls to the SFO oracle
+is bounded by
+
+⌘i
+
+i
+i
+
+
+
+2
+kLDX
+,
+2
+
+Pk
+
+i=1
+
+i
+i Bi ( i
+
+L
+
+i)
+
+
+
+2
+kLDX
+2 2 .
+
+Using the bound in (37), we obtain (27), which implies that
+the⇣total number
+⌘ of outer iterations N can be bounded by
+p
+2
+O
+LDX /✏ under the assumptions (9) and (10). The
+
+We now provide a slightly improved complexity bound on
+the number of calls to the SFO oracle which depends on
+the distance from the initial point to the set of optimal solutions, rather than the diameter DX . In order to obtain
+this improvement, we need to estimate D0
+kx0 x⇤ k
+and to fix the number of iterations N in advance. This
+result will play an important role for the analysis of the
+CALSGD method to solve strongly convex problems (see
+Supplementary Material C.1).
+
+Conditional Accelerated Lazy Stochastic Gradient Descent
+
+k
+
+(32)
+
+0
+
+101
+100
+10
+
+1
+
+10
+
+2
+
+10
+
+3
+
+0
+
+Under assumptions (9) and (10),
+E [f (yN )
+
+f (x )] 
+
+8N
+
+1.
+
+As a consequence, the total number of calls to the SFO and
+LOsepX oracles performed by the CALSGD method for
+finding a stochastic ✏-solution of (1), respectively, can be
+bounded by
+⇢q
+O
+
+LD02
+✏
+
++
+
+2
+
+D02
+✏2
+
+600
+
+102
+
+8LD02
+N (N +1) ,
+
+,
+
+(33)
+
+and (29).
+
+Proof. The proof is similar to Corollary 2.4, and hence
+details are skipped.
+It should be pointed out that the complexity bound for the
+number of calls to the LOsep oracle in (29) is established
+with probability 1 ⇤. However, the probability parameter
+⇤ only appears in the non-dominant term.
+
+3. Experimental Results
+We present preliminary experimental results showing the
+performance of CALSGD compared to OFW for stochastic
+optimization. As examples we use the video co-localization
+problem, which can be solved by quadratic programming
+over a path polytope, different structured regression problems, and quadratic programming over the standard spectrahedron. In all cases we use objective functions of the
+2
+form kAx bk , with A 2 Rm⇥n , i.e., m examples over a
+feasible region of dimension n. For comparability we use a
+batch size of 128 for all algorithms to compute each gradient and the full matrix A for the actual objective function
+values. All graphs show the function value using a logscale
+on the vertical axis.
+In Figure 1 we compare the performance of three algorithms:
+CALSGD, SCGS and OFW. As described above SCGS is
+the non-lazy counterpart of CALSGD. In the four graphs
+of Figure 1 we report the objective function value over the
+number of iterations, the wall clock time in seconds, the
+number of calls to the linear oracle, and the number of
+gradient evaluations in that order. In all these measures, our
+proposed algorithms outperform OFW by multiple orders
+of magnitude. As expected in number of iterations and
+number of gradient evaluations both versions CALSGD and
+SCGS perform equally well, however in wall clock time and
+
+Function value
+
+⇤
+
+150 300 450
+Iterations
+
+Function value
+
+3L
+k ,
+
+2LD 2
+
+2
+= k+1
+, ⌘k = N k 0 ,
+m
+l 2
+N (k+1)2
+and Bk =
+, k 1.
+L2 D 2
+
+=
+
+102
+CALSGD
+SCGS
+OFW
+
+101
+100
+10
+
+1
+
+10
+
+2
+
+10
+
+3
+
+CALSGD
+SCGS
+OFW
+
+101
+100
+10
+
+1
+
+10
+
+2
+
+10
+
+3
+
+0
+
+150
+300
+450
+Wall clock time
+
+102
+CALSGD
+SCGS
+OFW
+
+0 100 200 300 400 500 600
+LP calls
+
+Function value
+
+k
+
+102
+Function value
+
+Corollary 2.5. Suppose that there exists an estimate D0
+s.t. kx0 x⇤ k  D0  DX . Also assume that the outer
+iteration limit N 1 is given. If
+
+101
+100
+10
+
+1
+
+10
+
+2
+
+10
+
+3
+
+CALSGD
+SCGS
+OFW
+
+0 100 200 300 400 500 600
+Gradient evaluations
+
+Figure 1. Performance of CALSGD and its non-lazy variant SCGS
+on a structured regression problem compared to OFW. The feasible region is the flow-based formulation of the convex hull of
+Hamiltonian cycles on 9 nodes and has dimension n = 162.
+
+in the number of calls to the linear oracle we observe the
+advantage of the weaker LOsep oracle over LO.
+In Figure 5 and 4 we show the performance of CALSGD
+on one video co-localization instance and one semi-definite
+convex programming instance. Due to space limitations
+we only report the function value over the number of iterations and wall clock time in seconds; see Supplementary
+Material D for a detailed analysis as well as more examples.
+Implementation details. Finally, we provide details of
+the implementation of LOsep. In the case of the structured
+regression problems and the quadratic optimizations over
+the path polytope instances, we used Gurobi as a solver
+and included callbacks to terminate whenever the required
+improvement (given by t 1 ) is reached; our approach is
+one out of many and other approaches could have been used
+equally well. If the solver does not find a good enough
+solution, it returns with a lower bound on the Wolfe gap,
+which we use to update t . In the case of convex programming over the feasible region Sn := {X 2 Rn⇥n | X <
+0 and tr(X) = 1}, we compute a maximal eigenvector of
+the gradient (which is a matrix in this case) and use the rank1 factor of the maximal eigenvector, which is an optimal
+point. In this case, there is no early termination.
+However, in all cases, we use caching, i.e., we store all
+previously seen points and check if any of them satisfies
+the improvement guarantee. If that is the case we do not
+call Gurobi or the maximal eigenvector routine. The size of
+the cache is very small in all experiments; alternatively one
+could use cache strategies such as e.g., k-paging.
+
+Conditional Accelerated Lazy Stochastic Gradient Descent
+
+104
+10
+
+3
+
+102
+
+0
+
+10
+20
+30
+Iterations
+
+105
+104
+
+10
+
+0
+
+Function value
+
+Function value
+
+106
+
+2
+
+10
+
+0
+
+8
+16
+24
+Iterations
+CALSGD
+OFW
+
+107
+106
+
+10
+
+1
+
+10
+
+2
+
+10
+
+3
+
+10
+
+4
+
+0
+
+500 1000 1500
+Iterations
+
+CALSGD
+OFW
+
+102
+10
+
+1
+
+100
+10
+
+1
+
+10
+
+2
+
+10
+
+3
+
+10
+
+4
+
+0
+
+25
+50
+75 100
+Wall clock time
+
+Figure 4. Performance of CALSGD and OFW on a medium sized
+convex programming instance with feasible region Sn := {X 2
+Rn⇥n | X < 0, tr(X) = 1} with n = 100 and m = 10000.
+Similar to the results before in both iterations and wall clock time
+our method performs better.
+
+105
+104
+103
+
+108
+
+2
+
+10
+
+7
+
+10
+
+6
 
 10
 
 15
+30
+45
+Wall clock time
 
+100
+
+3
+
+108
+CALSGD
+OFW
+
+107
+
+10
+
+104
+102
+
+40
+
+108
+
+3
+
+105
+
+1
+
+0
+
+15
+30
+45
+Wall clock time
+
+Figure 2. Two small video co-localization instances. On the
+left: road_paths_01_DC_a instance (n = 29682 and m =
+10000). On the right: road_paths_01_DC_b instance (n =
+29682 and m = 10000). Observe a significant difference in function value of multiple orders of magnitude after a few seconds.
+
+108
+CALSGD
+OFW
+
+Function value
+
+105
+
+106
+
+10
+
+Function value
+
+106
+
+CALSGD
+OFW
+
+107
+
+103
+CALSGD
+OFW
+
+102
+
+Function value
+
+108
+CALSGD
+OFW
+
+107
+
+Function value
+
+Function value
+
+108
+
+Function value
+
+103
+
+105
+104
+103
+102
+
+0
+
+10
 20
+30
+Iterations
 
-c)
+10
+
+6
+
+105
+104
+103
+102
+
+40
+
+CALSGD
+OFW
+
+107
+
+0
+
+15
+30
+45
+Wall clock time
+
+Figure 5. Performance of CALSGD compared to OFW on a small
+video co-localization instance. The dimension of the underlying
+path polytope is n = 29682, the time limit is 50 seconds. Our
+algorithm performs significantly better both in number of iterations
+as well as in wall clock time.
+
+10
+
+3
+
+Function value
+
+10
+
+0
+
+9
+
+107
+106
+10
+
+5
+
+10
+
+4
+
+10
+
+3
+
+105
+104
+
+10
+CALSGD
+OFW
+
+108
+
+0
+
+50 100 150 200
+Wall clock time
+
+6
+
+103
+
+10
+20
+30
+Iterations
+
+107
+CALSGD
+OFW
+
+0
+
+8
+16
+Iterations
+
+24
+
+106
+
+0
+
+9
+
+CALSGD
+OFW
+
+108
+107
+106
+105
+104
+103
+
+0
+
+50 100 150 200
+Wall clock time
+
+Figure 3. Two medium sized video co-localization instances. On
+the left: road_paths_02_DE_a instance (n = 119520 and
+m = 10000). On the right: road_paths_02_DE_b instance
+(n = 119520 and m = 10000). Similar results as in Figure 2.
 
 25
+50
+75
+Iterations
 
-30
+106
 
-( ( ( ( ( ( ( ( ( [ [ [ [ [ [ ) ) ) aaaaaa ] ] ] ] ] ] ] ] ] ( ) ( ) ( ) (
+100
 
-d)
+107
 
-Figure 9. A visualization of the dynamics of an ISAN for the two
-parentheses counting task with 1 time lag (count either ’()’ or ’[]’
-nesting levels with a one-step readout delay). In a) the weight
-matrix for ‘[’ is shown in the original basis. In c) it is shown transformed to highlight the delay-line dynamics. The activations of the
-hidden units are shown b) in the original basis, and d) rotated to the
-same basis as in c), to highlight the delay-line dynamics in a more
-intelligible way. The white line delineates the transition matrix
-elements and hidden state dimensions that directly contribute to
-the output. All matrices for parentheses types appear similarly,
-with closing parentheses, e.g. ‘]’, changing the direction of the
-delay line.
+0
 
-complexities of memory management, batching, etc.
-5.2. Future work
-There are some obvious future directions to this work. Currently, we define switching behavior using an input set with
-finite and manageable cardinality. Studying word-level language models with enormous vocabularies may require
-some additional logic to scale. Another idea is to build
-a language model that switches on bigrams or trigrams,
-rather than characters or words, targeting an intermediate
-number of affine transformations. Adapting this model
-to continuous-valued inputs is another important direction.
-One approach is to use a tensor factorization similar to that
-employed by the MRNN (Sutskever et al., 2014) or defining
-weights via additional networks, as in HyperNetworks (Ha
-et al., 2016). Finally, we expect that automated methods
-for changing bases to enable sparse representations in the
-hidden state and dynamics matrices will be a particularly
-fruitful direction to pursue.
+20
+40
+60
+Iterations
 
-Interpretable RNNs with Input Switched Affine Networks
+107
+CALSGD
+OFW
+
+106
+
+CALSGD
+OFW
+
+Function value
+
+10
+
+4
+
+10
+
+107
+
+0
+
+1000 2000 3000 4000
+Wall clock time
+
+CALSGD
+OFW
+
+Function value
+
+105
+
+107
+
+Function value
+
+10
+
+6
+
+CALSGD
+OFW
+
+108
+
+Function value
+
+107
+
+Function value
+
+10
+
+109
+CALSGD
+OFW
+
+8
+
+Function value
+
+Function value
+
+109
+
+106
+
+0
+
+1000 2000 3000 4000
+Wall clock time
+
+Figure 6. Structured regression problem over the convex hull of
+all Hamiltonian cycles of a graph on 11 nodes (n = 242) on the
+left and 12 nodes (n = 288) on the right. We used a density of
+d = 0.6 for A and m = 10000. On both instances CALSGD
+achieves lower values much faster, both in number of iterations as
+well as in wall clock time.
+
+Conditional Accelerated Lazy Stochastic Gradient Descent
 
 Acknowledgements
-We would like to thank Jasmine Collins for her help and
-advice, and Quoc Le, David Ha and Mohammad Norouzi
-for helpful discussions. We would also like to thank Herbert
-Jaeger for insightful discussions regarding the ObservableOperator-Model.
+We would to thank Elad Hazan for providing references.
+Research reported in this paper was partially supported by
+NSF CAREER award CMMI-1452463.
 
 References
-Alain, Guillaume and Bengio, Yoshua. Understanding intermediate layers using linear classifier probes. arXiv
-preprint arXiv:1610.01644, 2016.
-Andrew, Alex M. An introduction to support vector machines and other kernel-based learning methods. Kybernetes, 2013.
-Belanger, David and Kakade, Sham. A linear dynamical
-system model for text. In Proceedings of the 32nd International Conference on Machine Learning (ICML-15),
-pp. 833–842, 2015.
-Berk, Richard, Heidari, Hoda, Jabbari, Shahin, Kearns,
-Michael, and Roth, Aaron. Fairness in criminal justice
-risk assessments: The state of the art. arXiv preprint
-arXiv:1703.09207, 2017.
-Bojarski, Mariusz, Del Testa, Davide, Dworakowski, Daniel,
-Firner, Bernhard, Flepp, Beat, Goyal, Prasoon, Jackel,
-Lawrence D, Monfort, Mathew, Muller, Urs, Zhang, Jiakai, et al. End to end learning for self-driving cars. arXiv
-preprint arXiv:1604.07316, 2016.
-Chelba, C., Mikolov, T., Schuster, M., Ge, Q., Brants, T.,
-Koehn, P., and Robinson, T. One Billion Word Benchmark for Measuring Progress in Statistical Language
-Modeling. ArXiv e-prints, December 2013.
-Ching, Travers, Himmelstein, Daniel S, Beaulieu-Jones,
-Brett K, Kalinin, Alexandr A, Do, Brian T, Way, Gregory P, Ferrero, Enrico, Agapow, Paul-Michael, Xie, Wei,
-Rosen, Gail L, et al. Opportunities and obstacles for deep
-learning in biology and medicine. bioRxiv, pp. 142760,
-2017.
-Collins, Jasmine, Sohl-Dickstein, Jascha, and Sussillo,
-David. Capacity and trainability in recurrent neural networks. ICLR 2017 submission, 2016.
-Council of European Union. General Data Protection
-Regulation, Article 22 (Regulation (EU) 2016/679),
-2016. URL http://www.privacy-regulation.
-eu/en/22.htm.
-Deo, Rahul C. Machine learning in medicine. Circulation,
-132(20):1920–1930, 2015.
+S. Ahipasaoglu and M. Todd. A Modified Frank-Wolfe Algorithm for Computing Minimum-Area Enclosing Ellipsoidal Cylinders: Theory and Algorithms. Computational
+Geometry, 46:494–519, 2013.
+F. Bach, S. Lacoste-Julien, and G. Obozinski. On the equivalence between herding and conditional gradient algorithms. In the 29th International Conference on Machine
+Learning, 2012.
+A. Beck and M. Teboulle. A conditional gradient method
+with linear rate of convergence for solving convex linear
+systems. Math. Methods Oper. Res., 59:235–247, 2004.
+G. Braun, S. Pokutta, and D. Zink. Lazifying conditional
+gradient algorithms. arXiv preprint arXiv:1610.05120,
+2016.
+Y. Chen, G. Lan, and Y. Ouyang. Optimal primal-dual
+methods for a class of saddle point problems. SIAM
+Journal on Optimization, 24(4):1779–1814, 2014.
+K. L. Clarkson. Coresets, sparse greedy approximation, and
+the frank-wolfe algorithm. ACM Trans. Algorithms, 6(4):
+63:1–63:30, Sept. 2010.
+B. Cox, A. Juditsky, and A. S. Nemirovski. Dual subgradient
+algorithms for large-scale nonsmooth learning problems.
+Manuscript, School of ISyE, Georgia Tech, Atlanta, GA,
+30332, USA, 2013. submitted to Mathematical Programming, Series B.
+M. Frank and P. Wolfe. An algorithm for quadratic programming. Naval Research Logistics Quarterly, 3:95–110,
+1956.
+R. M. Freund and P. Grigas. New Analysis and Results for
+the Frank-Wolfe Method. ArXiv e-prints, July 2013.
+D. Garber and E. Hazan. A Linearly Convergent Conditional Gradient Algorithm with Applications to Online
+and Stochastic Optimization. ArXiv e-prints, Jan 2013.
+S. Ghadimi and G. Lan. Optimal stochastic approximation
+algorithms for strongly convex stochastic composite optimization, I: a generic algorithmic framework. SIAM
+Journal on Optimization, 22:1469–1492, 2012.
+S. Ghadimi and G. Lan. Optimal stochastic approximation
+algorithms for strongly convex stochastic composite optimization, II: shrinking procedures and optimal algorithms.
+SIAM Journal on Optimization, 23:2061–2089, 2013.
 
-Freedman, David A. Statistical models: theory and practice.
-cambridge university press, 2009.
-Gulshan, Varun, Peng, Lily, Coram, Marc, Stumpe, Martin C, Wu, Derek, Narayanaswamy, Arunachalam, Venugopalan, Subhashini, Widner, Kasumi, Madams, Tom,
-Cuadros, Jorge, et al. Development and validation of a
-deep learning algorithm for detection of diabetic retinopathy in retinal fundus photographs. JAMA, 316(22):2402–
-2410, 2016.
-Ha, David, Dai, Andrew, and Le, Quoc V. Hypernetworks.
-arXiv preprint arXiv:1609.09106, 2016.
-Hochreiter, Sepp and Schmidhuber, Jürgen. Long short-term
-memory. Neural computation, 9(8):1735–1780, 1997.
-Hwang, Kyuyeon and Sung, Wonyong. Character-level
-language modeling with hierarchical recurrent neural
-networks. CoRR, abs/1609.03777, 2016. URL http:
-//arxiv.org/abs/1609.03777.
-Jaeger, Herbert. Observable operator models for discrete
-stochastic time series. Neural Computation, 12(6):1371–
-1398, 2000.
-Józefowicz, Rafal, Vinyals, Oriol, Schuster, Mike, Shazeer,
-Noam, and Wu, Yonghui. Exploring the limits of language modeling. CoRR, abs/1602.02410, 2016. URL
-http://arxiv.org/abs/1602.02410.
-Karpathy, Andrej, Johnson, Justin, and Li, Fei-Fei. Visualizing and understanding recurrent networks. arXiv preprint
-arXiv:1506.02078, 2015.
-Katz, Guy, Barrett, Clark, Dill, David, Julian, Kyle, and
-Kochenderfer, Mykel. Reluplex: An efficient smt solver
-for verifying deep neural networks. arXiv preprint
-arXiv:1702.01135, 2017.
-Le, Quoc V, Ranzato, Marc A., Monga, Rajat, Devin,
-Matthieu, Chen, Kai, Corrado, Greg S., Dean, J, and
-Ng, Andrew Y. Building high-level features using large
-scale unsupervised learning. In International Conference
-on Machine Learning, 2012.
-Linderman, Scott W, Miller, Andrew C, Adams, Ryan P,
-Blei, David M, Paninski, Liam, and Johnson, Matthew J.
-Recurrent switching linear dynamical systems. arXiv
-preprint arXiv:1610.08466, 2016.
-Mahoney, Matt. Large text compression benchmark: About
-the test data, 2011. URL http://mattmahoney.
-net/dc/textdata. [Online; accessed 15-November2016].
-Martens, James and Sutskever, Ilya. Learning recurrent neural networks with hessian-free optimization. In Proceedings of the 28th International Conference on Machine
-Learning (ICML-11), pp. 1033–1040, 2011.
+Gurobi Optimization. Gurobi optimizer reference manual version 6.5, 2016. URL https://www.gurobi.
+com/documentation/6.5/refman/.
+Z. Harchaoui, A. Juditsky, and A. S. Nemirovski. Conditional gradient algorithms for machine learning. NIPS
+OPT workshop, 2012.
+E. Hazan. Sparse approximate solutions to semidefinite
+programs. In E. Laber, C. Bornstein, L. Nogueira, and
+L. Faria, editors, LATIN 2008: Theoretical Informatics, volume 4957 of Lecture Notes in Computer Science,
+pages 306–316. Springer Berlin Heidelberg, 2008. ISBN
+978-3-540-78772-3.
+E. Hazan and S. Kale. Projection-free online learning. arXiv
+preprint arXiv:1206.4657, 2012.
+E. Hazan and H. Luo. Variance-reduced and projectionfree stochastic optimization. In Proceedings of The 33rd
+International Conference on Machine Learning, pages
+1263–1271, 2016.
+M. Jaggi. Sparse Convex Optimization Methods for
+Machine Learning. PhD thesis, ETH Zürich, 2011.
+http://dx.doi.org/10.3929/ethz-a-007050453.
+M. Jaggi. Revisiting frank-wolfe: Projection-free sparse
+convex optimization. In the 30th International Conference on Machine Learning, 2013.
+M. Jaggi and M. Sulovský. A simple algorithm for nuclear
+norm regularized problems. In the 27th International
+Conference on Machine Learning, 2010.
+R. Johnson and T. Zhang. Accelerating stochastic gradient
+descent using predictive variance reduction. In Advances
+in Neural Information Processing Systems, pages 315–
+323, 2013.
+A. Joulin, K. Tang, and L. Fei-Fei. Efficient image and
+video co-localization with frank-wolfe algorithm. In European Conference on Computer Vision, pages 253–268.
+Springer, 2014.
+G. Lan. Convex optimization under inexact first-order information. Ph.D. dissertation, School of Industrial and
+Systems Engineering, Georgia Institute of Technology,
+Atlanta, GA 30332, USA, 2009.
+G. Lan. An optimal method for stochastic composite optimization. Mathematical Programming, 133(1):365–397,
+2012.
+G. Lan. The complexity of large-scale convex programming
+under a linear optimization oracle. Technical Report,
+2013. Available on http://www.optimization-online.org/.
 
-Interpretable RNNs with Input Switched Affine Networks
+Conditional Accelerated Lazy Stochastic Gradient Descent
 
-Mikolov, Tomáš, Sutskever, Ilya, Deoras, Anoop, Le, HaiSon, and Kombrink, Stefan. Subword language modeling
-with neural networks. preprint, 2012.
-Mordvintsev, Alexander, Olah, Christopher, and Tyka, Mike.
-Inceptionism: Going deeper into neural networks. Google
-Research Blog. Retrieved June, 20:14, 2015.
-Murdoch, W. James and Szlam, Arthur. Automatic rule
-extraction from long short term memory networks. In
-ICLR, 2017.
-Quinlan, J. Ross. Simplifying decision trees. International
-journal of man-machine studies, 27(3):221–234, 1987.
-Scarborough, David and Somers, Mark John. Neural networks in organizational research: Applying pattern recognition to the analysis of organizational behavior. American Psychological Association, 2006.
-Siano, Pierluigi, Cecati, Carlo, Yu, Hao, and Kolbusz,
-Janusz. Real time operation of smart grids via fcn networks and optimal power flow. IEEE Transactions on
-Industrial Informatics, 8(4):944–952, 2012.
-Sussillo, David and Barak, Omri. Opening the black box:
-low-dimensional dynamics in high-dimensional recurrent
-neural networks. Neural computation, 25(3):626–649,
-2013.
-Sutskever, Ilya, Martens, James, and Hinton, Geoffrey E.
-Generating text with recurrent neural networks. In Proceedings of the 28th International Conference on Machine Learning (ICML-11), pp. 1017–1024, 2011.
-Sutskever, Ilya, Vinyals, Oriol, and Le, Quoc V. Sequence
-to sequence learning with neural networks. In Advances
-in neural information processing systems, pp. 3104–3112,
-2014.
-Tashea, Jason. Courts are using ai to sentence criminals.
-that must stop now. WIRED magazine, 2017.
-Zeiler, Matthew D, Krishnan, Dilip, Taylor, Graham W, and
-Fergus, Rob. Deconvolutional networks. In Computer
-Vision and Pattern Recognition (CVPR), 2010 IEEE Conference on, pp. 2528–2535. IEEE, 2010.
+G. Lan and Y. Zhou. Conditional gradient sliding for convex
+optimization. Optimization-Online preprint (4605), 2014.
+R. Luss and M. Teboulle. Conditional gradient algorithms
+for rank one matrix approximations with a sparsity constraint. SIAM Review, 55:65–98, 2013.
+M. Mahdavi, L. Zhang, and R. Jin. Mixed optimization for
+smooth functions. In Advances in Neural Information
+Processing Systems, pages 674–682, 2013.
+Y. E. Nesterov. A method for unconstrained convex minimization problem with the rate of convergence O(1/k 2 ).
+Doklady AN SSSR, 269:543–547, 1983.
+Y. E. Nesterov. Introductory Lectures on Convex Optimization: a basic course. Kluwer Academic Publishers, Massachusetts, 2004.
+Y. E. Nesterov. Smooth minimization of nonsmooth functions. Mathematical Programming, 103:127–152, 2005.
+C. Shen, J. Kim, L. Wang, and A. van den Hengel. Positive semidefinite metric learning using boosting-like algorithms. Journal of Machine Learning Research, 13:
+1007–1036, 2012.
 
 

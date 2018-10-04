@@ -1,1006 +1,1123 @@
-Image-to-Markup Generation with Coarse-to-Fine Attention
+Efficient Nonmyopic Active Search
 
-Yuntian Deng 1 Anssi Kanervisto 2 Jeffrey Ling 1 Alexander M. Rush 1
+Shali Jiang 1 Gustavo Malkomes 1 Geoff Converse 2 Alyssa Shofner 3 Benjamin Moseley 1 Roman Garnett 1
 
 Abstract
-We present a neural encoder-decoder model to
-convert images into presentational markup based
-on a scalable coarse-to-fine attention mechanism.
-Our method is evaluated in the context of imageto-LaTeX generation, and we introduce a new
-dataset of real-world rendered mathematical expressions paired with LaTeX markup. We show
-that unlike neural OCR techniques using CTCbased models, attention-based approaches can
-tackle this non-standard OCR task. Our approach outperforms classical mathematical OCR
-systems by a large margin on in-domain rendered data, and, with pretraining, also performs
-well on out-of-domain handwritten data. To reduce the inference complexity associated with
-the attention-based approaches, we introduce a
-new coarse-to-fine attention layer that selects a
-support region before applying attention.
+Active search is an active learning setting with the
+goal of identifying as many members of a given
+class as possible under a labeling budget. In this
+work, we first establish a theoretical hardness of
+active search, proving that no polynomial-time
+policy can achieve a constant factor approximation ratio with respect to the expected utility of the
+optimal policy. We also propose a novel, computationally efficient active search policy achieving
+exceptional performance on several real-world
+tasks. Our policy is nonmyopic, always considering the entire remaining search budget. It also automatically and dynamically balances exploration
+and exploitation consistent with the remaining
+budget, without relying on a parameter to control
+this tradeoff. We conduct experiments on diverse
+datasets from several domains: drug discovery,
+materials science, and a citation network. Our
+efficient nonmyopic policy recovers significantly
+more valuable points with the same budget than
+several alternatives from the literature, including
+myopic approximations to the optimal policy.
 
 1. Introduction
-Optical character recognition (OCR) is most commonly
-used to recognize natural language from an image; however, as early as the work of Anderson (1967), there has
-been research interest in converting images into structured
-language or markup that defines both the text itself and
-its presentational semantics. The primary target for this
-research is OCR for mathematical expressions, and how
-to handle presentational aspects such as sub and superscript notation, special symbols, and nested fractions (Belaid & Haton, 1984; Chan & Yeung, 2000). The most effective systems combine specialized character segmentation with grammars of the underlying mathematical layout
-language (Miller & Viola, 1998). A prime example of this
-approach is the I NFTY system that is used to convert printed
-mathematical expressions to LaTeX and other markup formats (Suzuki et al., 2003). Other, mostly proprietary sys1
-Harvard University 2 University of Eastern Finland. Correspondence to: Yuntian Deng <dengyuntian@seas.harvard.edu>.
+In many real-world applications, the process of analyzing
+data incurs some cost; for example, obtaining a label may
+require a laborious experiment, a human action, or depletion of some other expensive resource. In these scenarios,
+carefully selecting data to label can often help us achieve
+our goals more efficiently than, e.g., random sampling. This
+is the motivation behind active learning.
+Naturally, which data examples are the most useful to label might change according to our objective. Traditionally,
+much of the active learning literature has focused on train1
+Washington University in St. Louis, St. Louis, MO, USA
+Simpson College, Indianola, IA, USA 3 University of South
+Carolina, Columbia, SC, USA. Correspondence to: Shali Jiang
+<jiang.s@wustl.edu>.
+2
 
 Proceedings of the 34 th International Conference on Machine
-Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
-by the author(s).
+Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017 by
+the author(s).
 
-tems, have competed on this task as part of the CROHME
-handwritten mathematics challenge (Mouchere et al., 2013;
-2014).
-Problems like OCR that require joint processing of image
-and text data have recently seen increased research interest due to the refinement of deep neural models in these
-two domains. For instance, advances have been made in
-the areas of handwriting recognition (Ciresan et al., 2010),
-OCR in natural scenes (Jaderberg et al., 2015; 2016; Wang
-et al., 2012) and image caption generation (Karpathy & FeiFei, 2015; Vinyals et al., 2015). At a high-level, each of
-these systems learn an abstract encoded representation of
-the input image which is then decoded to generate a textual
-output. In addition to performing quite well on standard
-tasks, these models are entirely data driven, which makes
-them adaptable to a wide range of datasets without requiring heavy preprocessing or domain specific engineering.
-However, we note that tasks such as image captioning differ from the traditional mathematical OCR task in two respects: first, unlike image captioning, the traditional OCR
-task assumes a left-to-right ordering, so neural systems addressing this problem have primarily relied on Connectionist Temporal Classification (CTC) (Graves et al., 2006) or
-stroke-based approaches. Second, the image captioning
-task theoretically allows for systems to focus their attention anywhere, and thus does not directly test a system’s
-ability to maintain consistent tracking with its attention.
-In this work, we explore the use of attention-based imageto-text models (Xu et al., 2015) for the problem of generating structured markup. We consider whether a supervised
-model can learn to produce correct presentational markup
-from an image, without requiring a textual or visual grammar of the underlying markup language. Our model incorporates a multi-layer convolutional network over the image
-with an attention-based recurrent neural network decoder.
-To adapt this model to the OCR problem and capture the
-document’s layout, we also incorporate a new source encoder layer in the form of a multi-row recurrent model as
-part of the encoder.
-Our modeling contributions are twofold. First, we show
-that assumptions like the left-to-right ordering inherent in
-CTC-based models are not required for neural OCR, since
-general-purpose encoders can provide the necessary track-
+ing a model to have high generalization performance with
+few training examples. Here, we consider a special and
+atypical realization of active learning: the active search
+problem (Garnett et al., 2012). In active search, we seek
+to sequentially inspect data so as to discover members of a
+rare, desired class. The labels are not known a priori but can
+be revealed by querying a costly labeling oracle. The goal
+is to design an policy to sequentially query points to find
+as many valuable points as possible under a labeling budget. Several real-world problems can be naturally posed in
+terms of active search; drug discovery, fraud detection, and
+product recommendation are a few examples. A successful
+active search policy faces the fundamental dilemma between
+exploration and exploitation; i.e., whether to search for new
+regions of valuable points (exploration) or take advantage
+of the currently most-promising regions (exploitation).
+Previous work developed policies for active search by appealing to Bayesian decision theory (Garnett et al., 2011;
+2012). Garnett et al. (2012) derived the optimal policy in
+this framework with a natural utility function. Not surprisingly, realizing this policy in the general case requires
+exponential computation. To overcome this intractability,
+the authors of that work proposed using myopic lookahead
+policies in practice, which compute the optimal policy only
+up to a limited number of steps into the future. This defines
+a family of policies ranging in complexity from completely
+greedy one-step lookahead to the optimal policy, which
+looks ahead to the depletion of the entire budget. The authors demonstrated improved performance on active search
+over the greedy policy even when looking just two steps into
+the future, including in a drug-discovery setting (Garnett
+et al., 2015). The main limitation of these strategies is that
+they completely ignore what can happen beyond the chosen
+horizon, which for typical problems is necessarily limited
+to ` ≤ 3, even with aggressive pruning.
+The contributions of this paper are two-fold. First, we prove
+that no polynomial time policy for active search can have
+nontrivial approximation ratio with respect to the optimal
+policy in terms of expected utility. This extends the result
+by Garnett et al. (2012) that myopic approximations to the
+optimal policy cannot approximate the optimal policy. The
+proof of this theorem is constructive, creating a family of
+explicitly difficult active search instances and showing that
+no polynomial time algorithm can perform well compared
 
-Image-to-Markup Generation with Coarse-to-Fine Attention
+Efficient Nonmyopic Active Search
 
-Figure 1: Example of the model generating mathematical markup. The model generates one LaTeX symbol y at a time based on the
-input image x. The gray lines highlight the H × V grid features V formed by the row encoder from the CNN’s output. The dotted lines
-indicate the center of mass of α for each token (only non-structural tokens are shown). The blue cell indicates the support set selected
-by the coarse-level attention for the symbol “0”, while the red cells indicate its fine-level attention. White space around the image has
-been trimmed for visualization. The actual size of the blue mask is 4 × 4. See http://lstm.seas.harvard.edu/latex/ for
-a complete interactive version of this visualization over the test set.
+to the optimal (exponential cost) policy on these.
+Second, we introduce a novel nonmyopic policy for active
+search that considers not only the potential immediate contribution of each unlabeled point but also its potential impact
+on the remaining points that could be chosen afterwards.
+Our policy automatically balances exploitation against exploration consistent with the labeling budget without requiring any parameters controlling this tradeoff. We also
+develop an effective strategy for pruning unlabeled points
+by bounding their potential impact on the search problem.
+We compare our method with several baselines by conducting experiments on numerous real datasets spanning several
+domains including citation networks, materials science, and
+drug discovery. Our results thoroughly demonstrate that
+our policy typically significantly outperforms previously
+proposed active search approaches.
 
-ing for accurate attention (example shown in Figure 1).
-Second, in order to reduce attention computation overhead,
-we introduce a novel two-layer hard-soft approach to attention, which we call coarse-to-fine attention, inspired
-by coarse-to-fine inference (Raphael, 2001) from graphical models.1 Sparse memory and conditional computation
-with neural networks have also been explored with various
-levels of success in several previous works (Bengio et al.,
-2015; Shazeer et al., 2017; Rae et al., 2016; Andrychowicz
-& Kurach, 2016). We demonstrate here that this coarse-tofine method, when trained with REINFORCE, significantly
-reduces the overhead of attention, and leads to only a small
-drop in accuracy.
-To make these experiments possible, we also construct a
-new public dataset, I M 2L ATEX -100 K, which consists of
-a large collection of rendered real-world mathematical expressions collected from published articles2 . This dataset
-provides a challenging test-bed for the image-to-markup
-task based on reconstructing mathematical markup from
-rendered images, originally written by scientists. A model
-is trained to generate LaTeX markup with the goal of rendering to the exact source image.
-Experiments compare the output of the model with several research and commercial baselines, as well as ablations of these models. The full system for mathematical
-expression generation is able to reproduce the same image on more than 75% of real-world test examples. Additionally, the use of a multi-row encoder leads to a significant increase in performance. We also experiment with
-training on a simulated handwritten version of the dataset
-to recognize handwritten textual expressions. Even with
-only a small in-domain training set, the model is able to
+2. Active Search and the Optimal Policy
+Suppose we are given a finite domain of elements X , {xi }.
+We know that there is a rare subset R ⊂ X , the members
+of which are considered valuable, but their identities are
+unknown a priori. We will call the elements of R targets
+or positive items. Assume that there is an oracle that can
+determine whether a specified element x ∈ X is a target,
+producing the binary output y , 1{x ∈ R}. The oracle, however, is assumed to be expensive and may only be
+queried t times. We seek to design a policy to sequentially
+query elements to maximize the number of targets found.
+We will express
+over different sets of obser our preference
+	
+vations D , (xi , yi ) through a simple utility:
+u(D) ,
+
+P
+
+yi ∈D
+
+yi ,
+
+(1)
+
+which simply counts the number of targets in D. Then,
+the problem is to sequentially construct a set of t observed
+points D with the goal of maximizing u(D). Throughout
+this work, we use a subscript to specify a set of observed
+
+	i
+data after i ≤ t queries, defining Di , (xj , yj ) j=1 .
+
+expected utility of the final observed dataset:
+
+
+x∗i = arg max E u(Dt ) | xi , Di−1 .
+
+(2)
+
+xi ∈X \Di−1
+
+In other words, we choose a point x∗i maximizing the expected number of targets found at termination.
+Unfortu
+
+nately, as we shall see later, computing E u(Dt ) | xi , Di−1
+is computationally impractical.
+To better understand the optimal policy, consider the case
+i = t, so we already have t − 1 observations Dt−1 and there
+is only one more query left. The expected utility is
+
+ P
+E u(Dt ) | xt , Dt−1 = yt u(Dt ) Pr(yt | xt , Dt−1 )
+= u(Dt−1 ) + Pr(yt = 1 | xt , Dt−1 ). (3)
+Note u(Dt−1 ) is a constant, since Dt−1 was already observed. Thus, when there is one query remaining, the optimal decision is to greedily choose the remaining point with
+maximum probability of being a target.
+When two or more queries are left, the optimal policy is not
+as trivial. The challenge is that after the first choice, the
+probability model changes, affecting all future decisions.
+Below, we show the expected utility for i = t − 1.
+
+
+E u(Dt ) | xt−1 , Dt−2 = u(Dt−2 ) +
+Pr(yt−1 = 1 | xt−1 , Dt−2 ) +
+
+
+Eyt−1 max Pr(yt = 1 | xt , Dt−1 ) . (4)
+xt
+
+This expression has an intuitive interpretation. First, we
+have the reward for the data already observed, u(Dt−2 ). The
+second term is the expected reward contribution from the
+point xt−1 under consideration, Pr(yt−1 = 1 | xt−1 , Dt−2 ).
+Finally, the last term is the expected future reward, which is
+the expected reward to be gathered on the next step; from
+our previous analysis, we know that this will be maximized
+by a greedy selection (3). These latter two terms can be
+interpreted as encouraging exploitation and exploration, respectively, with the optimal second-to-last query.
+In general, we can compute expected utility (2) at time i ≤ t
+recursively as (Garnett et al., 2012):
+
+2.1. The Bayesian Optimal Policy
+Following previous work, we consider the active search
+problem in the standard Bayesian framework. Assume we
+have a probabilistic classification model that provides the
+posterior probability of a point x belonging to R, given
+observed data D: Pr(y = 1 | x, D).
+Recall that we are allowed to perform t labeling queries,
+and suppose we are at some iteration i for i ≤ t; having
+already observed i − 1 examples, Di−1 . We wish to submit
+the ith item to the oracle. Bayesian decision theory compels
+us to select the item that if we evaluate next maximizes the
+
+
+
+E u(Dt ) | xi , Di−1 = u(Di−1 ) +
+Pr(yi = 1 | xi , Di−1 ) +
+|
+{z
+}
+exploitation, < 1
+
+h
+
+
+i
+Eyi maxx0 E u(Dt \ Di ) | x0 , Di . (5)
+{z
+}
+|
+exploration, < t−i
+
+It is easy to show that
+ the time complexity for computing
+Eq. (5) is O (2n)` , where ` = t − i + 1 is the lookahead
+and n is the total number of unlabeled points.
+
+Efficient Nonmyopic Active Search
+
+This exponential running time complexity makes the
+Bayeisan optimal policy infeasible to compute, even for
+small-scale applications. A typical workaround is to pretend
+there are only a few steps left in the search problem at each
+iteration, and sequentially apply a myopic policy (e.g., (3)
+or (4)). We will refer to these policies as the one-step and
+two-step myopic policies, respectively, and more generally
+to the `-step myopic policy, with ` < t − i + 1.
+Since these myopic approaches cannot plan more than `
+steps ahead, they can underestimate the potential benefit
+of exploration. In particular, the potential magnitude of
+the exploration term in (5) depends linearly on the budget,
+whereas in an `-step myopic policy, the magnitude of the
+equivalent term can go no higher than a fixed upper bound
+of `. In fact, Garnett et al. (2012) showed via an explicit
+construction that the expected performance of the `-step
+policy can be arbitrarily worse than any m-step policy with
+` < m, exploiting this inability to “see past” the horizon.
+When following this suggestion, we must thus trade off the
+potential benefits of nonmyopia and the rapidly increasing
+computational burden of lookahead when choosing a policy.
+2.2. Hardness of Approximation
+We extend the above hardness result to show that no
+polynomial-time active search policy can be a (constant
+factor) approximation algorithm with respect to the optimal
+policy, in terms of expected utility. In particular, under the
+assumption that algorithms only have access to a unit cost
+conditional marginal probability Pr(y = 1 | x, D) for any
+x and D, where |D| is less than the budget,1 then:
+
+Theorem 1. There is no polynomial-time active search policy with a constant factor approximation ratio for optimizing
+the expected utility.
+
+We prove this theorem in the appendix. The main idea is
+to construct a class of instances where a small “secret” set
+of elements encodes the locations of a large “treasure” of
+targets. The probability of revealing the treasure is vanishingly small without discovering the secret set; however, it
+is extremely unlikely to observe any information about this
+secret set with polynomial-time effort.
+Despite the negative result of Theorem 1, we may still
+search for policies that are empirically effective on real problems. In the next section, we propose a novel alternative
+approximation to the optimal policy (2) that is nonmyopic,
+computationally efficient, and shows impressive empirical
+performance.
 1
-Note that ideas with the same name have been proposed in
-previous work (Mei et al., 2016), albeit in a different formulation
-without the goal of reducing computation.
-2
-This dataset is based on the challenge originally proposed as
-an OpenAI Request for Research under the title Im2Latex.
 
-produce over 30% exact match output. All data, models, and evaluation scripts are publicly available at http:
-//lstm.seas.harvard.edu/latex/.
+The optimal policy operates under these restrictions.
 
-2. Problem: Image-to-Markup Generation
-We define the image-to-markup problem as converting a
-rendered source image to target presentational markup that
-fully describes both its content and layout. The source, x,
-consists of an image. The target, y, consists of a sequence
-of tokens y1 , y2 , · · · , yT where T is the length of the output, and each y is a token in the markup language. The
-rendering is defined by a possibly unknown, many-to-one,
-compile function, compile. In practice this function may
-be quite complicated, e.g a browser, or ill-specified, e.g.
-the LaTeX language.
-The supervised task is to learn to approximately invert the
-compile function using supervised examples of its behavior. We assume that we are given instances (x, y), with
-possibly differing dimensions and that, compile(y) ≈ x,
-for all training pairs (x, y) (assuming possible noise).
-At test time, the system is given a raw input x rendered
-from ground-truth y. It generates a hypothesis ŷ that
-can then be rendered by the black-box function x̂ =
-compile(ŷ). Evaluation is done between x̂ and x, i.e. the
-aim is to produce similar rendered images while ŷ may or
-may not be similar to the ground-truth markup y.
-
-3. Model
-Contrary to most past work on neural OCR, our model uses
-a full grid encoder over the input image, so that it can
-support non left-to-right order in the generated markup.
-The base model is adapted from the encoder of Xu et al.
-(2015) developed for image captioning. Notably, though,
-our model also includes a row encoder which helps the performance of the system.
-
-Image-to-Markup Generation with Coarse-to-Fine Attention
-
-Decoder
-
-V0
-
-V
-
-Row Encoder
-
-Row Encoder
-
-Ṽ
+3. Efficient Nonmyopic Active Search
+We have seen above how to myopically approximate the
+Bayesian optimal policy using an `-step-lookahead approximate policy (5). Such an approximation, however, effectively assumes that the search procedure will terminate after
+the next ` evaluations, which does not reward exploratory
+behavior that improves performance beyond that horizon.
+We propose to continue to exactly compute the expected
+utility to some fixed horizon, but to approximate the remainder of the search differently. We will approximate the
+expected utility from any remaining portion of the search by
+assuming that any remaining points, {xi+1 , xi+2 , . . . , xt },
+in our budget will be selected simultaneously in one big
+batch. One rationale is if we assume that after observing Di ,
+the labels of all remaining unlabeled points are conditionally
+independent, then this approximation recovers the Bayesian
+optimal policy exactly. By exploiting linearity of expectation, it is easy to work out the optimal policy for selecting
+such a simultaneous batch observation: we simply select the
+points with the highest probability of being valuable. The
+resulting approximation is
+
+ P0
+max
+E u(Dt \Di ) | x0 , Di ≈ t−i Pr(y = 1 | x, Di ),
+0
 x
-Figure 2: Network structure. Given an input image, a CNN is
-applied to extract a feature map Ṽ. For each row in the feature
-map, we employ an RNN to encode spatial layout information.
-The encoded fine features V are then used by an RNN decoder
-with a visual attention mechanism to produce final outputs. For
-clarity we only show the RNN encoding at the first row and the
-decoding at one step. In Section 4, we consider variants of the
-model where another CNN and row encoder are applied to the
-feature map to extract coarse features V0 , which are used to select
-a support region in the fine-grained features, as indicated by the
-blue masks.
 
-The model first extracts image features using a convolutional neural network (CNN) and arranges the features in
-a grid. Each row is then encoded using a recurrent neural
-network (RNN). These encoded features are then used by
-an RNN decoder with a visual attention mechanism. The
-decoder implements a conditional language model over the
-vocabulary, and the whole model is trained to maximize
-the likelihood of the observed markup. The full structure is
-illustrated in Figure 2.
-Convolutional Network The visual features of an image
-are extracted with a multi-layer convolutional neural network interleaved with max-pooling layers. This network
-architecture is now standard; we model it specifically after the network used by Shi et al. (2015) for OCR from
-images (specification is given in Table 1). Unlike some recent OCR work (Jaderberg et al., 2015; Lee & Osindero,
-2016), we do not use final fully-connected layers (Ioffe &
-Szegedy, 2015), since we want to preserve the locality of
-CNN features in order to use visual attention. The CNN
-takes the raw input and produces a feature grid Ṽ of size
-D × H × W , where D denotes the number of channels and
-H and W are the resulted feature map height and width.
+where the summation-with-prime symbol
+we only sum the largest k values.
 
-Row Encoder In image captioning, the CNN features are
-used as is. For OCR, however, it is important for the encoder to localize the relative positions within the source
-image. In past work this localization has been handled by
-CTC, which in effect partitions the source into regions. We
-instead implicitly allow the encoder to localize its input by
-running RNNs over each of the rows of CNN features. This
-extension turns out to be crucial for performance.
-Formally, a recurrent neural network (RNN) is a parameterized function RNN that recursively maps an input vector
-and a hidden state to a new hidden state. At time t, the hidden state is updated with an input vt in the following manner: ht = RNN(ht−1 , vt ; θ), with h0 an initial state. In
-practice there are many different variants of RNN; however, long short-term memory networks (LSTMs) (Hochreiter & Schmidhuber, 1997) have been shown to be very effective for most NLP tasks. For simplicity we will describe
-the model as an RNN, but all experiments use LSTM networks.
-In this model, the new feature grid V is created from
-Ṽ by running an RNN across each row of that input.
-Recursively for all rows h ∈ {1, . . . , H} and columns
-w ∈ {1, . . . , W }, the new features are defined as Vhw =
-RNN(Vh,w−1 , Vhw ). In order to capture the sequential
-order information in vertical direction, we use a trainable
-initial hidden state Vh,0 for each row, which we refer to as
-positional embeddings.
-Decoder The target markup tokens {yt } are then generated by a decoder based only on the grid V. The decoder
-is trained as a conditional language model to give the probability of the next token given the history and the annotations. This language model is defined on top of a decoder
-RNN,
-p(yt+1 |y1 , . . . , yt , V) = softmax(Wout ot )
-where ot = tanh(Wc [ht ; ct ]) and Wout , Wc are learned
-linear transformations. The vector ht is used to summarize
-the decoding history: ht = RNN(ht−1 , [yt−1 ; ot−1 ]).
-The context vector ct is used to capture the context information from the annotation grid. We describe how to
-compute ct in the next section.
+P0
 
-4. Attention in Markup Generation
-The accuracy of the model is dependent on being able to
-track the next current position of the image for generating markup, which is conveyed through an attentive context
-vector ct . Formally, we define a latent categorical variable
-zt ∈ {1, · · · , H} × {1, · · · , W } to denote which cell the
-model is attending to. If we assume access to an attention
-distribution zt ∼ p(zt ), then the context is defined as an
+k
 
-Image-to-Markup Generation with Coarse-to-Fine Attention
+(6)
+indicates that
 
-expectation of source side features:
-X
-ct =
-p(zt = (h, w))Vhw
-h,w
-
-In practice, the attention distribution is parameterized as
-part of the model. We consider three forms of attention:
-standard, hierarchical, and coarse-to-fine.
-Standard Attention In standard attention (Bahdanau
-et al., 2014), we use a neural network to approximate the
-attention distribution p(zt ):
-p(zt ) = softmax(a(ht , {Vhw }))
-where a(·) is a neural network to produce unnormalized
-attention weights. Note there are different choices for
-a – we follow past empirical work and use at,h,w =
-β T tanh(W1 ht + W2 Vhw ) (Luong et al., 2015).
-Figure 1 shows an example of the attention distribution at
-each step of the model. Note several key properties about
-the attention distribution for the image-to-text problem. 1)
-It is important for the grid to be relatively small for attention to localize around the current symbol. For this reason
-we use a fine grid with a large H and W . 2) In practice, the
-support of the distribution is quite small as a single markup
-symbol is in a single region. 3) As noted above, attention
-is run every time step and requires an expectation over all
-cells. Therefore the decoding complexity of such an attention mechanism is O(T HW ), which can be prohibitive
-when applied to large images.
-Hierarchical Attention When producing a target symbol
-from an image, we can infer the rough region where it is
-likely to appear from the last generated symbol with high
-probability. In addition to the fine grid, we therefore also
-impose a grid over the image, such that each cell belongs
-to a larger region. When producing the markup, we first
-attend to the coarse grid to get the relevant coarse cell(s),
-and then attend to the inside fine cells to get the context
-vector, a method known as hierarchical attention.
-For this problem, define V0 as a coarse grid of size H 0 ×
-W 0 , which we construct by running additional convolution
-and pooling layers and row encoders on top of Ṽ. We
-also introduce a latent attention variable zt0 that indicates
-the parent level
-cell, and write p(zt )
-P cell 0of the attended
+Our proposed policy selects points by maximizing the approximate final expected utility using:
+
+
+E u(Dt ) | xi , Di−1 ≈ u(Di−1 ) +
+Pr(yi = 1 | xi , Di−1 ) +
+hP
+i
 0
-as p(zt ) =
-p(z
-)p(z
-|z
-),
-where
-we first generate a
-t t
-t
-zt0
+Eyi
+. (7)
+t−i Pr y = 1 | x, Di
+|
+{z
+}
+exploration, < t−i
+
+We will call this policy efficient nonmyopic search (ENS).
+As in the optimal policy, we can interpret (7) naturally as
+rewarding both exploitation and exploration, where the exploration benefit is judged by a point’s capability to increase
+the top probabilities among currently unlabeled points. We
+note further that in (7) the reward for exploration naturally
+decreases over time as the budget is depleted, exactly as in
+the optimal policy. In particular, the very last point xt is
+chosen greedily by maximizing probability, agreeing with
+the true optimal policy. The second-to-last point is also
+guaranteed to match the optimal policy.
+Note that we may also use the approximation in (6) as part of
+a finite-horizon lookahead with ` > 1, producing a family of
+increasingly expensive but higher-fidelity approximations to
+the optimal policy, all retaining the same budget consciousness. The approximation in (7) is equivalent to a one-step
+maximization of (6). We will see in our experiments that this
+is often enough to show massive gains in performance, and
+
+Efficient Nonmyopic Active Search
+
+that even this policy shows clear awareness of the remaining
+budget throughout the search process, automatically and
+dynamically trading off exploration and exploitation.
+3.1. Nonmyopic Behavior
+To illustrate the nonmyopic behavior of our policy, we have
+adapted the toy example presented by Garnett et al. (2012).
+Let I , [0, 1]2 be the unit square. We repeated the following experiment 100 times. We selected 500 points i.i.d.
+uniformly at random from I to form the input space X . We
+create an active search problem by defining the set of targets
+R ⊆ X to be all points within Euclidean distance 1/4 from
+either the center or any corner of I. We took the closest
+point to the center (always a target) as an initial training
+set. We then applied ENS and the two-step-lookahead (4)
+policies to sequentially select 200 further points for labeling.
+Figure 1 shows a kernel density estimate of the distribution
+of locations selected by both methods during two time intervals. Figures 1(a–b) correspond to our method; Figures
+1(c–d) to two-step lookahead. Figures 1(a, c) consider the
+distribution of the first 100 selected locations; Figures 1(b,
+d) consider the last 100. The qualitative difference between
+these strategies is clear. The myopic policy focused on collecting all targets around the center (Figure 1(c)), whereas
+our policy explores the boundaries of the center clump with
+considerable intensity, as well as some of the corners (Figure 1(a)). As a result, our policy is capable of finding some
+of targets in the corners, whereas two-step lookahead hardly
+ever can (Figure 1(d)). We can also see that the highest probability mass in Figure 1(b) is the center, which shows that
+our policy typically saves many high-probability points until
+the end. On average, the ENS policy found about 40 more
+targets at termination than the two-step-lookahead policy.
+
+(a)
+
+(b)
+
+(c)
+
+(d)
+
+Figure 1: Kernel density estimates of the distribution of
+points chosen by ENS (top) and 2-step lookahead (bottom)
+during two different time intervals. The figures on the left
+show the kernel density estimates for the first 100 locations;
+the figures on the right, the last 100 chosen locations.
+lists to get the top t − i posterior probabilities in time
+O(t − i), where i is the index of current iteration. In summary, these tricks can reduce the computational complexity to O n(log n + m log m + t) . We can see the complexity is about the
+ same as two-step lookahead, which is
+O n(log n + m) when using the same tricks.
+3.3. Pruning the Search Space
+
+3.2. Implementation and Time Complexity
+The complexity of our policy (7) is O n 2(n+n log n) =
+O(n2 log n), for n = |X |, because we need to compute the
+approximate expected utility for all n points, evaluate an expectation over its label, conditioning the model and sorting
+the posterior probabilities in the expectation. However, for
+some classification models Pr(y = 1 | x, D), observing one
+point will only affect the probabilities on a small portion
+of the other points (e.g., in a k-nn model). We can exploit
+such structure to reduce the complexity of our method by
+avoiding unnecessary computation.
+
+
+Specifically, suppose that after observing a point we only
+need to update the probabilities of at-most m other points.
+We can avoid repeatedly sorting the probabilities of every
+unlabeled point when computing the score of each candidate point. Once the current probabilities are sorted
+(O(n log n)), we only need to update m probabilities and
+sort these as well (O(m log m)); now we can merge both
+
+To further reduce the computational complexity, we can use
+a similar strategy as suggested by Garnett et al. (2012) to
+bound the score function (7) and prune points that cannot
+possibly maximize our score. We consider the same two
+assumptions proposed by these authors. First, observing a
+new negative point will not raise the probability of any other
+point being a target. Second, we are able to bound the maximum probability of the unlabeled points after conditioning
+on a given number of additional targets; that is, we assume
+there is a function p∗ (n, D) such that
+P
+p∗ (n, D) ≥ max Pr(y = 1 | x, D ∪ D0 , y0 ∈D0 y 0 ≤ n).
+x∈X \D
+
+That is, the probability of any unlabeled point can become
+at most p∗ (n, D) after further conditioning on n or fewer
+additional target points.
+Consider an unlabeled point x at time i, and define π(x) =
+Pr(y = 1 | x, Di ) for the remainder of this discussion. The
+
+Efficient Nonmyopic Active Search
+
+score (7), denoted f (x) here for simplicity, can be upper
+bounded by
+
+f (x) ≤ π · 1 + (t − i)p∗ (1, Di ) +
+
+P0
 0
-coarse-level cell zt followed by a fine-level cell zt only
-from within it.
-We parameterize p(zt0 ) and p(zt |zt0 ) as part of the model.
-For p(zt0 ), we employ a standard attention mechanism over
-V0 to approximate the probability in time O(H 0 W 0 ). For
-the conditional p(zt |zt0 ), we also employ a standard attention mechanism to get as before, except that we only consider the fine-level cells within coarse-level cell zt0 . Note
-
-H W
-that computing p(zt |zt0 ) takes time O( H
-0 W 0 ). However to
-compute the p(zt ) even with this hierarchical attention, still
-requires O(HW ) as in standard attention.
-
-Coarse-to-Fine Attention Ideally we could consider a
-reduced set of possible coarse cells in hierarchical attention
-to reduce time complexity. Borrowing the name coarse-tofine inference (Raphael, 2001) we experiment with methods to construct a coarse attention p(zt0 ) with a sparse support to reduce the number of fine attention cells we consider. We use two different approaches for training this
-sparse coarse distribution.
-For the first approach we use sparsemax attention (Martins & Astudillo, 2016) where instead of using a softmax
-for p(zt0 ) at the coarse-level, we substitute a Euclidean projection onto the simplex. The sparsemax function is defined as, sparsemax(p) = argminq∈∆K−1 kq−pk2 , where
-∆K−1 is the probability simplex and K denotes the number of classes. The sparsemax function can be computed
-efficiently and as a projection and can be shown to produce
-a sparser output than the standard softmax. If there are K +
-nonzero entries returned by sparsemax, then the attention
-H W
-time complexity for one step is O(H 0 W 0 + K + H
-0 W 0 ). In
-+
-practice, we find K to be suitably small.
-For the second approach we use “hard” attention for zt0 ,
-an approach which has been shown to work in several image tasks (Xu et al., 2015; Mnih et al., 2014; Ba et al.,
-2015). Here we take a hard sample from p(zt0 ) as opposed
-to considering the full distribution. Due to this stochasticity, the objective is no longer differentiable. However,
-stochastic networks can be trained using the REINFORCE
-algorithm (Williams, 1992). We pose the problem in the
-framework of reinforcement learning by treating zt0 as our
-agent’s stochastic action at time t and the log-likelihood of
-the symbol produced as the reward rP
-t . We aim to maxT
-imize the total expected reward Ezt0 [ t=1 rt ], or equivalently minimize the negative expected reward as our loss.
-For parameters θ that precede the nondifferentiable zt0 in the
-stochastic computation graph, we backpropagate a gradient
-∂ log p(zt0 ;θ)
-of the form rt ·
-. This gives us an unbiased esti∂θ
-mate of the loss function gradient (Schulman et al., 2015).
-Since our decoder RNN takes previous context vectors as
-input at each time step, each action zt0 influences later rewards rt , rt+1 , . . . , rT . Hence, we assume a multiplicative
-discount
-PTrate of γ for future rewards, and we use the reward
-r̃t = s=t γ s rs in place of rt .
-In practice, this gradient estimator is noisy and slow to converge. Following Xu et al. (2015), we include a moving
-average reward baseline for each timestep t that we update
-as bt ← βbt + (1 − β)r̃t , where β is a tunable learning rate.
-We subtract these baselines from our rewards to reduce the
-
-Image-to-Markup Generation with Coarse-to-Fine Attention
-Conv
-
-Pool
-
-coarse features
-c:512, k:(3,3), s:(1,1), p:(1,1), bn
-c:512, k:(3,3), s:(1,1), p:(1,1), bn
-fine features
-c:512, k:(3,3), s:(1,1), p:(0,0), bn
-c:512, k:(3,3), s:(1,1), p:(1,1), bn
-c:256, k:(3,3), s:(1,1), p:(1,1)
-c:256, k:(3,3), s:(1,1), p:(1,1), bn
-c:128, k:(3,3), s:(1,1), p:(1,1)
-c:64, k:(3,3), s:(1,1), p:(1,1)
-
-po:(4,4), s:(4,4), p:(0,0)
-po:(2,1), s:(2,1), p:(0,0)
-po:(1,2), s:(1,2), p(0,0)
-po:(2,2), s:(2,2), p:(0,0)
-po:(2,2), s:(2,2), p(0,0)
-
-Table 1: CNN specification. ‘Conv‘: convolution layer, ‘Pool:
-max-pooling layer. ‘c’: number of filters, ‘k’: kernel size, ‘s’:
-stride size, ‘p’: padding size, ‘po’: , ‘bn’: with batch normalization. The sizes are in order (height, width).
-variance, giving final gradient update
-∂L
-∂ log p(zt0 ; θ)
-= (r̃t − bt ) ·
+0
+(1 − π) ·
+t−i Pr(y = 1 | x , Di ) , U (π).
+Note this upper bound is only a function of the current
+probability π. Let x+ be the point with maximum probability. Then f (x+ ) is certainly a lower bound
+ of maxx f (x).
+Hence, those points satisfying U π(x) < f (x+ ) can be
+safely removed from consideration. Solving this inequality,
+we have
+P0
+f (x+ ) − t−i Pr(y 0 = 1 | x0 , D)
+π(x) <
 .
-∂θ
-∂θ
-At train time, we sample zt0 and update the network with
-stochastic gradients. At test time, we take an argmax over
-the coarse-level attentions to choose zt0 . The attention time
-H W
+P0
+1 + p∗ (1, D)(t − i) − t−i Pr(y 0 = 1 | x0 , D)
+(8)
+Then, all points with current probability lower than the
+RHS of (8) can be removed from consideration. We will
+show empirically that a large fraction of points can often be
+pruned on massive datasets.
+
+4. Related Work
+Our method falls into the broader framework of active learning. The particular setting of finding elements of a valuable
+class is rather unusual in active learning, which typically
+considers the goal of training a high-fidelity model (Lewis
+& Gale, 1994). For an exhaustive introduction to active
+learning, we refer the reader to Settles (2010).
+The multi-armed bandit (MAB) problem shares some similarities with active search, where selecting an item can
+understood as “pulling an arm.” However, in active search
+the items are correlated, and, critically, they can never be
+played twice. Despite the difference, we note that our ENS
+policy is somewhat similar to the knowledge gradient policy
+introduced by Frazier et al. (2008).
+Active search can be seen as a special case of Bayesian
+optimization (Brochu et al., 2010; Snoek et al., 2012) with
+binary observations and cumulative reward. Several nonmyopic policies have been proposed for Bayesian optimization in the regression setting (e.g., Ling et al. (2016)), and
+our method is spiritually similar to the recently propopsed
+GLASSES algorithm (González et al., 2016).
+Vanchinathan et al. (2015) proposed a method called GPSELECT to solve a class of problems the authors call “adaptive valuable item discovery,” which generalizes active
+search to the regression setting. GP - SELECT employs a
+Gaussian process regression model in a manner inspired
+by the Gaussian process upper confidence bound (GP - UCB)
+algorithm (Srinivas et al., 2010). A parameter must be specified to balance exploration and exploitation, whereas our
+method automatically and dynamically trades off these quantities. The method is also critically tied to Gaussian process
+
+regression as the underlying model, which is inappropriate
+for classification. Our decision-theoretic approach does not
+make any assumptions about the classification model.
+Active search can also be seen as a special case of (partially
+observable) Markov decision processes (( PO ) MDPs), for
+which there are known hardness results. Sabbadin et al.
+(2007), for example, defined the class of so-called “purely
+epistemic” MDPs (EMDPs), where the state does not evolve
+over time. The authors showed that the optimal policy
+for these problems cannot admit polynomial-time constant
+approximations. Unfortunately, these hardness results, for
+the very rich class of EMDPs are not trivially transferred to
+the more-specific active search problem.
+Our proposed approximation is similar in nature to the active
+search policy proposed by Wang et al. (2013), which only
+considered the effect of raising probabilities after observing
+a positive label, and did not consider the budget. Rather, the
+proposed score always encourages maximal exploration, in
+opposition to the optimal policy.
+There has been some attention to active search in the graph
+setting where the input domain X is the nodes of a graph
+(Garnett et al., 2011; Wang et al., 2013; Pfeiffer III et al.,
+2014; Ma et al., 2015a). Our method does not restrict the
+input space. Further, the classification models used in these
+settings are often difficult to scale to large datasets, e.g.,
+requiring the pseudoinverse of the graph Laplacian.
+Finally, variations on the active search problem have also
+been considered. Ma et al. (2014) proposed the active area
+search problem, wherein a continuous function is sampled
+to discover regions with large mean value, and Ma et al.
+(2015b) extended this idea to define the more-general active
+pointillistic pattern search problem. These settings do not
+allow querying for labels directly and offer no insight to the
+core active search problem.
+
+5. Experiments
+We implemented our approximation to the Bayesian optimal
+policy with the MATLAB active learning toolbox,2 and have
+compared the performance of our proposed ENS policy with
+several baselines. First we compare with the myopic onestep (greedy) and two-step approximations to the Bayesian
+optimal policy, presented in (3–4). Note that Garnett et al.
+(2012) and Garnett et al. (2015) thoroughly compared the
+one- and two-step policies, with the finding that the lessmyopic two-step algorithm usually performs better in terms
+of targets found, as one would expect. In our experiments we
+will mainly focus on comparing our algorithm with myopic
+two-step approximate policy.
+We also consider a simple baseline which we call RANDOM 2
+
+https://github.com/rmgarnett/active_learning
+
+Efficient Nonmyopic Active Search
+GREEDY ( RG ).
+
+We further compare with the score function proposed by
+Wang et al. (2013), which we refer to as IMS:
+
+IMS (x) = Pr(y = 1 | x, D) 1 + α IM (x) ;
+(9)
+where IM(x) measures the “expected impact”, the sum of
+the raised probabilities x results in if it is positive. Note
+that it is difficult to determine the tradeoff parameter α
+without (expensive) cross validation. The empirical results
+in (Wang et al., 2013) indicate that α = 10−4 performs well
+on average; we will fix this value in our experiments.
+Finally, we have also considered the followingpUCB-style
+(Auer, 2002) score function: α(x, D) = π + γ π(1 − π),
+where π = Pr(y = 1 | x, D) and γ is a tradeoff parameter. The UCB score function is very popular and is the
+essence of the methods in (Vanchinathan et al., 2015; Srinivas et al., 2010) developed for Gaussian processes, including
+GP - SELECT. We considered various γ values and our experiments show that it is no better than two-step lookahead, so
+we present these results in the appendix due to space.
+The probability model Pr(y = 1 | x, D) we will adopt is the
+k-nearest-neighbor (k-NN) classifier as described in Section
+7 of (Garnett et al., 2012). This model, while being rather
+simple, shows reasonable generalization error, is nonparameteric, and can be rapidly updated given new training data,
+an important property in the active setting we consider here.
+We will also adopt the probability bound (8) for this model
+described in that work. Note IMS was proposed together (but
+orthogonally) with a graph model for the probability, which
+is computationally infeasible (O(n3 )) for our datasets. So
+we also use k-NN model for IMS.
+5.1. CiteSeerx Data
+For our first real data experiment, we consider a subset of
+the CiteSeerx citation network, first described in (Garnett
+et al., 2012). This dataset comprises 39 788 computer science papers published in the top-50 most-popular computer
+science venues. We form an undirected citation network
+from these papers. The target class is papers published in
+the NIPS proceedings; there are 2 190 such papers, 5.5% of
+the whole dataset. Note that distinguishing NIPS papers in
+the citation network is not an easy task, because many other
+highly related venues such as ICML, AAAI, IJCAI, etc. are
+also among the most-popular venues. A feature vector for
+each paper is computed by performing graph principal component analysis (Fouss et al., 2007) on the citation network
+and retaining the first 20 principal components.
+We select a single target (i.e., a NIPS paper) uniformly at
+
+200
+
+ENS
+
+number of targets found
+
+Here we randomly select points to query
+(exploration) during the first half of the budget, and select
+the remainder using greedy selection (exploitation). Although naïve, this policy adapts to the budget.
+
+two-step
+IMS
+
+150
+
+one-step
+RG
+100
+
+50
+
 0
 0
-complexity for a single time step is thus O( H
-0 W 0 +H W ).
-√
-√
-√
-If we take H 0 = H, W 0 = W , we get O( HW )
-attention complexity per decoding step.
-
-5. Dataset Construction
-To experiment on this task we constructed a new public
-dataset, IM 2 LATEX -100 K, which collects a large-corpus
-of real-world mathematical expressions written in LaTeX.
-This dataset provides a difficult test-bed for learning how
-to reproduce naturally occurring rendered LaTeX markup.
-Corpus The IM 2 LATEX -100 K dataset provides 103,556
-different LaTeX math equations along with rendered pictures. We extract formulas by parsing LaTeX sources of
-papers from tasks I and II of the 2003 KDD cup (Gehrke
-et al., 2003), which contain over 60,000 papers.
-We extract formulas from the LaTeX sources with regular
-expressions, and only keep matches whose number of characters fall in the range from 40 to 1024 to avoid single symbols or text sentences. With these settings we extract over
-800,000 different formulas, out of which around 100,000
-are rendered in a vanilla LaTeX environment. Rendering is
-done with pdflatex3 and formulas that fail to compile are excluded. The rendered PDF files are then converted to PNG
-format4 . The final dataset we provide contains 103,556 images of resolution 1654 × 2339, and the corresponding LaTeX formulas.
-The dataset is separated into training set (83,883 equa3
-
-LaTeX (version 3.1415926-2.5-1.40.14)
-We use the ImageMagick convert tool with parameters
--density 200 -quality 100
-4
-
-tions), validation set (9,319 equations) and test set (10,354
-equations) for a standardized experimental setup. The LaTeX formulas range from 38 to 997 characters, with mean
-118 and median 98.
-Tokenization Training the model requires settling on a
-token set. One option is to use a purely character-based
-model. While this method requires fewer assumptions,
-character-based models would be significantly more memory intensive than word-based models due to longer target
-sequences. Therefore original markup is simply split into
-minimal meaningful LaTeX tokens, e.g. for observed characters, symbols such as \sigma, modifier characters such
-as ˆ, functions, accents, environments, brackets and other
-miscellaneous commands.
-Finally we note that naturally occurring LaTeX contains
-many different expressions that produce identical output.
-We therefore experiment with an optional normalization
-step to eliminate spurious ambiguity (prior to training). For
-normalization, we wrote a LaTeX parser5 to convert the
-markup to an abstract syntax tree. We then apply a set of
-safe normalizing tree transformation to eliminate common
-spurious ambiguity, such as fixing the order of sub-superscripts and transforming matrices to arrays. Surprisingly
-we find this additional step gives only a small accuracy
-gain, and is not necessary for strong results.
-Synthetic Data for Handwriting Recognition Our main
-results focus on rendered markup, but we also considered
-the problem of recognizing handwritten math. As there is
-very little labeled data for this task, we also synthetized a
-handwritten corpus of the IM 2 LATEX -100 K dataset. We
-created this data set by replacing all individual symbols
-with handwritten symbols taken from Detexify’s training
-data6 . We use the same set of formulas as in the original
-dataset, but when rendering each symbol we randomly pick
-a corresponding handwritten symbol from Detexify. An
-example of synthesized handwriting is shown in Figure 3.
-Note that although the images in this dataset look like handwritten formulas, they do not capture certain aspects such
-as varying baselines (Nagabhushan & Alaei, 2010). We use
-this dataset as a pretraining step for handwritten formulas
-recognition on a small labeled dataset.
-
-Figure 3: An example synthetic handwritten image from
-IM 2 LATEX -100 K dataset.
-5
-
-Based on KaTeX parser https://khan.github.io/
-KaTeX/
-6
-http://detexify.kirelabs.org/classify.html
-
-Image-to-Markup Generation with Coarse-to-Fine Attention
-
-6. Experiments
-Experiments compare the proposed model, which we refer to as I M 2T EX to classical OCR baselines, neural models, and model ablations on the image-to-LaTeX task.
-We also compare the proposed model against commercial, OCR-based mathematical expression recognition system InftyReader. InftyReader is an implementation of the
-I NFTY system of (Suzuki et al., 2003), combining symbol
-recognition and structural analysis phases.
-For neural models, a natural comparison is to standard image captioning approaches (Xu et al., 2015), and CTCbased approaches (Shi et al., 2016). We simulate the image
-captioning setup with a model C APTION which removes
-the row encoder, i.e. replacing V with Ṽ, and increases
-the number of CNN filters such that the number of parameters is the same. For CTC we use the implementation of
-Shi et al. (2016), designed for natural image OCR.
-To better understand the role of attention in the model,
-we run several baseline experiments with different attention styles. To examine if fine-level features are necessary,
-we experiment with a standard attention system with the
-coarse feature maps only (coarse-only) and also with a twolayer hierarchical model. Additionally we experiment with
-different coarse-to-fine (C2F) mechanisms: hard reinforcement learning, and sparsemax.
-Finally, we run additional experiments comparing our approach to other models for handwritten mathematical expressions on the CROHME 2013 and 2014 shared tasks.
-The training set is same for both years, consisting of 8,836
-training expressions (although teams also used external
-data). The dataset is in a different domain from our rendered images and is designed for stroke-based OCR. To
-handle these differences, we employ two extensions: (1)
-We convert the data to images by rendering the strokes
-and also augment data by randomly resizing and rotating
-symbols, (2) We also employ the simulated IM 2 LATEX 100 K handwriting dataset to pretrain a large out-of-domain
-model and then fine-tune it on this CROHME dataset.
-Our core evaluation method is to check the accuracy of the
-rendered markup output image x̂ compared to the true image x. The main evaluation reports exact match rendering between the gold and predicted images, and we additionally check the exact match accuracy with the original image as well as the value after eliminating whitespace
-columns.7 We also include standard intrinsic text generation metrics, conditional language model perplexity and
-BLEU score (Papineni et al., 2002), on both tokenized and
-normalized gold data.
-7
-
-In practice we found that the LaTeX renderer often misaligns
-identical expressions by several pixels. To correct for this, only
-misalignments of ≥ 5 pixels wide are “exact” match errors.
-
-Implementation Details The CNN specifications are
-H
-W
-summarized in Table 1. Note that H
-0 = W 0 = 4. The
-model uses single-layer LSTMs for all RNNs. We use a
-bi-directional RNN for the encoder. The hidden state of
-the encoder RNN is of size 256, decoder RNN of 512, and
-token embeddings of size 80. The model with standard attention has 9.48 million parameters, and the models with
-hierarchical or coarse-to-fine attention have 15.85 million
-parameters due to the additional convolution layers and row
-encoders. We use mini-batch stochastic gradient descent to
-learn the parameters.
-For the standard attention models, we use batch size of 20.
-The initial learning rate is set to 0.1, and we halve it once
-the validation perplexity does not decrease. We train the
-model for 12 epochs and use the validation perplexity to
-choose the best model. For the hierarchical and coarseto-fine attention models, we use batch size of 6. For hard
-attention, we use the pretrained weights of hierarchical to
-initialize the parameters. Then we use initial learning rate
-0.005, average reward baseline learning rate β = 0.01, reward discount rate γ = 0.5.
-The complete model is trained end-to-end to maximize the
-likelihood of the training data. Beyond the training data,
-the model is given no other information about the markup
-language or the generating process. To generate markup
-from unseen images, we use beam search with beam size 5
-at test time. No further hard constraints are employed.
-The system is built using Torch (Collobert et al., 2011)
-based on the OpenNMT system (Klein et al., 2017). Experiments are run on a 12GB Nvidia Titan X GPU (Maxwell).
-Original images are cropped to only the formula area, and
-padded with 8 pixels to the top, left, right and bottom. For
-efficiency we downsample all images to half of their original sizes. To facilitate batching, we group images into similar sizes and pad with whitespace.8 All images of larger
-sizes, LaTeX formulas with more than 150 tokens, or those
-that cannot be parsed are ignored during training and validation, but included during testing.
-
-7. Results
-The main experimental results, shown at the top of Table 2,
-compare different systems on the image-to-markup task.
-The I NFTY system is able to do quite well in terms of text
-accuracy, but performs poorly on exact match image metrics. The poor results of the neural CTC system validate
-our expectation that the strict left-to-right order assumption is unsuitable in this case. Our reimplementation of im8
-Width-Height groups used are (128, 32), (128, 64), (160,
-32), (160, 64), (192, 32), (192, 64), (224, 32), (224, 64), (256,
-32), (256, 64), (320, 32), (320, 64), (384, 32), (384, 64), (384,
-96), (480, 32), (480, 64), (480, 128), (480, 160).
-
-Image-to-Markup Generation with Coarse-to-Fine Attention
-Dataset
-
-Model
-
-Attention
-
-BLEU (tok)
-
-BLEU (norm)
-
-Match
-
-Match (-ws)
-
-Im2latex-100k
-
-I NFTY
-CTC
-C APTION
-I M 2T EX - TOK
-I M 2T EX
-
-n/a
-n/a
-standard
-standard
-standard
-
-51.20
-39.20
-52.53
-73.71
-58.41
-
-66.65
-30.36
-75.01
-73.97
-87.73
-
-15.60
-7.60
-53.53
-74.46
-77.46
-
-26.66
-9.16
-55.72
-77.04
-79.88
-
-I M 2T EX
-
-coarse-only
-hierarchical
-hard
-sparsemax
-
-53.40
-60.32
-59.96
-59.38
-
-79.53
-86.21
-87.07
-86.97
-
-44.40
-77.39
-74.90
-76.15
-
-48.53
-79.63
-77.07
-78.10
-
-M Y S CRIPT*
-UPV
-U NATES
-TUAT
-I M 2T EX
-
-n/a
-n/a
-n/a
-n/a
-standard
-
-50.28
-
-68.57
-
-62.68
-37.22
-26.06
-25.66
-38.74
-
-39.96
-
-I M 2T EX
-I M 2T EX -C2F
-
-hierarchical
-hard
-sparsemax
-
-47.52
-48.02
-47.65
-
-64.49
-64.42
-64.26
-
-35.90
-33.87
-34.28
-
-36.41
-35.09
-35.40
-
-M Y S CRIPT*
-U VALENCIA
-TUAT
-USP
-I M 2T EX
-
-n/a
-n/a
-n/a
-n/a
-standard
-
-44.51
-
-60.84
-
-60.36
-23.40
-19.97
-9.39
-33.53
-
-34.72
-
-I M 2T EX
-I M 2T EX -C2F
-
-hierarchical
-hard
-sparsemax
-
-43.65
-43.09
-44.18
-
-59.70
-57.18
-58.13
-
-29.81
-29.51
-28.32
-
-30.85
-31.00
-29.51
-
-I M 2T EX -C2F
-
-CROHME14
-
-CROHME13
-
-Table 2: [Top] Main experimental results on the IM 2 LATEX -100 K dataset. Reports the BLEU score compared to the tokenized formulas
-(BLEU (tok)), BLEU score compared to the normalized formulas (BLEU (norm)), exact match accuracy, and exact match accuracy after
-deleting whitespace columns. All systems except I M 2T EX -T OK are trained on normalized data. [Bottom] Results on the CROHME
-handwriting datasets. We list the best 4 systems in 2013 and 2014 competition: MyScript, U Valencia, TUAT, USP, and MyScript, UPV,
-U Nates, TUAT. All Im2Tex systems use out-of-domain synthetic data as well as the small given training set. *Note that the proprietary
-MyScript system uses a large corpus of private in-domain handwritten training data.
-
-Model
-NG RAM
-LSTM-LM
-I M 2T EX
-I M 2T EX
-I M 2T EX
-I M 2T EX -C2F (hard)
-
-Ablation
--Enc
--RowEnc
--PosEmbed
-
-Train
-
-Test
-
-Match
-
-5.50
-4.13
-1.08
-1.03
-1.05
-1.05
-
-8.95
-5.22
-1.18
-1.12
-1.11
-1.15
-
-53.53
-76.86
-77.46
-74.90
-
-Table 3: Image-to-LaTeX ablation experiments. Compares simple LM approaches and versions of the full model on train and test
-perplexity, and image match accuracy.
-
-age captioning C APTION does better, pushing the number
-above 50%. Our standard attention system I M 2T EX with
-RNN encoder increases this value above 75%, achieving
-high accuracy on this task. The LaTeX normalizer provides
-a few points of accuracy gain and achieves high normalized
-BLEU. This indicates that the decoder LM is able to learn
-well despite the ambiguities in real-world LaTeX.
-We next compare the different hierarchical and coarse-tofine extensions to the system. We first note that the use of
-the coarse-only system leads to a large drop in accuracy,
-
-indicating that fine attention is crucial to performance. On
-the other hand, the high performance of hierarchical indicates that two layers of soft-attention do not hurt the performance of the model. Table 4 shows the average number
-of cells being attended to at both the coarse and fine layers
-by each of the models. Both the hard REINFORCE system
-and sparsemax reduce lookups at a small cost in accuracy.
-Hard is the most aggressive, selecting a single coarse cell.
-Sparsemax achieves higher accuracy, at the cost of selecting multiple coarse cells. Depending on the application,
-these are both reasonable alternatives to reduce the number
-of lookups in standard attention.
-Our final experiments look at the CROHME 2013 and 2014
-datasets, which were designed as a stroke recognition task,
-but are the closest existing dataset to our task. For this
-dataset we first train with our synthetic handwriting dataset
-and then fine-tune on the CROHME training set. We find
-our models achieve comparable performance to all best systems excepting MyScript, a commercial system with access to additional in-domain data. Note that our synthetic
-dataset does not contain variation in baselines, font sizes,
-
-Image-to-Markup Generation with Coarse-to-Fine Attention
-Model
-
-Attn
-
-#C
-
-#F
-
-Match
-
-I M 2T EX
-
-standard
-coarse-only
-hierarchical
-hard
-sparsemax
+
+100
+
+200
+
+300
+
+400
+
+500
+
+number of queries
+
+Figure 2: The learning curve of our policy and other baselines on the CiteSeerx dataset.
+random to form an initial training set. The budget is set to
+t = 500, and we use k = 50 in the k-NN model. These parameters match the choices in (Garnett et al., 2012). We use
+each policy to sequentially select t papers for labeling. The
+experiment was repeated 20 times, varying the initial seed
+target. Figure 2 shows the average number of targets found
+for each method as a function of the number of queries.
+We first observe that the ranking of the performance is ENS,
+two-step, IMS, one-step, and RG, and our policy outperforms
+the two-step policy in this task by a large margin. The mean
+difference in number of targets found at termination vs. twostep is 34.6 (189 vs. 155), an improvement on average of
+22%. A two-sided paired t-test testing the hypothesis that
+the average difference of targets found is zero returns a pvalue of p < 10−4 , and a 95% confidence interval on the
+increase in number of targets found of [19.80, 49.30].
+Another interesting observation is that during the initial ∼80
+queries, ENS actually performs worse on average than all
+baseline policies except RG, after which it quickly outperforms them. This feature perfectly illustrates an automatic
+exploration–exploitation transition made by our policy. As
+we are always cognizant of our budget, we spend the initial
+stage thoroughly exploring the domain, without immediate
+reward. Once complete, we exploit what we learned for
+the remainder of the budget. This tradeoff happens automatically and without any need for an explicit two-stage
+approach or arbitrary tuning parameters.
+Varying the Budget. A distinguishing feature of our
+method is that it always takes the remaining budget into consideration when selecting a point, so we would expect different behavior with different budgets. We repeated the above
+experiment for budgets t ∈ {100, 300, 500, 700, 900}, and
+report in Table 1 the average number of targets found at
+these time points for each method. We have the following
+observations from the table. First, ENS performs better than
+
+Efficient Nonmyopic Active Search
+
+Table 1: CiteSeerx (left) and BMG (right) data: Average number of targets found by the one- and two-step myopic policies
+and ENS with different five budgets, varying from 100 to 900, at specific time steps. The performance of the best method at
+each time waypoint is in bold.
+CiteSeerx data
+
+BMG
+
+query number
+
+data
+
+query number
+
+policy
+
+100
+
+300
+
+500
+
+700
+
+900
+
+policy
+
+100
+
+300
+
+500
+
+700
+
+900
+
+RG
+
+19.7
+
+60.0
+
+104
+
+140
+
+176
+
+RG
+
+48.6
+
+144
+
+243
+
+336
+
+427
+
+IMS
+
+26.3
+
+86.3
+
+147
+
+214
+
+281
+
+IMS
+
+93.6
+
+276
+
+451
+
+629
+
+799
+
+one-step
+two-step
+
+25.5
+24.9
+
+80.5
+89.8
+
+141
+155
+
+209
+220
+
+273
+287
+
+one-step
+two-step
+
+90.8
+91.0
+
+273
+273
+
+450
+452
+
+633
+632
+
+798
+802
+
+ENS –900
+ENS –700
+ENS –500
+ENS –300
+ENS –100
+
+25.9
+28.0
+28.7
+26.4
+30.7
+
+94.3
+105
+112
+105
+
+163
+188
+189
+
+239
+259
+
+308
+
+ENS –900
+ENS –700
+ENS –500
+ENS –300
+ENS –100
+
+89.0
+91.3
+92.4
+92.8
+94.5
+
+270
+276
+279
+279
+
+453
+460
+466
+
+635
+645
+
+815
+
+all other baseline policies for every budget. Second, ENS is
+able to adapt to the specified budget. For example, when
+comparing performance after 100 queries, ENS–100 has located many more targets than the ENS methods with greater
+budgets, which at that time are still strongly rewarding exploration. A similar pattern holds when comparing other
+pairs of ENS variations, with one minor exception.
+5.2. Finding Bulk Metallic Glasses
+Our next dataset considers an application from materials science: discovering novel alloys forming bulk metallic glasses
+(BMGs). BMGs have numerous desirable properties, including high toughness and good wear resistance compared
+to crystalline alloys. We compiled a database of 118 678
+known alloys from the materials literature (e.g., (Kawazoe
+et al., 1997; all)), an extension of the dataset from (Ward
+et al., 2016). Of these, 4 746 (∼4%) are known to exhibit
+glass-forming ability, which we define to be targets. We
+conduct the same experiments described for the CiteSeerx
+data above and show the results in Table 1. We can see the
+results again demonstrate our policy’s superior performance
+over all other methods, and its ability of adapting to the
+remaining budget.
+5.3. Virtual Drug Screening Data
+We further conduct experiments on a massive database of
+chemoinformatic data. The basic setting is to screen a large
+database of compounds searching for those that show binding activity against some biological target. This is a basic
+component of drug-discovery pipelines. The dataset comprises 120 activity classes of human biological importance
+selected from the Binding DB (Liu et al., 2007) database. For
+each activity class, there are a small number of compounds
+with significant binding activity; the number of targets varies
+
+from 200 to 1 488 across the activity classes. From these we
+define 120 different active search problems. There are also
+100 000 presumed inactive compounds selected at random
+from the ZINC database (Sterling & Irwin, 2015); these are
+used as a shared negative class for each of these problems.
+For each compound, we consider two different feature representations, also known as chemoinformatic fingerprints,
+called ECFP 4 and GpiDAPH 3. These fingerprints are binary
+vectors encoding the relevant chemical characteristics of the
+compounds; see (Garnett et al., 2015) for more details.3 So
+in total we have 240 active search problems, each with more
+than 100 000 points, and with targets less than 1.5%.
+As is standard in this setting, we compute fingerprint similarities via the Jaccard index (Jasial et al., 2016), which are
+used to define the weight matrix of the k-NN model from
+above, setting k = 100 for all the experiments. For active
+search policies, we again randomly select one positive as the
+initial training set, and sequentially query t = 500 further
+points. We also report the performance of a baseline where
+we randomly sample a stratified sample of size 5% of the
+database (∼5 000 points, more than 10 times the budget
+of the active search policies). From this sample, we train
+the same k-NN model, compute the active probability of
+the remaining points, and query the 500 points with the
+highest posterior activity probability. All experiments were
+repeated 20 times, varying the initial training point. Note we
+did not test IMS on these data due to computational expense.
+Our policy nominally has higher time complexity, but our
+pruning strategy can reduce the computation significantly
+in practice, as we show in Section 5.4.
+Table 2 summarizes the results. First we notice that all
+3
+We did not conduct experiments on the MACCS fingerprint. It
+was inferior in the findings of Garnett et al. (2015). A reviewer
+of (Jasial et al., 2016) noted that it is no longer used, due to clear
+underperformance compared to, e.g., ECFP 4 and GpiDAPH 3.
+
+Efficient Nonmyopic Active Search
+
+Table 2: Number of active compounds found by various active search policies at termination for each fingerprint, averaged
+over 120 active classes and 20 experiments. Also shown is the difference of performance between ENS and two-step
+lookahead and the results of the corresponding paired t-test.
+policy
+fingerprint
+ECFP 4
+G pi DAPH 3
+
+100-NN
+189
+134
+
+RG
+
+189
+170
+
+one-step
+289
+255
+
+t-test results
+two-step
+297
+261
+
+difference in utility
+
+20
+
+−20
+
+−40
+200
+
+5.29
+14.8
+
+95% CI
+
+p-value
+−3
+
+1.76 × 10
+3.90 × 10−13
+
+2.01
+11.2
+
+8.56
+18.4
+
+To investigate how pruning can improve the efficiency of
+computing the policy, we computed the average number
+of pruned points across all 120 × 20 × 500 = 3 000 000
+iterations of active search, for each fingerprint. On average
+about 93% of the unlabeled points are pruned, dramatically
+improving the computational efficiency by approximately a
+corresponding linear factor. The time for each experiment
+was effectively reduced from on the order of one day to that
+of one hour. See the appendix for detailed results.
 
 0
-22
-22
-22
-22
 
-355
+100
+
+303
+276
+
+difference
+
+5.4. Effect of Pruning
+
+mean difference
+95% CI
+
 0
-355
-16
-74
 
-77.46
-44.40
-77.39
-74.90
-76.15
+ENS
 
-I M 2T EX -C2F
+300
 
-Table 4: Average number of coarse (#C) and fine (#F) attention computations for all models throughout the test set. standard
-and hierarchical provide an upper-bound and coarse-only a lowerboard, whereas hard always does the minimal 4 × 4 = 16 fine
-lookups. Test accuracy is shown for ease of comparison.
+400
 
-or other noise, which are common in real data. We expect
-increased performance from the system when trained with
-well-engineered data. For these datasets we also use the hierarchical and coarse-to-fine models, and find that they are
-similarly effective. Interestingly, contrary to the full data
-for some problems hard performs better than sparsemax.
-Analysis To better understand the contribution of each
-part of the standard I M 2T EX model, we run ablation experiments removing different features from the model, which
-are shown in Table 3. The simplest model is a basic (nonconditional) NG RAM LM on LaTeX which achieves a perplexity of around 8. Simply switching to an LSTM-LM reduces the value to 5, likely due to its ability to count parentheses and nesting-levels. These values are quite low, indicating strong regularity just in the LaTeX alone. Adding
-back the image data with a CNN further reduces the perplexity down to 1.18. Adding the encoder LSTM adds a
-small gain to 1.12, but makes a large difference in final accuracy. Adding the positional embeddings (trainable initial
-states for each row) provides a tiny gain. Hard attention
-leads to a small increase in perplexity. We also consider
-the effect of training data on performance. Figure 4 shows
-accuracy of the system with different training set size using standard attention. As with many neural systems, the
-model is quite data hungry. In order for the model to reach
-≥ 50% accuracy, at least 16k training examples are needed.
-Finally Figure 5 illustrates several common errors. Qualitatively the system is quite accurate on difficult LaTeX
-constructs. Typically the structure of the expression is preserved with one or two symbol recognition errors. We find
-that the most common presentation-affecting errors come
-from font or sizing issues, such as using small parentheses
-instead of large ones, using standard math font instead of
-escaping or using mathcal.
+500
 
-Figure 4: Test accuracy (Match) of the model w.r.t. training set
-size.
+number of queries
 
-order to reduce the attention complexity, we propose a
-coarse-to-fine attention layer, which selects a region by using a coarse view of the image, and use the fine-grained
-cells within. These contributions provide a new view on the
-task of structured text OCR, and show data-driven models
-can be effective without any knowledge of the language.
-The coarse-to-fine attention mechanism is general and directly applicable to other domains, including applying the
-proposed coarse-to-fine attention layer to other tasks such
-as document summarization, or combining the proposed
-model with neural inference machines such as memory networks.
+Figure 3: The average difference in cumulative targets found
+between ENS and the two-step policy, averaged over 120 activity classes and 20 experiments on the ECFP 4 fingerprint.
 
-Figure 5: Typical reconstruction errors on aligned images. Red
-denotes gold image and blue denotes generated image.
-Acknowledgements
+active search policies perform much better than the recall of
+a simple classification algorithm, even though they observe
+less than one-tenth the data. Interestingly, even the naïve
+random-greedy (RG) policy performs much better than this
+baseline, albeit much worse than other active search policies.
+The two-step policy is again better than the greedy policy
+for both fingerprints, which is consistent with the results
+reported in (Garnett et al., 2015). The ENS policy performs
+significantly better than two-step lookahead; a two-sided
+paired t-test overwhelmingly rejects the hypothesis that the
+performance at termination is equal in both cases.
+Figure 3 shows the mean difference in cumulative targets found between ENS and the two-step policy for the
+ECFP 4 fingerprint. Again, we very clearly observe the automatic trade-off between exploration and exploitation by
+our method. In the initial stage of the search, we explore the
+space without much initial reward, but around query 200,
+our algorithm switches automatically to exploitation, outperforming the myopic policy significantly at termination. The
+mean difference curves for the other fingerprint is similar,
+and can be found in the appendix, along with the individual
+learning curves of the first six activity classes of ECFP 4.
 
-8. Conclusion
-We have presented a visual attention-based model for OCR
-of presentational markup. We also introduce a new dataset
-IM 2 LATEX -100 K that provides a test-bed for this task. In
+6. Conclusion
+In this paper we proved the theoretical hardness of active
+search and proposed an well-motivated and empirically
+better-performing policy for solving this problem. In particular, we proved that no polynomial-time algorithm can
+approximate the expected utility of the optimal policy within
+a constant approximation ratio. We then proposed a novel
+method, efficient nonmyopic search (ENS), for the active
+search problem. Our method approximates the Bayesian
+optimal policy by computing, conditioned on the location of
+the next point, how many targets are expected at termination,
+if the remaining budget is spent simultaneously. By taking
+the remaining budget into consideration in each step, we
+are able to automatically balance exploration and exploitation. Despite being nonmyopic, ENS is efficient to compute
+because future steps are flattened into a single batch, in
+contrast to the recursive simulation required when computing the true expected utility. We also derived an effective
+pruning strategy that can reduce the number of candidate
+points we must consider at each step, which can further improve the efficiency dramatically in practice. We conducted
+a massive empirical evaluation that clearly demonstrated
+superior overall performance on various domains, as well as
+our automatic balance between exploration and exploitation.
+Given the hardness result we proved, in general there is
+little point to require more of an algorithm than superior
+empirical performance. However, one exciting future direction is to understand, under what conditions (e.g., some
+assumption about the structure of problem instances) we
+can find efficient algorithms with guarantees.
 
-We would like to thank Daniel Kirsch for providing us Detexify
-data, and Sam Wiseman and Yoon Kim for the helpful feedback
-on this paper. This research is supported by a Bloomberg Data
-Science Research Award.
+Efficient Nonmyopic Active Search
 
-Image-to-Markup Generation with Coarse-to-Fine Attention
+Acknowledgments
+We would like to thank Brendan Juba for insightful discussion. SJ, GM, and RG were supported by the National Science Foundation (NSF) under award number IIA–1355406.
+GM was also supported by the Brazilian Federal Agency
+for Support and Evaluation of Graduate Education (CAPES).
+GC and AS were supported by NSF under award number
+CNS–1560191. BM was supported by a Google Research
+Award, a Yahoo Research Award, and by NSF under award
+number CCF–1617724.
 
 References
-Anderson, Robert H. Syntax-directed recognition of handprinted two-dimensional mathematics. In Symposium on
-Interactive Systems for Experimental Applied Mathematics: Proceedings of the Association for Computing Machinery Inc. Symposium, pp. 436–459. ACM, 1967.
-Andrychowicz, Marcin and Kurach, Karol. Learning Efficient Algorithms with Hierarchical Attentive Memory.
-CoRR, abs/1602.0, 2016.
-Ba, Jimmy, Mnih, Volodymyr, and Kavukcuoglu, Koray.
-Multiple Object Recognition with Visual Attention. Proceedings of the International Conference on Learning
-Representations (ICLR), 2015.
-Bahdanau, Dzmitry, Cho, Kyunghyun, and Bengio,
-Yoshua. Neural machine translation by jointly learning
-to align and translate. arXiv preprint arXiv:1409.0473,
-2014.
-Belaid, Abdelwaheb and Haton, Jean-Paul. A syntactic approach for handwritten mathematical formula recognition. IEEE Transactions on Pattern Analysis and Machine Intelligence, (1):105–111, 1984.
-Bengio, Emmanuel, Bacon, Pierre-Luc, Pineau, Joelle, and
-Precup, Doina. Conditional Computation in Neural Networks for faster models. CoRR, abs/1511.06297, 2015.
-URL http://arxiv.org/abs/1511.06297.
-Chan, Kam-Fai and Yeung, Dit-Yan. Mathematical expression recognition: a survey. IJDAR, 3(1):3–15, 2000. doi:
-10.1007/PL00013549. URL http://dx.doi.org/
-10.1007/PL00013549.
-Ciresan, Dan Claudiu, Meier, Ueli, Gambardella,
-Luca Maria, and Schmidhuber, Jürgen. Deep, big, simple neural nets for handwritten digit recognition. Neural
-computation, 22(12):3207–3220, 2010.
-Collobert, Ronan, Kavukcuoglu, Koray, and Farabet,
-Clément. Torch7: A matlab-like environment for machine learning. In BigLearn, NIPS Workshop, number
-EPFL-CONF-192376, 2011.
-Gehrke, Johannes, Ginsparg, Paul, and Kleinberg, Jon.
-Overview of the 2003 kdd cup. ACM SIGKDD Explorations Newsletter, 5(2):149–151, 2003.
-Graves, Alex, Fernández, Santiago, Gomez, Faustino, and
-Schmidhuber, Jürgen. Connectionist temporal classification: labelling unsegmented sequence data with recurrent neural networks. In Proceedings of the 23rd international conference on Machine learning, pp. 369–376.
-ACM, 2006.
-
-Hochreiter, Sepp and Schmidhuber, Jürgen. Long shortterm memory. Neural computation, 9(8):1735–1780,
-1997.
-Ioffe, Sergey and Szegedy, Christian. Batch normalization:
-Accelerating deep network training by reducing internal
-covariate shift. In Proceedings of The 32nd International
-Conference on Machine Learning, pp. 448–456, 2015.
-Jaderberg, Max, Simonyan, Karen, Vedaldi, Andrea, and
-Zisserman, Andrew. Deep structured output learning for
-unconstrained text recognition. ICLR, 2015.
-Jaderberg, Max, Simonyan, Karen, Vedaldi, Andrea, and
-Zisserman, Andrew. Reading text in the wild with convolutional neural networks. International Journal of Computer Vision, 116(1):1–20, 2016.
-Karpathy, Andrej and Fei-Fei, Li. Deep visual-semantic
-alignments for generating image descriptions. In Proceedings of the IEEE Conference on Computer Vision
-and Pattern Recognition, pp. 3128–3137, 2015.
-Klein, Guillaume, Kim, Yoon, Deng, Yuntian, Senellart,
-Jean, and Rush, Alexander M. Opennmt: Open-source
-toolkit for neural machine translation. arXiv preprint
-arXiv:1701.02810, 2017.
-Lee, Chen-Yu and Osindero, Simon. Recursive recurrent
-nets with attention modeling for ocr in the wild. arXiv
-preprint arXiv:1603.03101, 2016.
-Luong, Minh-Thang, Pham, Hieu, and Manning, Christopher D. Effective approaches to attention-based neural
-machine translation. EMNLP, 2015.
-Martins, André FT and Astudillo, Ramón Fernandez. From
-softmax to sparsemax: A sparse model of attention and
-multi-label classification. CoRR, abs/1602.02068, 2016.
-Mei, Hongyuan, Bansal, Mohit, and Walter, Matthew R.
-What to talk about and how? Selective Generation using
-LSTMs with Coarse-to-Fine Alignment. Proceedings of
-NAACL-HLT, pp. 1–11, 2016.
-Miller, Erik G and Viola, Paul A. Ambiguity and constraint
-in mathematical expression recognition. In AAAI/IAAI,
-pp. 784–791, 1998.
-Mnih, Volodymyr, Heess, Nicolas, Graves, Alex, and koray Kavukcuoglu. Recurrent models of visual attention.
-Advances in Neural Information Processing Systems, pp.
-2204—-2212, 2014.
-Mouchere, Harold, Viard-Gaudin, Christian, Zanibbi,
-Richard, Garain, Utpal, Kim, Dae Hwan, and Kim,
-Jin Hyung. Icdar 2013 crohme: Third international competition on recognition of online handwritten mathematical expressions. In 2013 12th International Conference
-
-Image-to-Markup Generation with Coarse-to-Fine Attention
-
-on Document Analysis and Recognition, pp. 1428–1432.
-IEEE, 2013.
-Mouchere, Harold, Viard-Gaudin, Christian, Zanibbi,
-Richard, and Garain, Utpal. Icfhr 2014 competition on
-recognition of on-line handwritten mathematical expressions (crohme 2014). In Frontiers in handwriting recognition (icfhr), 2014 14th international conference on, pp.
-791–796. IEEE, 2014.
-Nagabhushan, P and Alaei, Alireza. Tracing and straightening the baseline in handwritten persian/arabic text-line:
-A new approach based on painting-technique. International Journal on Computer Science and Engineering, 2
-(4):907–916, 2010.
-Papineni, Kishore, Roukos, Salim, Ward, Todd, and Zhu,
-Wei-Jing. Bleu: a method for automatic evaluation of
-machine translation. In Proceedings of the 40th annual meeting on association for computational linguistics, pp. 311–318. Association for Computational Linguistics, 2002.
-Rae, Jack, Hunt, Jonathan J, Danihelka, Ivo, Harley, Timothy, Senior, Andrew W, Wayne, Gregory, Graves, Alex,
-and Lillicrap, Tim. Scaling Memory-Augmented Neural
-Networks with Sparse Reads and Writes. In Lee, D D,
-Sugiyama, M, Luxburg, U V, Guyon, I, and Garnett, R
-(eds.), Advances in Neural Information Processing Systems 29. Curran Associates, Inc., 2016.
-Raphael, Christopher. Coarse-to-fine dynamic programming. IEEE Transactions on Pattern Analysis and Machine Intelligence, 23(12):1379–1390, 2001.
-Schulman, John, Heess, Nicolas, Weber, Theophane, and
-Abbeel, Pieter. Gradient estimation using stochastic
-computation graphs. In Advances in Neural Information
-Processing Systems, pp. 3528–3536, 2015.
-Shazeer, Noam, Mirhoseini, Azalia, Maziarz, Krzysztof,
-Davis, Andy, Le, Quoc, Hinton, Geoffrey, and Dean,
-Jeff.
-Outrageously Large Neural Networks: the
-Sparsely-Gated Mixture-of-Experts Layer. Proceedings
-of the International Conference on Learning Representations (ICLR), 2017.
-Shi, Baoguang, Bai, Xiang, and Yao, Cong. An end-toend trainable neural network for image-based sequence
-recognition and its application to scene text recognition.
-arXiv preprint arXiv:1507.05717, 2015.
-Shi, Baoguang, Bai, Xiang, and Yao, Cong. An end-toend trainable neural network for image-based sequence
-recognition and its application to scene text recognition.
-IEEE Transactions on Pattern Analysis and Machine Intelligence, 2016.
-
-Suzuki, Masakazu, Tamari, Fumikazu, Fukuda, Ryoji,
-Uchida, Seiichi, and Kanahori, Toshihiro. Infty: an integrated ocr system for mathematical documents. In Proceedings of the 2003 ACM symposium on Document engineering, pp. 95–104. ACM, 2003.
-Vinyals, Oriol, Toshev, Alexander, Bengio, Samy, and Erhan, Dumitru. Show and tell: A neural image caption
-generator. In Proceedings of the IEEE Conference on
-Computer Vision and Pattern Recognition, pp. 3156–
-3164, 2015.
-Wang, Tao, Wu, David J, Coates, Andrew, and Ng, Andrew Y. End-to-end text recognition with convolutional
-neural networks. In Pattern Recognition (ICPR), 2012
-21st International Conference on, pp. 3304–3308. IEEE,
+ASM Alloy Center Database.
+URL http://mio.
+asminternational.org/ac/.
+Auer, Peter. Using Confidence Bounds for Exploitation–
+Exploration Trade-offs. Journal of Machine Learning
+Research, 3:397–422, 2002.
+Brochu, Eric, Cora, Vlad M., and de Freitas, Nando. A
+Tutorial on Bayesian Optimization of Expensive Cost
+Functions, with Application to Active User Modeling
+and Hierarchical Reinforcement Learning. 2010. arXiv
+preprint arXiv:1012.2599 [cs.LG].
+Fouss, Francois, Pirotte, Alain, Renders, Jean-Michel, and
+Saerens, Marco. Random-Walk Computation of Similarities between Nodes of a Graph with Application to
+Collaborative Recommendation. IEEE Transactions on
+Knowledge and Data Engineering, 19:355–369, 2007.
+Frazier, Peter I, Poweel, Warren B, and Dayanik, Savas. A
+Knowledge-Gradient Policy for Sequential Information
+Collection. SIAM Journal on Control and Optimization,
+47(5):2410–2439, 2008.
+Garnett, Roman, Krishnamurthy, Yamuna, Wang, Donghan,
+Schneider, Jeff, and Mann, Richard. Bayesian Optimal
+Active Search on Graphs. In 9th Workshop on Mining
+and Learning with Graphs, 2011.
+Garnett, Roman, Krishnamurthy, Yamuna, Xiong, Xuehan,
+Schneider, Jeff G., and Mann, Richard P. Bayesian Optimal Active Search and Surveying. In Proceedings of
+the 29th International Conference on Machine Learning,
 2012.
-Williams, Ronald J. Simple statistical gradient-following
-algorithms for connectionist reinforcement learning.
-Machine learning, 8(3-4):229–256, 1992.
-Xu, Kelvin, Ba, Jimmy, Kiros, Ryan, Cho, Kyunghyun,
-Courville, Aaron, Salakhudinov, Ruslan, Zemel, Rich,
-and Bengio, Yoshua. Show, attend and tell: Neural image caption generation with visual attention. In Proceedings of The 32nd International Conference on Machine
-Learning, pp. 2048–2057, 2015.
+Garnett, Roman, Gärtner, Thomas, Vogt, Martin, and Bajorath, Jürgen. Introducing the ‘active search’ method for
+iterative virtual screening. Journal of Computer-Aided
+Molecular Design, 29(4):305–314, 2015.
+González, Javier, Osborne, Michael, and Lawrence, Neil D.
+GLASSES: Relieving The Myopia Of Bayesian Optimisation. In Proceedings of the 19th International Conference
+
+on Artificial Intelligence and Statistics, number 51 in Proceedings of Machine Learning Research, pp. 790–799,
+2016.
+Jasial, Swarit, Hu, Ye, Vogt, Martin, and Bajorath, Jürgen.
+Activity-relevant similarity values for fingerprints and
+implications for similarity searching. F1000Research,
+5(Chem Inf Sci):591, 2016.
+Kawazoe, Yoshiyuki, Yu, Jing-Zhi, Tsai, An-Pang, and
+Masumoto, Tsuyoshi (eds.). Nonequilibrium Phase Diagrams of Ternary Amorphous Alloys, volume 37A of
+Condensed Matter. Springer–Verlag, 1997.
+Lewis, David D. and Gale, William A. A Sequential Algorithm for Training Text Classifiers. In Proceedings of
+the 17th Annual International ACM SIGIR Conference on
+Research and Development in Information Retrieval, pp.
+3–12, 1994.
+Ling, Chun Kai, Low, Kian Hsiang, and Jaillet, Patrick.
+Gaussian process planning with Lipschitz continuous reward functions: Towards unifying Bayesian optimization, active learning, and beyond. In Proceedings of the
+30th AAAI Conference on Artificial Intelligence, pp. 1860–
+1866, 2016.
+Liu, Tiqing, Lin, Yuhmei, Wen, Xin, Jorissen, Robert N,
+and Gilson, Michael K. BindingDB: A web-accessible
+database of experimentally determined protein–ligand
+binding affinities. Nucleic Acids Research, 35(suppl 1):
+D198–D201, 2007.
+Ma, Yifei, Garnett, Roman, and Schneider, Jeff. Active Area
+Search via Bayesian Quadrature. In Proceedings of the
+17th International Conference on Artificial Intelligence
+and Statistics, number 33 in Proceedings of Machine
+Learning Research, pp. 595–603, 2014.
+Ma, Yifei, Huang, Tzu-Kuo, and Schneider, Jeff. Active
+Search and Bandits on Graphs using Sigma-Optimality.
+In Proceedings of the 31st Conference on Uncertainty in
+Artificial Intelligence, pp. 542–551, 2015a.
+Ma, Yifei, Sutherland, Dougal J., Garnett, Roman, and
+Schneider, Jeff. Active Pointillistic Pattern Search. In
+Proceedings of the 18th International Conference on Artificial Intelligence and Statistics, number 38 in Proceedings of Machine Learning Research, pp. 672–680, 2015b.
+Pfeiffer III, Joseph J, Neville, Jennifer, and Bennett, Paul N.
+Active Exploration in Networks: Using Probabilistic Relationships for Learning and Inference. In Proceedings of
+the 23rd ACM International Conference on Information
+and Knowledge Management, pp. 639–648, 2014.
+
+Efficient Nonmyopic Active Search
+
+Sabbadin, Régis, Lang, Jérôme, and Ravoanjanahary, Nasolo. Purely Epistemic Markov Decision Processes. In
+Proceedings of the 22nd AAAI Conference on Artificial
+Intelligence, pp. 1057–1062, 2007.
+Settles, Burr. Active Learning Literature Survey. Technical
+report, University of Wisconsin–Madison, 2010. Computer Sciences Technical Report 1648.
+Snoek, Jasper, Larochelle, Hugo, and Adams, Ryan P. Practical Bayesian Optimization of Machine Learning Algorithms. In Advances in Neural Information Processing
+Systems 25, pp. 2951–2959, 2012.
+Srinivas, Niranjan, Krause, Andreas, Kakade, Sham, and
+Seeger, Matthias W. Gaussian Process Optimization in
+the Bandit Setting: No Regret and Experimental Design.
+In Proceedings of the 27th International Conference on
+Machine Learning, pp. 1015–1022, 2010.
+Sterling, Teague and Irwin, John J. ZINC 15 – Ligand Discovery for Everyone. Journal of Chemical Information
+and Modeling, 55(11):2324–2337, 2015.
+Vanchinathan, Hastagiri P., Marfurt, Andreas, Robelin,
+Charles-Antoine, Kossmann, Donald, and Krause, Andreas. Discovering Valuable Items from Massive Data.
+In Proceedings of the 21st ACM SIGKDD International
+Conference on Knowledge Discovery and Data Mining,
+pp. 1195–1204, 2015.
+Wang, Xuezhi, Garnett, Roman, and Schneider, Jeff. Active Search on Graphs. In Proceedings of the 19th ACM
+SIGKDD International Conference on Knowledge Discovery and Data Mining, pp. 731–738, 2013.
+Ward, Logan, Agrawal, Ankit, Choudhary, Alok, and
+Wolverton, Christopher. A General-Purpose Machine
+Learning Framework for Predicting Properties of Inorganic Materials. 2016. arXiv preprint arXiv:1606.09551
+[cond-mat.mtrl-sci].
 
 

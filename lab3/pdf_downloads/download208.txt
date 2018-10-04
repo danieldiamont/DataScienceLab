@@ -1,798 +1,1375 @@
-Learning to Detect Sepsis with a Multitask Gaussian Process RNN Classifier
-
-Joseph Futoma 1 Sanjay Hariharan 1 Katherine Heller 1
+Deriving Neural Architectures from Sequence and Graph Kernels
+Tao Lei* 1 Wengong Jin* 1 Regina Barzilay 1 Tommi Jaakkola 1
 
 Abstract
-We present a scalable end-to-end classifier that
-uses streaming physiological and medication
-data to accurately predict the onset of sepsis,
-a life-threatening complication from infections
-that has high mortality and morbidity. Our proposed framework models the multivariate trajectories of continuous-valued physiological time
-series using multitask Gaussian processes, seamlessly accounting for the high uncertainty, frequent missingness, and irregular sampling rates
-typically associated with real clinical data. The
-Gaussian process is directly connected to a
-black-box classifier that predicts whether a patient will become septic, chosen in our case to be
-a recurrent neural network to account for the extreme variability in the length of patient encounters. We show how to scale the computations associated with the Gaussian process in a manner
-so that the entire system can be discriminatively
-trained end-to-end using backpropagation. In a
-large cohort of heterogeneous inpatient encounters at our university health system we find that it
-outperforms several baselines at predicting sepsis, and yields 19.4% and 55.5% improved areas under the Receiver Operating Characteristic
-and Precision Recall curves as compared to the
-NEWS score currently used by our hospital.
+The design of neural architectures for structured
+objects is typically guided by experimental insights rather than a formal process. In this work,
+we appeal to kernels over combinatorial structures, such as sequences and graphs, to derive
+appropriate neural operations. We introduce a
+class of deep recurrent neural operations and formally characterize their associated kernel spaces.
+Our recurrent modules compare the input to virtual reference objects (cf. filters in CNN) via the
+kernels. Similar to traditional neural operations,
+these reference objects are parameterized and directly optimized in end-to-end training. We empirically evaluate the proposed class of neural architectures on standard applications such as language modeling and molecular graph regression,
+achieving state-of-the-art results across these applications.
 
 1. Introduction
-Sepsis is a clinical condition involving a destructive host
-response to the invasion of a microorganism and/or its
-toxin, and is associated with high morbidity and mortality. Without early intervention, this inflammatory response
-can progress to septic shock, organ failure and death (Bone
-et al., 1989). Identifying sepsis early improves patient outcomes, as mortality from septic shock increases by 7.6%
+Many recent studies focus on designing novel neural architectures for structured data such as sequences or annotated graphs. For instance, LSTM (Hochreiter & Schmidhuber, 1997), GRU (Chung et al., 2014) and other complex
+recurrent units (Zoph & Le, 2016) can be easily adapted
+to embed structured objects such as sentences (Tai et al.,
+2015) or molecules (Li et al., 2015; Dai et al., 2016) into
+vector spaces suitable for later processing by standard predictive methods. The embedding algorithms are typically
+integrated into an end-to-end trainable architecture so as to
+tailor the learnable embeddings directly to the task at hand.
+The embedding process itself is characterized by a sequence operations summarized in a structure known as
+the computational graph. Each node in the computational
+*
 1
-Dept. of Statistical Science, Duke University, Durham NC,
-USA. Correspondence to: Joseph Futoma <jdf38@duke.edu>.
+Equal contribution
+MIT Computer Science & Artificial Intelligence Laboratory.
+Correspondence to:
+Tao Lei <taolei@csail.mit.edu>, Wengong Jin <wengong@csail.mit.edu>.
 
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-for every hour that treatment is delayed after the onset of
-hypotension (Kumar et al., 2006). It was also recently
-shown that timely administration of a 3-hour bundle of
-care for patients with sepsis (i.e. blood culture, broadspectrum antibiotics, and a lactate measurement) was associated with lower in-hospital mortality (Seymour et al.,
-2017), further emphasizing the need for fast and aggressive
-treatment. Unfortunately, early and accurate identification
-of sepsis remains elusive even for experienced clinicians,
-as the symptoms associated with sepsis may be caused by
-many other clinical conditions (Jones et al., 2010).
-Despite the difficulties associated with identifying sepsis,
-data that could be used to inform such a prediction is
-already being routinely captured in the electronic health
-record (EHR). To this end, data-driven early warning scores
-have great potential to identify early clinical deterioration using live data from the EHR. As one example, the
-Royal College of Physicians developed, validated, and implemented the National Early Warning Score (NEWS) to
-identify patients who are acutely decompensating (Smith
-et al., 2013). Such early warning scores compare a small
-number of physiological variables (NEWS uses six) to normal ranges of values to generate a single composite score.
-NEWS is already implemented in our university health system’s EHR so that when the score reaches a defined trigger,
-a patient’s care nurse is alerted to potential clinical deterioration. However, a major problem with NEWS and other
-related early warning scores is that they are typically broad
-in scope and were not developed to target a specific condition such as sepsis, since many unrelated disease states
-(e.g. trauma, pancreatitis, alcohol withdrawal) can result
-in high scores. Previous measurements revealed 63.4% of
-the alerts triggered by the NEWS score at our hospital were
-cancelled by the care nurse, suggesting breakdowns in the
-training and education process, low specificity, and high
-alarm fatigue. Despite the obvious limitation of using only
-a small fraction of available information, these scores are
-also overly simplistic in assigning independent scores to
-each variable, ignoring both the complex relationships between different physiological variables and their evolution
-in time.
-The goal in this work is to develop a more flexible statistical model that leverages as much available data as possible from patient admissions in order to provide earlier
-
-Learning to Detect Sepsis
-
-and more accurate detection of sepsis. However, this task
-is complicated by a number of problems that arise working with real EHR data, some of them particular to sepsis. Unlike other clinical adverse events such as cardiac
-arrests or transfers to the Intensive Care Unit (ICU) with
-known event times, sepsis presents a challenge as the exact
-time at which it starts is generally unknown. Instead, sepsis is typically observed indirectly through abnormal labs
-or vitals, the administration of antibiotics, or the drawing
-of blood cultures to test for suspected infection. Another
-challenging aspect of our data source is the large degree of
-heterogeneity present across patient encounters, as we did
-not exclude certain classes of admissions. More generally,
-clinical time series data presents its own set of problems, as
-they are measured at irregularly spaced intervals and there
-are many (often informatively) missing values. Alignment
-of patient time series also presents an issue, as patients admitted to the hospital may have very different unknown
-clinical states, with some having sepsis already upon admission. A crucial clinical consideration to be taken into
-account is the timeliness of alarms raised by the model, as
-a clinician needs ample time to act on the prediction and
-quickly intervene on patients flagged as high-risk of being
-septic. Thus in building a system to predict sepsis we must
-consider timeliness of the prediction in addition to other
-metrics that quantify discrimination and accuracy.
-Our proposed methodology for detecting sepsis in multivariate clinical time series overcomes many of these limitations. Our approach hinges on constructing an end-toend classifier that takes in raw physiology time series data,
-transforms it through a Multitask Gaussian Process (MGP)
-to a more uniform representation on an evenly spaced grid,
-and feeds the latent function values through a deep recurrent neural network (RNN) to predict the binary outcome of
-whether or not the patient will become (or is already) septic. Setting up the problem in this way allows us to leverage
-the powerful representational abilities of RNNs, which typically requires standardized inputs at uniformly-spaced intervals, for our irregularly spaced multivariate clinical time
-series. As more information is made available during an
-encounter, the model can dynamically update its prediction
-about how likely it is that the patient will become septic.
-When the predicted probability of sepsis exceeds a predefined threshold (chosen to maximize predefined metrics
-such as sensitivity, positive predictive value, and timeliness), the model can be used to trigger an alarm.
-We train our model with real patient data extracted from the
-Duke University Health System EHR, using a large cohort
-of heterogeneous inpatient encounters spanning 18 months.
-Our experiments show that using our method we can reliably predict the onset of sepsis roughly 4 hours in advance
-of the true occurrence, at a sensitivity of 0.85 and a precision of 0.64. The benefits of our MGP classification frame-
-
-work are also apparent as there is a performance gain of
-4.3% in area under the ROC curve and 11.1% in area under the Precision Recall curve, compared to the results of
-training an RNN to raw clinical data without a Gaussian
-Process to smoothly interpolate and impute missing values.
-Our overall performance is also substantially better than the
-most common early warnings scores from the medical literature, and in particular we perform significantly better than
-the NEWS score currently in use at our hospital. These
-large gains in performance will translate to better patient
-outcomes and a lower burden on the overall health system
-when our model is deployed on the wards in the near future
-as part of a randomized trial.
-
-2. Related Works
-There is a large body of works on the development and
-validation of early warning scores to predict clinical deterioration and other related outcomes. For instance, the
-MEWS score (Gardner-Thorpe et al., 2006) and NEWS
-score (Smith et al., 2013) are two of the more common
-scores used to assess overall clinical deterioration. In addition, the SIRS score for systemic inflammatory response
-syndrome was part of the original clinical definition of sepsis (Bone et al., 1992), although other scores designed for
-sepsis such as SOFA (Vincent et al., 1996) and qSOFA
-(Singer et al., 2016) have been more popular in recent
-years. A more sophisticated regression-based approach
-called the Rothman Index (Rothman et al., 2013) is also in
-widespread use for detecting overall deterioration. Finally,
-(Henry et al., 2015) used a Cox regression to predict sepsis
-using clinical time series data, although they do not account
-for temporal structure since they simply create feature and
-event-time pairs from raw data.
-There has been much recent interest within machine learning in developing models to predict future disease progression using EHRs. For instance, (Schulam & Saria,
-2015) developed a longitudinal model for predicting progression of scleroderma, (Futoma et al., 2016) presented
-a joint model for predicting progression of chronic kidney
-disease and cardiac events, and (Liu et al., 2015) proposed
-a continuous-time hidden Markov model for progression
-of glaucoma. However, these models operate on a longer
-time scale, on the order of months to years, which is different for our setting that demands real-time predictions at
-an hourly level of granularity. The recent works of (Yoon
-et al., 2016) and (Hoiles & van der Schaar, 2016) are more
-relevant to our application, as they both developed models
-using clinical time series to predict a more general condition of clinical deterioration, as observed by admission to
-the Intensive Care Unit.
-Although there has been some past methodological work
-on classification of multivariate time series, most of these
-
-Learning to Detect Sepsis
-
-approaches rely on clustering using some form of ad-hoc
-distance metric between series, e.g. (Xing et al., 2012), and
-comparing a new series to observed clusters. More similar
-to our work are several recent papers on using recurrent
-neural networks to classify clinical time series. In particular, (Lipton et al., 2016) used Long-Short Term Memory
-(LSTM) RNNs to predict diagnosis codes given physiological time series from the ICU, and (Choi et al., 2016) used
-Gated Recurrent Unit RNNs to predict onset of heart failure using categorical time series of diagnosis and procedural codes. Lastly, on a different note (Zhengping et al.,
-2016) also used a variant of Gated Recurrent Unit networks
-to investigate patterns of informative missingness in physiological ICU time series.
-There are several related works that also utilized multitask Gaussian processes in modeling multivariate physiological time series. For instance (Ghassemi et al., 2015)
-and (Durichen et al., 2015) used a similar model to ours,
-but instead focused more on forecasting of vitals to predict
-clinical instability, whereas our task is a binary classification to identify sepsis early. Finally, our end-to-end technique to discriminatively learn both the MGP and classifier
-parameters builds off of (Cheng-Xian Li & Marlin, 2016).
-However, our focus is more applied and the setting is more
-involved, as our time series are multivariate, of highly variable length, and may contain large amounts of missingness.
-
-Figure 2. An example patient encounter that shows when different lab and vital time series variables were measured, to highlight
-their irregular sampling rates. Not pictured are the 8 other physiological variables in our dataset that were never measured during
-this encounter (Ammonia, Bandemia, CK-MB, CRP, D-Dimer,
-ESR, LDH, PO2).
-
-some notation, before presenting the details of the modeling framework, the learning algorithm, and the approximations to speed up learning and inference.
-
-3. Proposed Model
-Multitask
-Gaussian
-Process
-Raw
-Labs/Vitals
-
-MGP Posterior
-
-Z ⇠ p(Z|Y, t; ✓)
-
-Y, t
-Sepsis Label
-
-RNN inputs
-
-o
-
-{dj = [zj , b, pj ]}X
-j=1
-
-Loss
-
-l(f (D; w), o)
-RNN
-Figure 1. Model framework. Raw labs and vitals Y at times t are
-fed through a Multitask Gaussian Process to get imputed and interpolated values Z at regularly spaced grid times x. These are fed
-into an RNN along with baseline covariates b and medications P
-to predict the binary outcome o (presence of sepsis).
-
-We frame the problem of early detection of sepsis as a multivariate time series classification problem. Given a new patient encounter, the goal is to continuously update the predicted probability that the encounter will result in sepsis,
-using all available information up until that time. Figure
-1 shows an overview of our approach. We first introduce
-
-We suppose that our dataset D consists of N independent patient encounters, {Di }N
-i=1 . For each patient encounter i, we have a vector of baseline covariates available
-upon admission to the hospital, denoted bi ∈ RB , such
-as gender, age, and documented comorbidities. At times
-ti = [ti1 , ti2 , . . . , tiTi ] during the encounter we obtain information about M different types of vitals and laboratory tests that characterize the patient’s physiological state,
-where ti1 = 0 is the time of admission. These longitudinal values are denoted Yi = [yi1 , yi2 , . . . , yiM ] ∈ RTi ×M ,
-with yim ∈ RTi the vector of recorded values for variable
-m at each time. In practice, only a small fraction of this
-complete matrix is observed, since only a subset of the
-M variables are recorded at each observation time. We
-make no assumption about how long each encounter may
-last, so the length of the time series for each encounter is
-highly variable (Ti 6= Ti0 ) and these times are irregularly
-spaced, with each encounter having a unique set of observation times. Additionally, during the encounter, medications of P different classes are administered at Ui different
-times (and it is possible for Ui = 0). We denote this information as Pi = {(ui1 , pi1 ), (ui2 , pi2 ), . . . , (uiUi , piUi },
-with pij ∈ {0, 1}P a binary vector denoting which of the
-P medications were administered at time uij . This infor-
-
-Learning to Detect Sepsis
-
-mation is particularly valuable, because administration of
-medications provides some insight into a physician’s subjective impression of a patient’s health state by the type and
-quantity of medications ordered. Finally, each encounter in
-the training set is associated with a binary label oi ∈ {0, 1}
-denoting whether or not the patient acquired sepsis; we go
-into detail about how this is defined from the raw data in
-Section 4.1. Thus, the data for a single encounter can be
-summarized as Di = {bi , ti , Yi , Pi , oi }.
-
-corresponding stochastic process are only first-order continuous (Rasmussen & Williams, 2005). Finally, D is a
-2 M
-diagonal matrix of noise variances {σm
-}m=1 . In practice,
-only a subset of the M series are observed at each time,
-so the M Ti × M Ti covariance matrix Σi only needs to be
-computed at the observed values. This model is known in
-geostatistics as the intrinsic correlation model, since the covariance between different variables and between different
-points in time is explicitly separated, and is a special case of
-the linear model of coregionalization (Wackernagel, 1998).
-
-3.1. Multitask Gaussian Processes
-
-The MGP can be used as a mechanism to handle the irregular spacing and missing values in the raw data, and
-output a uniform representation to feed into a black box
-classifier. To accomplish this, we define X to be a set of
-evenly spaced points in time (e.g. every hour) that will be
-shared across all encounters. For each encounter, we denote a subset of these points by xi = (xi1 , xi2 , . . . , xiXi ),
-so that xij = xi0 j if both series are at least xij hours long.
-The MGP provides a posterior distribution for the M × Xi
-matrix Zi of latent time series values at the grid times xi
-within this encounter, while also maintaining uncertainty
-over the values. If we let zi = vec(Zi ), this posterior is
-also normally distributed with mean and covariance given
-by:
-
-Gaussian processes (GPs) are a common choice for modeling irregularly spaced time series as they are naturally
-able to handle the variable spacing and differing number of
-observations per series. Additionally, they maintain uncertainty about the variance of the series at each point, which
-is important in our setting since the irregularity and missingness of clinical time series can lead to high uncertainty
-for variables that are infrequently (or perhaps never) observed, as is often the case. In order to account for the
-multivariate nature of our time series, we use a Multitask
-Gaussian Process (MGP) (Bonilla et al., 2008), an extension to GPs for handling multiple outputs at each time. Let
-fim (t) be a latent function representing the true values of
-physiological variable m for patient encounter i at time t.
-The MGP model places independent GP priors over the latent functions, with a shared correlation function k t over
-time. We assume each function has a prior mean of zero,
-so that the data has been centered. Then, we have:
-M
-t
-0
-cov(fim (t), fim0 (t0 )) = Kmm
-0 k (t, t )
-
-yim (t) ∼
-
-2
-N (fim (t), σm
-)
-
-(1)
-(2)
-
-where yim (t) is the actual observed value. Equivalently,
-the likelihood for a fully observed multivariate time series
-of M measurements at T unique times is:
-vec(Yi ) ≡ yi ∼ N (0, Σi )
-
-Σi = K
-
-M
-
-⊗K
-
-Ti
-
-+ D ⊗ I,
-
-(3)
-(4)
-
-where yi is a stacked vector of all M longitudinal variables
-at the Ti observation times, and ⊗ denotes the Kronecker
-product. K M is a full-rank M × M covariance matrix
-specifying the relationships among the variables, crucially
-allowing information from more frequently sampled variables to help improve learning about the variables infrequently (or perhaps never) measured. K Ti is a Ti × Ti
-correlation matrix (the variance can be fully explained by
-K M ) for the observation times ti as specified by the correlation function k t with parameters η shared across all
-encounters. In this work we use the Ornstein-Uhlenbeck
-0
-(OU) kernel function, k t (t, t0 ) = e−|t−t |/l , with a single
-length-scale parameter η = l. The OU kernel is useful
-for modeling noisy physiological data, as draws from the
-
-µzi = (K M ⊗ K Xi Ti )Σ−1
-i yi
-
-Σzi = (K
-
-M
-
-⊗K
-
-Xi
-
-) − (K
-
-M
-
-(5)
-⊗K
-
-Xi Ti
-
-M
-)Σ−1
-i (K
-
-⊗ K Ti Xi )
-(6)
-
-where K Xi Ti and K Xi are correlation matrices between
-the grid times xi and observation times ti and between
-xi with itself, as specified by the correlation function k t .
-The set of MGP parameters to be learned are thus θ =
-2 M
-}m=1 , η), and in this work we assume that they
-(K M , {σm
-are shared across all encounters. The structured input Zi
-can then serve as a standardized input to the RNN, where
-the raw time series data has been interpolated and missing
-values imputed.
-3.2. Classification Method
-We build off the ideas in (Cheng-Xian Li & Marlin, 2016)
-to learn a classifier that directly takes the latent function
-i
-values zi at shared reference time points xi = {xij }X
-j=1
-as inputs. The time series for each encounter i in our data
-can be represented as an MGP posterior distribution zi ∼
-N (µzi , Σzi ; θ) at times xi . This information will be fed
-into a downstream black box classifier to learn the label of
-the time series.
-Since the lengths of each times series are variable, the classifier used must be able to account for variable length inputs, as the size of zi and xi will differ across encounters. To this end, we turn to deep recurrent neural networks, a natural choice for learning flexible functions that
-
-Learning to Detect Sepsis
-
-map variable-length input sequences to a single output. In
-particular, we used a Long-Short Term Memory (LSTM)
-architecture (Hochreiter & Schmidhuber, 1997), as these
-classes of RNNs have been shown to be very flexible and
-have obtained excellent performance on a wide variety of
-problems. At each time xij , a new set of inputs dij =
->
-> >
-[z>
-ij , bi , pij ] will be fed into the network, consisting of
-the M latent function values zij , the baseline covariates
-bi , and pij , a vector of counts of the S medications administered between xij and xi,j−1 . Thus, the RNN is able
-to learn complicated time-varying interactions among the
-static admission variables, the physiological labs and vitals, and administration of medications.
-If the function values zij were actually observed at each
-time xij , they could be directly fed into the RNN classifier along with the rest of the observed portion of the
-vector dij , and learning would be straightforward. Let
-f (Di ; w) denote the RNN classifier function, parameterized by w, that maps the (M + B + P ) × Xi matrix of
-inputs Di to an output probability. Learning the classifier given zi would involve learning the parameters w of
-the RNN by optimizing a loss function l(f (Di ; w), oi ) that
-compares the model’s prediction to the true label oi . However, since zi is a random variable, this loss function to
-be optimized is itself a random variable. Thus, the loss
-function that we will actually optimize is the expected loss
-Ezi ∼N (µzi ,Σzi ;θ) [l(f (Di ; w), oi )], with respect to the MGP
-posterior distribution of zi . Then the overall learning problem is to minimize this loss function over the full dataset:
-∗
-
-∗
-
-w , θ = argminw,θ
-
-N
+graph identifies the unit/mapping applied while the arcs
+specify the relative arrangement/order of operations. The
+process of designing such computational graphs or associated operations for classes of objects is often guided by
+insights and expertise rather than a formal process.
+Recent work has substantially narrowed the gap between
+desirable computational operations associated with objects
+and how their representations are acquired. For example,
+value iteration calculations can be folded into convolutional
+architectures so as to optimize the representations to facilitate planning (Tamar et al., 2016). Similarly, inference
+calculations in graphical models about latent states of variables such as atom characteristics can be directly associated
+with embedding operations (Dai et al., 2016).
+We appeal to kernels over combinatorial structures to define the appropriate computational operations. Kernels give
+rise to well-defined function spaces and possess rules of
+composition that guide how they can be built from simpler
+ones. The comparison of objects inherent in kernels is often broken down to elementary relations such as counting
+of common sub-structures as in
 X
+K( , 0 ) =
+1[s 2 ]1[s 2 0 ]
+(1)
+s2S
 
-Ezi ∼N (µzi ,Σzi ;θ) [l(f (Di ; w), oi )].
-
-i=1
-
-(7)
-Given fitted model parameters w∗ , θ ∗ , when we are given
-a new patient encounter Di0 for which we wish to predict whether or not it will become septic, we simply take
-Ezi0 ∼N (µz 0 ,Σz 0 ;θ∗ ) [f (Di0 ; w∗ )] as a risk score that can
-i
-i
-be updated continuously as more information is available.
-This approach is “uncertainty-aware”, as the uncertainty in
-the MGP posterior for zi is propagated all the way through
-to the loss function. Variations on this setup exist by moving the expectation. For instance, moving the expectation
-inside the classifier function f swaps the MGP mean vector
-µzi in place of zi in the RNN input Di . This approach will
-be more computationally efficient but discards the uncertainty information in the time series, which may be undesirable in our setting of noisy clinical time series with high
-rates of missingness.
-3.3. End to End Learning Framework
-The learning problem is to learn optimal parameters
-that minimize the loss in (7). Since the expected loss
-
-Ez∼N (µz ,Σz ;θ) [l(f (D; w), o)] is intractable for our problem
-setup, we approximate the loss with Monte Carlo samples:
-Ez∼N (µz ,Σz ;θ) [l(f (D; w), o)] ≈
-
-S
-1X
-l(f (Ds ; w), o),
-S s=1
-
-(8)
-Ds =
-
->
-> >
-[Z>
-s ,B ,P ] ,
-
-vec(Zs ) ≡ zs ∼ N (µz , Σz ; θ)
-
-(9)
-
-where B and P are appropriately sized matrices of the baseline covariates and medication counts over time.
-We need to compute gradients of this expression with respect to the RNN parameters w and the MGP parameters
-θ. This can be achieved with the reparameterization trick,
-using the fact that z = µz + Rξ, where ξ ∼ N (0, I) and
-R is a matrix such that Σz = RR> (Kingma & Welling,
-2014). This allows us to bring the gradients of (8) inside
-the expectation, where they can be computed efficiently.
-Rather than choose R to be lower triangular so that it can
-only be computed in O(M 3 X 3 ) time with a Cholesky decomposition, we follow (Cheng-Xian Li & Marlin, 2016)
-and let R be the symmetric matrix square root, as this leads
-to a scalable approximation to be discussed in Section 3.4.
-Finally, we train our model discriminatively and end-to-end
-by jointly learning θ with w, as opposed to a two-stage approach that would first learn and fix θ before learning w.
-3.4. Scaling Computation with the Lanczos Method
-The computation to both learn the model parameters and
-make predictions for a new patient encounter is dominated
-primarily by computing the parameters of the MGP in (5)
-and (6) and then drawing samples for z from it, as these are
-of dimension M X (where X is the number of reference
-time points). To make this computation more amenable to
-large-scale datasets such as our large cohort of inpatient
-admissions, we use the Lanczos method to obtain approximate draws from large multivariate Gaussians.
-Recall that to draw from a multivariate Gaussian requires
-1/2
-1/2
-taking the product Σz ξ, where Σz is the symmetric
-matrix square root and ξ ∼ N (0, I). We can approximate this product using the Lanczos method, a Krylov
-subspace approximation that bypasses the need to explic1/2
-itly compute Σz and only requires matrix-vector products with Σz . The main idea is to find an optimal ap1/2
-proximation of Σz in the Krylov subspace Kk (Σz , ξ) =
-span{ξ, Σz ξ, . . . , Σk−1
-ξ}; this approximation is simply
-z
-the orthogonal projection of Σz ξ into the subspace. See
-(Chow & Saad, 2014) for more details on the use of Krylov
-methods for sampling multivariate Gaussians. In practice,
-k is chosen to be a small constant, k << M X, so that
-the O(k 3 ) operation of computing the matrix square root
-of a k × k tridiagonal matrix can effectively be treated as
-
-Learning to Detect Sepsis
-
-Algorithm 1 Lanczos Method to approximate Σ1/2 ξ
-Input: covariance matrix Σ, random vector ξ, k
-β1 = 0 and d0 = 0
-d1 = ξ/||ξ||
-for j = 1 to k do
-d = Σdj − βj dj−1
-αj = d>
-j d
-d = d − αj dj
-βj+1 = ||d||
-dj+1 = d/βj+1
-end for
-D = [d1 , . . . , dk ]
-H = tridiagonal(β2:k , α1:k , β2:k )
-Return: ||ξ||DH 1/2 e1 // e1 = [1, 0, . . . , 0]>
-O(1). The most expensive step in the Lanczos method then
-becomes computation of matrix-vector products Σz d. To
-compute these we use the conjugate gradient algorithm, another Krylov method, and it usually converges in only a few
-iterations. We also use conjugate gradient when computing
-µz in (5) to approximate Σ−1 y. Importantly, every operation in both the Lanczos method (Algorithm 1) and the
-conjugate gradient algorithm are differentiable, so that it
-is possible to backpropagate through the entire procedure
-during training with automatic differentiation.
-
-4. Experiments
-4.1. Data Description
-Our dataset consists of 49,312 inpatient admissions from
-our university health system spanning 18 months, extracted
-directly from our EHR. After extensive data cleaning, there
-are M = 34 physiological variables, of which 5 are vitals, and 29 are laboratory values (see Figure 2), and they
-vary considerably in the number of encounters with at least
-one recorded measurement. At least one value for each
-of the vital variables is measured in over 99% of encounters, while some labs (e.g. Ammonia, ESR, D-Dimer) are
-very rarely taken, being measured in only 2-4% of encounters, with most of the rest falling somewhere in the middle.
-There were b = 35 baseline covariates reliably measured
-upon admission (e.g. age, race, gender, whether the admission was a transfer or urgent, comorbidities upon admission). Finally, we have information on P = 8 medication classes, where these classes were determined from a
-thorough review of the raw medication names in the EHR.
-The patient encounters range from very short admissions of
-only a few hours to extended stays lasting multiple months,
-with the mean length of stay at 121.7 hours, with a standard
-deviation of 108.1 hours. As there was no specific inclusion
-or exclusion criteria in the creation of this patient cohort,
-the resulting population is very heterogeneous and can vary
-
-tremendously in clinical status. This makes the dataset representative of the real clinical setting in which our method
-will be used, across the entire inpatient wards. Before modeling we log transform all M physiological time series variables to reduce the effect of outliers, and then center and
-scale all continuous-valued inputs into the model.
-For encounters that ultimately resulted in sepsis, we used
-a well-defined clinical definition to assess the first time at
-which sepsis is suspected to have been present. This criteria consisted of at least two consistently abnormal vitals
-signs, along with a blood culture drawn for a suspected
-infection, and at least one abnormal laboratory value indicating early signs of organ failure. This definition was
-carefully reviewed and found to be sufficient by clinicians.
-Thus each encounter is associated with a binary label indicating whether or not that patient ever acquired sepsis; the
-prevalence of sepsis in our full dataset was 21.4%.
-4.2. Experimental Setup
-We train our method to 80% of the full dataset, setting aside
-10% as a validation set to select hyperparameters and a final
-10% for testing. For the encounters that result in sepsis,
-we throw away data from after sepsis was acquired, as our
-clinical goal is to be able to predict sepsis before it happens
-for a new patient. For non-septic encounters we train on
-the full length of the encounter until discharge. We choose
-the shared reference times X to be evenly spaced at every
-hour starting at admission, as clinically the desire is for a
-risk score that will refresh only once an hour.
-We compared our method (denoted “MGP-RNN”) against
-several baselines, including several common clinical scoring systems, as well as more complex methods. In particular, we compared our model with the NEWS score currently in use at our hospital, along with the MEWS score
-and the SIRS score. Each of these scores are based off of
-a small subset of the total variables available to our methods. In particular, MEWS uses five, NEWS uses seven, and
-SIRS uses four. These clinical benchmarks all assign independent scores to each variable under consideration, with
-higher scores given for more abnormal values, although
-they each use different thresholds and different values.
-As a strong comparison to our end-to-end MGP-RNN classifier, we also trained an LSTM recurrent neural network
-from the raw data alone (denoted “Raw RNN” in Figure
-3), with the same number of layers and hidden units as the
-network in our classifier (2 layers with 64 hidden units per
-layer). The mean value for each vital and lab was taken
-in hourly windows, and windows with missing values carried the most recent value forward. If there was no previously observed variable yet in that encounter, we imputed
-the mean. In addition, we trained an L2 penalized logistic
-regression baseline (“PLR”) using this imputation mecha-
-
-Learning to Detect Sepsis
-
-Figure 3. Left: Area under the Receiver Operating Characteristic curve for each method, as a function of the number of hours in advance
-of sepsis/discharge the prediction is issued (0-12 hours). Middle: Area under the Precision Recall curve as a function of time. Right:
-Precision as a function of time, for a fixed sensitivity of 0.85. Methods are all color coded according to middle legend; all GP/MGP-RNN
-methods are solid lines.
-
-nism.
-We also compare against a simplified version of the end-toend MGP-RNN framework, (denoted “MGP-RNN-mean”)
-where we replace the latent MGP function values z with
-their expectation µz during both training and testing, to test
-the effect of discarding the extra uncertainty information.
-Finally, to demonstrate the added value of using an MGP
-instead of independent GPs for each physiological variable,
-we trained two end-to-end GP-RNN baselines using (7),
-the same loss function as the MGP-RNN. The first, “GPRNN-shared”, is equivalent to an MGP with K M = I,
-i.e. no covariances across variables, and all variables share
-the same length-scale in the OU kernel. The second, “GPRNN-indep”, is considerably stronger as it also has no covariances across variables, but allows each GP prior on the
-latent functions fm to have its own length scale in its OU
-kernel, i.e. lm 6= lm0 .
-To guard against overfitting we apply early stopping on the
-validation set, and use mild L2 regularization for all RNNbased methods. We train all models using stochastic gradient descent with the ADAM optimizer (Kingma & Ba,
-2015) using minibatches of 100 encounters at a time and a
-learning rate of 0.001. To approximate the expectation in
-(8) we draw ten Monte Carlo samples. We implemented
-our methods in Tensorflow1 . On a server with 63GB RAM
-and 12 Intel Xeon E5-2680 2.50GHz CPUs, the MGP-RNN
-method takes roughly 10 hours per epoch on the training
-set, and takes on average 0.3 seconds to evaluate a test case
+where S is the set of possible substructures. For example, in a string kernel (Lodhi et al., 2002), S may refer
+to all possible subsequences while a graph kernel (Vishwanathan et al., 2010) would deal with possible paths
+in the graph. Several studies have highlighted the relation between feed-forward neural architectures and kernels (Hazan & Jaakkola, 2015; Zhang et al., 2016) but we
+are unaware of any prior work pertaining to kernels associated with neural architectures for structured objects.
+In this paper, we introduce a class of deep recurrent neural
+embedding operations and formally characterize their associated kernel spaces. The resulting kernels are parameterized in the sense that the neural operations relate objects of
+interest to virtual reference objects through kernels. These
+reference objects are parameterized and readily optimized
+for end-to-end performance.
+To summarize, the proposed neural architectures, or Kernel
+Neural Networks 1 , enjoy the following advantages:
 1
 
-https://github.com/jfutoma/MGP-RNN
+Code available at https://github.com/taolei87/icml17 knn
 
-and generate a risk score. All methods converged in a small
-number of epochs.
-4.3. Evaluation Metrics
-We use several different metrics to evaluate performance.
-The area under the Receiver Operating Characteristic
-(ROC) curve (AU-ROC) is an overall measure of discrimination, and can be interpreted as the probability that the
-classifier correctly ranks a random sepsis encounter as
-higher risk than a random non-sepsis encounter. We also
-report the area under the Precision Recall (PR) curve (AUPR). Importantly, we examine how these metrics vary as
-we change the window in which we make the prediction
-to see how far in advance we can reliably predict onset of
-sepsis.
-4.4. Results
-Our results show that the MGP-RNN classification framework yields clear performance gains when compared to
-the various baselines considered. It substantially outperforms the overly simplistic clinical scores, and demonstrates modest gains over the RNN trained to raw data, the
-MGP-RNN-mean method that discards uncertainty information, and the univariate GP baselines.
-Figure 3 summarizes the results. The four MGP/GP-RNN
-methods are in solid lines, and the other baselines are
-dashed. It is clear that these four methods perform considerably better than the other methods, especially in the
-last four hours prior to sepsis/discharge.
+Deriving Neural Architectures from Sequence and Graph Kernels
 
-Learning to Detect Sepsis
+• The architecture design is grounded in kernel computations.
+• Our neural models remain end-to-end trainable to the
+task at hand.
+• Resulting architectures demonstrate state-of-the-art
+performance against strong baselines.
+In the following sections, we will introduce these neural
+components derived from string and graph kernels, as well
+as their deep versions. Due to space limitations, we defer
+proofs to supplementary material.2
 
-The left and middle panes of Figure 3 display the AU-ROC
-and AU-PR for each method as a function of the number of hours in advance the prediction is made. Generally
-the MGP-RNN performs best, followed by the three other
-MGP/GP-RNN baselines. This is likely because it retains
-uncertainty information about the noisy time series (unlike MGP-RNN-mean), and can learn correlations among
-the different physiological variables to improve the quality of the imputation (unlike the GP-RNN methods). As
-expected, the GP-RNN-indep baseline consistently outperforms the simpler GP-RNN-shared.
-The right pane of Figure 3 shows the tradeoff between precision and timeliness for a fixed sensitivity of 0.85 across
-the methods. It is most useful to evaluate with such a high
-sensitivity as this is the setting clinicians typically want to
-use a risk score, in order not to miss many cases. The MGPRNN performs comparably to the MGP-RNN-mean within
-a few hours of sepsis, and demonstrates the biggest performance gains from about 3 to 7 hours beforehand. Throughout, it has much higher precision than NEWS, MEWS, and
-SIRS, especially so in the few hours immediately preceding
-sepsis. This is a very important clinical point, since clinicians want a method with very high precision and a low
-false alarm rate to reduce the alarm fatigue experienced
-with current solutions. Furthermore, being able to detect
-sepsis even a few hours early might substantially increase
-treatment effectiveness and improve patient outcomes.
+2. From String Kernels to Sequence NNs
+Notations We define a sequence (or a string) of tokens
+d
+(e.g. a sentence) as x1:L = {xi }L
+i=1 where xi 2 R repreth
+sents its i element and |x| = L denotes the length. Whenever it is clear from the context, we will omit the subscript
+and directly use x (and y) to denote a sequence. For
+P a pair
+of vectors (or matrices) u, v, we denote hu, vi = k uk vk
+as their inner product. For a kernel function Ki (·, ·) with
+subscript i, we use i (·) to denote its underlying mapping,
+i.e. Ki (x, y) = h i (x), i (y)i = i (x)> i (y).
 
-5. Conclusions and Clinical Significance
-We have presented a novel approach for early detection of
-sepsis that classifies multivariate clinical time series in a
-manner that is both flexible and takes into account the uncertainty in the series. On a large dataset of inpatient encounters from our university health system, we find that our
-proposed method substantially outperforms strong baselines and a number of widespread clinical benchmarks. In
-particular, our methods tend to have much higher precision,
-and thus they have much lower rates of false alarm. For instance, at a very high sensitivity of 0.85 and when making
-predictions 4 hours in advance, there will be only roughly
-0.5 false alarms for every true alarm generated by our approach, whereas for the NEWS score currently being used
-at our institution, there will be about 2.5 false alarms for every true alarm. Thus, adoption of our method would result
-in a drastic reduction in the total number of false alarms.
-In addition to the initial promise of our approach, there
-are a number of interesting directions to extend the proposed method to better account for various aspects of our
-data source. In particular, we could incorporate a clustering component with different sets of MGPs for different
-latent subpopulations of encounters, to address high heterogeneity across patients. The medication data might be
+String Kernel String kernel measures the similarity between two sequences by counting shared subsequences
+(see Lodhi et al. (2002)). For example, let x and y be two
+strings, a bi-gram string kernel K2 (x, y) counts the number of bi-grams (xi , xj ) and (yk , yl ) such that (xi , xj ) =
+(yk , yl )3 ,
+X
+K2 (x, y) =
+x,i,j y,k,l (xi , yk ) · (xj , yl )
+1i<j|x|
+1k<l|y|
 
-better utilized to also learn the effect of medications on
-the physiological time series. For instance, certain medications might have a sharp effect on certain vitals signs to
-help stabilize them; such treatment response curves could
-be learned observationally and applied to help improve predictions. More sophisticated covariance structure in the
-multitask Gaussian process would allow for a more flexible model, since our assumption of a correlation function
-shared across all physiological streams may be overly restrictive. Finally, use of additional approximations from
-the GP literature may further decrease the computational
-overhead and improve training times.
-This work has the potential to have a high impact in improving clinical practice in the identification of sepsis, both
-at our institution and elsewhere. The underlying biological
-mechanism is poorly understood, and the problem has historically been very difficult for clinicians. Use of a model
-such as ours to predict onset of sepsis would significantly
-reduce the alarm fatigue associated with current clinical
-scores, and could both significantly improve patient outcomes and reduce burden on the health system. Although
-in this work our emphasis was on early detection of sepsis,
-the methods could be modified with minimal effort to apply to detection of other clinical events of interest, such as
-cardiac arrests, code blue events, admission to the ICU, and
-cardiogenic shock. We are currently working to implement
-our methods directly into an application that can pull live
-data from our health system’s EHR and present our model’s
-predictions to a rapid response team. This will allow us to
-apply our methods in a real-time clinical setting and their
-utility can be proven empirically, as data is collected on
-how accurate the alarms it raises are and how it is used on
-the actual wards.
+(2)
+where x,i,j , y,k,l 2 [0, 1) are context-dependent weights
+and (x, y) is an indicator that returns 1 only when x = y.
+The weight factors can be realized in various ways. For
+instance, in temporal predictions such as language modeling, substrings (i.e. patterns) which appear later may have
+higher impact for prediction. Thus a realization x,i,j =
+|x| i 1
+and y,k,l = |y| k 1 (penalizing substrings far
+from the end) can be used to determine weights given a
+constant decay factor 2 (0, 1).
+In our case, each token in the sequence is a vector (such as
+one-hot encoding of a word or a feature vector). We shall
+replace the exact match (u, v) by the inner product hu, vi.
+To this end, the kernel function (2) can be rewritten as,
+X
+X
+x,i,j y,k,l hxi , yk i · hxj , yl i
+1i<j|x| 1k<l|y|
 
-Acknowledgements
-Joseph Futoma is supported by an NDSEG fellowship.
-Katherine Heller is supported by an NSF CAREER award.
-This project was partially funded by the Duke Institute
-for Health Innovation. Thanks to the other members of
-our team for their invaluable work on this project: Cara
-O’Brien MD, Meredith Clement MD, Armando Bedoya
-MD, Mark Sendak MD, Nathan Brajer, and Bryce Wolery.
+2
+An extended version with supplementary material is available
+at https://arxiv.org/abs/1705.09037
+3
+We define n-gram as a subsequence of original string (not
+necessarily consecutive).
+
+Figure 1. An unrolled view of the derived recurrent module for
+K2 (). Horizontal lines denote decayed propagation from c[t 1]
+to c[t], while vertical lines represent a linear mapping Wxt that
+is propagated to the internal states c[t].
+
+=
+
+X
+
+X
+
+x,i,j
+
+y,k,l
+
+1i<j|x| 1k<l|y|
+
+=
+
+*
+
+X
+
+|x| i 1
+
+i<j
+
+xi ⌦ xj ,
+
+X
+k<l
+
+hxi ⌦ xj , yk ⌦ yl i
+
+|y| k 1
+
+yk ⌦ yl
+
++
+(3)
+
+where xi ⌦ xj 2 Rd⇥d (and similarly yk ⌦ yl ) is the outerproduct. In other words, the underlying
+mapping of kernel
+P
+K2 () defined above is 2 (x) = 1i<j|x| |x| i 1 xi ⌦
+xj . Note we could alternatively use a partial additive scoring hxi , yk i + hxj , yl i, and the kernel function can be generalized to n-grams when n 6= 2. Again, we commit to one
+realization in this section.
+String Kernel NNs We introduce a class of recurrent modules whose internal feature states embed the computation of
+string kernels. The modules project kernel mapping (x)
+into multi-dimensional vector space (i.e. internal states of
+recurrent nets). Owing to the combinatorial structure of
+(x), such projection can be realized and factorized via
+efficient computation. For the example kernel discussed
+above, the corresponding neural component is realized as,
+⇣
+⌘
+c1 [t] = · c1 [t 1] + W(1) xt
+⇣
+⌘
+cj [t] = · cj [t 1] + cj 1 [t 1] W(j) xt
+1<jn
+
+h[t] = (cn [t]),
+
+(4)
+
+where cj [t] are the pre-activation cell states at word xt , and
+h[t] is the (post-activation) hidden vector. cj [0] is initialized with a zero vector. W(1) , .., W(n) are weight matrices
+to be learned from training examples.
+The network operates like other RNNs by processing each
+input token and updating the internal states. The elementwise multiplication can be replaced by addition + (corresponding to the partial additive scoring above). As a special case, the additive variant becomes a word-level convolutional neural net (Kim, 2014) when = 0.4
+4
+
+h[t] = (W(1) xt
+
+n+1
+
++ · · · + W(n) xt ) when
+
+= 0.
+
+Deriving Neural Architectures from Sequence and Graph Kernels
+
+2.1. Single Layer as Kernel Computation
+Now we state how the proposed class embeds string kernel
+computation. For j 2 {1, .., n}, let cj [t][i] be the i-th entry
+(j)
+of state vector cj [t], wi represents the i-th row of ma(1)
+(2)
+(j)
+trix W(j) . Define wi,j = {wi , wi , ..., wi } as a “reference sequence” constructed by taking the i-th row from
+each matrix W(1) , .., W(j) .
+Theorem 1. Let x1:t be the prefix of x consisting of first
+t tokens, and Kj be the string kernel of j-gram shown in
+Eq.(3). Then cj [t][i] evaluates kernel function,
+cj [t][i] = Kj (x1:t , wi,j ) = h
+
+j (x1:t ),
+
+j (wi,j )i
+
+for any j 2 {1, .., n}, t 2 {1, .., |x|}.
+In other words, the network embeds sequence similarity
+computation by assessing the similarity between the input
+sequence x1:t and the reference sequence wi,j . This interpretation is similar to that of CNNs, where each filter
+is a “reference pattern” to search in the input. String kernel NN further takes non-consecutive n-gram patterns into
+consideration (seen from the summation over all n-grams
+in Eq.(3)).
+Applying Non-linear Activation In practice, a non-linear
+activation function such as polynomial or sigmoid-like activation is added to the internal states to produce the final output state h[t]. It turns out that many activations
+are also functions in the reproducing kernel Hilbert space
+(RKHS) of certain kernel functions (see Shalev-Shwartz
+et al. (2011); Zhang et al. (2016)). When this is true, the
+underlying kernel of h[t] is the composition of string kernel and the kernel containing the activation. We give the
+formal statements below.
+Lemma 1. Let x and w be multi-dimensional vectors with
+finite norm. Consider the function f (x) := (w> x) with
+non-linear activation (·). For functions such as polynomials and sigmoid function, there exists kernel functions
+K (·, ·) and the underlying mapping (·) such that f (x)
+is in the reproducing kernel Hilbert space of K (·, ·), i.e.,
+f (x) = (w> x) = h
+
+(x), (w)i
+
+for some mapping (w) constructed from w. In particular,
+1
+K (x, y) can be the inverse-polynomial kernel 2 hx,yi
+for
+the above activations.
+Proposition 1. For one layer string kernel NN with nonlinear activation (·) discussed in Lemma 1, h[t][i] as a
+function of input x belongs to the RKHS introduced by the
+composition of K (·, ·) and string kernel Kn (·, ·). Here a
+kernel composition K ,n (x, y) is defined with the underlying mapping x 7!
+( n (x)), and hence K ,n (x, y) =
+( n (x))> ( n (y)).
+
+Proposition 1 is the corollary of Lemma 1 and Theorem 1, since h[t][i] = (cn [t][i]) = (Kn (x1:t , wi,j )) =
+h ( n (x1:t )), w̃i,j i and ( n (·)) is the mapping for the
+composed kernel. The same proof applies when h[t] is a
+linear combination of all ci [t] since kernel functions are
+closed under addition.
+2.2. Deep Networks as Deep Kernel Construction
+We now address the case when multiple layers of the same
+module are stacked to construct deeper networks. That is,
+the output states h(l) [t] of the l-th layer are fed to the (l+1)th layer as the input sequence. We show that layer stacking
+corresponds to recursive kernel construction (i.e. (l + 1)th kernel is defined on top of l-th kernel), which has been
+proven for feed-forward networks (Zhang et al., 2016).
+We first generalize the sequence kernel definition to enable
+recursive construction. Notice that the definition in Eq.(3)
+uses the linear kernel (inner product) hxi , yk i as a “subroutine” to measure the similarity between substructures (e.g.
+tokens) within the sequences. We can therefore replace it
+with other similarity measures introduced by other “base
+kernels”. In particular, let K(1) (·, ·) be the string kernel
+(associated with a single layer). The generalized sequence
+kernel K(l+1) (x, y) can be recursively defined as,
+X
+(l)
+(l)
+x,i,j y,k,l K (x1:i , y1:k ) K (x1:j , y1:l ) =
+i<j
+k<l
+
+*
+
+X
+
+(l)
+
+i<j
+
+(x1:i ) ⌦
+
+(l)
+
+(x1:j ),
+
+X
+k<l
+
+(l)
+
+(l)
+
+(y1:k ) ⌦
+
+(y1:l )
+
++
+
+where (l) (·) denotes the pre-activation mapping of the l(l)
+th kernel,
+(·) =
+( (l) (·)) denotes the underlying
+(post-activation) mapping for non-linear activation (·),
+(l)
+and K (·, ·) is the l-th post-activation kernel. Based on
+this definition, a deeper model can also be interpreted as a
+kernel computation.
+Theorem 2. Consider a deep string kernel NN with L
+layers and activation function (·). Let the final output
+(L)
+state h(L) [t] = (cn [t]) (or any linear combination of
+(l)
+{ci [t]}, i = 1, .., n). For l = 1, · · · , L,
+(l)
+
+(i) cn [t][i] as a function of input x belongs to the RKHS
+of kernel K(l) (·, ·);
+(l)
+
+(ii) h(l) [t][i] belongs to the RKHS of kernel K (·, ·).
+
+3. From Graph Kernels to Graph NNs
+In the previous section, we encode sequence kernel computation into neural modules and demonstrate possible extensions using different base kernels. The same ideas apply
+
+Deriving Neural Architectures from Sequence and Graph Kernels
+
+to other types of kernels and data. Specifically, we derive
+neural components for graphs in this section.
+
+3.2. Unified View of Graph Kernels
+
+Notations A graph is defined as G = (V, E), with each
+vertex v 2 V associated with feature vector fv . The neighbor of node v is denoted as N (v). Following previous
+notations, for any kernel function K⇤ (·, ·) with underlying mapping ⇤ (·), we use K⇤, (·, ·) to denote the postactivation kernel induced from the composed underlying
+mapping ⇤, = ( ⇤ (·)).
+
+The derivation of the above neural module could be extended to other classes of graph kernels, such as subtree
+kernels (cf. (Ramon & Gärtner, 2003; Vishwanathan et al.,
+2010)). Generally speaking, most of these kernel functions
+factorize graphs into local sub-structures, i.e.
+XX
+K(G, G0 ) =
+Kloc (v, v 0 )
+(7)
+
+3.1. Random Walk Kernel NNs
+
+where Kloc (v, v 0 ) measures the similarity between local
+sub-structures centered at node v and v 0 .
+
+We start from random walk graph kernels (Gärtner et al.,
+2003), which count common walks in two graphs. Formally, let Pn (G) be the set of walks x = x1 · · · xn , where
+8i : (xi , xi+1 ) 2 E.5 Given two graphs G and G0 , an n-th
+order random walk graph kernel is defined as:
+n
+KW
+(G, G0 )
+
+X
+
+n 1
+
+=
+
+X
+
+n
+Y
+
+x2Pn (G) y2Pn (G0 ) i=1
+
+hfxi , fyi i (5)
+
+Now we show how to realize the above graph kernel with
+a neural module. Given a graph G, the proposed neural
+module is:
+=
+
+cj [v]
+
+=
+
+W(1) fv
+X
+
+=
+
+(
+
+X
+v
+
+cj
+
+1 [u]
+
+W(j) fv
+
+(6)
+
+cn [v])
+
+1<jn
+
+where again c⇤ [v] is the cell state vector of node v, and hG
+is the representation of graph G aggregated from node vectors. hG could then be used for classification or regression.
+Now we show the proposed model embeds the random
+walk kernel. To show this, construct Ln,k as a “refer(1)
+(n)
+ence walk” consisting of the row vectors {wk , · · · , wk }
+from the parameter matrices. Here Ln,k = (LV , LE ),
+where LV = {v0 , v1 , · · · , vn }, LE = {(vi , vi+1 )} and vi ’s
+(i)
+feature vector is wk . We have the following theorem:
+Theorem 3. For any n
+1, the state value cn [v][k] (the
+k-th coordinate of cn [v]) satisfies:
+X
+v
+
+Other kernels like subtree kernels could be recursively defined similarly. Therefore, we adopt this unified view of
+graph kernels for the rest of this paper.
+In addition, this definition of random walk kernel could be
+further generalized and enhanced by aggregating neighbor
+features non-linearly:
+X
+X
+n 1
+n
+Kloc
+(v, v 0 ) = hfv , fv0 i
+Kloc,
+(u, u0 )
+where could be either multiplication or addition. (·)
+n 1
+denotes a non-linear activation and Kloc,
+(·, ·) denotes the
+post-activation kernel when (·) is involved. The generalized kernel could be realized by modifying Eq.(6) into:
+X
+cj [v] = W(j) fv
+(cj 1 [u])
+(8)
+u2N (v)
+
+where could be either + or
+
+n
+cn [v][k] = KW
+(G, Ln,k )
+
+A single node could appear multiple times in a walk.
+
+operation.
+
+3.3. Deep Graph Kernels and NNs
+Following Section 2, we could stack multiple graph kernel
+NNs to form a deep network. That is:
+(l)
+
+1)
+
+[v]
+
+(l)
+
+1)
+
+[v]
+
+c1 [v] = W(l,1) h(l
+cj [v] = W(l,j) h(l
+
+X
+
+u2N (v)
+(l)
+
+P
+n
+thus v cn [v] lies in the RKHS of kernel KW
+. As a coroln
+lary, hG lies in the RKHS of kernel KW, ().
+5
+
+n
+For example, the random walk kernel KW
+can be equivan
+0
+lently defined with Kloc (v, v ) =
+8
+if n = 1
+< hfv , fv0 i
+P
+P
+n 1
+0
+Kloc (u, u ) if n > 1
+: hfv , fv0 i ·
+
+u2N (v) u0 2N (v 0 )
+
+u2N (v)
+
+hG
+
+v0
+
+u2N (v) u0 2N (v 0 )
+
+where fxi 2 Rd is the feature vector of node xi in the walk.
+
+c1 [v]
+
+v
+
+h [v] =
+
+(U(l) c(l)
+n [v])
+
+⇣
+
+(l)
+
+cj
+
+1 [u]
+
+⌘
+
+1  l  L, 1 < j  n
+
+The local kernel function is recursively defined in
+two dimensions: depth (term h(l) ) and width (term
+cj ). Let the pre-activation kernel in the l-th layer be
+(l)
+(l,n)
+Kloc (v, v 0 ) = Kloc (v, v 0 ), and the post-activation ker(l)
+(l,n)
+nel be Kloc, (v, v 0 ) = Kloc, (v, v 0 ). We recursively define
+
+Deriving Neural Architectures from Sequence and Graph Kernels
+(l,j)
+
+Kloc (v, v 0 ) =
+8 (l 1)
+< Kloc, (v, v 0 )
+:
+
+(l 1)
+Kloc, (v, v 0 )
+
+P
+
+P
+
+u2N (v) u0 2N (v 0 )
+
+if j = 1
+(l,j 1)
+Kloc, (u, u0 )
+
+if j > 1
+
+for j = 1, · · · , n.
+Finally, the graph kernel is
+P
+(L,n)
+(L,n)
+0
+0
+K
+(G, G ) =
+v,v 0 Kloc (v, v ). Similar to Theorem 2, we have
+Theorem 4. Consider a deep graph kernel NN with L layers andPactivation function (·). Let the final output state
+hG = v h(L) [v]. For l = 1, · · · , L; j = 1, · · · , n:
+(l)
+
+(i) cj [v][i] as a function of input v and graph G belongs
+(l,j)
+
+to the RKHS of kernel Kloc (·, ·);
+
+(ii) h [v][i] belongs to the RKHS of kernel
+(l)
+
+(l,n)
+Kloc, (·, ·).
+
+(iii) hG [i] belongs to the RKHS of kernel K(L,n) (·, ·).
+3.4. Connection to Weisfeiler-Lehman Kernel
+
+We derived the above deep kernel NN for the purpose of
+generality. This model could be simplified by setting n =
+2, without losing representational power (as non-linearity
+is already involved in depth dimension). In this case, we
+rewrite the network by reparametrization:
+0
+1
+⇣
+⌘
+X
+(l)
+(l 1)
+1) A
+@U(l)
+h(l)
+U2
+V(l) h(l
+v =
+u
+1 hv
+u2N (v)
+
+(9)
+In this section, we further show that this model could be enhanced by sharing weight matrices U and V across layers.
+This parameter tying mechanism allows our model to embed Weisfeiler-Lehman kernel (Shervashidze et al., 2011).
+For clarity, we briefly review basic concepts of WeisfeilerLehman kernel below.
+Weisfeiler-Lehman Graph Relabeling
+WeisfeilerLehman kernel borrows concepts from the WeisfeilerLehman isomorphism test for labeled graphs. The key idea
+of the algorithm is to augment the node labels by the sorted
+set of node labels of neighbor nodes, and compress these
+augmented labels into new, short labels (Figure 2). Such
+relabeling process is repeated T times. In the i-th iteration,
+it generates a new labeling li (v) for all nodes v in graph G,
+with initial labeling l0 .
+
+Generalized Graph Relabeling The key observation here
+is that graph relabeling operation could be viewed as neighbor feature aggregation. As a result, the relabeling process
+naturally generalizes to the case where nodes are associated
+with continuous feature vectors. In particular, let r be the
+relabeling function. For a node v 2 G:
+X
+r(v) = (U1 fv + U2
+(Vfu ))
+(10)
+u2N (v)
+
+Figure 2. Node relabeling in Weisfeiler-Lehman isomorphism
+test. Figure taken from Shervashidze et al. (2011)
+
+Note that our definition of r(v) is exactly the same as hv in
+Equation 9, with being additive composition.
+Weisfeiler-Lehman Kernel Let K be any graph kernel (called base kernel). Given a relabeling function r,
+Weisfeiler-Lehman kernel with base kernel K and depth L
+is defined as
+(L)
+
+KW L (G, G0 ) =
+
+L
+X
+i=0
+
+K(ri (G), ri (G0 ))
+
+(11)
+
+where r0 (G) = G and ri (G), ri (G0 ) are the i-th relabeled
+graph of G and G0 respectively.
+Weisfeiler-Lehman Kernel NN Now with the above kernel definition, and random walk kernel as the base kernel,
+we propose the following recurrent module:
+(l)
+
+=
+
+(l)
+
+=
+
+c0 [v]
+cj [v]
+
+1)
+W(l,0) h(l
+v
+X (l)
+cj 1 [u]
+
+W(l,j) h(l
+v
+
+1)
+
+u2N (v)
+
+h(l)
+v
+(l)
+hG
+
+=
+=
+
+0
+
+@U1 h(l
+v
+
+X
+v
+
+(0)
+
+c(l)
+n [v]
+
+1)
+
++ U2
+
+X
+
+u2N (v)
+
+(Vh(l
+u
+
+1)
+
+1
+
+)A
+
+1  l  L, 1 < j  n
+
+where hv = fv and U1 , U2 , V are shared across layers.
+PL
+(l)
+The final output of this network is hG = l=1 hG .
+The above recurrent module is still an instance of deep kernel, even though some parameters are shared. A minor difference here is that there is an additional random walk kernel NN that connects i-th layer and the output layer. But
+this is just a linear combination of L deep random walk
+kernels (of different depth). Therefore, as an corollary of
+Theorem 4, we have:
+Proposition 2. For a Weisfeiler-Lehman Kernel NN with L
+n
+iterations and random walk kernel KW
+as base kernel, the
+P (l)
+final output state hG =
+l hG belongs to the RKHS of
+(L)
+kernel KW L (·, ·).
+
+Deriving Neural Architectures from Sequence and Graph Kernels
+
+4. Adaptive Decay with Neural Gates
+The sequence and graph kernel (and their neural components) discussed so far use a constant decay value regardless of the current input. However, this is often not the
+case since the importance of the input can vary across the
+context or the applications. One extension is to make use of
+neural gates that adaptively control the decay factor. Here
+we give two illustrative examples:
+Gated String Kernel NN By replacing constant decay
+with a sigmoid gate, we modify our single-layer sequence
+module as:
+t
+
+= (U[xt , ht
+
+c1 [t] =
+
+t
+
+c1 [t
+
+cj [t] =
+
+t
+
+cj [t
+
+1]
+
++ b)
+⇣
+⌘
+1] + W(1) xt
+⇣
+1] + cj 1 [t 1]
+
+W(j) xt
+
+1<jn
+
+h[t] = (cn [t])
+
+⌘
+
+As compared with the original string kernel, now the decay
+factor x,i,j is no longer |x| i 1 , but rather an adaptive
+value based on current context.
+Gated Random Walk Kernel NN Similarly, we could introduce gates so that different walks have different weights:
+u,v
+
+=
+
+c0 [v]
+
+=
+
+cj [v]
+
+=
+
+(U[fu , fv ] + b)
+W(0) fv
+X
+
+u,v
+
+cj
+
+1 [u]
+
+W(j) fv
+
+u2N (v)
+
+hG
+
+=
+
+(
+
+X
+
+cn [v])
+
+v
+
+1<jn
+
+The underlying kernel of the above gated network becomes
+n
+KW
+(G, G0 ) =
+
+X
+
+X
+
+n
+Y
+
+x2Pn (G) y2Pn (G0 ) i=1
+
+xi ,yi
+
+hfxi , fyi i
+
+where each path is weighted by different decay weights,
+determined by network itself.
+
+5. Related Work
+Sequence Networks Considerable effort has gone into designing effective networks for sequence processing. This
+includes recurrent modules with the ability to carry persistent memories such as LSTM (Hochreiter & Schmidhuber, 1997) and GRU (Chung et al., 2014), as well as
+non-consecutive convolutional modules (RCNNs, Lei et al.
+(2015)), and others. More recently, Zoph & Le (2016) exemplified a reinforcement learning-based search algorithm
+to further optimize the design of such recurrent architectures. Our proposed neural networks offer similar state
+
+evolution and feature aggregation functionalities but derive the motivation for the operations involved from wellestablished kernel computations over sequences.
+Recursive neural networks are alternative architectures to
+model hierarchical structures such as syntax trees and logic
+forms. For instance, Socher et al. (2013) employs recursive networks for sentence classification, where each node
+in the dependency tree of the sentence is transformed into
+a vector representation. Tai et al. (2015) further proposed
+tree-LSTM, which incorporates LSTM-style architectures
+as the transformation unit. Dyer et al. (2015; 2016) recently introduced a recursive neural model for transitionbased language modeling and parsing. While not specifically discussed in the paper, our ideas do extend to similar
+neural components for hierarchical objects (e.g. trees).
+Graph Networks Most of the current graph neural architectures perform either convolutional or recurrent operations on graphs. Duvenaud et al. (2015) developed Neural
+Fingerprint for chemical compounds, where each convolution operation is a sum of neighbor node features, followed by a linear transformation. Our model differs from
+theirs in that our generalized kernels and networks can aggregate neighboring features in a non-linear way. Other approaches, e.g., Bruna et al. (2013) and Henaff et al. (2015),
+rely on graph Laplacian or Fourier transform.
+For recurrent architectures, Li et al. (2015) proposed gated
+graph neural networks, where neighbor features are aggregated by GRU function. Dai et al. (2016) considers a
+different architecture where a graph is viewed as a latent
+variable graphical model. Their recurrent model is derived
+from Belief Propagation-like algorithms. Our approach is
+most closely related to Dai et al. (2016), in terms of neighbor feature aggregation and resulting recurrent architecture. Nonetheless, the focus of this paper is on providing
+a framework for how such recurrent networks could be derived from deep graph kernels.
+Kernels and Neural Nets Our work follows recent work
+demonstrating the connection between neural networks and
+kernels (Cho & Saul, 2009; Hazan & Jaakkola, 2015).
+For example, Zhang et al. (2016) showed that standard
+feedforward neural nets belong to a larger space of recursively constructed kernels (given certain activation functions). Similar results have been made for convolutional
+neural nets (Anselmi et al., 2015), and general computational graphs (Daniely et al., 2016). We extend prior work
+to kernels and neural architectures over structured inputs,
+in particular, sequences and graphs. Another difference is
+how we train the model. While some prior work appeals
+to convex optimization through improper learning (Zhang
+et al., 2016; Heinemann et al., 2016) (since kernel space is
+larger), we use the proposed networks as building blocks in
+typical non-convex but flexible neural network training.
+
+Deriving Neural Architectures from Sequence and Graph Kernels
+
+6. Experiments
+The left-over question is whether the proposed class of operations, despite its formal characteristics, leads to more
+effective architecture exploration and hence improved performance. In this section, we apply the proposed sequence
+and graph modules to various tasks and empirically evaluate their performance against other neural network models.
+These tasks include language modeling, sentiment classification and molecule regression.
+6.1. Language Modeling on PTB
+Dataset and Setup We use the Penn Tree Bank (PTB) corpus as the benchmark. The dataset contains about 1 million
+tokens in total. We use the standard train/development/test
+split of this dataset with vocabulary of size 10,000.
+Model Configuration Following standard practice, we use
+SGD with an initial learning rate of 1.0 and decrease the
+learning rate by a constant factor after a certain epoch. We
+back-propagate the gradient with an unroll size of 35 and
+use dropout (Hinton et al., 2012) as the regularization. Unless otherwise specified, we train 3-layer networks with
+n = 1 and normalized adaptive decay.6 Following (Zilly
+et al., 2016), we add highway connections (Srivastava et al.,
+2015) within each layer:
+c(l) [t] =
+(l)
+
+t
+
+h [t] = ft
+
+c(l) [t
+(l)
+
+1] + (1
+
+c [t] + (1
+
+ft )
+
+t)
+
+h
+
+(W(l) h(l
+
+(l 1)
+
+1)
+
+[t])
+
+[t]
+
+where h [t] = xt , t is the gated decay factor and ft is
+the transformation gate of highway connections.
+(0)
+
+Results Table 1 compares our model with various state-ofthe-art models. Our small model with 5 million parameters
+achieves a test perplexity of 73.6, already outperforming
+many results achieved using much larger network. By increasing the network size to 20 million, we obtain a test
+perplexity of 69.2, with standard dropout. Adding variational dropout (Gal & Ghahramani, 2016) within the recurrent cells further improves the perplexity to 65.5. Finally, the model achieves 63.8 perplexity when the recurrence depth is increased to 4, being state-of-the-art and on
+par with the results reported in (Zilly et al., 2016; Zoph &
+Le, 2016). Note that Zilly et al. (2016) uses 10 neural layers and Zoph & Le (2016) adopts a complex recurrent cell
+found by reinforcement learning based search. Our network is architecturally much simpler.
+Figure 3 analyzes several variants of our model. Wordlevel CNNs are degraded cases ( = 0) that ignore noncontiguous n-gram patterns. Clearly, this variant performs
+worse compared to other recurrent variants with > 0.
+6
+See the supplementary sections for a discussion of network
+variants: https://arxiv.org/abs/1705.09037
+
+Table 1: Comparison with state-of-the-art results on PTB.
+|✓| denotes the number of parameters. Following recent
+work (Press & Wolf, 2016), we share the input and output word embedding matrix. We report the test perplexity
+(PPL) of each model. Lower number is better.
+Model
+LSTM (large) (Zaremba et al., 2014)
+Character CNN (Kim et al., 2015)
+Variational LSTM (Gal & Ghahramani)
+Variational LSTM (Gal & Ghahramani)
+Pointer Sentinel-LSTM (Merity et al.)
+Variational RHN (Zilly et al., 2016)
+Neural Net Search (Zoph & Le, 2016)
+Kernel NN ( = 0.8)
+Kernel NN ( learned as parameter)
+Kernel NN (gated )
+Kernel NN (gated )
++ variational dropout
++ variational dropout, 4 RNN layers
+
+CNNs
+
+PPL
+78.4
+78.9
+78.6
+73.4
+70.9
+65.4
+64.0
+84.3
+76.8
+73.6
+69.2
+65.5
+63.8
+
+99.0
+
+constants (0.8)
+constants (trained)
+
+|✓|
+66m
+19m
+20m
+66m
+21m
+23m
+25m
+5m
+5m
+5m
+20m
+20m
+20m
+
+84.3
+76.8
+
+adaptive (x)
+
+74.2
+
+adaptive (x and h)
+
+73.6
+
+Figure 3. Comparison between kernel NN variants on PTB. |✓| =
+5m for all models. Hyper-parameter search is performed for each
+variant.
+
+Moreover, the test perplexity improves from 84.3 to 76.8
+when we train the constant decay vector as part of the
+model parameters. Finally, the last two variants utilize neural gates (depending on input xt only or on both input xt
+and previous state h[t 1]), improving the performance 2-3
+points.
+6.2. Sentiment Classification
+Dataset and Setup We evaluate our model on the sentence
+classification task. We use the Stanford Sentiment Treebank benchmark (Socher et al., 2013). The dataset consists of 11855 parsed English sentences annotated at both
+the root (i.e. sentence) level and the phrase level using 5class fine-grained labels. We use the standard split for training, development and testing. Following previous work, we
+also evaluate our model on the binary classification variant
+of this benchmark, ignoring all neutral sentences.
+
+Deriving Neural Architectures from Sequence and Graph Kernels
+
+Table 2: Classification accuracy on Stanford Sentiment
+Treebank. Block I: recursive networks; Block II: convolutional or recurrent networks; Block III: other baseline
+methods. Higher number is better.
+Model
+RNN (Socher et al. (2011))
+RNTN (Socher et al. (2013))
+DRNN (Irsoy & Cardie (2014))
+RLSTM (Tai et al. (2015))
+DCNN (Kalchbrenner et al. (2014))
+CNN-MC (Kim (2014))
+Bi-LSTM (Tai et al. (2015))
+LSTMN (Cheng et al. (2016))
+PVEC (Le & Mikolov (2014))
+DAN (Iyyer et al. (2014))
+DMN (Kumar et al. (2016))
+Kernel NN, = 0.5
+Kernel NN, gated
+
+Fine
+43.2
+45.7
+49.8
+51.0
+48.5
+47.4
+49.1
+47.9
+48.7
+48.2
+52.1
+51.2
+53.2
+
+Binary
+82.4
+85.4
+86.8
+88.0
+86.9
+88.1
+87.5
+87.0
+87.8
+86.8
+88.6
+88.6
+89.9
+
+Table 3: Experiments on Harvard Clean Energy Project.
+We report Root Mean Square Error(RMSE) on test set. The
+first block lists the results reported in Dai et al. (2016) for
+reference. For fair comparison, we reimplemented their
+best model so that all models are trained under the same
+setup. Results under our setup is reported in second block.
+Model (Dai et al., 2016)
+Mean Predicator
+Weisfeiler-lehman Kernel, degree=3
+Weisfeiler-lehman Kernel, degree=6
+Embedded Mean Field
+Embedded Loopy BP
+Under Our Setup
+Neural Fingerprint
+Embedded Loopy BP
+Weisfeiler Kernel NN
+Weisfeiler Kernel NN, gated
+
+|✓|
+1
+1.6m
+1378m
+0.1m
+0.1m
+
+RMSE
+2.4062
+0.2040
+0.1367
+0.1250
+0.1174
+
+0.26m
+0.26m
+0.26m
+0.26m
+
+0.1409
+0.1065
+0.1058
+0.1043
+
+emphasis on molecules with higher PCE values, since the
+data is distributed unevenly.
+Following the recent work of DAN (Iyyer et al., 2015) and
+RLSTM (Tai et al., 2015), we use the publicly available
+300-dimensional GloVe word vectors (Pennington et al.,
+2014). Unlike prior work which fine tunes the word vectors, we normalize the vectors (i.e. kwk22 = 1) and fixed
+them for simplicity.
+
+We use the same feature set as in Duvenaud et al. (2015) for
+atoms and bonds. Initial atom features include the atoms
+element, its degree, the number of attached hydrogens, its
+implicit valence, and an aromaticity indicator. The bond
+feature is a concatenation of bond type indicator, whether
+the bond is conjugated, and whether the bond is in a ring.
+
+Model Configuration Our best model is a 3-layer network
+with n = 2 and hidden dimension d = 200. We average
+the hidden states h[t] across t, and concatenate the averaged
+vectors from the 3 layers as the input of the final softmax
+layer. The model is optimized with Adam (Kingma & Ba,
+2015), and dropout probability of 0.35.
+
+Model Configuration Our model is a Weisfeiler-Lehman
+NN, with 4 recurrent iterations and n = 2. All models
+(including baseline) are optimized with Adam (Kingma &
+Ba, 2015), with learning rate decay factor 0.9.
+
+Results Table 2 presents the performance of our model
+and other networks. We report the best results achieved
+across 5 independent runs. Our best model obtains 53.2%
+and 89.9% test accuracies on fine-grained and binary tasks
+respectively. Our model with only a constant decay factor
+also obtains quite high accuracy, outperforming other baseline methods shown in the table.
+6.3. Molecular Graph Regression
+Dataset and Setup We further evaluate our graph NN
+models on the Harvard Clean Energy Project benchmark,
+which has been used in Dai et al. (2016); Duvenaud et al.
+(2015) as their evaluation dataset. This dataset contains 2.3
+million candidate molecules, with each molecule labeled
+with its power conversion efficiency (PCE) value.
+We follow exactly the same train-test split as Dai et al.
+(2016), and the same re-sampling procedure on the training
+data (but not the test data) to make the algorithm put more
+
+Results In Table 3, we report the performance of our
+model against other baseline methods. Neural Fingerprint (Duvenaud et al., 2015) is a 4-layer convolutional neural network. Convolution is applied to each atom, which
+sums over its neighbors’ hidden state, followed by a linear transformation and non-linear activation. Embedded
+Loopy BP (Dai et al., 2016) is a recurrent architecture, with
+4 recurrent iterations. It maintains message vectors for each
+atom and bond, and propagates those vectors in a message
+passing fashion. Table 3 shows our model achieves stateof-the-art against various baselines.
+
+7. Conclusion
+We proposed a class of deep recurrent neural architectures
+and formally characterized its underlying computation using kernels. By linking kernel and neural operations, we
+have a “template” for deriving new families of neural architectures for sequences and graphs. We hope the theoretical
+view of kernel neural networks can be helpful for future
+model exploration.
+
+Deriving Neural Architectures from Sequence and Graph Kernels
+
+Acknowledgement
+We thank Prof. Le Song for sharing Harvard Clean Energy Project dataset. We also thank Yu Zhang, Vikas Garg,
+David Alvarez, Tianxiao Shen, Karthik Narasimhan and
+the reviewers for their helpful comments. This work was
+supported by the DARPA Make-It program under contract
+ARO W911NF-16-2-0023.
 
 References
-Bone, R. C., Fisher, C. J., and Clemmer, T. P. et al. Sepsis syndrome: a valid clinical entity. methylprednisolone severe sepsis
-study group. Crit Care Med., 17(5):389–93, 1989.
-Bone, R. C., Balk, R. A., and Cerra, F. B. et al. Definitions for
-sepsis and organ failure and guidelines for the use of innovative
-therapies in sepsis. Chest, 101(6):1644–55, 1992.
-Bonilla, E. V., Chai, K. M. A., and Williams, C. K. I. Multi-task
-gaussian process prediction. NIPS, 2008.
+Anselmi, Fabio, Rosasco, Lorenzo, Tan, Cheston, and Poggio, Tomaso. Deep convolutional networks are hierarchical kernel machines. preprint arXiv:1508.01084, 2015.
+Bruna, Joan, Zaremba, Wojciech, Szlam, Arthur, and LeCun, Yann. Spectral networks and locally connected networks on graphs. arXiv preprint arXiv:1312.6203, 2013.
 
-Learning to Detect Sepsis
-Cheng-Xian Li, S. and Marlin, B. A scalable end-to-end gaussian
-process adapter for irregularly sampled time series classification. NIPS, 2016.
-Choi, E., Schuetz, A., Stewart, W. F., and Sun, J. Using recurrent neural network models for early detection of heart failure
-onset. J Am Med Inform Assoc., 0(1-9), 2016.
-Chow, E. and Saad, Y. Preconditioned krylov subspace methods
-for sampling multivariate gaussian distributions. SIAM Journal
-on Scientific Computing, 36(2):A588–A608, 2014.
+Dyer, Chris, Kuncoro, Adhiguna, Ballesteros, Miguel, and
+Smith, Noah A. Recurrent neural network grammars. In
+Proceedings of the 2016 Conference of the North American Chapter of the Association for Computational Linguistics, San Diego, California, June 2016.
+Gal, Yarin and Ghahramani, Zoubin. A theoretically
+grounded application of dropout in recurrent neural networks. In Advances in Neural Information Processing
+Systems 29 (NIPS), 2016.
+Gärtner, Thomas, Flach, Peter, and Wrobel, Stefan. On
+graph kernels: Hardness results and efficient alternatives. In Learning Theory and Kernel Machines, pp.
+129–143. Springer, 2003.
+Hazan, Tamir and Jaakkola, Tommi. Steps toward deep
+kernel methods from infinite neural networks. arXiv
+preprint arXiv:1508.05133, 2015.
 
-Rothman, M. J., Rothman, S. I., and Beals IV, J. Development and
-validation of a continuous measure of patient condition using
-the electronic medical record. Journal of Biomedical Informatics, 46(5):837–48, 2013.
-Schulam, P. and Saria, S. A framework for individualizing predictions of disease trajectories by exploiting multi-resolution
-structure. NIPS, 2015.
-Seymour, C. W., Gesten, F., and Prescott, H. C. et al. Time to
-treatment and mortality during mandated emergency care for
-sepsis. New England Journal of Medicine, 2017.
+Cheng, Jianpeng, Dong, Li, and Lapata, Mirella. Long
+short-term memory networks for machine reading. Proceedings of the Conference on Empirical Methods in
+Natural Language Processing, pp. 551–562, 2016.
 
-Durichen, R., Pimentel, M. A. F., and Clifton, L. et al. Multitask
-gaussian processes for multivariate physiological time-series
-analysis. IEEE Transactions on Biomedical Engineering, 61
-(1), 2015.
+Heinemann, Uri, Livni, Roi, Eban, Elad, Elidan, Gal, and
+Globerson, Amir. Improper deep kernels. In Proceedings of the 19th International Conference on Artificial
+Intelligence and Statistics, pp. 1159–1167, 2016.
 
-Singer, M., Deutschman, C. S., and Seymour, C. W. et al. The
-third international consensus definitions for sepsis and septic
-shock (sepsis-3). JAMA, 315:801–10, 2016.
+Cho, Youngmin and Saul, Lawrence K. Kernel methods for
+deep learning. In Bengio, Y., Schuurmans, D., Lafferty,
+J. D., Williams, C. K. I., and Culotta, A. (eds.), Advances
+in Neural Information Processing Systems 22, pp. 342–
+350. 2009.
 
-Futoma, J., Sendak, M., Cameron, C. B., and Heller, K. Scalable joint modeling of longitudinal and point process data for
-disease trajectory prediction and improving management of
-chronic kidney disease. UAI, 2016.
+Henaff, Mikael, Bruna, Joan, and LeCun, Yann. Deep
+convolutional networks on graph-structured data. arXiv
+preprint arXiv:1506.05163, 2015.
 
-Smith, G. B., Prytherch, D. R., and Meredith, P. et al. The ability of the national early warning score (news) to discriminate
-patients at risk of early cardiac arrest, unanticipated intensive
-care unit admission, and death. Resuscitation, 84(4), 2013.
+Chung, Junyoung, Gulcehre, Caglar, Cho, KyungHyun,
+and Bengio, Yoshua. Empirical evaluation of gated recurrent neural networks on sequence modeling. arXiv
+preprint arXiv:1412.3555, 2014.
+Dai, Hanjun, Dai, Bo, and Song, Le. Discriminative embeddings of latent variable models for structured data.
+arXiv preprint arXiv:1603.05629, 2016.
+Daniely, Amit, Frostig, Roy, and Singer, Yoram. Toward
+deeper understanding of neural networks: The power of
+initialization and a dual view on expressivity. CoRR,
+abs/1602.05897, 2016.
+Duvenaud, David K, Maclaurin, Dougal, Iparraguirre,
+Jorge, Bombarell, Rafael, Hirzel, Timothy, AspuruGuzik, Alán, and Adams, Ryan P. Convolutional networks on graphs for learning molecular fingerprints. In
+Advances in neural information processing systems, pp.
+2224–2232, 2015.
+Dyer, Chris, Ballesteros, Miguel, Ling, Wang, Matthews,
+Austin, and Smith, Noah A. Transition-based dependency parsing with stack long short-term memory. In
+Proceedings of the 53rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), Beijing, China, July 2015.
 
-Gardner-Thorpe, J., Love, N., and Wrightson, J. et al. The value
-of modified early warning score (mews) in surgical in-patients:
-A prospective observational study. Ann R Coll Surg Engl, 88
-(6):571–75, 2006.
+Hinton, Geoffrey E, Srivastava, Nitish, Krizhevsky, Alex,
+Sutskever, Ilya, and Salakhutdinov, Ruslan R. Improving
+neural networks by preventing co-adaptation of feature
+detectors. arXiv preprint arXiv:1207.0580, 2012.
+Hochreiter, Sepp and Schmidhuber, Jürgen. Long shortterm memory. Neural computation, 9(8):1735–1780,
+1997.
+Irsoy, Ozan and Cardie, Claire. Deep recursive neural networks for compositionality in language. In Advances in
+Neural Information Processing Systems, 2014.
+Iyyer, Mohit, Boyd-Graber, Jordan, Claudino, Leonardo,
+Socher, Richard, and Daumé III, Hal. A neural network for factoid question answering over paragraphs. In
+Proceedings of the 2014 Conference on Empirical Methods in Natural Language Processing (EMNLP), pp. 633–
+644, Doha, Qatar, October 2014.
+Iyyer, Mohit, Manjunatha, Varun, Boyd-Graber, Jordan,
+and Daumé III, Hal. Deep unordered composition rivals
+syntactic methods for text classification. In Proceedings
+of the 53rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), 2015.
+Kalchbrenner, Nal, Grefenstette, Edward, and Blunsom,
+Phil. A convolutional neural network for modelling sentences. In Proceedings of the 52th Annual Meeting of the
+Association for Computational Linguistics, 2014.
 
-Vincent, J. L., Moreno, R., and Takala, J. et al. The sofa (sepsisrelated organ failure assessment) score to describe organ dysfunction/failure. Intensive Care Med., 22(7):707–10, 1996.
-Wackernagel, H. Multivariate Geostatistics: An Introduction with
-Applications. Springer-Verlag, 2nd edition edition, 1998.
+Deriving Neural Architectures from Sequence and Graph Kernels
 
-Ghassemi, M., Pimentel, M. A. F., and Naumann, T. et al. A
-multivariate timeseries modeling approach to severity of illness
-assessment and forecasting in icu with sparse, heterogeneous
-clinical data. AAAI, 2015.
+Kim, Yoon. Convolutional neural networks for sentence
+classification. In Proceedings of the Empiricial Methods
+in Natural Language Processing (EMNLP 2014), 2014.
+Kim, Yoon, Jernite, Yacine, Sontag, David, and Rush,
+Alexander M. Character-aware neural language models. Twenty-Ninth AAAI Conference on Artificial Intelligence, 2015.
+Kingma, Diederik P and Ba, Jimmy Lei. Adam: A method
+for stochastic optimization. In International Conference
+on Learning Representation, 2015.
+Kumar, Ankit, Irsoy, Ozan, Ondruska, Peter, Iyyer, Mohit, James Bradbury, Ishaan Gulrajani, Zhong, Victor,
+Paulus, Romain, and Socher, Richard. Ask me anything: Dynamic memory networks for natural language
+processing. 2016.
+Le, Quoc and Mikolov, Tomas. Distributed representations
+of sentences and documents. In Proceedings of the 31st
+International Conference on Machine Learning (ICML14), pp. 1188–1196, 2014.
+Lei, Tao, Joshi, Hrishikesh, Barzilay, Regina, Jaakkola,
+Tommi, Tymoshenko, Katerina, Moschitti, Alessandro, and Marquez, Lluis.
+Semi-supervised question retrieval with gated convolutions. arXiv preprint
+arXiv:1512.05726, 2015.
+Li, Yujia, Tarlow, Daniel, Brockschmidt, Marc, and Zemel,
+Richard. Gated graph sequence neural networks. arXiv
+preprint arXiv:1511.05493, 2015.
+Lodhi, Huma, Saunders, Craig, Shawe-Taylor, John, Cristianini, Nello, and Watkins, Chris. Text classification
+using string kernels. Journal of Machine Learning Research, 2(Feb):419–444, 2002.
+Merity, Stephen, Xiong, Caiming, Bradbury, James, and
+Socher, Richard. Pointer sentinel mixture models. arXiv
+preprint arXiv:1609.07843, 2016.
+Pennington, Jeffrey, Socher, Richard, and Manning,
+Christopher D. Glove: Global vectors for word representation. volume 12, 2014.
+Press, Ofir and Wolf, Lior. Using the output embedding to improve language models. arXiv preprint
+arXiv:1608.05859, 2016.
+Ramon, Jan and Gärtner, Thomas. Expressivity versus efficiency of graph kernels. In First international workshop
+on mining graphs, trees and sequences, pp. 65–74. Citeseer, 2003.
+Shalev-Shwartz, Shai, Shamir, Ohad, and Sridharan,
+Karthik. Learning kernel-based halfspaces with the 01 loss. SIAM Journal on Computing, 40(6):1623–1646,
+2011.
 
-Xing, Z., Jian, P., and Philip, S. Y. Early classification on time
-series. Knowledge and information systems, 31(1), 2012.
-
-Henry, K. E., Hager, D. N., Pronovost, P. J., and Saria, S. A
-targeted real-time early warning score (trewscore) for septic
-shock. Science Translational Medicine, 7(299), 2015.
-
-Yoon, J., Alaa, A. M., Hu, Scott, and van der Schaar, M. Forecasticu: A prognostic decision support system for timely prediction of intensive care unit admission. ICML, 2016.
-
-Hochreiter, S. and Schmidhuber, J. Long short-term memory.
-Neural Computation, 9(8):1735–80, 1997.
-
-Zhengping, C., Purushotham, S., and Cho, K. et al. Recurrent
-neural networks for multivariate time series with missing values. arXiv preprint: 1606.01865, 2016.
-
-Hoiles, W. and van der Schaar, M. A non-parametric learning
-method for confidently estimating patient’s clinical state and
-dynamics. NIPS, 2016.
-Jones, A. E., Shapiro, N. I., and Trzeciak, S. et al. Lactate clearance vs central venous oxygen saturation as goals of early sepsis therapy: a randomized clinical trial. JAMA, 303(8):739–46,
-2010.
-Kingma, D. P. and Ba, J. Adam: A method for stochastic optimization. ICLR, 2015.
-Kingma, D. P. and Welling, M. Auto-encoding variational bayes.
-ICLR, 2014.
-Kumar, A., Roberts, D., and Wood, K. E. et al. Duration of hypotension before initiation of effective antimicrobial therapy is
-the critical determinant of survival in human septic shock. Crit
-Care Med., 34(6):1589–96, 2006.
-Lipton, Z. C., Kale, D. C., Elkan, C., and Wetzel, R. Learning to
-diagnose with lstm recurrent neural networks. ICLR, 2016.
-Liu, Y. Y., Li, S., and Li, F. et al. Efficient learning of continuoustime hidden markov models for disease progression. NIPS,
+Shervashidze, Nino, Schweitzer, Pascal, Leeuwen, Erik
+Jan van, Mehlhorn, Kurt, and Borgwardt, Karsten M.
+Weisfeiler-lehman graph kernels. Journal of Machine
+Learning Research, 12(Sep):2539–2561, 2011.
+Socher, Richard, Pennington, Jeffrey, Huang, Eric H,
+Ng, Andrew Y, and Manning, Christopher D. Semisupervised recursive autoencoders for predicting sentiment distributions. In Proceedings of the Conference on
+Empirical Methods in Natural Language Processing, pp.
+151–161, 2011.
+Socher, Richard, Perelygin, Alex, Wu, Jean, Chuang, Jason, Manning, Christopher D., Ng, Andrew Y., and Potts,
+Christopher. Recursive deep models for semantic compositionality over a sentiment treebank. In Proceedings
+of the 2013 Conference on Empirical Methods in Natural
+Language Processing, pp. 1631–1642, October 2013.
+Srivastava, Rupesh K, Greff, Klaus, and Schmidhuber,
+Jürgen. Training very deep networks. In Advances in
+neural information processing systems, pp. 2377–2385,
 2015.
-Rasmussen, C. E. and Williams, C. K. I. Gaussian Processes for
-Machine Learning. The MIT Press, 2005.
+Tai, Kai Sheng, Socher, Richard, and Manning, Christopher D. Improved semantic representations from treestructured long short-term memory networks. In Proceedings of the 53th Annual Meeting of the Association
+for Computational Linguistics, 2015.
+Tamar, Aviv, Levine, Sergey, Abbeel, Pieter, Wu, Yi, and
+Thomas, Garrett. Value iteration networks. In Advances
+in Neural Information Processing Systems, pp. 2146–
+2154, 2016.
+Vishwanathan, S Vichy N, Schraudolph, Nicol N, Kondor,
+Risi, and Borgwardt, Karsten M. Graph kernels. Journal of Machine Learning Research, 11(Apr):1201–1242,
+2010.
+Zaremba, Wojciech, Sutskever, Ilya, and Vinyals, Oriol.
+Recurrent neural network regularization. arXiv preprint
+arXiv:1409.2329, 2014.
+Zhang, Yuchen, Lee, Jason D., and Jordan, Michael I. `1 regularized neural networks are improperly learnable in
+polynomial time. In Proceedings of the 33nd International Conference on Machine Learning, 2016.
+Zilly, Julian Georg, Srivastava, Rupesh Kumar, Koutnı́k,
+Jan, and Schmidhuber, Jürgen. Recurrent Highway Networks. arXiv preprint arXiv:1607.03474, 2016.
+Zoph, Barret and Le, Quoc V.
+Neural architecture
+search with reinforcement learning. arXiv preprint
+arXiv:1611.01578, 2016.
 
 

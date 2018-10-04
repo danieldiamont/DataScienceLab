@@ -1,961 +1,956 @@
-Parallel and Distributed Thompson Sampling for
-Large-scale Accelerated Exploration of Chemical Space
-
-José Miguel Hernández-Lobato * 1 James Requeima * 1 2 Edward O. Pyzer-Knapp 3 4 Alán Aspuru-Guzik 3
+Differentially Private Submodular Maximization:
+Data Summarization in Disguise
+Marko Mitrovic 1 Mark Bun 1 2 Andreas Krause 3 Amin Karbasi 1
 
 Abstract
-Chemical space is so large that brute force
-searches for new interesting molecules are infeasible.
-High-throughput virtual screening
-via computer cluster simulations can speed up
-the discovery process by collecting very large
-amounts of data in parallel, e.g., up to hundreds
-or thousands of parallel measurements. Bayesian
-optimization (BO) can produce additional acceleration by sequentially identifying the most useful simulations or experiments to be performed
-next. However, current BO methods cannot scale
-to the large numbers of parallel measurements
-and the massive libraries of molecules currently
-used in high-throughput screening. Here, we
-propose a scalable solution based on a parallel and distributed implementation of Thompson
-sampling (PDTS). We show that, in small scale
-problems, PDTS performs similarly as parallel
-expected improvement (EI), a batch version of
-the most widely used BO heuristic. Additionally, in settings where parallel EI does not scale,
-PDTS outperforms other scalable baselines such
-as a greedy search, -greedy approaches and a
-random search method. These results show that
-PDTS is a successful solution for large-scale parallel BO.
+Many data summarization applications are captured by the general framework of submodular
+maximization. As a consequence, a wide range
+of efficient approximation algorithms have been
+developed. However, when such applications involve sensitive data about individuals, their privacy concerns are not automatically addressed.
+To remedy this problem, we propose a general and systematic study of differentially private
+submodular maximization. We present privacypreserving algorithms for both monotone and
+non-monotone submodular maximization under
+cardinality, matroid, and p-extendible system
+constraints, with guarantees that are competitive
+with optimal solutions. Along the way, we analyze a new algorithm for non-monotone submodular maximization under a cardinality constraint,
+which is the first (even non-privately) to achieve
+a constant approximation ratio with a linear number of function evaluations. We additionally provide two concrete experiments to validate the efficacy of these algorithms.
 
 1. Introduction
-Chemical space is huge: it is estimated to contain over 1060
-molecules. Among these, fewer than 100 million compounds can be found in public repositories or databases
-(Reymond et al., 2012). This discrepancy between known
-*
+A set function f : 2V → R is said to be submodular if
+for all sets S ⊆ T ⊆ V and every element v ∈ V we
+have f (S ∪ {v}) − f (S) ≥ f (T ∪ {v}) − f (T ). That is,
+the marginal contribution of any element v to the value of
+the function f (S) diminishes as the input set S increases.
+The theory of submodular maximization unifies and generalizes diverse problems in combinatorial optimization, including the Max-Cover, Max-Cut, and Facility Location
+problems. In turn, this theory has recently found numerous
+applications to problems in machine learning, data science,
+and artificial intelligence. A few such applications include
+exemplar-based clustering (Krause & Gomes, 2010), feature selection for classification (Krause & Guestrin, 2005),
+document and corpus summarization (Lin & Bilmes, 2011;
+1
 
-Equal contribution 1 University of Cambridge, Cambridge,
-UK 2 Invenia Labs, Cambridge, UK 3 Harvard University, Cambridge, USA 4 IBM Research, UK. Correspondence to: José
-Miguel Hernández-Lobato <jmh233@cam.ac.uk>, Edward O.
-Pyzer-Knapp <epyzerk3@uk.ibm.com>.
+Yale University, New Haven, CT, USA 2 Princeton University,
+Princeton, NJ, USA 3 ETH Zurich, Zurich, Switzerland. Correspondence to: Marko Mitrovic <marko.mitrovic@yale.edu>.
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-compounds and possible compounds indicates the potential
-for discoverying many new compounds with highly desirable functionality (e.g., new energy materials, pharmaceuticals, dyes, etc.). While the vast size of chemical space
-makes this an enormous opportunity, it also presents a significant difficulty in the identification of new relevant compounds among the many unimportant ones. This challenge
-is so great that any discovery process relying purely on the
-combination of scientific intuition with trial and error experimentation is slow, tedious and in many cases infeasible.
-To accelerate the search, high-throughput approaches can
-be used in a combinatorial exploration of small specific
-areas of chemical space (Rajan, 2008). These have led
-to the development of high-throughput virtual screening
-(Pyzer-Knapp et al., 2015; Gómez-Bombarelli et al., 2016)
-in which large libraries of molecules are created and then
-analyzed using theoretical and computational techniques,
-typically by running a large number of parallel simulations
-in a computer cluster. The objective is to reduce an initially
-very large library of molecules to a small set of promising
-leads for which expensive experimental evaluation is justified. However, even though these techniques only search
-a tiny drop in the ocean of chemical space, they can result
-in massive libraries whose magnitude exceeds traditional
-computational capabilities. As a result, at present, there
-is an urgent need to accelerate high-throughput screening
-approaches.
-Bayesian optimization (BO) (Jones et al., 1998) can speed
-up the discovery process by using machine learning to
-guide the search and make improved decisions about what
-molecules to analyze next given the data collected so far.
-However, current BO methods cannot scale to the large
-number of parallel measurements and the massive libraries
-of candidate molecules currently used in high-throughput
-screening (Pyzer-Knapp et al., 2015). While there are BO
-methods that allow parallel data collection, these methods
-have typically been limited to tens of data points per batch
-(Snoek et al., 2012; Shahriari et al., 2014; Gonzlez et al.,
-2016). In contrast, high-throughput screening may allow
-the simultaneous collection of thousands of data points via
-large-scale parallel computation. This creates a need for
-new scalable methods for parallel Bayesian optimization.
+Kirchhoff & Bilmes, 2014; Sipos et al., 2012), crowd teaching (Singla et al., 2014), and influence maximization in social networks (Kempe et al., 2003).
+Some of the most compelling use cases for these applications concern sensitive data about individuals (Mirzasoleiman et al., 2016a;b). As a running example, let us
+consider the specific problem of determining which of a
+collection of features (e.g. age, height, weight, etc.) are
+most relevant to a binary classification task (e.g. predicting whether an individual is likely to have diabetes). In
+this problem, a sensitive training set takes the form D =
+{(xi , yi )}ni=1 where each individual i’s data consists of features xi,1 , . . . , xi,m together with a class label yi . The goal
+is to identify a small subset S ⊆ [m] of features which can
+then be used to build a good classifier for y. Many techniques exist for feature selection, including one based on
+maximizing a submodular function which captures the mutual information between a subset of features and the class
+label of interest (Krause & Guestrin, 2005). However, for
+both legal (e.g. compliance with HIPAA regulations) and
+ethical reasons, it is important that the selection of relevant
+features does not compromise the privacy of any individual
+who has contributed to the training data set. Unfortunately,
+the theory of submodular maximization does not in itself
+accommodate such privacy concerns.
+To this end, we propose a systematic study of differentially
+private submodular maximization to enable these applications based on submodular maximization, while provably
+guaranteeing individual-level privacy. The notion of differential privacy (Dwork et al., 2006) offers a strong protection of individual-level privacy. Nevertheless, differential
+privacy has been shown to permit useful data analysis and
+machine learning tasks. In a nutshell, the definition formalizes a guarantee that no individual’s data should have too
+significant an effect on the outcome of a computation. We
+provide the formal definition in Section 2. Such a privacy
+guarantee is obtained through the introduction of random
+noise, so private submodular maximization is conceptually
+related to the problem of submodular maximization in the
+presence of noise (Cheraghchi, 2012; Hassidim & Singer,
+2016).
+In this work, we study the following problem under various
+conditions on the submodular objective function f (monotone vs. non-monotone), and various choices of the con-
 
-Parallel and Distributed Thompson Sampling for Large-scale Accelerated Exploration of Chemical Space
-Posterior predictive distribution
+Differentially Private Submodular Maximization
 
-Thompson sample 1
+straint C (cardinality, matroid, or p-extendible system).
+Problem 1. Given a sensitive dataset D associated to
+a submodular function fD : 2V → R: Find a subset
+S ∈ C ⊂ 2V that approximately maximizes fD (S) in a
+manner that guarantees differential privacy with respect to
+the input dataset D.
+An important special case of this problem was studied in prior work of Gupta et al. (2010). They considered the “combinatorial public projects” problem (Papadimitriou et al., 2008), where given a dataset D =
+(x1 , . . . , xn ),Pthe function fD takes the particular form
+n
+fD (S) = n1 i=1 fxi (S) for monotone submodular functions fxi : 2V → [0, 1], and is to be maximized subject
+to a cardinality constraint |S| ≤ k. We call functions of
+this form decomposable. They presented a simple greedy
+algorithm, which will be central to our work, together with
+a tailored analysis which achieves strong accuracy guarantees in this special case.
+However, there are many cases of Problem 1 which do not
+fall into the combinatorial public projects framework. For
+some problems, including feature selection via mutual information, the submodular function fD of interest depends
+on the dataset D in ways much more complicated than averaging functions associated to each individual. The focus of
+our work is on understanding Problem 1 in circumstances
+which capture a broader class of useful applications and
+constraints in machine learning. We summarize our specific contributions in Section 1.2.
+1.1. The greedy paradigm
+Even without concern for privacy, the problem of submodular maximization poses computational challenges. In particular, exact submodular maximization subject to a cardinality constraint is NP-hard. One of the principal approaches to designing efficient approximation algorithms
+is to use a greedy strategy (Nemhauser et al., 1978). Consider the problem of maximizing a set function f (S) subject to the cardinality constraint |S| ≤ k. In each of rounds
+i = 1, . . . , k, the basic greedy algorithm constructs Si
+from Si−1 by adding the element vi ∈ (V \ Si−1 ) which
+maximizes the marginal gain f (Si−1 ∪ {vi }) − f (Si−1 ).
+Nemhauser et al. (1978) famously showed that this algorithm yields a (1−1/e)-approximation to the optimal value
+of f (S) whenever f is a monotone submodular function.
+In the combinatorial public projects setting, Gupta et al.
+(2010) showed how to make the greedy algorithm compatible with differential privacy by randomizing the procedure
+for selecting each vi . This selection procedure is specified
+by the differentially private exponential mechanism of McSherry & Talwar (2007), which (probabilistically) guarantees that the vi selected in each round is almost as good as
+the true marginal gain maximizer. Remarkably, Gupta et al.
+(2010) show that the cumulative privacy guarantee of the
 
-objective
+resulting randomized greedy algorithm is not much worse
+than that of a single run of the exponential mechanism.
+This analysis is highly tailored to the structure of the combinatorial public projects problem. However, replacing this
+tailored analysis with the more generic “advanced composition theorem” for differential privacy (Dwork et al.,
+2010), one still obtains useful results for the more general
+class of “low-sensitivity” submodular functions.
+1.2. Our contributions
+Table 1 summarizes the approximation guarantees we obtain for Problem 1 under increasingly more general classes
+of submodular functions fD (read top to bottom), and increasingly more general types of constraints (read left to
+right). In each entry, OPT denotes the value of the optimal
+non-private solution. Below we draw attention to a few particular contributions, including some that are not expressed
+in Table 1.
+Non-monotone objective functions. Submodular maximization for non-monotone functions is significantly more
+challenging than it is for monotone objectives. In particular, the basic greedy algorithm of Nemahauser et al. fails,
+and cannot guarantee any constant-factor approximation.
+Several works (Feldman et al., 2017; Mirzasoleiman et al.,
+2016a; Buchbinder et al., 2014; Feldman et al., 2011) have
+identified variations of the greedy algorithm that do yield
+constant-factor approximations for non-monotone objectives. However, it is not clear how to modify any of these
+algorithms to accommodate differential privacy.
+Our starting point is instead the “stochastic greedy” algorithm of Mirzasoleiman et al. (2015), which was originally designed to perform monotone submodular maximization in linear time. Drawing ideas from Buchbinder
+et al. (2014), we give a new analysis of the stochastic
+greedy algorithm to show that it also gives a 1e (1 − 1/e)approximation for non-monotone submodular functions.
+To our knowledge, this is the first algorithm making exactly |V | function evaluations which achieves a constantfactor approximation for either monotone or non-monotone
+objectives. Moreover, it is immediately clear how to use
+the exponential mechanism to make this algorithm differentially private.
+This phenomenon is analogous to how stochastic variants
+of gradient descent are more naturally suited to providing differential privacy than their deterministic counterparts (Song et al., 2013; Bassily et al., 2014). That is, our
+results illustrate how techniques for making algorithms fast
+are also helpful in making them privacy-preserving.
+General constraints. While a cardinality constraint is
+perhaps the most natural to place on a submodular maximization problem, some machine learning problems, e.g.
+personalized data summarization (Mirzasoleiman et al.,
+2016a), require the use of more general types of con-
 
-Thompson sample 2
+Differentially Private Submodular Maximization
 
-objective
+Comb. Pub. Proj.
+Monotone
+Non-monotone
 
-Selected evaluation locations
+1−
 
-objective
+1
+e
 
-objective
+
+Cardinality
+OPT −O k logn |V | (Gupta et al., 2010)
+
+ 3/2
+
+|V |
+1 − 1e OPT −O k log
+n
+
+ 3/2
+
+k
+log |V |
+1
+1
+1
+−
+OPT
+−O
+e
+e
+n
 
-Figure 1. Illustration of Thompson sampling and PDTS.
+Matroid
+
+
+OPT −O k logn |V |
+ 3/2
+
+|V |
+OPT −O k log
+n
 
-To address the above difficulty, we present here a scalable
-solution for parallel Bayesian optimization based on a distributed implementation of the Thompson sampling heuristic (Thompson, 1933; Chapelle & Li, 2011). We show that,
-for the case of small batch sizes, the proposed parallel and
-distributed Thompson sampling (PDTS) method performs
-as well as a parallel implementation of expected improvement (EI) (Snoek et al., 2012; Ginsbourger et al., 2011), the
-most widely used Bayesian optimization heuristic. Parallel
-EI selects the batch entries sequentially and so EI proposals
-can’t be parallelized, which limits its scalability properties.
-PDTS generates each batch of evaluation locations by selecting the different batch entries independently and in parallel. Consequently, PDTS is highly scalable and applicable to large batch sizes. We also evaluate the performance
-of PDTS in several real-world high-throughput screening
-experiments for material and drug discovery, where parallel EI is infeasible. In these problems, PDTS outperforms
-other scalable baselines such as a greedy search strategy,
--greedy approaches and a random search method. These
-results indicate that PDTS is a successful solution for largescale parallel Bayesian optimization.
-Algorithm 1 Sequential Thompson sampling
-Input: initial data DI(1) = {(xi , yi )}i∈I(1)
-for t = 1 to T do
-Compute current posterior p(θ|DI(t) )
-Sample θ from p(θ|DI(t) )
-Select k ← argmaxj6∈I(t) E[yj |xj , θ]
-Collect yk by evaluating f at xk
-DI(t+1) ← DI(t) ∪ {(xk , yk )}
-end for
-
-2. BO and Thompson Sampling
-Let us assume we have a large library of candidate
-molecules M = {m1 , . . . , m|M| }. Our goal is to identify a small subset of elements {mi } ⊂ M for which the
-
-f (mi ) are as high as possible, with f being an expensiveto-evaluate objective function. The objective f could be,
-for example, an estimate of the power-conversion efficiency
-of organic photovoltaics, as given by expensive quantum
-mechanical simulations (Scharber et al., 2006), and we may
-want to identify the top 1% elements in M according to this
-score.
-Bayesian optimization methods can be used to identify the
-inputs that maximize an expensive objective function f by
-performing only a reduced number of function evaluations.
-For this, BO uses a model to make predictions for the value
-of f at new inputs given data from previous evaluations.
-The next point to evaluate is then chosen by maximizing an
-acquisition function that quantifies the benefit of evaluating
-the objective at a particular location.
-Let x1 , . . . , x|M| be D-dimensional feature vectors for
-the molecules in M and let DI = {(xi , yi ) : i ∈ I} be a
-dataset with information about past evaluations, where I
-is a set with the indices of the molecules already evaluated, xi is the feature vector for the i-th molecule in M
-and yi = f (mi ) is the result of evaluating the objective
-function f on that molecule. We assume that the evaluations of f are noise free, however, the methods described
-here can be applied to the case in which the objective evaluations are corrupted with additive Gaussian noise. BO
-typically uses a probabilistic model to describe how the yi
-in DI are generated as a function of the corresponding features xi and some model parameters θ, that is, the model
-specifies p(yi |xi , θ). Given the data DI and a prior distribution p(θ), the model
-Qalso specifies a posterior distribution p(θ|DI ) ∝ p(θ) i∈I p(yi |xi , θ). The predictive
-distribution for anyRmj ∈ M \ {mi : i ∈ I} is then given
-by p(yj |xj , DI ) = p(yj |xj , θ)p(θ|DI ) dθ. BO methods
-use this predictive distribution to compute an acquisition
-function (AF) given by
-α(xj |DI ) = Ep(yj |xj ,DI ) [U (yj |xj , DI )] ,
-
-(1)
-
-where U (yj |xj , DI ) is the utility of obtaining value yj
-when evaluating f at mj . Eq. (1) is then maximized with
-respect to j 6∈ I to select the next molecule mj on which to
-evaluate f . The most common choice for the utility is the
-improvement: U (yj |xj , DI ) = max(0, yj − y? ), where y?
-is equal to the best yi in DI . In this case, Eq. (1) is called
-the expected improvement (EI) (Jones et al., 1998). Ideally,
-the AF should encourage both exploration and exploitation.
-For this, the expected utility should increase when yj takes
-high values on average (to exploit), but also when there is
-high uncertainty about yj (to explore). The EI utility function satisfies these two requirements.
-Thompson sampling (TS) (Thompson, 1933) can be understood as a version of the previous framework in which
-the utility function is defined as U (yj |xj , DI ) = yj and
-the expectation in (1) is taken with respect to p(yj |xj , θ)
-
-Parallel and Distributed Thompson Sampling for Large-scale Accelerated Exploration of Chemical Space
-
-2.1. Parallel BO
-So far we have considered the sequential evaluation setting,
-where BO methods collect just a single data point in each
-iteration. However, BO can also be applied in the parallel
-setting, which involves choosing a batch of multiple points
-to evaluate next in each iteration. For example, when we
-run S parallel simulations in a computer cluster and each
-simulation performs one evaluation of f .
-Snoek et al. (2012) describe how to extend sequential BO
-methods to the parallel setting. The idea is to select the first
-evaluation location in the batch in the same way as in the
-sequential setting. However, the next evaluation location
-is then selected while the previous one is still pending. In
-particular, given a set K with indexes of pending evaluation
-locations, we choose a new location in the batch based on
-the expectation of the AF under all possible outcomes of
-the pending evaluations according to the predictions of the
-model. Therefore, at any point, the next evaluation location
-is obtained by optimizing the AF
-αparallel (xj |DI , K) =
-Ep({yk }k∈K |{xk }k∈K ,DI ) [α(xj |DI ∪ DK )] ,
-
-(2)
-
-where DK = {(yk , xk )}k∈K and α(xj |DI ∪ DK ) is given
-by (1). Computing this expression exactly is infeasible in
-most cases. Snoek et al. (2012) propose a Monte Carlo
-approximation in which the expectation in the second line
-is approximated by averaging across a few samples from
-the predictive distribution at the pending evaluations, that
-is, p({yk }k∈K |{xk }k∈K , DI ). These samples are referred
-to as fantasized data.
-This approach for parallel BO has been successfully used
-
-to collect small batches of data (about 10 elements in size),
-with EI as utility function and with a Gaussian process as
-the model for the data (Snoek et al., 2012). However, it
-lacks scalability to large batch sizes, failing when we need
-to collect thousands of simultaneous measurements. The
-reason for this is the high computational cost of adding a
-new evaluation to the current batch. The corresponding
-cost includes: 1 sampling the fantasized data, 2 updating
-the posterior predictive distribution to p(yj |xj , DI ∪ DK ),
-which is required for evaluating α(xj |DI ∪ DK ), and 3
-optimizing the Monte Carlo approximation to (2). Step 2
-can be very expensive when the number of training points
-in DI is very large. This step is also considerably challenging when the model does not allow for exact inference, as
-it is often the case with Bayesian neural networks. Step 3
-can also take a very long time when the library of candidate
-molecules M is very large (e.g., when it contains millions
-of elements) and among all the remaining molecules we
-have to find one that maximizes the AF.
-Despite these difficulties, the biggest disadvantage in this
-approach for parallel BO is that it cannot be parallelized
-since it is a sequential process in which (2) needs to be
-iteratively optimized, with each optimization step having
-a direct effect on the next one. This prevents this method
-from fully exploiting the acceleration provided by multiple
-processors in a computer cluster. The sequential nature of
-the algorithm is illustrated by the plot in the left of Figure 2.
-In this plot computer node 1 is controlling the BO process
-and decides the batch evaluation locations. Nodes 2, . . . , 5
-then perform the evaluations in parallel. Note that steps 2
-and 3 from the above description have been highlighted in
-green and magenta colors.
-In the following section we describe an algorithm for batch
-BO which can be implemented in a fully parallel and distributed manner and which, consequently, can take full advantage of multiple processors in a computer cluster. This
-novel method is based on a parallel implementation of the
-Thompson sampling heuristic.
-
-Algorithm 2 Parallel and distributed Thompson sampling
-Input: initial data DI(1) = {xi , yi }i∈I(1) , batch size S
-for t = 1 to T do
-Compute current posterior p(θ|DI(t) )
-for s = 1 to S do
-Sample θ from p(θ|DI(t) )
-Select k(s) ← argmaxj6∈I(t) E[yj |xj , θ]
-Collect yk(s) by evaluating f at xk(s)
-end for
-DI(t+1) = DI(t) ∪ {xk(s) , yk(s) }Ss=1
-end for
-Executed
-in parallel
-in node s
-
-instead of p(yj |xj , DI ), with θ being a sample from
-the posterior p(θ|DI ). That is, when computing the
-RAF, TS approximates the integral in p(yj |xj , DI ) =
-p(yj |xj , θ)p(θ|DI ) dθ by Monte Carlo, using a single
-sample from p(θ|DI ) in the approximation. The TS utility
-function enforces only exploitation because the expected
-utility is insensitive to any variance in yj . Despite this, TS
-still enforces exploration because of the variance produced
-by the Monte Carlo approximation to p(yj |xj , DI ). Under
-TS, the probability of evaluating the objective at a particular location matches the probability of that location being
-the maximizer of the objective, given the model assumptions and the data from past evaluations. Algorithm 1 contains the pseudocode for TS. The plots in the top of Figure
-1 illustrate how TS works. The top-left plot shows several samples from a posterior distribution on f induced by
-p(θ|DI ) since each value of the parameters θ corresponds
-to an associated value of f . Sampling from p(θ|DI ) is then
-equivalent to selecting one of these samples for f . The selected sample represents the current AF, which is optimized
-in the top-right plot in Figure 1 to select the next evaluation.
-
-Parallel and Distributed Thompson Sampling for Large-scale Accelerated Exploration of Chemical Space
-Parallel EI
-
-Node
-updating model
-comunicating information
-between nodes
-optimizing acquisition
-function
-evaluating objective
-function
-
+1
 2
 
-Parallel and Distributed TS
+
+
+1
 2
 
-3
+–
 
-3
-4
-
-1
-
-1
-
-1
-
-1
-
-4
+p-Extendible
+
+
+OPT −O k logn |V |
+ 3/2
+
+|V |
+OPT −O k log
+n
 
 1
-
+p+1
 1
-5
+p+1
 
+–
+
+Table 1. Guarantees of expected solution quality for privately maximizing a sensitivity-(1/n) submodular function fD . The parameter k
+represents either a cardinality constraint, or the size of the set returned (for matroid or p-extendible system constraints). Full expressions
+with explicit dependencies on differential privacy parameters ε, δ appear in the body of the paper.
+
+straints. For instance, one may wish to maximize a submodular function f (S) subject to S ∈ I for an arbitrary
+matroid I, or subject to S being contained in an intersection of p matroids (more generally, a p-extendible system). For these types of constraints, the greedy algorithm
+still yields a constant factor approximation for monotone
+objective functions (Fisher et al., 1978; Jenkyns, 1976;
+Călinescu et al., 2011). We show in this work that the analysis provided by Călinescu et al. (2011) for matroids and
+p-extendible families can be adapted to handle additional
+error introduced for differential privacy.
+General selection procedures. For worst-case datasets,
+the exponential mechanism is optimal within each round
+of private maximization. However, it may be sub-optimal
+for datasets enjoying additional structural properties. Fortunately, the greedy framework we use is flexible with regard to the choice of the selection procedure. For instance,
+one can replace the exponential mechanism in a black-box
+manner with the “large margin mechanism” of Chaudhuri
+et al. (2014) to obtain error bounds that replace the explicit dependence on log |V | in Table 1 with a term that
+may be significantly smaller for real datasets. We give a
+slightly simplified analysis of the large margin mechanism,
+and present it in a manner suitable for greedy algorithms
+which access the same data set multiple times. (These guarantees are more complicated, but spelled out in Section 5.)
+For submodular functions exhibiting additional structure,
+one may also be able to perform each maximization step
+with the “choosing mechanism” of Beimel et al. (2016)
+and Bun et al. (2015).
+
+2. Preliminaries
+Let V be finite set which we will refer to as the ground set
+and let X be a finite set which we will refer to as the data
+universe. A dataset is an n-tuple D = (x1 , . . . , xn ) ∈ X n .
+Suppose each dataset D is associated to a set function fD :
+2V → R. The manner in which fD depends on D will be
+application-specific, but it is assumed that the association
+between D and fD is public information.
+Definition 2. A set function fD : 2V → R is submodular
+if for all sets S ⊆ T ⊆ V and every element v ∈ V , we
+have fD (S ∪ {v}) − fD (S) ≥ fD (T ∪ {v}) − fD (T ).
+Moreover, If fD (S) ≤ fD (T ) whenever S ⊆ T , we say
+fD is monotone. If for
+Pnevery dataset D = (x1 , . . . , xn ),
+the function fD = n1 i=1 fxi for monotone submodular
+
+functions fxi : 2V → [0, λ], we say fD is λ-decomposable.
+The problem of maximizing a decomposable submodular function was considered as the “combinatorial public
+projects problem” by Papadimitriou et al. (2008).
+We are interested in the problem of approximately maximizing a submodular function subject to differential privacy. The definition of differential privacy relies on the
+notion of neighboring datasets, which are simply tuples
+D, D0 ∈ X n that differ in at most one entry. If D, D0 are
+neighboring, we write D ∼ D0 .
+Definition 3. A randomized algorithm M : X n → R satisfies (ε, δ)-differential privacy if for all measurable sets
+T ⊆ R and all neighboring datasets D ∼ D0 ,
+Pr[M (D) ∈ T ] ≤ eε Pr[M (D0 ) ∈ T ] + δ.
+Differentially private algorithms must be calibrated to the
+sensitivity of the function of interest with respect to small
+changes in the input dataset, defined formally as follows.
+Definition 4. The sensitivity of a set function fD : 2V →
+R (depending on a dataset D) with respect to a constraint
+C ⊆ 2V is defined as
+max0 max |fD (S) − fD0 (S)|.
+D∼D S∈C
+
+Composition of Differential Privacy. The analyses of
+our algorithms rely crucially on composition theorems for
+differential privacy. For a sequence of privacy parameters {(εi , δi )}ki=1 , we informally refer to the k-fold adaptive composition of (εi , δi )-differentially private algorithms
+as the output of a mechanism M ∗ that behaves as follows on an input D: In each of rounds i = 1, . . . , k,
+the algorithm M ∗ selects an (εi , δi )-differentially private
+algorithm Mi possibly depending on the previous outcomes M1 (D), . . . , Mi (D) (but not directly on the sensitive dataset D itself), and releases Mi (D). For a formal
+treatment of adaptive composition, see (Dwork et al., 2010;
+Dwork & Roth, 2014).
+Theorem 5. (Dwork & Lei, 2009; Dwork et al., 2010;
+Bun & Steinke, 2016) The k-fold adaptive composition
+of (ε0 , δ0 )-differentially private algorithms satisfies (ε, δ)differential privacy where
+1. ε = kε0 and δ = kδ0 .
+(Basic Composition).
+p
+2. ε = 21 kε20 + 2 log(1/δ 0 )ε0 and δ = δ 0 + kδ, for any
+δ 0 > 0.
+(Advanced Composition)
+
+Differentially Private Submodular Maximization
+
+Exponential Mechanism. The exponential mechanism (McSherry & Talwar, 2007) is a general primitive for solving discrete optimization problems. Let
+q : V × X n → R be a “quality” function measuring
+how good a solution v ∈ V is with respect to a dataset
+D ∈ X n . We say a quality function q has sensitivity λ if
+for all v ∈ V and all neighboring datasets D ∼ D0 , we
+have |q(v, D) − q(v, D0 )| ≤ λ.
+Proposition 6. Let ε > 0 and let q : V × X n be a quality
+function with sensitivity λ. Define the exponential mechanism as the algorithm which selects every v ∈ V with
+probability proportional to exp(εq(v, D)/2λ).
+• The exponential mechanism provides (ε, 0)differential privacy.
+• For every D ∈ X n ,
+2λ · ln |V |
+,
+E[q(v̂, D)] ≥ max q(v, D) −
+v∈V
+ε
+where v̂ is the output of the exponential mechanism on
+dataset D.
+The privacy guarantee and a “with high probability” utility
+guarantee of the exponential mechanism are due to McSherry & Talwar (2007). A simple proof of the utility guarantee in expectation appears in (Bassily et al., 2016).
+
+3. Monotone Submodular Maximization
+In this section, we present a variant of the basic greedy algorithm which will enable maximization of monotone submodular functions. This algorithm simply replaces each
+greedy selection step with a privacy-preserving selection
+algorithm denoted O. The selection function O takes as
+input a quality function q : U × X n → R and a dataset
+D, as well as privacy parameters ε0 , δ0 , and outputs an element u ∈ U . We begin in the simplest case of monotone
+submodular maximization with a cardinality constraint (Algorithm 1). The algorithm for more general constraints appears in Section 3.1.
+Algorithm 1 was already studied by Gupta et al. (2010) in
+the special case where fD is decomposable, and O is the
+exponential mechanism. We generalize their result to the
+much broader class of low-sensitivity monotone submodular functions.
+Algorithm 1 Diff. Private Greedy (Cardinality) G O
+Input: Submodular function fD : 2V → R, dataset D,
+cardinality constraint k, privacy parameters ε0 , δ0
+Output: Size k subset of V
+1. Initialize S0 = ∅
+2. For i = 1, . . . , k:
+• Define qi : (V \Si−1 )×X n → R via qi (v, D̃) =
+fD̃ (Si−1 ∪ {v}) − fD̃ (Si−1 )
+• Compute vi ←R O(qi , D; ε0 , δ0 )
+• Update Si ← (Si−1 ∪ {vi })
+3. Return Sk
+
+Theorem 7. (Gupta et al., 2010) Suppose fD : 2V → R
+is λ-decomposable (cf. Definition 2). Let δ > 0 and let
+ε0 ≥ 0 be such that ε = 2 · ε0 · (e − 1) ln(3e/δ) ≤ 1. Then
+instantiating Algorithm 1 with O = EM and parameter
+ε0 > 0 provides (ε, δ)-differential privacy.
+Moreover, for every D∈ X n , 
+2λk ln |V |
 1
-
+OPT −
+E [fD (Sk )] ≥ 1 −
+e
+ε0
+where Sk ←R G EM (D).
+Unfortunately, the privacy analysis of Theorem 7 makes essential use of the decomposability of fD , and does not directly generalize to arbitrary submodular functions of lowsensitivity. Replacing the privacy analysis of (Gupta et al.,
+2010) with the Composition Theorem 5 instead gives
+Theorem 8. Suppose fD : 2V → R is monotone and has
+sensitivity λ. Then instantiating Algorithm 1 with O = EM
+and parameter ε0 > 0 provides (ε = kε0 , δ = 0)differential privacy. It also provides (ε, δ)-differential
+prip
+vacy for every δ > 0 with ε = kε20 /2 + ε0 · 2k ln(1/δ).
+Moreover, for every D∈ X n , 
 1
-
-5
-
-idle node
-
-2
-
-2
-
-2
-
-3
-
-3
-
-3
-
-4
-
-4
-
-4
-
-5
-
-5
-
-5
-
+2λk ln |V |
+E [fD (Sk )] ≥ 1 −
+OPT −
+e
+ε0
+where Sk ←R G EM (D).
+3.1. Matroid and p-Extendible System Constraints
+We now show how to extend Algorithm 1 to privately maximize monotone submodular functions subject to more general constraints. To start, we review the definition of a pextendible system. Consider a ground set V and a nonempty downward-closed family of subsets I ⊆ 2V (i.e. if
+T ∈ I, then S ∈ I for every S ⊆ T ). Such an I is called a
+family of independent sets. The pair (V, I) is said to be a pextendible system (Mestre, 2006) if for all S ⊂ T ∈ I, and
+v ∈ V such that S ∪{v} ∈ I, there exists a set Z ⊆ (T \S)
+such that |Z| ≤ p and (T \ Z) ∪ {v} ∈ I. Let r(I) denote
+the size of the largest independent set in I.
+The definition of a matroid coincides with that of a 1extendible system (with rank r(I)). For p ≥ 2, the notion of a p-extendible system strictly generalizes that of an
+intersection of p matroids. A slight modification of Algorithm 1 gives a unified algorithm for privately maximizing
+a monotone submodular function subject to matroid and pextendible system constraints, presented as Algorithm 2.
+Theorem 9. Suppose fD : 2V → R is λ-decomposable
+(cf. Definition 2). Let δ > 0 and let ε0 ≥ 0 be such that
+ε = 2 · ε0 · (e − 1) ln(3e/δ) ≤ 1. Then instantiating Algorithm 2 with O = EM and parameter ε0 > 0 provides
+(ε, δ)-differential privacy. Moreover, for every D ∈ X n ,
+
+
+p
+2λr(I) ln |V |
 1
+E [fD (S)] ≥
+· OPT −
+p+1
+p+1
+ε0
+where S ←R G EM (D).
 
-Figure 2. A visualization of one iteration of BO using parallel EI as implemented in (Snoek et al., 2012) and PDTS. Note that in PDTS
-the model is updated once and sample points are acquired independently by the nodes. With parallel EI, the the location of the next
-sample points is dependent on the location of previous sample points in the batch so these are computed sequentially.
+Differentially Private Submodular Maximization
 
-3. Parallel and Distributed Thompson
-Sampling
+Algorithm 2 Differentially Private Greedy (p-system) G O
+Input: Submodular function fD : 2V → R, dataset D, pextendible family (V, I), privacy parameters ε0 , δ0
+Output: Maximal independent subset of V
+1. Initialize S = ∅
+2. While S ∈ I is not maximal:
+• Define q : (V \ S) × X n → R via q(v, D̃) =
+fD̃ (S ∪ {v}) − fD̃ (S)
+• Compute vi ←R O(q, D; ε0 , δ0 )
+• Update S ← (S ∪ {vi })
+3. Return S
+Theorem 10. Suppose fD : 2V → R has sensitivity λ.
+Then instantiating Algorithm 2 with O = EM and parameter ε0 > 0 provides (ε = r(I)ε0 , δ = 0)-differential privacy. It also provides (ε, δ)-differential
+privacy for every
+p
+δ > 0 with ε = r(I)ε2 /2 + ε · 2r(I) ln(1/δ).
+Moreover, for every D ∈ X n ,
+
+
+p
+2λr(I) ln |V |
+1
+E [fD (S)] ≥
+· OPT −
+p+1
+p+1
+ε0
+where S ←R G EM (D).
 
-how PDTS selects two parallel evaluation locations. For
-this, sequential TS is run twice.
+4. Non-Monotone Submodular Maximization
+We now consider the problem of privately maximizing an
+arbitrary, possibly non-monotone, submodular function under a cardinality constraint. In general, the greedy algorithm presented in Section 3 fails to give any constantfactor approximation. Instead, our algorithm in this section will be based on the “stochastic greedy” algorithm first
+studied by Mirzasoleiman et al. (2015). In each round,
+the stochastic greedy algorithm first subsamples a random
+1
+k · ln(1/α) fraction of the ground set for some α > 0,
+and then greedily selects the item from this subsample that
+maximizes marginal gain. Mirzasoleiman et al. (2015)
+showed that for a monotone objective function f , this algorithm provides a (1 − 1/e − α)-approximation to the optimal solution. Their original motivation was to improve the
+running time of the greedy algorithm: from O(|V |·k) evaluations of the objective function to linear O(|V | · ln(1/α)).
+Unfortunately, the stochastic greedy algorithm does not
+provide any approximation guarantee for non-monotone
+submodular functions. Buchbinder et al. (2014) instead
+proposed a “random greedy” algorithm that, in each iteration, randomly selects one of the k elements with the highest marginal gain. Buchbinder et al. (2014) showed that the
+random greedy algorithm achieves a 1/e approximation to
+the optimal solution (in expectation), using k|V | function
+evaluations. However, it is not clear how to adapt this algorithm to accommodate differential privacy, since its analysis has a brittle dependence on the sampling procedure.
+We make two main contributions to the analysis of the
 
-We present an implementation of the parallel BO method
-from Section 2.1 based on the Thompson sampling (TS)
-heuristic. In particular, we propose to apply to (2) the
-same approximation that TS applied to (1). For this, we
-choose in (2) the same utility function used by TS in the
-sequential setting, that is, U (yj |xj , DI ∪ DK ) = yj . Then,
-we approximate the expectation with respect to {yk }k∈K
-in (2) by Monte Carlo, averaging across just one sample
-of {yk }k∈K drawn from p({yk }k∈K |{xk }k∈K , DI ). After
-that, α(xj |DI ∪ DK ) in (2) is approximated in the same
-way as in the sequential setting by first sampling θ from
-p(θ|DI ∪ DK ) and then approximating p(yj |xj , DI ∪ DK )
-with p(yj |xj , θ). Importantly, in this process, sampling
-first {yk }k∈K from p({yk }k∈K |{xk }k∈K , DI ) and then θ
-from p(θ|DI ∪ DK ) is equivalent to sampling θ from just
-p(θ|DI ). The reason for this is that updating a posterior
-distribution with synthetic data sampled from the model’s
-predictive distribution produces on average the same initial posterior distribution. The result is that parallel TS
-with batch size S is the same as running sequential TS
-S times without updating the current posterior p(θ|DI ),
-where each execution of sequential TS produces one of the
-evaluation locations in the batch. Importantly, these executions can be done in distributed manner, with each one
-running in parallel in a different node.
+stochastic greedy and random greedy algorithms. First,
+we show that running the stochastic greedy algorithm on
+an exact k1 fraction of the ground set per iteration still
+gives a (0.468)-approximation for monotone objectives,
+and moreover, gives a 1e (1 − 1/e)-approximation even for
+non-monotone objectives. Note that this algorithm evaluates the objective function on only |V | elements, and still
+provides a constant factor approximation guarantee. This
+makes our “subsample-greedy” algorithm the fastest algorithm for maximizing a general submodular function subject to a cardinality constraint (albeit with slightly worse
+approximation guarantees). Second, we show that the guarantees of this algorithm are robust to using a randomized
+greedy selection procedure (e.g. the exponential or large
+margin mechanism), and hence it can be adapted to ensure
+differential privacy.
+We present the subsample-greedy algorithm as Algorithm 3
+below. Assume that V is augmented by enough “dummy
+elements” to ensure that |V |/k is an integer; each dummy
+element u is defined so that fD (S ∪ {u}) = fD (S) for
+every set S. We also explicitly account for an additional
+set U of k dummy elements, and ensure that at least one
+appears in every subsample.
+Algorithm 3 Diff. Private “Subsample-Greedy” SG O
+Input: Submodular function fD : 2V → R, dataset D,
+cardinality constraint k, privacy parameters ε0 , δ0
+Output: Size k subset of V
+1. Initialize S0 = ∅, dummy elements U =
+{u1 , . . . , uk }
+2. For i = 1, . . . , k:
+• Sample Vi ⊂ V a uniformly random subset of
+size |V |/k and ui a random dummy element
+• Define qi : (Vi ∪{ui })×X n → R via qi (v, D̃) =
+fD̃ (Si−1 ∪ {v}) − fD̃ (Si−1 )
+• Compute vi ←R O(qi , D; ε0 , δ0 )
+• Update Si ← (Si−1 ∪ {vi })
+3. Return Sk with all dummy elements removed
+Theorem 11. Suppose fD : 2V → R has sensitivity λ.
+Then instantiating Algorithm 3 with O = EM provides
+(ε, δ)-differential privacy, and for every D ∈ X n ,
+
+
+1
+1
+2λk ln |V |
+E [fD (S)] ≥
+1−
+OPT −
+e
+e
+ε
+EM
+where S ←R SG (D). Moreover, if fD is monotone, then
+
+
+2λk ln |V |
+E [fD (S)] ≥ 1 − e−(1−1/e) OPT −
+ε
+2λk ln |V |
+≈ 0.468 OPT −
+.
+ε
+The guarantees of Theorem 11 are of interest even without privacy. Letting MAX denote the selection procedure
+which simply outputs the true maximizer (equivalently,
 
-The scalability of PDTS makes it a promising method for
-parallel BO in high-throughput screening. However, in this
-type of problem, the optimization of the AF is done over a
-discrete set of molecules. Therefore, whenever we collect a
-batch of data in parallel with PDTS, several of the simultaneous executions of sequential TS may choose to evaluate
-the same molecule. A central computer node (e.g. the node
-controlling the BO process) maintaining a list of molecules
-currently selected for evaluation can be used to avoid this
-problem. In this case, each sequential TS node sends to the
-central node a ranked list with the top S (the batch size)
-molecules according to its AF. From this list, the central
-node then selects the highest ranked molecule that has not
-been selected for evaluation before.
+Differentially Private Submodular Maximization
 
-The resulting parallel and distributed TS (PDTS) method is
-highly scalable and can be applied to very large batch sizes
-by running each execution of sequential TS on the same
-computer node that will then later evaluate f at the selected
-evaluation location. Algorithm 2 contains the pseudocode
-for PDTS. The parallel nature of the algorithm is illustrated
-by the plot in the right of Figure 2. In this plot computer
-node 1 is controlling the BO process. To collect four new
-function evaluations in parallel, computer node 1 sends the
-current posterior p(θ|DI ) and I to nodes 2, . . . , 5. Each
-of them samples then a value for θ from the posterior and
-optimizes its own AF given by E[yj |xj , θ], with j 6∈ I.
-The objective function is evaluated at the selected input and
-the resulting data is sent back to node 1. Figure 1 illustrates
+which runs the exponential mechanism with ε0 = +∞),
+we obtain the following non-private algorithm for maximizing a submodular function fD :
+V
 
-4. Related Work
-Ginsbourger et al. (Ginsbourger et al., 2010) proposed the
-following framework for parallel BO: given a set of current observations DI and pending experiments {xk }K
-k=1 ,
-an additional set of fantasies DK = {(xk , yk )}K
-can
-be
-k=1
-assumed to be the result of those pending experiments. A
-step of Bayesian optimization can then be performed using
-the augmented dataset DI ∪ DK and the acquisition function α(x|DI ∪ DK ). Two different values are proposed for
-the fantasies: the constant liar, where yk = L for some
-constant L and all k = 1 . . . K, and the Kriging believer,
-where yk is given by the GP predictive mean at xk .
-Snoek et al. (2012) compute a Monte Carlo approximation
-of the expected acquisition function over potential fantasies
-sampled from the model’s predictive distribution. Recent
-methods have been proposed to modify the parallel EI procedure to recommend points jointly (Chevalier & Ginsbourger, 2013; Marmin et al., 2015; Wang et al., 2016).
-Azimi et al. (2010) describe a procedure called simulated
-matching whose goal is to propose a batch DK of points
-which is a good match for the set of samples that a sequential BO policy π would recommend. The authors consider
-a batch “good” if it contains a sample that yields, with high
+Corollary 12. Let fD : 2 → R be any submodular function. Instantiating Algorithm 3 with O = MAX gives
+
+
+1
+1
+E [fD (S)] ≥
+1−
+OPT
+e
+e
+where S ←R SG MAX (D). Moreover, if fD is monotone,
+then
+
+
+E [fD (S)] ≥ 1 − e−(1−1/e) OPT ≈ 0.468 OPT .
 
-Parallel and Distributed Thompson Sampling for Large-scale Accelerated Exploration of Chemical Space
+5. The Large Margin Mechanism
+The accuracy guarantee of the exponential mechanism can
+be pessimistic on datasets where q(·, D) exhibits additional structure. For example, suppose that when the elements of V are sorted so that q(v1 , D) ≥ q(v2 , D) ≥
+· · · ≥ q(v|V | , D), there exists an ` such that q(v1 , D) 
+q(v`+1 , D). Then only the top ` ground set items are relevant to the optimization problem, so running the exponential mechanism on these should maintain differential
+privacy, but with error proportional to ln ` rather than to
+ln |V |. The large margin mechanism of Chaudhuri et al.
+(2014), like the exponential mechanism, generically solves
+discrete optimization problems. However, it automatically
+leverages this additional margin structure whenever it exists. Asymptotically, the error guarantee of the large margin
+mechanism is always at most that of the exponential mechanism, but can be much smaller when the data exhibits a
+margin for small `.
+Formally, given a quality function q : V × X n → R and
+parameters ` ∈ N, γ > 0, a dataset D satisfies the (`, γ)margin condition if q(v`+1 , D) < q(v1 , D) − γ.
+For each ` = 1, . . . , |V |, define
+
+
+4 ln(2`/δ)
+g` = λ · 3 +
+ε
+8λ ln(2/δ) 16λ ln(7`2 /δ)
+G` =
++
++ g` .
+ε
+ε
+Recall that the Laplace distribution Lap(b) is specified by
+1
+the density function 2b
+exp(−|x|/b).
+Replacing the exponential mechanism with the large margin mechanism gives analogues of our results for monotone
+submodular maximization with a cardinality constraint,
+monotone submodular maximization over a p-extendible
+system, and non-monotone submodular maximization with
+a cardinality constraint:
+Theorem 13. Suppose fD : 2V → R is monotone
+and has sensitivity λ. Then instantiating Algorithm 1
+with O = LMM and parameters ε0 , δ0 = 0 provides
+(kε0 , kδ0 )-differential privacy. It also provides (ε, δ 0 +
 
-probability, an objective value close to that of the best sample produced by a sequential execution of π.
-Several authors have proposed to extend the upper confidence bound (UCB) heuristic to the parallel setting. Since
-the GP predictive variance depends only on the input location of the observations, Desautels et al. (2014) propose GP-BUCP acquisition which uses the UCB acquisition with this updated variance. Contal et al. (2013) introduce the Gaussian Process Upper Confidence Bound with
-Pure Exploration (GP-UCB-PE). Under this procedure, the
-first point is obtained using the standard UCB acquisition
-function while the remaining points are sequentially selected to be the ones yielding the highest predictive variance, while still lying in a region that contains the maximizer with high probability.
-Shah & Ghahramani (2015) extend the Predictive Entropy
-Search (PES) heuristic to the parallel setting (PPES). PPES
-seeks to recommend a collection of samples DK that yields
-the greatest reduction in entropy for the posterior distribution of x? , the latent objective maximizer. Wu & Frazier
-(2016) propose the Parallel Knowledge Gradient Method
-which optimizes an acquisition function called the parallel knowledge gradient (q-KG), a measure of the expected
-incremental solution quality after q samples.
-An advantage of PDTS over parallel EI and other related
-methods is that the approximate marginalization of potential experimental outcomes adds no extra computational
-cost to our procedure and so PDTS is highly parallelizable.
-Finally, unlike other approaches, PDTS can be applied to a
-wide variety of models, such as GPs and Bayesian neural
-networks, since it only requires samples from an exact or
-approximate posterior distribution.
+kδ0p
+)-differential privacy for every δ 0 > 0 with ε = kε2 /2+
+ε · 2k ln(1/δ 0 ).
+Moreover, for every D ∈ X n , there exists an event E with
+Pr[E] ≥ 1 − β such that
+
+
+k
+X
+1
+4λ ln `i
+E [fD (Sk )|E] ≥ 1 −
+OPT −
+e
+ε0
+i=1
+where Sk ←R G LMM (D), and D satisfies the (`i , γi )margin condition with respect to every function of the form
+qi (v, D) = fD (Ŝi−1 ∪ {v}) − fD (Ŝi−1 ), with γi =
+24λ ln(k/β)/ε + G`i .
+Theorem 14. Instantiating Algorithm 2 with O = LMM
+under all of the conditions of Theorem 13 gives the same
+privacy guarantee (replacing k with r(I)) and gives
+r(I)
+X 4λ ln `i
+1
+· OPT −
+.
+E [fD (S)|E] ≥
+p+1
+ε0
+i=1
+Theorem 15. Instantiating Algorithm 3 with O = LMM
+under all of the conditions of Theorem 13 gives the same
+privacy guarantee and gives
+
+
+k
+X
+1
+1
+4λ ln `i
+1−
+OPT −
+E [fD (Sk )|E] ≥
+.
+e
+e
+ε0
+i=1
+Moreover, if fD is monotone, then
+k
+X
+4λ ln `i
+E [fD (Sk )|E] ≥ 0.468 OPT −
+.
+ε0
+i=1
 
-5. Bayesian Neural Networks for
-High-throughput Screening
-Neural networks are well-suited for implementing BO on
-molecules. They produce state-of-the-art predictions of
-chemical properties (Ma et al., 2015; Mayr et al., 2016;
-Ramsundar et al., 2015) and can be applied to large data
-sets by using stochastic optimization (Bousquet & Bottou, 2008). Typical applications of neural networks focus on the deterministic prediction scenario. However,
-in large search spaces with multiple local optima (which
-is the case when navigating chemical space), it is desirable to use a probabilistic approach that can produce accurate estimates of uncertainty for efficient exploration
-and so, we use probabilistic back-propagation (PBP), a
-recently-developed technique for the scalable training of
-Bayesian neural networks (Hernández-Lobato & Adams,
-2015). Note that other methods for approximate inference in Bayesian neural networks could have been chosen as well (Blundell et al., 2015; Snoek et al., 2015; Gal
+6. Experimental Results
+In this section we describe two concrete applications of our
+mechanisms.
+6.1. Location Privacy
+We analyze a dataset of 10,000 Uber pickups in Manhattan
+in April 2014 (UberDataset). Each individual entry in the
+dataset consists of the longitude and latitude coordinates of
+the pickup location. We want to use this dataset to select
+k public locations as waiting spots for idle Uber drivers,
+while also guaranteeing differential privacy for the passengers whose locations appear in this dataset.1 We consider
+two different public sets of locations L:
+• LP opular is a set of 33 popular locations in Manhattan.
+• LGrid is a set of 33 locations spread evenly across
+Manhattan in a grid-like manner.
+We define a utility function M (i, j) to be the normalized
+Manhattan distance between a pickup location i and the
+waiting location j. That is, if pickup location i is located at
+coordinates (i1 , i2 ) and the waiting location j is located at
+|i1 − j1 | + |i2 − j2 |
+,
+coordinates (j1 , j2 ), then M (i, j) =
+m
+where m = 0.266 is simply the Manhattan distance between the two furthest spread apart points in Manhattan.
+1
+Under the assumption that each pickup corresponds to a
+unique individual.
 
-& Ghahramani, 2016). We prefer PBP because it is fast
-and it does not require the tuning of hyper-parameters such
-as learning rates or regularization constants (HernándezLobato & Adams, 2015).
-Given a dataset DI = {(xi , yi )}i∈I , we assume that
-yi = f (xi ; W) + i , where f (·; W) is the output of a neural network with weights W. The network output is corrupted with additive noise variables i ∼ N (0, γ −1 ). The
-network has L layers, with Vl hidden units in layer l, and
-W = {Wl }L
-l=1 is the collection of Vl ×(Vl−1 +1) synaptic
-weight matrices. The +1 is introduced here to account for
-the additional per-layer biases. The activation functions for
-the hidden layers are rectifiers: ϕ(x) = max(x, 0).
-The likelihood for the network weights W and the noise
-precision γ is
-p({yi }i∈|I |W, {xi }i∈I , γ) =
+Differentially Private Submodular Maximization
 
+(a) LP opular
+
+(e) LP opular :
+greedy
+
+(b) LGrid
+
+Non-private
+
+(c) LP opular
+
+(f) LP opular : EM-based greedy
+
+(d) LGrid
+
+(g) LGrid : Non- (h) LGrid : EMprivate greedy
+based greedy
+
+Figure 1. (a) and (b) show utility for various cardinalities (k). (c) and (d) fix k = 3 and show utility for various privacy parameters ().
+Utility is normalized to be between 0 and 1. (e) - (h) shows a representative top 3 set under various settings.
+
+This normalization ensures that 0 ≤ M (i, j) ≤ 1, for all
+i, j. In order to make sure we have a maximization problem, X
+we define the following objective function: fD (S) =
+n−
+min M (i, j), where n = |D| = 10000.
+i∈D
+
+j∈S
+
+Observation 16. The function fD is λ-decomposable for
+λ = 1 (and hence has sensitivity 1).
+This form of objective function is known to be monotone
+submodular and so we can use the greedy algorithms studied in this paper. We use  = 0.1 and δ = 2−20 . For our settings of parameters, “basic composition” outperforms “advanced composition,” so the privacy budget of  = 0.1 is
+split equally across the k iterations, meaning the mechanism at each iteration uses 0 = k . Our figures plot the
+average utility across 100 simulations.
+From Figures 1(a) and (b) we see that the results for both
+LP opular and LGrid are relatively similar and unsurprising. The non-private greedy algorithm achieves the highest utility, but both the exponential mechanism (EM)-based
+greedy and large margin mechanism (LMM)-based greedy
+algorithms exhibit comparable utility while preserving a
+high level of privacy. Interestingly, we also see that the
+utilities of the EM-based and LMM-based algorithms are
+almost identical for both LP opular and LGrid . This indicates that our mechanisms are actually selecting good locations, rather than just getting lucky because there are a lot
+of good locations to choose from.
+Figures 1(c) and (d) show how the utility of the EM-based
+
+and LMM-based algorithms vary with the privacy parameter . We can also think of this as varying the dataset size
+for a fixed . We fix k = 3 and take the average of 100
+simulations for each value of . We see that even for very
+small , our algorithms outperform fully random selection.
+As  increases, so does the utility. It is not shown in this
+figure, but varying δ has very little effect.
+From Figures 1(e) - (h), we see that the both the non-private
+and private algorithms select public locations that are relatively close to each other. For example, for the LP opular
+set of locations, the Empire State Building is close to the
+New York Public Library, the Soho Grand Hotel is close to
+NYU, and the Grand Army Plaza is close to the UN Headquarters. As a result, the private mechanisms manage to
+achieve comparable utility, while also masking the users’
+exact locations.
+The theory described in Section 5 suggests that, at least
+asymptotically, the large margin mechanism-based algorithm should outperform the exponential mechanism-based
+algorithm. However, in our experiments, we find that the
+large margin mechanism is generally only able to find a
+margin in the first iteration of the greedy algorithm. This is
+because the threshold for finding a margin depends only on
+, δ, and n and thus it stays the same across all k iterations.
+On the other hand, the marginal gain at each iteration drops
+very quickly, so the mechanism fails to find a margin and
+thus samples from all remaining locations. However, since
+the large margin mechanism spends half of its privacy bud-
+
+Differentially Private Submodular Maximization
+
+Diabetes
+
+Insulin
+
+High Blood Pressure
+
+Overweight
+
+Insulin
+
+Blood Transfusion
+
+Overweight
+
+Insulin
+
+Vigorous Exercise
+
+Gender
+
+Non-Private
+Greedy
+
+Exponential
+Mechanism
+
+Asthma
+
+Taking
+Insulin
+
+Vigorous
+Exercise
+
+High
+Blood
+Pressure
+
+(a) Graphical model of Naive Bayes
+
+Large Margin
+Mechanism
+
+(b) Expected mutual information
+
+(c) Representative top 3 features
+
+Figure 2. Privately selecting health features, from national health examination surveys, that correlate most with diabetes.
+
+get to try to find a margin, the sampling step gives slightly
+worse guarantees than does the plain exponential mechanism, thus giving us the slightly weaker results we see in
+the figures.
+6.2. Feature Selection Privacy
+We analyze a dataset created from a combination of National Health Examination Surveys ranging from 2007 to
+2014 (NHANESDataset). There are n = 23, 876 individuals in the dataset with information on whether or not they
+have diabetes, along with m = 23 other potentially related
+binary health features. Our goal is to privately select k of
+these features that provide as much information about the
+diabetes class variable as possible.
+More specifically, our goal is to maximize the mutual information between Y and XS , where Y is a binary random
+variable indicating whether or not an individual has diabetes and XS is a random variable that represents a set S
+of k binary health features. Mutual information takes the
+form:
+
+
+XX
+p(x, y)
+I(Y ; X) =
+p(x, y) log2
+.
+p(x)p(y)
+y∈Y x∈X
+
+Under the Naive Bayes assumption, we suppose the
+joint distribution on (Y, X1 , . . . , Xk ) takes the form
+k
 Y
+p(y, x1 , . . . , xk ) = p(y)
+p(xi | y). Therefore, we can
+i=1
 
-N (yi |f (xi ; W), γ −1 ) .
+easily specify the entire probability distribution by finding
+each p(xi | y). We estimate each p(xi | y) by counting
+frequencies in the dataset.
+Our goal is to choose a size k subset S of the features in
+order to maximize fD (S) = I(Y ; XS ). Mutual information (under the Naive Bayes assumption) for feature selection is known to be monotone submodular in S (Krause &
+Guestrin, 2005), and thus we can apply the greedy algorithms described in this paper.
+Claim 17. In iteration i of the greedy algorithm, the sensitivity of fD (S) is (2i+1)nlog2 (n) .
+We run 1,000 simulations with  = 1.0 and δ = 2−20 .
+As we can see from Figure 2(b), our private mechanisms
 
-i∈I
+maintain a comparable utility relative to the non-private
+algorithm. We also observe an interesting phenomenon
+where the expected utility obtained by our mechanism is
+not necessarily monotonically increasing with the number
+of features selected. This is an artifact of the fact that if
+we are selecting k features, then composition requires us to
+divide  so that each iteration uses privacy budget k . This
+is problematic for this particular application because there
+happens to be one feature (insulin administration) that has
+much higher value than the rest. Therefore, the reduced
+probability of picking this single best feature (as a result of
+the lower privacy parameter k ) is not compensated for by
+selecting more features.
+From Figure 2(c), we see that both the private and nonprivate mechanisms generally select insulin administration
+as the top feature. However, while all three of the top features selected by the non-private algorithm are clearly related to diabetes, the non-private mechanisms tend to select
+one feature (in our case, gender or having received a blood
+transfusion) that may not be quite as relevant.
 
-We specify a Gaussian prior distribution for each entry in
-each of the weight matrices in W:
-p(W|λ) =
+7. Conclusion
+We have presented a general framework for maximizing
+submodular functions while guaranteeing differential privacy. Our results demonstrate that simple and flexible
+greedy algorithms can preserve privacy while achieving
+competitive guarantees for a variety of submodular maximization problems: for all functions under cardinality constraints, as well as for monotone functions under matroid
+and p-extendible system constraints. Via our motivation to
+identify algorithms that could be made differentially private, we discovered a non-monotone submodular maximization algorithm that achieves guarantees that are novel
+even without concern for privacy. Finally, our experiments
+show that our algorithms are indeed competitive with their
+non-private counterparts.
+Acknowledgments. This work was supported by DARPA
+Young Faculty Award (D16AP00046), Simons-Berkeley
+fellowship, and ERC StG 307036. This work was done in
+part while Amin Karbasi and Andreas Krause were visiting
+the Simons Institute for the Theory of Computing.
 
-Vl Vl−1
-L Y
-Y
-Y+1
-l=1 k=1
-
-N (wkj,l |0, λ−1 ) ,
-
-(3)
-
-j=1
-
-where wkj,l is the entry in the k-th row and j-th column of
-Wl and λ is a precision parameter. The hyper-prior for λ
-is gamma: p(λ) = Gam(λ|α0λ , β0λ ) with shape α0λ = 6
-and inverse scale β0λ = 6. This relatively low value for
-the shape and inverse scale parameters makes this prior
-weakly-informative. The prior for the noise precision γ
-is also gamma: p(γ) = Gam(γ|α0γ , β0γ ). We assume that
-the yi have been normalized to have unit variance and, as
-above, we fix α0γ = 6 and β0γ = 6.
-The exact computation of the posterior distribution for the
-model parameters p(W, γ, λ|DI ) is not tractable in most
-cases. PBP approximates the intractable posterior on W, γ
-and λ with the tractable approximation
-
-
-Vl Vl−1+1
-L Y
-Y
-Y
-N (wkj,l |mkj,l , vkj,l )
-q(W, γ, λ) = 
-l=1k=1 j=1
-
-Gam(γ | αγ , β γ )Gam(λ | αλ , β λ ) ,
-
-(4)
-
-whose parameters are tuned by iteratively running an assumed density filtering (ADF) algorithm over the training
-data (Opper, 1998). The main operation in PBP is the
-update of the mean and variance parameters of q, that is,
-the mkj,l and vkj,l in (4), after processing each data point
-{(xi , yi )}. For this, PBP matches moments between the
-new q and the product of the old q with the corresponding likelihood factor N (yi | f (xi ; W), γ −1 ). The matching
-of moments for the distributions on the weights is achieved
-
-Parallel and Distributed Thompson Sampling for Large-scale Accelerated Exploration of Chemical Space
-
-by using well-known Gaussian ADF updates, see equations
-5.12 and 5.1 in (Minka, 2001).
-To compute the ADF updates, PBP finds a Gaussian
-approximation to the distribution of the network output
-f (xi ; W) when W ∼ q. This is achieved by doing a
-forward pass of xi through the network, with the weights
-W being randomly sampled from q. In this forward pass
-the non-Gaussian distributions followed by the output of
-the neurons are approximated with Gaussians that have
-the same means and variances as the original distributions.
-This is a Gaussian approximation by moment matching.
-We refer the reader to Hernández-Lobato & Adams (2015)
-for full details on PBP.
-After several ADF iterations over the data by PBP, we can
-then make predictions for the unknown target variable y?
-associated with a new feature vector x? . For this, we obtain
-a Gaussian approximation to f (x? ; W) when W ∼ q by
-applying the forward pass process described above.
-To implement TS, as described in Algorithm 1, we first
-sample the model parameters θ from the posterior p(θ|DI )
-and then optimize the AF given by E[yj |xj , θ], with j 6∈ I.
-When the model is a Bayesian neural network trained with
-PBP, the corresponding operations are sampling W from
-q and then optimizing the AF given by f (xj ; W), with
-j 6∈ I. This last step requires the use of a deterministic
-neural network, with weight values given by the posterior
-sample from q, to make predictions on all the molecules
-that have not been evaluated yet. Then, the molecule with
-highest predictive value is selected for the next evaluation.
-
-6. Experiments with GPs and Parallel EI
-We first compare the performance of our parallel and distributed Thompson sampling (PDTS) algorithm with the
-most popular approach for parallel BO: the parallel EI
-method from Section 2.1. Existing implementations of parallel EI such as spearmint1 use a Gaussian process (GP)
-model for the objective function. To compare with these
-methods, we also adopt a GP as the model in PDTS. Note
-that parallel EI cannot scale to the large batch sizes used
-in high-throughput screening. Therefore, we consider here
-only parallel optimization problems with small batch sizes
-and synthetic objective functions. Besides PDTS and parallel EI, we also analyze the performance of the sequential
-versions of these algorithms: TS and EI.
-To implement Thompson sampling (TS) with a GP model,
-we approximate the non-parametric GP with a parametric
-approximation based on random features, as described in
-the supplementary material of (Hernández-Lobato et al.,
-2014). For the experiments, we consider a cluster with 11
-1
-
-https://github.com/HIPS/Spearmint
-
-nodes: one central node for controlling the BO process and
-10 additional nodes for parallel evaluations. We assume
-that all objective evaluations take a very large amount of
-time and that the cost of training the GPs and recomputing
-and optimizing the AF is negligible in comparison. Thus,
-in practice, we perform these experiments in a sequential
-(non-parallel) fashion with the GP model being updated
-only in blocks of 10 consecutive data points at a time.
-As objective functions we consider the two dimensional
-Bohachevsky and Branin-Hoo functions and the six dimensional Hartmann function, all available in Benchfunk2 . We
-also consider the optimization of functions sampled from
-the GP prior over the 2D unit square using a squared exponential covariance function with fixed 0.1 length scale.
-After each objective evaluation, we compute the immediate regret (IR), which we define as the difference between
-the best objective value obtained so far and the minimum
-value of the objective function. The measurement noise is
-zero in these experiments.
-Figure 3 reports mean and standard errors for the logarithm
-of the best IR seen so far, averaged across 50 repetitions of
-the experiments. In the plots, the horizontal axis shows the
-number of function evaluations performed so far. Note that
-in these experiments TS and EI update their GPs once per
-sample, while PDTS and parallel EI update only every 10
-samples. Figure 3 shows that EI is better than TS in most
-cases, although the differences between these two methods
-are small in the Branin-Hoo function. However, EI is considerably much better than TS in Hartmann. The reason
-for this is that in Hartmann there are multiple equivalent
-global minima and TS tends to explore all of them. EI is
-by contrast more exploitative and focuses on evaluating the
-objective around only one of the minima. The differences
-between parallel EI and PDTS are much smaller, with both
-obtaining very similar results. The exception is again Hartmann, where parallel EI is much better than PDTS, probably because PDTS is more explorative than parallel EI.
-Interestingly, PDTS performs better than parallel EI on the
-random samples from the GP prior, although parallel EI
-eventually catches up.
-These results indicate that PDTS performs in practice very
-similarly to parallel EI, one of the most popular methods
-for parallel BO.
-
-7. Experiments with Molecule Data Sets
-We describe the molecule data sets used in our experiments.
-The input features for all molecules are 512-bit Morgan circular fingerprints (Rogers & Hahn, 2010), calculated with a
-bond radius of 2, and derived from the canonical SMILES
-as implemented in the RDkit package (Landrum).
-2
-
-https://github.com/mwhoffman/benchfunk
-
-Parallel and Distributed Thompson Sampling for Large-scale Accelerated Exploration of Chemical Space
-
-Figure 3. Immediate regret in experiments with GPs, using TS, EI, PDTS and parallel EI for optimizing synthetic functions (first 3 plots)
-and functions sampled from a GP prior (fourth plot).
-
-Harvard Clean Energy Project: The Clean Energy
-Project is the world’s largest materials high-throughput
-virtual screening effort (Hachmann et al., 2014; 2011),
-and has scanned more than 3.5 million molecules to find
-those with high power conversion efficiency (PCE) using
-quantum-chemical techniques, taking over 30,000 years of
-CPU time. The target value within this data set is the power
-conversion efficiency (PCE), which is calculated for the
-2.3 million publicly released molecules, using the Scharber model (Dennler et al., 2008) and frontier orbitals calculated at the BP86 (Perdew, 1986; Becke, 1993) def2-SVP
-(Weigend & Ahlrichs, 2005) level of theory.
-Dose-Response Data Set: These data sets were obtained
-from the NCI-cancer database (Many authors). The doseresponse target value has a potential range of -100 to 100,
-and reports a percentage cell growth relative to a no-drug
-control. Thus, a value of +40 would correspond to a 60%
-growth inhibition and a value of -40 would correspond
-to 40% lethality. Molecules with a positive value for the
-dose-response are known as inhibitors, molecules with a
-score less than 0 have a cytotoxic effect. Results against
-the NCI-H23 cell line were taken against a constant logconcentration of -8.00M and where multiple identical conditions were present in the data an average was used for the
-target variables. In this data set we are interested in finding
-molecules with smaller values of the target variable.
-Malaria Data Set: The Malaria data set was taken from the
-P. falciparum whole cell screening derived by combining
-the GSK TCAMS data set, the Novatis-GNF Malaria Box
-data set and the St Jude’s Research Hospital data set, as
-released through the Medicines for Malaria Venture website (Spangenberg et al., 2013). The target variable is the
-EC50 value, which is defined as the concentration of the
-drug which gives half maximal response. Much like the
-Dose response data set, the focus here is on minimization:
-the lower the concentration, the stronger the drug.
-7.1. Results
-We evaluate the gains produced by PDTS in experiments
-simulating a high throughput virtual screening setting. In
-these experiments, we sequentially sample molecules from
-
-libraries of candidate molecules given by the data sets from
-Section 7. After each sampling step, we calculate the 1%
-recall, that is, the fraction of the top 1% of molecules
-from the original library that are found among the sampled
-ones. For the CEP data, we compute recall by focusing
-on molecules with PCE larger than 10%. In all data sets,
-each sampling step involves selecting a batch of molecules
-among those that have not been sampled so far. In the
-Malaria and One-dose data sets we use batches of size 200.
-These data sets each contain about 20,000 molecules. By
-contrast, the CEP data set contains 2 million molecules.
-In this latter case, we use batches of size 500. We use
-Bayesian neural networks with one hidden layer and 100
-hidden units.
-We compare the performance of PDTS with two baselines.
-The first one, greedy, is a sampling strategy that only considers exploitation and does not perform any exploration.
-We implement this approach by selecting molecules according to the average of the probabilistic predictions generated by PBP. That is, the greedy approach ignores any
-variance in the predictions of the Bayesian neural network
-and generates batches by just ranking molecules according to the mean of the predictive distribution given by PBP.
-The second baseline is a Monte Carlo approach in which
-the batches of molecules are selected uniformly at random.
-These two baselines are comparable to PDTS in that they
-can be easily implemented in a large scale setting in which
-the library of candidate molecules contains millions of elements and data is sampled using large batch sizes.
-In the Malaria and One-dose data sets, we average across
-50 different realizations of the experiments. This is not possible in the CEP data set, which is 100 times larger than the
-two other data sets. In the CEP case, we report results for
-a single realization of the experiment (in a second realization we obtained similar results). Figure 4 shows the recall
-obtained by each method in the molecule data sets. PDTS
-significantly outperforms the Monte Carlo approach, and
-also offers better performance than greedy sampling. This
-shows the importance of building in exploration into the
-sampling strategy, rather than relying on purely exploitative methods. The greedy approach performs best in the
-
-Parallel and Distributed Thompson Sampling for Large-scale Accelerated Exploration of Chemical Space
-
-Figure 4. Recall obtained by PDTS on each data set. For the CEP data, the recall for molecules with a PCE > 10% is reported, whilst
-for One-dose and Malaria we report the recall for the molecules in the top 1%. In addition to the Monte Carlo sampling baseline, we also
-include results for a greedy sampling approach, in which there is no exploration, and the molecules are chosen according to the mean of
-the predictive distribution given by PBP. The overall lower performance of this greedy strategy illustrates the importance of exploration
-in this type of problems.
-
-CEP data set. In this case, the greedy strategy initially
-finds better molecules than PDTS, but after a while PDTS
-overtakes, probably because a promising area of chemical
-space initially discovered by the greedy approach starts to
-become exhausted.
-The previous results allow us to consider the savings produced by BO. In the CEP data set, PDTS achieves about 20
-times higher recall values than the Monte Carlo approach,
-which is comparable to the exhaustive enumeration that
-was used to collect the CEP data. We estimate that, with
-BO, the CEP virtual screening process would have taken
-1,500 CPU years instead of the 30,000 that were actually
-used. Regarding the One-dose and Malaria data sets, PDTS
-can locate in both sets about 70% of the top 1% molecules
-by sampling approximately 6,000 molecules. By contrast,
-the Monte Carlo approach would require sampling 14,000
-molecules. This represents a significant reduction in the
-discovery time for new therapeutic molecules and savings
-in the economic costs associated with molecule synthesis
-and testing.
-
-Table 1. Average rank and standard errors by each method.
-
-Method
- = 0.01
- = 0.025
- = 0.05
- = 0.075
-PDTS
-
-Rank
-3.42±0.28
-3.02±0.25
-2.86±0.23
-3.20±0.26
-2.51±0.20
-
-we now sub-sample the CEP data set to be able to average across 50 different realizations of the experiment: we
-choose 4,000 molecules uniformly at random and then collect data in batches of size 50 across 50 different repetitions
-of the screening process. We compute the average rank obtained by each method across the 3 × 50 = 150 simulated
-screening experiments. A ranking equal to 1 indicates that
-the method always obtains the highest recall at the end of
-the experiment, while a ranking equal to 5 indicates that
-the method always obtains the worst recall value. Table 1
-shows that the lowest average rank is obtained by PDTS,
-which achieves better exploration-exploitation trade-offs
-than the -greedy approaches.
-
-7.2. Comparison with -greedy Approaches
-We can easily modify the greedy baseline from the previous
-section to include some amount of exploration by replacing a small fraction of the molecules in each batch with
-molecules chosen uniformly at random. This approach is
-often called -greedy (Watkins, 1989), where the variable
- indicates the fraction of molecules that are sampled uniformly at random. The disadvantage of the -greedy approach is that it requires the tuning of  to the problem of
-interest whereas the amount of exploration is automatically
-set by PDTS.
-We compared PDTS with different versions of -greedy in
-the same way as above, using  = 0.01, 0.025, 0.05 and
-0.075. The experiments with the One-dose and the Malaria
-data sets are similar to the ones done before. However,
-
-8. Conclusions
-We have presented a Parallel and Distributed implementation of Thompson Sampling (PDTS), a highly scalable
-method for parallel Bayesian optimization. PDTS can be
-applied when scalability limits the applicability of competing approaches. We have evaluated the performance of
-PDTS in experiments with both Gaussian process and probabilistic neural networks. We show that PDTS compares favorably with parallel EI in problems with small batch sizes.
-We also demonstrate the effectiveness of PDTS on large
-scale real world applications that involve searching chemical space for new molecules wit improved properties. We
-show that PDTS outperforms other scalable approaches on
-these applications, in particular, a greedy search strategy,
--greedy approaches and a random search method.
-
-Parallel and Distributed Thompson Sampling for Large-scale Accelerated Exploration of Chemical Space
-
-Acknowledgements
-J.M.H.L. acknowledges support from the Rafael del Pino
-Foundation. The authors thank Ryan P. Adams for useful discussions. A.A.-G. and E.O.P.-K. acknowledge the
-Department of Energy Program on Theory and modeling
-through grant DE-SC0008733.
+Differentially Private Submodular Maximization
 
 References
-Azimi, Javad, Fern, Alan, and Fern, Xiaoli Z. Batch Bayesian
-optimization via simulation matching. In NIPS, pp. 109–117,
+Bassily, Raef, Smith, Adam D., and Thakurta, Abhradeep.
+Private empirical risk minimization: Efficient algorithms
+and tight error bounds. In FOCS, pp. 464–473, 2014.
+Bassily, Raef, Nissim, Kobbi, Smith, Adam D., Steinke,
+Thomas, Stemmer, Uri, and Ullman, Jonathan. Algorithmic stability for adaptive data analysis. In STOC, pp.
+1046–1059, 2016.
+Beimel, Amos, Nissim, Kobbi, and Stemmer, Uri. Private
+learning and sanitization: Pure vs. approximate differential privacy. Theory of Computing, 12(1):1–61, 2016.
+Buchbinder, Niv, Feldman, Moran, Naor, Joseph, and
+Schwartz, Roy. Submodular maximization with cardinality constraints. In SODA, pp. 1433–1452, 2014.
+Bun, Mark and Steinke, Thomas. Concentrated differential
+privacy: Simplifications, extensions, and lower bounds.
+In TCC, pp. 635–658, 2016.
+Bun, Mark, Nissim, Kobbi, Stemmer, Uri, and Vadhan,
+Salil P. Differentially private release and learning of
+threshold functions. In FOCS, pp. 634–649, 2015.
+Călinescu, Gruia, Chekuri, Chandra, Pál, Martin, and
+Vondrák, Jan. Maximizing a monotone submodular
+function subject to a matroid constraint. SIAM Journal
+on Computing, 2011.
+Chaudhuri, Kamalika, Hsu, Daniel J., and Song, Shuang.
+The large margin mechanism for differentially private
+maximization. In NIPS, pp. 1287–1295, 2014.
+Cheraghchi, Mahdi, et al. Submodular functions are noise
+stable. In SODA, 2012.
+Dwork, Cynthia and Lei, Jing. Differential privacy and robust statistics. In STOC, pp. 371–380, 2009.
+Dwork, Cynthia and Roth, Aaron. The algorithmic foundations of differential privacy. Foundations and Trends in
+Theoretical Computer Science, 9(3-4):211–407, 2014.
+Dwork, Cynthia, McSherry, Frank, Nissim, Kobbi, and
+Smith, Adam D. Calibrating noise to sensitivity in private data analysis. In TCC, pp. 265–284, 2006.
+Dwork, Cynthia, Rothblum, Guy N., and Vadhan, Salil P.
+Boosting and differential privacy. In FOCS, pp. 51–60,
 2010.
-Becke, Axel D. Density-functional thermochemistry. III. The role
-of exact exchange. The Journal of Chemical Physics, 98(7):
-5648, 1993.
-Blundell, Charles, Cornebise, Julien, Kavukcuoglu, Koray, and
-Wierstra, Daan. Weight uncertainty in neural networks. In
-ICML, pp. 1613–1622, 2015.
-Bousquet, Olivier and Bottou, Léon. The tradeoffs of large scale
-learning. In NIPS, pp. 161–168, 2008.
-Chapelle, Olivier and Li, Lihong. An empirical evaluation of
-Thompson sampling. In NIPS, pp. 2249–2257. 2011.
-Chevalier, Clément and Ginsbourger, David. Fast computation
-of the multi-points expected improvement with applications in
-batch selection. In International Conference on Learning and
-Intelligent Optimization, pp. 59–69. Springer, 2013.
-Contal, Emile, Buffoni, David, Robicquet, Alexandre, and Vayatis, Nicolas. Parallel Gaussian process optimization with upper confidence bound and pure exploration. In Joint European
-Conference on Machine Learning and Knowledge Discovery in
-Databases, pp. 225–240. Springer, 2013.
-Dennler, G., Scharber, M. C., Ameri, T., Denk, P., Forberich, K.,
-Waldauf, C., and Brabec, C. J. Design rules for donors in
-bulk-heterojunction tandem solar cells? towards 15% energyconversion efficiency. Adv. Mater., 20(3):579–583, feb 2008.
+Feldman, Moran, Naor, Joseph, and Schwartz, Roy. A unified continuous greedy algorithm for submodular maximization. In FOCS, 2011.
 
-Ha, Dong-Gwang, Wu, Tony, Markopoulos, Georgios, Jeon,
-Soonok, Kang, Hosuk, Miyazaki, Hiroshi, Numata, Masaki,
-Kim, Sunghan, Huang, Wenliang, Hong, Seong Ik, Baldo,
-Marc, Adams, Ryan P., and Aspuru-Guzik, Alán. Design of
-efficient molecular organic light-emitting diodes by a highthroughput virtual screening and experimental approach. Nature Materials, aug 2016.
-Gonzlez, J., Dai, Z., Hennig, P., and Lawrence, N. Batch Bayesian
-optimization via local penalization. In AISTATS, pp. 648–657,
-2016.
-Hachmann, Johannes, Olivares-Amaya, Roberto, Atahan-Evrenk,
-Sule, Amador-Bedolla, Carlos, Sanchez-Carrera, Roel S.,
-Gold-Parker, Aryeh, Vogt, Leslie, Brockway, Anna M., and
-Aspuru-Guzik, Alan. The Harvard Clean Energy Project:
-Large-Scale Computational Screening and Design of Organic
-Photovoltaics on the World Community Grid. J. Phys. Chem.
-Lett., 2(17):2241–2251, sep 2011.
-Hachmann, Johannes, Olivares-Amaya, Roberto, Jinich, Adrian,
-Appleton, Anthony L., Blood-Forsythe, Martin A., Seress,
-László R., Román-Salgado, Carolina, Trepte, Kai, AtahanEvrenk, Sule, Er, Sleyman, Shrestha, Supriya, Mondal, Rajib, Sokolov, Anatoliy, Bao, Zhenan, and Aspuru-Guzik, Alán.
-Lead candidates for high-performance organic photovoltaics
-from high-throughput quantum chemistry – the Harvard Clean
-Energy Project. Energy Environ. Sci., 7(2):698–704, 2014.
-Hernández-Lobato, José Miguel and Adams, Ryan P. Probabilistic backpropagation for scalable learning of bayesian neural
-networks. In ICML, pp. 1861–1869, 2015.
-Hernández-Lobato, José Miguel, Hoffman, Matthew W, and
-Ghahramani, Zoubin. Predictive entropy search for efficient
-global optimization of black-box functions. In NIPS, pp. 918–
-926, 2014.
-Jones, Donald R, Schonlau, Matthias, and Welch, William J. Efficient global optimization of expensive black-box functions.
-Journal of Global optimization, 13(4):455–492, 1998.
-Landrum, Greg. RDKit: Open-source cheminformatics.
+Feldman, Moran, Harshaw, Christopher, and Karbasi,
+Amin. Greed is good: Near-optimal submodular maximization via greedy optimization. In COLT, 2017.
+Fisher, Marshall L., Nemhauser, George L., and Wolsey,
+Laurence A. An analysis of approximations for maximizing submodular set functions - II. Mathematical Programming Study, (8), 1978.
+Gupta, Anupam, Ligett, Katrina, McSherry, Frank, Roth,
+Aaron, and Talwar, Kunal. Differentially private combinatorial optimization. In SODA, pp. 1106–1125, 2010.
+Hassidim, Avinatan and Singer, Yaron. Submodular optimization under noise. CoRR, abs/1601.03095, 2016.
+URL http://arxiv.org/abs/1601.03095.
+Jenkyns, T. A. The efficacy of the “greedy” algorithm.
+In South Eastern Conference on Combinatorics, Graph
+Theory and Computing, 1976.
+Kempe, David, Kleinberg, Jon, and Tardos, Éva. Maximizing the spread of influence through a social network. In
+KDD, 2003.
+Kirchhoff, Katrin and Bilmes, Jeff. Submodularity for data
+selection in statistical machine translation. In EMNLP,
+2014.
+Krause, A. and Guestrin, C. Near-optimal nonmyopic value
+of information in graphical models. In UAI, 2005.
+Krause, Andreas and Gomes, Ryan G. Budgeted nonparametric learning from data streams. In ICML, 2010.
+Lin, Hui and Bilmes, Jeff. A class of submodular functions
+for document summarization. In ACL, 2011.
+McSherry, Frank and Talwar, Kunal. Mechanism design
+via differential privacy. In FOCS, pp. 94–103, 2007.
+Mestre, Julián. Greedy in approximation algorithms. In
+ESA, pp. 528–539, 2006.
+Mirzasoleiman, Baharan, Badanidiyuru, Ashwinkumar,
+Karbasi, Amin, Vondrak, Jan, and Krause, Andreas.
+Lazier than lazy greedy. In AAAI, 2015.
+Mirzasoleiman, Baharan, Badanidiyuru, Ashwinkumar,
+and Karbasi, Amin. Fast constrained submodular maximization: Personalized data summarization. In ICML,
+2016a.
+Mirzasoleiman, Baharan, Zadimoghaddam, Morteza, and
+Karbasi, Amin. Fast distributed submodular cover:
+Public-private data summarization. In NIPS, 2016b.
+Nemhauser, George L., Wolsey, Laurence A., and Fisher,
+Marshall L. An analysis of approximations for maximizing submodular set functions - I. Mathematical Programming, 1978.
 
-Desautels, Thomas, Krause, Andreas, and Burdick, Joel W. Parallelizing exploration-exploitation tradeoffs in Gaussian process
-bandit optimization. Journal of Machine Learning Research,
-15(1):3873–3923, 2014.
+Differentially Private Submodular Maximization
 
-Ma, Junshui, Sheridan, Robert P., Liaw, Andy, Dahl, George E.,
-and Svetnik, Vladimir. Deep neural nets as a method for quantitative structure–activity relationships. Journal of Chemical
-Information and Modeling, 55(2):263–274, feb 2015.
-
-Gal, Yarin and Ghahramani, Zoubin. Dropout as a bayesian approximation: Representing model uncertainty in deep learning.
-In ICML, pp. 1050–1059, 2016.
-
-Many authors. NCI Database Download Page. URL http://
-cactus.nci.nih.gov/download/nci/.
-
-Ginsbourger, David, Le Riche, Rodolphe, and Carraro, Laurent.
-Kriging is well-suited to parallelize optimization. In Computational Intelligence in Expensive Optimization Problems, pp.
-131–162. Springer, 2010.
-
-Marmin, Sébastien, Chevalier, Clément, and Ginsbourger, David.
-Differentiating the multipoint expected improvement for optimal batch design. In International Workshop on Machine
-Learning, Optimization and Big Data, pp. 37–48. Springer,
-2015.
-
-Ginsbourger, David, Janusevskis, Janis, and Le Riche, Rodolphe.
-Dealing with asynchronicity in parallel Gaussian process based
-global optimization. In 4th International Conference of the
-ERCIM WG on computing & statistics (ERCIM’11), 2011.
-
-Mayr, Andreas, Klambauer, Gnter, Unterthiner, Thomas, and
-Hochreiter, Sepp. Deeptox: Toxicity prediction using deep
-learning. Front. Environ. Sci., 3, feb 2016.
-
-Gómez-Bombarelli, Rafael, Aguilera-Iparraguirre, Jorge, Hirzel,
-Timothy D., Duvenaud, David, Maclaurin, Dougal, BloodForsythe, Martin A., Chae, Hyun Sik, Einzinger, Markus,
-
-Minka, Thomas P. A family of algorithms for approximate
-Bayesian inference. PhD thesis, Massachusetts Institute of
-Technology, 2001.
-
-Parallel and Distributed Thompson Sampling for Large-scale Accelerated Exploration of Chemical Space
-Opper, Manfred. A Bayesian approach to on-line learning. In
-Saad, David (ed.), On-Line Learning in Neural Networks, pp.
-363–378. Cambridge University Press (CUP), 1998.
-
-Watkins, Christopher John Cornish Hellaby. Learning from delayed rewards. PhD thesis, University of Cambridge England,
-1989.
-
-Perdew, John P. Density-functional approximation for the correlation energy of the inhomogeneous electron gas. Phys. Rev. B,
-33(12):8822–8824, jun 1986.
-
-Weigend, Florian and Ahlrichs, Reinhart. Balanced basis sets
-of split valence triple zeta valence and quadruple zeta valence
-quality for H to Rn: Design and assessment of accuracy. Phys.
-Chem. Chem. Phys., 7(18):3297, 2005.
-
-Pyzer-Knapp, Edward O., Suh, Changwon, Gómez-Bombarelli,
-Rafael, Aguilera-Iparraguirre, Jorge, and Aspuru-Guzik, Alán.
-What is high-throughput virtual screening? A perspective from
-organic materials discovery. Annu. Rev. Mater. Res., 45(1):
-195–216, jul 2015.
-
-Wu, Jian and Frazier, Peter. The parallel knowledge gradient
-method for batch Bayesian optimization. In NIPS, pp. 3126–
-3134, 2016.
-
-Rajan, Krishna. Combinatorial Materials Sciences: Experimental
-Strategies for Accelerated Knowledge Discovery. Annu. Rev.
-Mater. Res., 38(1):299–322, aug 2008.
-Ramsundar, Bharath, Kearnes, Steven, Riley, Patrick, Webster,
-Dale, Konerding, David, and Pande, Vijay. Massively multitask
-networks for drug discovery. arXiv preprint arXiv:1502.02072,
-2015.
-Reymond, Jean-Louis, Ruddigkeit, Lars, Blum, Lorenz, and van
-Deursen, Ruud. The enumeration of chemical space. Wiley
-Interdisciplinary Reviews: Computational Molecular Science,
-2(5):717–733, apr 2012.
-Rogers, David and Hahn, Mathew. Extended-connectivity fingerprints. Journal of Chemical Information and Modeling, 50(5):
-742–754, may 2010.
-Scharber, M.C., Mhlbacher, D., Koppe, M., Denk, P., Waldauf, C.,
-Heeger, A.J., and Brabec, C.J. Design rules for donors in bulkheterojunction solar cells–towards 10% energy-conversion efficiency. Advanced Materials, 18(6):789–794, 2006.
-Shah, Amar and Ghahramani, Zoubin. Parallel predictive entropy search for batch global optimization of expensive objective functions. In NIPS, pp. 3330–3338, 2015.
-Shahriari, Bobak, Wang, Ziyu, Hoffman, Matthew W, BouchardCôté, Alexandre, and de Freitas, Nando.
-An entropy
-search portfolio for Bayesian optimization. arXiv preprint
-arXiv:1406.4625, 2014.
-Snoek, Jasper, Larochelle, Hugo, and Adams, Ryan P. Practical Bayesian optimization of machine learning algorithms. In
-NIPS, pp. 2951–2959, 2012.
-Snoek, Jasper, Rippel, Oren, Swersky, Kevin, Kiros, Ryan, Satish,
-Nadathur, Sundaram, Narayanan, Patwary, Md. Mostofa Ali,
-Prabhat, and Adams, Ryan P. Scalable Bayesian optimization
-using deep neural networks. In ICML, pp. 2171–2180, 2015.
-Spangenberg, Thomas, Burrows, Jeremy N., Kowalczyk, Paul,
-McDonald, Simon, Wells, Timothy N. C., and Willis, Paul.
-The Open Access Malaria Box: A Drug Discovery Catalyst
-for Neglected Diseases. PLoS ONE, 8(6):e62906, jun 2013.
-Thompson, William R. On the likelihood that one unknown probability exceeds another in view of the evidence of two samples.
-Biometrika, 25(3/4):285, dec 1933.
-Wang, Jialei, Clark, Scott C, Liu, Eric, and Frazier, Peter I. Parallel Bayesian global optimization of expensive functions. arXiv
-preprint arXiv:1602.05149, 2016.
+NHANESDataset. National health and nutrition examination survey (2007 - 2014). URL https://wwwn.
+cdc.gov/nchs/nhanes/default.aspx.
+Papadimitriou, Christos H., Schapira, Michael, and Singer,
+Yaron. On the hardness of being truthful. In FOCS, pp.
+250–259, 2008.
+Singla, Adish, Bogunovic, Ilija, Bartók, Gábor, Karbasi,
+Amin, and Krause, Andreas. Near-optimally teaching
+the crowd to classify. In ICML, 2014.
+Sipos, Ruben, Swaminathan, Adith, Shivaswamy, Pannaga,
+and Joachims, Thorsten. Temporal corpus summarization using submodular word coverage. In CIKM, 2012.
+Song, Shuang, Chaudhuri, Kamalika, and Sarwate,
+Anand D. Stochastic gradient descent with differentially
+private updates. In GlobalSIP, pp. 245–248, 2013.
+UberDataset.
+Uber
+pickups
+in
+new
+york
+city.
+URL
+https://www.
+kaggle.com/fivethirtyeight/
+uber-pickups-in-new-york-city.
 
 

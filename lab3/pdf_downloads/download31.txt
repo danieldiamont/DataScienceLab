@@ -1,2085 +1,1112 @@
-Averaged-DQN: Variance Reduction and Stabilization for
-Deep Reinforcement Learning
+Learning Algorithms for Active Learning
 
-Oron Anschel 1 Nir Baram 1 Nahum Shimkin 1
+Philip Bachman * 1 Alessandro Sordoni * 1 Adam Trischler 1
 
 Abstract
-Instability and variability of Deep Reinforcement
-Learning (DRL) algorithms tend to adversely affect their performance. Averaged-DQN is a simple extension to the DQN algorithm, based on
-averaging previously learned Q-values estimates,
-which leads to a more stable training procedure
-and improved performance by reducing approximation error variance in the target values. To understand the effect of the algorithm, we examine
-the source of value function estimation errors and
-provide an analytical comparison within a simplified model. We further present experiments
-on the Arcade Learning Environment benchmark
-that demonstrate significantly improved stability
-and performance due to the proposed extension.
+We introduce a model that learns active learning
+algorithms via metalearning. For a distribution
+of related tasks, our model jointly learns: a data
+representation, an item selection heuristic, and
+a prediction function. Our model uses the item
+selection heuristic to construct a labeled support
+set for training the prediction function. Using the
+Omniglot and MovieLens datasets, we test our
+model in synthetic and practical settings.
 
 1. Introduction
-In Reinforcement Learning (RL) an agent seeks an optimal policy for a sequential decision making problem (Sutton & Barto, 1998). It does so by learning which action
-is optimal for each environment state. Over the course
-of time, many algorithms have been introduced for solving RL problems including Q-learning (Watkins & Dayan,
-1992), SARSA (Rummery & Niranjan, 1994; Sutton &
-Barto, 1998), and policy gradient methods (Sutton et al.,
-1999). These methods are often analyzed in the setup of
-linear function approximation, where convergence is guaranteed under mild assumptions (Tsitsiklis, 1994; Jaakkola
-et al., 1994; Tsitsiklis & Van Roy, 1997; Even-Dar & Mansour, 2003). In practice, real-world problems usually involve high-dimensional inputs forcing linear function approximation methods to rely upon hand engineered features
-1
+For many real-world tasks, labeled data is scarce while
+unlabeled data is abundant. It is often possible, at some cost,
+to obtain labels for the unlabeled data. In active learning,
+a model selects which instances to label so as to maximize
+some combination of task performance and data efficiency.
+Active learning is motivated by the observation that a model
+may perform better while training on less labeled data if it
+can choose the data on which it trains (Cohn et al., 1996).
+E.g., in SVMs (Schölkopf & Smola, 2002) only the support
+vectors affect the decision boundary. If one could identify
+the support vectors in advance, the classifier trained on the
+resulting set of examples would obtain the same decision
+boundary with less data and computation.
+Active learning can benefit a variety of practical scenarios.
+For example, preference information for a new user in a
+movie recommender system may be scarce, and recommendations for the new user could be improved by carefully
+selecting several movies for her to rate (Sun et al., 2013b;
+Houlsby et al., 2014; Aggarwal, 2016). Likewise, collecting
+labels for a medical imaging task may be costly because it
+requires a specialist (Hoi et al., 2006), and the cost could be
+reduced by carefully selecting which images to label.
+Various heuristics for selecting instances to label have been
+proposed in the active learning literature, such as choos*
 
-Department
-of
-Electrical
-Engineering,
-Haifa
-32000, Israel.
-Correspondence to:
-Oron Anschel
-<oronanschel@campus.technion.ac.il>,
-Nir
-Baram
-<nirb@campus.technion.ac.il>,
-Nahum
-Shimkin
-<shimkin@ee.technion.ac.il>.
+Equal contribution 1 Microsoft Maluuba, Montreal, Canada.
+Correspondence to: P. Bachman <phbachma@microsoft.com>,
+A. Sordoni <alsordon@microsoft.com>.
 Proceedings of the 34 th International Conference on Machine
-Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
-by the author(s).
+Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017 by
+the author(s).
 
-for problem-specific state representation. These problemspecific features diminish the agent flexibility, and so the
-need of an expressive and flexible non-linear function approximation emerges. Except for few successful attempts
-(e.g., TD-gammon, Tesauro (1995)), the combination of
-non-linear function approximation and RL was considered
-unstable and was shown to diverge even in simple domains
-(Boyan & Moore, 1995).
-The recent Deep Q-Network (DQN) algorithm (Mnih et al.,
-2013), was the first to successfully combine a powerful non-linear function approximation technique known
-as Deep Neural Network (DNN) (LeCun et al., 1998;
-Krizhevsky et al., 2012) together with the Q-learning algorithm. DQN presented a remarkably flexible and stable
-algorithm, showing success in the majority of games within
-the Arcade Learning Environment (ALE) (Bellemare et al.,
-2013). DQN increased the training stability by breaking
-the RL problem into sequential supervised learning tasks.
-To do so, DQN introduces the concept of a target network
-and uses an Experience Replay buffer (ER) (Lin, 1993).
-Following the DQN work, additional modifications and extensions to the basic algorithm further increased training
-stability. Schaul et al. (2015) suggested sophisticated ER
-sampling strategy. Several works extended standard RL
-exploration techniques to deal with high-dimensional input
-(Bellemare et al., 2016; Tang et al., 2016; Osband et al.,
-2016). Mnih et al. (2016) showed that sampling from ER
-could be replaced with asynchronous updates from parallel
-environments (which enables the use of on-policy methods). Wang et al. (2015) suggested a network architecture
-base on the advantage function decomposition (Baird III,
-1993).
-In this work we address issues that arise from the combination of Q-learning and function approximation. Thrun &
-Schwartz (1993) were first to investigate one of these issues
-which they have termed as the overestimation phenomena.
-The max operator in Q-learning can lead to overestimation
-of state-action values in the presence of noise. Van Hasselt
-et al. (2015) suggest the Double-DQN that uses the Double
-Q-learning estimator (Van Hasselt, 2010) method as a solution to the problem. Additionally, Van Hasselt et al. (2015)
-showed that Q-learning overestimation do occur in practice
+ing the instance whose label the model is most uncertain
+about, or the instance whose label is expected to maximally
+reduce the model’s uncertainty about labels for other instances (Gilad-Bachrach et al., 2005; Settles, 2010; Houlsby
+et al., 2011). We propose moving away from engineered
+selection heuristics towards learning active learning algorithms end-to-end via metalearning. Our model interacts
+with labeled items for many related tasks in order to learn
+an active learning strategy for the task at hand. In recommendation systems, for example, ratings data for existing
+users can inform a strategy that efficiently elicits preferences for new users who lack prior rating data, thus bootstrapping the system quickly out of the cold-start setting
+(Golbandi et al., 2010; 2011; Sun et al., 2013a; Kawale et al.,
+2015). A learned active learning strategy could outperform
+task-agnostic heuristics by sharing experience across related tasks. In particular, the model’s (i) data representation,
+(ii) strategy for selecting items to label, and (iii) prediction function could all co-adapt. Moving from pipelines of
+independently-engineered components to end-to-end learning has lead to rapid improvements in, e.g., computer vision,
+speech recognition, and machine translation (Krizhevsky
+et al., 2012; Hannun et al., 2014; He et al., 2016; Wu et al.,
+2016).
+We base our model on the Matching Networks (MN) introduced by Vinyals et al. (2016). We extend the MN’s
+one-shot learning ability to settings where labels are not
+available a priori. We cast active learning as a sequential
+decision problem: at each step the model requests the label
+for a particular item in a pool of unlabeled items, then adds
+this item to a labeled support set, which is used for MN-style
+prediction. We train our model end-to-end with backprop
+and reinforcement learning. We expedite the training process by allowing our model to observe and mimic a strong
+selection policy with oracle knowledge of the labels.
+We demonstrate empirically that our proposed model learns
+effective active learning algorithms in an end-to-end fashion.
+We evaluate the model on “active” variants of existing oneshot learning tasks for Omniglot (Lake et al., 2015; Vinyals
+et al., 2016; Santoro et al., 2016), and show that it can
+learn efficient label querying strategies. We also test the
+model’s ability to learn an algorithm for bootstrapping a
+recommender system using the MovieLens dataset, showing
+it holds promise for application in more practical settings.
 
-Averaged-DQN: Variance Reduction and Stabilization for Deep Reinforcement Learning
+Learning Algorithms for Active Learning
 
-(at least in the ALE).
+2. Related Work
+Various heuristics have been proposed to guide the selection
+of which examples to label during active learning (Settles,
+2010). For instance, Lewis & Gale (1994) and Tong &
+Chang (2001) developed policies based on the confidence
+of the classifier, while Gilad-Bachrach et al. (2005) used
+the disagreement of a committee of classifiers. Houlsby
+et al. (2011) presented an approach based on Bayesian information theory, in which examples are selected in order to
+maximally reduce the entropy of the posterior distribution
+over classifier parameters.
+The idea of learning an active learning algorithm end-to-end,
+via meta active learning, was recently investigated by Woodward & Finn (2016). Building on the memory-augmented
+neural network (MANN) (Santoro et al., 2016), the authors
+developed a stream-based active learner. In stream-based
+active learning the model decides, while observing items
+presented in an exogenously-determined order, whether to
+predict each item’s label or to pay a cost to observe its label.
+Our proposed model instead falls into the class of poolbased active learners, i.e. it has access to a static collection
+of unlabeled data and selects both the items for which to
+observe labels, and the order in which to observe them.
+Active learning can be useful when the cost incurred for
+labeling an item may be traded for lower prediction error,
+and where the model must be data efficient (e.g. in medical
+imaging (Hoi et al., 2006)). We explicitly train our model
+to balance between task performance and labeling cost. In
+this sense, we build an anytime active learner (Zilberstein,
+1996), with the model trained at each step to output the best
+possible prediction on the evaluation set.
+Our model builds on the matching-networks (MN) architecture presented by Vinyals et al. (2016), which enables
+“one-shot” learning, i.e. learning the appearance of a class
+from just a single example of that class (Santoro et al., 2016;
+Koch, 2015). Vinyals et al. (2016) assume that at least one
+example per class exists in the labeled support set available
+to the model. Confronted with the harder task of composing
+a labeled support set from a larger pool of unlabeled examples, we show that the active learning policy learnt by our
+model obtains, in some cases, an equally effective support
+set. As in the recent one-shot learning work of Santoro et al.
+(2016) and Vinyals et al. (2016), and the active learning
+work of Woodward & Finn (2016), we evaluate our model
+on the Omniglot dataset. This dataset was developed for the
+foundational one-shot learning work of Lake et al. (2015),
+which focused on probabilistic program induction.
+The cold-start problem is ubiquitous in recommendation systems (Aggarwal, 2016; Lika et al., 2014; Harpale & Yang,
+2008; Sun et al., 2013b; Elahi et al., 2016). Instead of bootstrapping from a cold-start by randomly selecting items for
 
-2.2. Q-learning
+a user to rate, an active learner asks for particular items to
+help learn a strong user model more quickly. In model-free
+strategies (Rashid et al., 2008), items are selected according
+to general empirical statistics such as popularity or informativeness. These approaches are computationally cheap,
+but lack the benefits of adaptation and personalization. Proposals for learning an adaptive selection strategy have been
+made in the form of Bayesian methods that learn the parameters of a user model (Houlsby et al., 2014; Harpale & Yang,
+2008), and in the form of decision-trees learned from existing ratings (Sun et al., 2013b). An extensive review can be
+found in Elahi et al. (2016). Intuitively, our model learns a
+compact, parametric representation of a decision tree end-toend, by directly maximizing task performance. We evaluate
+our active learner on MovieLens-20M, a standard dataset
+for recommendation tasks.
+We provide hints to our model during training using samples from an oracle policy that knows all the labels. Related
+approaches have been explored in previous work on imitation learning and learning to search (Ross & Bagnell, 2014;
+Chang et al., 2015). These methods, which focus the cost
+of sampling from the oracle policy on states visited by the
+model policy, have recently been adopted by researchers
+working with deep networks for representation learning
+(Zhang & Cho, 2017; Sun et al., 2017).
 
-This work suggests a different solution to the overestimation phenomena, named Averaged-DQN (Section 3), based
-on averaging previously learned Q-values estimates. The
-averaging reduces the target approximation error variance
-(Sections 4 and 5) which leads to stability and improved
-results. Additionally, we provide experimental results on
-selected games of the Arcade Learning Environment.
+3. Model Description
+We now present our model, which metalearns algorithms
+for active learning. Our model metalearns by attempting
+to actively learn on tasks sampled from a distribution over
+tasks, using supervised feedback to improve its expected
+performance on new tasks drawn from a similar distribution.
+Succinctly, our model solves each task by adaptively selecting items for the labeled support set used by a Matching
+Network (Vinyals et al., 2016) to classify test items. The full
+support set from which our model selects these examples
+contains both labeled and unlabeled data.
+For a summary of our model, see the architecture diagram in
+Figure 1, the optimization objectives in Equations 2, 3, and
+5, and the pseudo-code in Algorithm 1. We present a formal
+description of our meta active learning task in Section 3.1.
+We describe the details of our model in Section 3.2, and our
+approach to parameter optimization in Section 3.3.
+3.1. Task Description
+Our model refines its behaviour over many training episodes,
+in order to maximize performance during test episodes not
+encountered in training. In each episode, our model interacts with a support set S ≡ {(x, y)} comprising items x
+for which the model can request labels y, and a similarlydefined evaluation set E ≡ {(x̂, ŷ)}. Let Stu ≡ {(x, ·)}
 
-One of the most popular RL algorithms is the Q-learning
-algorithm (Watkins & Dayan, 1992). This algorithm is
-based on a simple value iteration update (Bellman, 1957),
-directly estimating the optimal value function Q∗ . Tabular
-Q-learning assumes a table that contains old action-value
-function estimates and preform updates using the following update rule:
+Learning Algorithms for Active Learning
 
-We summarize the main contributions of this paper as follows:
+denote the set of items in the support set whose labels are
+still unknown after t label queries, and let Stk ≡ {(x, y)}
+denote the complementary set of items whose labels are
+known. Let St denote the joint set of labeled and unlabeled
+items after t label queries. Let the real-valued vector st
+denote the control state of our model after viewing t labels,
+and let R(E, St , st ) denote the reward won by our model
+when predicting labels for the evaluation set based on the
+information it has received after t label queries. We assume
+all functions depend on the model parameters θ, and omit
+this dependence from our notation for brevity.
+We define the prediction reward as follows:
+R(E, St , st ) ≡
 
-Q(s0 , a0 ) − Q(s, a)),
-Q(s, a) ← Q(s, a) + α(r + γ max
-0
+X
 
-• A novel extension to the DQN algorithm which stabilizes training, and improves the attained performance,
-by averaging over previously learned Q-values.
-• Variance analysis that explains some of the DQN
-problems, and how the proposed extension addresses
-them.
-• Experiments with several ALE games demonstrating
-the favorable effect of the proposed scheme.
-
-a
+log p(ŷ|x̂, st , St ),
 
 (1)
-where s0 is the resulting state after applying action a in the
-state s, r is the immediate reward observed for action a at
-state s, γ is the discount factor, and α is a learning rate.
-When the number of states is large, maintaining a lookup table with all possible state-action pairs values in memory is impractical. A common solution to this issue is to
-use function approximation parametrized by θ, such that
-Q(s, a) ≈ Q(s, a; θ).
-2.3. Deep Q Networks (DQN)
 
-2.1. Reinforcement Learning
-
-We present in Algorithm 1 a slightly different formulation
-of the DQN algorithm (Mnih et al., 2013). In iteration i
-the DQN algorithm solves a supervised learning problem
-to approximate the action-value function Q(s, a; θ) (line 6).
-This is an extension of implementing (1) in its function approximation form (Riedmiller, 2005).
-
-We consider the usual RL learning framework (Sutton &
-Barto, 1998). An agent is faced with a sequential decision making problem, where interaction with the environment takes place at discrete time steps (t = 0, 1, . . .). At
-time t the agent observes state st ∈ S, selects an action
-at ∈ A, which results in a scalar reward rt ∈ R, and a
-transition to a next state st+1 ∈ S. We consider infinite
-horizon problems
-P∞with a0 discounted cumulative reward objective Rt = t0 =t γ t −t rt0 , where γ ∈ [0, 1] is the discount factor. The goal of the agent is to find an optimal
-policy π : S → A that maximize its expected discounted
-cumulative reward.
-
-Algorithm 1 DQN
-1: Initialize Q(s, a; θ) with random weights θ0
-2: Initialize Experience Replay (ER) buffer B
-3: Initialize exploration procedure Explore(·)
-4: for i = 1, 2, . . . , N do
-i
-= EB [r + γ maxa0 Q(s0 , a0 ; θi−1 )| s, a]
-5:
-ys,a
-
- i
-6:
-θi ≈ argminθ EB (ys,a
-− Q(s, a; θ))2
-7:
-Explore(·), update B
-8: end for
-output QDQN (s, a; θN )
-
-2. Background
-In this section we elaborate on relevant RL background,
-and specifically on the Q-learning algorithm.
-
-Value-based methods for solving RL problems encode policies through the use of value functions, which denote the
-expected discounted cumulative reward from a given state
-s, following a policy π. Specifically we are interested in
-state-action value functions:
-"∞
-#
-X
-π
-π
-t
-Q (s, a) = E
-γ rt |s0 = s, a0 = a .
-t=0
-
-The optimal value function is denoted as Q∗ (s, a) =
-maxπ Qπ (s, a), and an optimal policy π ∗ can be easily derived by π ∗ (s) ∈ argmaxa Q∗ (s, a).
-
-i
-The target values ys,a
-(line 5) are constructed using a designated target-network Q(s, a; θi−1 ) (using the previous iteration parameters θi−1 ), where the expectation (EB ) is taken
-w.r.t. the sample distribution of experience transitions in the
-ER buffer (s, a, r, s0 ) ∼ B. The DQN loss (line 6) is minimized using a Stochastic Gradient Descent (SGD) variant,
-sampling mini-batches from the ER buffer. Additionally,
-DQN requires an exploration procedure (which we denote
-as Explore(·)) to interact with the environment (e.g., an greedy exploration procedure). The number of new experience transitions (s, a, r, s0 ) added by exploration to the ER
-
-Averaged-DQN: Variance Reduction and Stabilization for Deep Reinforcement Learning
-
-buffer in each iteration is small, relatively to the size of the
-ER buffer. Thereby, θi−1 can be used as a good initialization for θ in iteration i.
-Note that in the original implementation (Mnih et al., 2013;
-2015), transitions are added to the ER buffer simultaneously with the minimization of the DQN loss (line 6). Using the hyperparameters employed by Mnih et al. (2013;
-2015) (detailed for completeness in Appendix E), 1% of the
-experience transitions in ER buffer are replaced between
-target network parameter updates, and 8% are sampled for
-minimization.
-
-3. Averaged DQN
-The Averaged-DQN algorithm (Algorithm 2) is an extension of the DQN algorithm. Averaged-DQN uses the K
-previously learned Q-values estimates to produce the current action-value estimate (line 5). The Averaged-DQN algorithm stabilizes the training process (see Figure 1), by
-reducing the variance of target approximation error as we
-elaborate in Section 5. The computational effort compared to DQN is, K-fold more forward passes through a
-Q-network while minimizing the DQN loss (line 7). The
-number of back-propagation updates remains the same as
-in DQN. Computational cost experiments are provided in
-Appedix D. The output of the algorithm is the average over
-the last K previously learned Q-networks.
-
-Breakout
-DQN
-Averaged DQN, K=10
-
-Averaged score per episode
-
-400
-
-300
-
-200
-
-DQN compared to DQN (and Double-DQN), further experimental results are given in Section 6.
-We note that recently-learned state-action value estimates
-are likely to be better than older ones, therefore we have
-also considered a recency-weighted average. In practice,
-a weighted average scheme did not improve performance
-and therefore is not presented here.
-
-4. Overestimation and Approximation Errors
-Next, we discuss the various types of errors that arise due to
-the combination of Q-learning and function approximation
-in the DQN algorithm, and their effect on training stability.
-We refer to DQN’s performance in the B REAKOUT game
-in Figure 1. The source of the learning curve variance in
-DQN’s performance is an occasional sudden drop in the
-average score that is usually recovered in the next evaluation phase (for another illustration of the variance source
-see Appendix A). Another phenomenon can be observed in
-Figure 2, where DQN initially reaches a steady state (after
-20 million frames), followed by a gradual deterioration in
-performance.
-For the rest of this section, we list the above mentioned errors, and discuss our hypothesis as to the relations between
-each error and the instability phenomena depicted in Figures 1 and 2.
-
-100
-
-0
-
-Algorithm 2 Averaged DQN
-1: Initialize Q(s, a; θ) with random weights θ0
-2: Initialize Experience Replay (ER) buffer B
-3: Initialize exploration procedure Explore(·)
-4: for i = 1, 2, . . . , N do
-PK
-1
-5:
-QA
-i−1 (s, a) = K
-k=1 Q(s, a; θi−k )
-
-
-i
-0 0
-6:
-ys,a
-= EB r + γ maxa0 QA
-i−1 (s , a )| s, a
- i
-
-7:
-θi ≈ argminθ EB (ys,a
-− Q(s, a; θ))2
-8:
-Explore(·), update B
-9: end for
-PK−1
-1
-output QA
-N (s, a) = K
-k=0 Q(s, a; θN −k )
-
-0
-
-20
-
-40
-
-60
-80
-frames [millions]
-
-100
-
-120
-
-Figure 1. DQN and Averaged-DQN performance in the Atari
-game of B REAKOUT. The bold lines are averages over seven independent learning trials. Every 1M frames, a performance test
-using -greedy policy with  = 0.05 for 500000 frames was conducted. The shaded area presents one standard deviation. For both
-DQN and Averaged-DQN the hyperparameters used were taken
-from Mnih et al. (2015).
-
-In Figures 1 and 2 we can see the performance of Averaged-
-
-We follow terminology from Thrun & Schwartz (1993),
-and define some additional relevant quantities. Letting
-Q(s, a; θi ) be the value function of DQN at iteration i, we
-denote ∆i = Q(s, a; θi ) − Q∗ (s, a) and decompose it as
-follows:
-
-∆i = Q(s, a; θi ) − Q∗ (s, a)
-
-i
-i
-i
-i
-= Q(s, a; θi ) − ys,a
-+ ys,a
-− ŷs,a
-+ ŷs,a
-− Q∗ (s, a) .
-|
-{z
-} | {z } |
-{z
-}
-Target Approximation
-Error
-
-Overestimation
-Error
-
-Optimality
-Difference
-
-Averaged-DQN: Variance Reduction and Stabilization for Deep Reinforcement Learning
-
-10000
-
-Asterix
-
-104
-
-Value estimates (log scale)
-
-Averaged score per episode
-
-Asterix
-DQN
-Double - DQN
-Averaged DQN, K=10
-
-8000
-
-6000
-
-4000
-
-2000
-
-103
-
-DQN
-Double - DQN
-Averaged DQN, K=10
-
-102
-
-101
-
-100
-0
-
-0
-
-20
-
-40
-
-60
-80
-frames [millions]
-
-100
-
-120
-
-20
-
-40
-
-60
-80
-frames [millions]
-
-100
-
-120
-
-Figure 2. DQN, Double-DQN, and Averaged-DQN performance (left), and average value estimates (right) in the Atari game of A STERIX.
-The bold lines are averages over seven independent learning trials. The shaded area presents one standard deviation. Every 2M frames,
-a performance test using -greedy policy with  = 0.05 for 500000 frames was conducted. The hyperparameters used were taken from
-Mnih et al. (2015).
-i
-i
-is the true target:
-is the DQN target, and ŷs,a
-Here ys,a
-h
-i
-i
-0 0
-ys,a
-= EB r + γ max
-Q(s
-,
-a
-;
-θ
-)|
-s,
-a
-,
-i−1
-a0
-h
-i
-i
-ŷs,a
-= EB r + γ max
-(ysi−1
-0 ,a0 )| s, a .
-0
-
-We hypothesize that the variability in DQN’s performance
-in Figure 1, that was discussed at the start of this section, is
-related to deviating from a steady-state policy induced by
-the TAE.
-
-i
-the target approximation error, and
-Let us denote by Zs,a
-i
-by Rs,a the overestimation error, namely
-
-The Q-learning overestimation phenomena were first investigated by Thrun & Schwartz (1993). In their work, Thrun
-i
-and Schwartz considered the TAE Zs,a
-as a random variable uniformly distributed in the interval [−, ]. Due to the
-i
-, the expected overmax operator in the DQN target ys,a
-i
-estimation errors Ez [Rs,a ] are upper bounded by γ n−1
-n+1
-(where n is the number of applicable actions in state s).
-The intuition for this upper bound is that in the worst case,
-all Q values are equal, and we get equality to the upper
-bound:
-n−1
-i
-Ez [Rs,a
-] = γEz [max
-[Zsi−1
-.
-0 ,a0 ]] = γ
-0
-a
-n+1
-
-a
-
-i
-i
-Zs,a
-= Q(s, a; θi ) − ys,a
-,
-
-i
-i
-i
-Rs,a
-= ys,a
-− ŷs,a
-.
-
-The optimality difference can be seen as the error of a standard tabular Q-learning, here we address the other errors.
-We next discuss each error in turn.
-4.1. Target Approximation Error (TAE)
-i
-The TAE (Zs,a
-), is the error in the learned Q(s, a; θi ) relai
-tive to ys,a , which is determined after minimizing the DQN
-loss (Algorithm 1 line 6, Algorithm 2 line 7). The TAE is
-a result of several factors: Firstly, the sub-optimality of θi
-due to inexact minimization. Secondly, the limited representation power of a neural net (model error). Lastly, the
-generalization error for unseen state-action pairs due to the
-finite size of the ER buffer.
-
-The TAE can cause a deviations from a policy to a worse
-one. For example, such deviation to a sub-optimal policy
-i
-i
-occurs in case ys,a
-= ŷs,a
-= Q∗ (s, a) and,
-i
-argmaxa [Q(s, a; θi )] 6= argmaxa [Q(s, a; θi ) − Zs,a
-]
-i
-= argmaxa [ys,a
-].
-
-4.2. Overestimation Error
-
-The overestimation error is different in its nature from the
-TAE since it presents a positive bias that can cause asymptotically sub-optimal policies, as was shown by Thrun &
-Schwartz (1993), and later by Van Hasselt et al. (2015)
-in the ALE environment. Note that a uniform bias in the
-action-value function will not cause a change in the induced
-policy. Unfortunately, the overestimation bias is uneven
-and is bigger in states where the Q-values are similar for
-the different actions, or in states which are the start of a
-long trajectory (as we discuss in Section 5 on accumulation
-of TAE variance).
-Following from the above mentioned overestimation upper
-bound, the magnitude of the bias is controlled by the variance of the TAE.
-
-Averaged-DQN: Variance Reduction and Stabilization for Deep Reinforcement Learning
-
-The Double Q-learning and its DQN implementation
-(Double-DQN) (Van Hasselt et al., 2015; Van Hasselt,
-2010) is one possible approach to tackle the overestimation
-problem, which replaces the positive bias with a negative
-one. Another possible remedy to the adverse effects of this
-error is to directly reduce the variance of the TAE, as in our
-proposed scheme (Section 5).
-In Figure 2 we repeated the experiment presented in
-Van Hasselt et al. (2015) (along with the application of
-Averaged-DQN). This experiment is discussed in Van Hasselt et al. (2015) as an example of overestimation that leads
-to asymptotically sub-optimal policies. Since AveragedDQN reduces the TAE variance, this experiment supports
-an hypothesis that the main cause for overestimation in
-DQN is the TAE variance.
-
-5. TAE Variance Reduction
-To analyse the TAE variance we first must assume a statistical model on the TAE, and we do so in a similar way to
-i
-Thrun & Schwartz (1993). Suppose that the TAE Zs,a
-is
-i
-i
-a random process such that E[Zs,a ] = 0, Var[Zs,a ] = σs2 ,
-i
-, Zsj0 ,a0 ] = 0. Furthermore, to foand for i 6= j: Cov[Zs,a
-cus only on the TAE we eliminate the overestimation error
-by considering a fixed policy for updating the target values.
-Also, we can conveniently consider a zero reward r = 0
-everywhere since it has no effect on variance calculations.
-Denote by Qi , Q(s; θi )s∈S the vector of value estimates
-in iteration i (where the fixed action a is suppressed), and
-by Zi the vector of corresponding TAEs. For AveragedDQN we get:
-Qi = Zi + γP
-
-K
-1 X
-Qi−k ,
-K
-k=1
-
-where P ∈ RS×S
-is the transition probabilities matrix
-+
-for the given policy. The covariance of the above Vector Autoregressive (VAR) model is given by the discretetime Lyapunov equation, and can be solved directly or by
-specialized numerical algorithms (Arthur E Bryson, 1975).
-However, to obtain an explicit comparison, we further specialize the model to an M -state unidirectional MDP as in
-Figure 3
-
-a
-s0
-
-a
-s1
-
-a
-···
-
-5.1. DQN Variance
-We assume the statistical model mentioned at the start of
-this section. Consider a unidirectional Markov Decision
-Process (MDP) as in Figure 3, where the agent starts at
-state s0 , state sM −1 is a terminal state, and the reward in
-any state is equal to zero.
-Employing DQN on this MDP model, we get that for i >
-M:
-QDQN (s0 , a; θi ) = Zsi0 ,a + ysi 0 ,a
-= Zsi0 ,a + γQ(s1 , a; θi−1 )
-= Zsi0 ,a + γ[Zsi−1
-+ ysi−1
-] = ··· =
-1 ,a
-1 ,a
-
-−1)
-= Zsi0 ,a + γZsi−1
-+ · · · + γ (M −1) Zsi−(M
-,
-1 ,a
-M −1 ,a
-
-j
-where in the last equality we have used the fact yM
-−1,a = 0
-for all j (terminal state). Therefore,
-
-Var[QDQN (s0 , a; θi )] =
-
-M
-−1
-X
-
-γ 2m σs2m .
-
-m=0
-
-The above example gives intuition about the behavior of
-the TAE variance in DQN. The TAE is accumulated over
-the past DQN iterations on the updates trajectory. Accumulation of TAE errors results in bigger variance with its
-associated adverse effect, as was discussed in Section 4.
-Algorithm 3 Ensemble DQN
-1: Initialize K Q-networks Q(s, a; θ k ) with random
-weights θ0k for k ∈ {1, . . . , K}
-2: Initialize Experience Replay (ER) buffer B
-3: Initialize exploration procedure Explore(·)
-4: for i = 1, 2, . . . , N do
-PK
-1
-k
-5:
-QE
-i−1 (s, a) = K
-k=1 Q(s, a; θi−1 )
-
-
-i
-E
-0
-6:
-ys,a = EB r + γ maxa0 Qi−1 (s , a0 ))| s, a
-7:
-for k = 1, 2, . . . , K do
- i
-
-8:
-θik ≈ argminθ EB (ys,a
-− Q(s, a; θ))2
-9:
-end for
-10:
-Explore(·), update B
-11: end for
-PK
-1
-k
-output QE
-N (s, a) = K
-k=1 Q(s, a; θi )
-
-a
-sM −2
-
-sM −1
-
-Figure 3. M states unidirectional MDP, The process starts at state
-s0 , then in each time step moves to the right, until the terminal
-state sM −1 is reached. A zero reward is obtained in any state.
-
-5.2. Ensemble DQN Variance
-We consider two approaches for TAE variance reduction.
-The first one is the Averaged-DQN and the second we term
-Ensemble-DQN. We start with Ensemble-DQN which is a
-straightforward way to obtain a 1/K variance reduction,
-
-Averaged-DQN: Variance Reduction and Stabilization for Deep Reinforcement Learning
-
-with a computational effort of K-fold learning problems,
-compared to DQN. Ensemble-DQN (Algorithm 3) solves
-K DQN losses in parallel, then averages over the resulted
-Q-values estimates.
-For Ensemble-DQN on the unidirectional MDP in Figure
-3, we get for i > M :
-QE
-i (s0 , a) =
-
-M
-−1
-X
-
-γm
-
-m=0
-
-Var[QE
-i (s0 , a)] =
-
-M
-−1
-X
-m=0
-
-=
-
-K
-1 X k,i−m
-Zsm ,a ,
-K
-k=1
-
-1 2m 2
-γ σsm
-K
-
-1
-Var[QDQN (s0 , a; θi )],
-K
-0
-
-,j
-k,i
-where for k 6= k 0 : Zs,a
-and Zsk0 ,a
-0 are two uncorrelated
-E
-TAEs. The calculations of Q (s0 , a) are detailed in Appendix B.
-
-5.3. Averaged DQN Variance
-We continue with Averaged-DQN, and calculate the variance in state s0 for the unidirectional MDP in Figure 3. We
-get that for i > KM :
-Var[QA
-i (s0 , a)] =
-
-M
-−1
-X
-
-DK,m γ 2m σs2m ,
-
-m=0
-
-PN −1
-
-where DK,m = N1 n=0 |Un /K|2(m+1) , with U =
-−1
-(Un )N
-n=0 denoting a Discrete Fourier Transform (DFT) of
-a rectangle pulse, and |Un /K| ≤ 1. The calculations of
-QA (s0 , a) and DK,m are more involved and are detailed in
-Appendix C.
-Furthermore, for K > 1, m > 0 we have that DK,m <
-1/K (Appendix C) and therefore the following holds
-E
-Var[QA
-i (s0 , a)] < Var[Qi (s0 , a)]
-1
-= Var[QDQN (s0 , a; θi )],
-K
-
-meaning that Averaged-DQN is theoretically more efficient
-in TAE variance reduction than Ensemble-DQN, and at
-least K times better than DQN. The intuition here is that
-Averaged-DQN averages over TAEs averages, which are
-the value estimates of the next states.
-
-• How does the averaging affect the learned polices
-quality.
-To that end, we ran Averaged-DQN and DQN on the
-ALE benchmark. Additionally, we ran Averaged-DQN,
-Ensemble-DQN, and DQN on a Gridworld toy problem
-where the optimal value function can be computed exactly.
-6.1. Arcade Learning Environment (ALE)
-To evaluate Averaged-DQN, we adopt the typical RL
-methodology where agent performance is measured at the
-end of training. We refer the reader to Liang et al. (2016)
-for further discussion about DQN evaluation methods on
-the ALE benchmark. The hyperparameters used were taken
-from Mnih et al. (2015), and are presented for completeness in Appendix E. DQN code was taken from McGill
-University RLLAB, and is available online1 (together with
-Averaged-DQN implementation).
-We have evaluated the Averaged-DQN algorithm on three
-Atari games from the Arcade Learning Environment
-(Bellemare et al., 2013). The game of B REAKOUT was
-selected due to its popularity and the relative ease of the
-DQN to reach a steady state policy. In contrast, the game
-of S EAQUEST was selected due to its relative complexity,
-and the significant improvement in performance obtained
-by other DQN variants (e.g., Schaul et al. (2015); Wang
-et al. (2015)). Finally, the game of A STERIX was presented
-in Van Hasselt et al. (2015) as an example to overestimation
-in DQN that leads to divergence.
-As can be seen in Figure 4 and in Table 1 for all three
-games, increasing the number of averaged networks in
-Averaged-DQN results in lower average values estimates,
-better-preforming policies, and less variability between the
-runs of independent learning trials. For the game of A S TERIX , we see similarly to Van Hasselt et al. (2015) that
-the divergence of DQN can be prevented by averaging.
-Overall, the results suggest that in practice Averaged-DQN
-reduces the TAE variance, which leads to smaller overestimation, stabilized learning curves and significantly improved performance.
-6.2. Gridworld
-
-The experiments were designed to address the following
-questions:
-
-The Gridworld problem (Figure 5) is a common RL benchmark (e.g., Boyan & Moore (1995)). As opposed to the
-ALE, Gridworld has a smaller state space that allows the
-ER buffer to contain all possible state-action pairs. Additionally, it allows the optimal value function Q∗ to be ac-
-
-• How does the number K of averaged target networks
-affect the error in value estimates, and in particular the
-overestimation error.
-
-1
-McGill University RLLAB DQN Atari code: https:
-//bitbucket.org/rllabmcgill/atari_release.
-Averaged-DQN
-code
-https://bitbucket.org/
-oronanschel/atari_release_averaged_dqn
-
-6. Experiments
-
-Averaged-DQN: Variance Reduction and Stabilization for Deep Reinforcement Learning
-
-Breakout
-
-Seaquest
-
-300
-200
-100
-0
-
-0
-
-20
-
-100
-
-10000
-
-7500
-
-5000
-
-2500
-
-0
-
-120
-
-0
-
-20
-
-Breakout
-
-14
-
-10
-
-40
-60
-80
-frames [millions]
-
-100
-
-6
-4
-
-20
-
-40
-60
-80
-frames [millions]
-
-10000
-
-8000
-
-6000
-
-4000
-
-2000
-
-0
-
-0
-
-20
-
-40
-60
-80
-frames [millions]
-
-15
-
-100
-
-120
-
-10
-
-5
-
-0
-
-0
-
-20
-
-40
-60
-80
-frames [millions]
-
-100
-
-120
-
-100
-
-120
-
-Asterix
-
-2
-0
-
-12000
-
-120
-
-DQN (K=1)
-Averaged DQN, K=5
-Averaged DQN, K=10
-Averaged DQN, K=15
-
-20
-
-8
-
-0
-
-DQN (K=1)
-Averaged DQN, K=5
-Averaged DQN, K=10
-Averaged DQN, K=15
-
-Seaquest
-
-DQN (K=1)
-Averaged DQN, K=2
-Averaged DQN, K=5
-Averaged DQN, K=10
-
-12
-Value estimates
-
-40
-60
-80
-frames [millions]
-
-12500
-
-Averaged score per episode
-
-400
-
-15000
-
-Asterix
-
-14000
-
-DQN (K=1)
-Averaged DQN, K=5
-Averaged DQN, K=10
-Averaged DQN, K=15
-
-Value estimates (log scale)
-
-500
-
-Averaged score per episode
-
-DQN (K=1)
-Averaged DQN, K=2
-Averaged DQN, K=5
-Averaged DQN, K=10
-
-Value estimates
-
-Averaged score per episode
-
-600
-
-100
-
-120
-
-DQN (K=1)
-Averaged DQN, K=5
-Averaged DQN, K=10
-Averaged DQN, K=15
-
-103
-
-102
-
-101
-
-100
-
-0
-
-20
-
-40
-60
-80
-frames [millions]
-
-Figure 4. The top row shows Averaged-DQN performance for the different number K of averaged networks on three Atari games. For
-K = 1 Averaged-DQN is reduced to DQN. The bold lines are averaged over seven independent learning trials. Every 2M frames,
-a performance test using -greedy policy with  = 0.05 for 500000 frames was conducted. The shaded area presents one standard
-deviation. The bottom row shows the average value estimates for the three games. It can be seen that as the number of averaged networks
-is increased, overestimation of the values is reduced, performance improves, and less variability is observed. The hyperparameters used
-were taken from Mnih et al. (2015).
-
-curately computed.
-For the experiments, we have used Averaged-DQN, and
-Ensemble-DQN with ER buffer containing all possible
-state-action pairs. The network architecture that was used
-composed of a small fully connected neural network with
-one hidden layer of 80 neurons. For minimization of the
-DQN loss, the ADAM optimizer (Kingma & Ba, 2014) was
-used on 100 mini-batches of 32 samples per target network
-parameters update in the first experiment, and 300 minibatches in the second.
-6.2.1. E NVIRONMENT S ETUP
-In this experiment on the problem of Gridworld (Figure
-5), the state space contains pairs of points from a 2D discrete grid (S = {(x, y)}x,y∈1,...,20 ). The algorithm interacts with the environment through raw pixel features with a
-one-hot feature map φ(st ) := (1{st = (x, y)})x,y∈1,...,20 .
-There are four actions corresponding to steps in each compass direction, a reward of r = +1 in state st = (20, 20),
-and r = 0 otherwise. We consider the discounted return
-problem with a discount factor of γ = 0.9.
-
-Gridworld
-+1
-
-start
-
-Figure 5. Gridworld problem. The agent starts at the left-bottom
-of the grid. In the upper-right corner, a reward of +1 is obtained.
-
-6.2.2. OVERESTIMATION
-In Figure 6 it can be seen that increasing the number K of
-averaged target networks leads to reduced overestimation
-eventually. Also, more averaged target networks seem to
-reduces the overshoot of the values, and leads to smoother
-and less inconsistent convergence.
-6.2.3. AVERAGED VERSUS E NSEMBLE DQN
-In Figure 7, it can be seen that as was predicted by the
-analysis in Section 5, Ensemble-DQN is also inferior to
-Averaged-DQN regarding variance reduction, and as a con-
-
-Averaged-DQN: Variance Reduction and Stabilization for Deep Reinforcement Learning
-Table 1. The columns present the average performance of DQN and Averaged-DQN after 120M frames, using -greedy policy with
- = 0.05 for 500000 frames. The standard variation represents the variability over seven independent trials. Average performance
-improved with the number of averaged networks. Human and random performance were taken from Mnih et al. (2015).
-G AME
-
-DQN
-AVG . ( STD .
-
-DEV.)
-
-B REAKOUT
-
-245.1
-
-(124.5)
-
-S EAQUEST
-
-3775.2
-
-(1575.6)
-
-A STERIX
-
-195.6
-
-AVERAGED -DQN
-
-AVERAGED -DQN
-
-(K=5)
-
-(K=10)
-
-(K=15)
-
-381.5
-
-(80.4)
-
-5740.2
-6960.0
-
-(20.2)
-
-381.8
-
-10475.1
-
-(2926.6)
-
-20182.0
-
-68.4
-
-(999.2)
-
-8008.3
-
-(243.6)
-
-8364.9
-
-(618.6)
-
-8503.0
-
-210.0
-
-Gridworld
-
-2.04
-
-Es[maxaQ∗(s, a)]
-2.02
-
-1.96
-A
-
-1.7
-
-(1946.9)
-
-1.98
-
-1.94
-
-31.8
-
-9961.7
-
-Average predicted value
-
-2.00
-
-R ANDOM
-
-(664.79 )
-
-DQN (K=1)
-Averaged DQN, K=5
-Averaged DQN, K=10
-Averaged DQN, K=20
-
-2.02
-
-H UMAN
-
---
-
-Es[maxaQ∗(s, a)]
-
-2.04
-
-B C
-D
-
-DQN (K=1)
-Ensemble DQN, K=20
-Averaged DQN, K=20
-
-2.00
-1.98
-1.96
-1.94
-1.92
-
-1.92
-1.90
-
-(24.2)
-
-Gridworld
-
-2.06
-
-Average predicted value
-
-AVERAGED -DQN
-
-200
-
-400
-
-600
-
-800
-
-1000
-
-Iterations
-
-Figure 6. Averaged-DQN average predicted value in Gridworld.
-Increasing the number K of averaged target networks leads to a
-faster convergence with less overestimation (positive-bias). The
-bold lines are averages over 40 independent learning trials, and
-the shaded area presents one standard deviation. In the figure,
-A,B,C,D present DQN, and Averaged-DQN for K=5,10,20 average overestimation.
-
-sequence far more overestimates the values. We note that
-Ensemble-DQN was not implemented for the ALE experiments due to its demanding computational effort, and the
-empirical evidence that was already obtained in this simple
-Gridworld domain.
-
-7. Discussion and Future Directions
-In this work, we have presented the Averaged-DQN algorithm, an extension to DQN that stabilizes training, and improves performance by efficient TAE variance reduction.
-We have shown both in theory and in practice that the proposed scheme is superior in TAE variance reduction, compared to a straightforward but computationally demanding
-approach such as Ensemble-DQN (Algorithm 3). We have
-demonstrated in several games of Atari that increasing the
-number K of averaged target networks leads to better poli-
-
-1.90
-0
-
-200
-
-400
-
-600
-Iterations
-
-800
-
-1000
-
-Figure 7. Averaged-DQN and Ensemble-DQN predicted value in
-Gridworld. Averaging of past learned value is more beneficial
-than learning in parallel. The bold lines are averages over 20
-independent learning trials, where the shaded area presents one
-standard deviation.
-
-cies while reducing overestimation. Averaged-DQN is a
-simple extension that can be easily integrated with other
-DQN variants such as Schaul et al. (2015); Van Hasselt
-et al. (2015); Wang et al. (2015); Bellemare et al. (2016);
-He et al. (2016). Indeed, it would be of interest to study
-the added value of averaging when combined with these
-variants. Also, since Averaged-DQN has variance reduction effect on the learning curve, a more systematic comparison between the different variants can be facilitated as
-discussed in (Liang et al., 2016).
-In future work, we may dynamically learn when and how
-many networks to average for best results. One simple suggestion may be to correlate the number of networks with
-the state TD-error, similarly to Schaul et al. (2015). Finally,
-incorporating averaging techniques similar to AveragedDQN within on-policy methods such as SARSA and ActorCritic methods (Mnih et al., 2016) can further stabilize
-these algorithms.
-
-Averaged-DQN: Variance Reduction and Stabilization for Deep Reinforcement Learning
-
-References
-Arthur E Bryson, Yu Chi Ho. Applied Optimal Control:
-Optimization Estimation and Control. Hemisphere Publishing, 1975.
-Baird III, Leemon C. Advantage updating. Technical report, DTIC Document, 1993.
-Bellemare, M. G., Naddaf, Y., Veness, J., and Bowling, M.
-The arcade learning environment: An evaluation platform for general agents. Journal of Artificial Intelligence
-Research, 47:253–279, 2013.
-Bellemare, Marc G, Srinivasan, Sriram, Ostrovski, Georg,
-Schaul, Tom, Saxton, David, and Munos, Remi. Unifying count-based exploration and intrinsic motivation.
-arXiv preprint arXiv:1606.01868, 2016.
-Bellman, Richard. A Markovian decision process. Indiana
-Univ. Math. J., 6:679–684, 1957.
-Boyan, Justin and Moore, Andrew W. Generalization in
-reinforcement learning: Safely approximating the value
-function. Advances in neural information processing
-systems, pp. 369–376, 1995.
-Even-Dar, Eyal and Mansour, Yishay. Learning rates for
-q-learning. Journal of Machine Learning Research, 5
-(Dec):1–25, 2003.
-He, Frank S., Yang Liu, Alexander G. Schwing, and Peng,
-Jian. Learning to play in a day: Faster deep reinforcement learning by optimality tightening. arXiv preprint
-arXiv:1611.01606, 2016.
-Jaakkola, Tommi, Jordan, Michael I, and Singh, Satinder P.
-On the convergence of stochastic iterative dynamic programming algorithms. Neural Computation, 6(6):1185–
-1201, 1994.
-Kingma, Diederik P. and Ba, Jimmy. Adam: A method
-for stochastic optimization.
-arXiv preprint arXiv:
-1412.6980, 2014.
-Krizhevsky, Alex, Sutskever, Ilya, and Hinton, Geoffrey E.
-Imagenet classification with deep convolutional neural
-networks. In Advances in NIPS, pp. 1097–1105, 2012.
-LeCun, Yann, Bottou, Léon, Bengio, Yoshua, and Haffner,
-Patrick. Gradient-based learning applied to document
-recognition. Proceedings of the IEEE, 86(11):2278–
-2324, 1998.
-Liang, Yitao, Machado, Marlos C, Talvitie, Erik, and Bowling, Michael. State of the art control of Atari games
-using shallow reinforcement learning. In Proceedings
-of the 2016 International Conference on Autonomous
-Agents & Multiagent Systems, pp. 485–493, 2016.
-
-Lin, Long-Ji. Reinforcement learning for robots using neural networks. Technical report, DTIC Document, 1993.
-Mnih, Volodymyr, Kavukcuoglu, Koray, Silver, David,
-Graves, Alex, Antonoglou, Ioannis, Wierstra, Daan, and
-Riedmiller, Martin. Playing Atari with deep reinforcement learning. arXiv preprint arXiv:1312.5602, 2013.
-Mnih, Volodymyr, Kavukcuoglu, Koray, Silver, David,
-Rusu, Andrei A, Veness, Joel, Bellemare, Marc G,
-Graves, Alex, Riedmiller, Martin, Fidjeland, Andreas K,
-Ostrovski, Georg, et al. Human-level control through
-deep reinforcement learning. Nature, 518(7540):529–
-533, 2015.
-Mnih, Volodymyr, Badia, Adria Puigdomenech, Mirza,
-Mehdi, Graves, Alex, Lillicrap, Timothy P, Harley, Tim,
-Silver, David, and Kavukcuoglu, Koray. Asynchronous
-methods for deep reinforcement learning. arXiv preprint
-arXiv:1602.01783, 2016.
-Osband, Ian, Blundell, Charles, Pritzel, Alexander, and
-Van Roy, Benjamin. Deep exploration via bootstrapped
-DQN. arXiv preprint arXiv:1602.04621, 2016.
-Riedmiller, Martin. Neural fitted Q iteration–first experiences with a data efficient neural reinforcement learning
-method. In European Conference on Machine Learning,
-pp. 317–328. Springer, 2005.
-Rummery, Gavin A and Niranjan, Mahesan. On-line Qlearning using connectionist systems. University of
-Cambridge, Department of Engineering, 1994.
-Schaul, Tom, Quan, John, Antonoglou, Ioannis, and Silver, David. Prioritized experience replay. arXiv preprint
-arXiv:1511.05952, 2015.
-Sutton, Richard S and Barto, Andrew G. Reinforcement
-Learning: An Introduction. MIT Press Cambridge, 1998.
-Sutton, Richard S, McAllester, David A, Singh, Satinder P,
-and Mansour, Yishay. Policy gradient methods for reinforcement learning with function approximation. In
-NIPS, volume 99, pp. 1057–1063, 1999.
-Tang, Haoran, Rein Houthooft, Davis Foote, Adam Stooke,
-Xi Chen, Yan Duan, John Schulman, and Filip De Turck,
-Pieter Abbeel. #exploration: A study of count-based exploration for deep reinforcement learning. arXiv preprint
-arXiv:1611.04717, 2016.
-Tesauro, Gerald. Temporal difference learning and tdgammon. Communications of the ACM, 38(3):58–68,
-1995.
-Thrun, Sebastian and Schwartz, Anton. Issues in using
-function approximation for reinforcement learning. In
-
-Averaged-DQN: Variance Reduction and Stabilization for Deep Reinforcement Learning
-
-Proceedings of the 1993 Connectionist Models Summer
-School Hillsdale, NJ. Lawrence Erlbaum, 1993.
-Tsitsiklis, John N. Asynchronous stochastic approximation and q-learning. Machine Learning, 16(3):185–202,
-1994.
-Tsitsiklis, John N and Van Roy, Benjamin. An analysis
-of temporal-difference learning with function approximation. IEEE transactions on automatic control, 42(5):
-674–690, 1997.
-Van Hasselt, Hado. Double Q-learning. In Lafferty, J. D.,
-Williams, C. K. I., Shawe-Taylor, J., Zemel, R. S., and
-Culotta, A. (eds.), Advances in Neural Information Processing Systems 23, pp. 2613–2621. 2010.
-Van Hasselt, Hado, Guez, Arthur, and Silver, David. Deep
-reinforcement learning with double Q-learning. arXiv
-preprint arXiv: 1509.06461, 2015.
-Wang, Ziyu, de Freitas, Nando, and Lanctot, Marc. Dueling
-network architectures for deep reinforcement learning.
-arXiv preprint arXiv: 1511.06581, 2015.
-Watkins, Christopher JCH and Dayan, Peter. Q-learning.
-Machine Learning, 8(3-4):279–292, 1992.
-
-Averaged-DQN: Variance Reduction and Stabilization for Deep Reinforcement Learning
-
-A. DQN Variance Source Example
-
-B. Ensemble DQN TAE Variance Calculation
-in a unidirectional MDP (Section 5.2)
-
-Breakout
-DQN
-Averaged DQN, K=10
-400
-Averaged score per episode
-
-Figure 8 presents a single learning trial of DQN compared
-to Averaged-DQN, which emphasizes that the source of
-variability in DQN between learning trials is due to occasions drops in average score within the learning trial. As
-suggested in Section 4, this effect can be related to the TAE
-causing to a deviation from the steady state policy.
-
-300
-
-200
-
-100
-
-k,i
-k,i
-Recall that E[Zs,a
-] = 0, Var[Zs,a
-] = σs2 , for all
-0
-
-,j
-k,i
-i 6= j: Cov[Zs,a
-, Zsk0 ,a
-] = 0, and for all k 6= k 0 :
-
-0
-
-0
-
-,j
-k,i
-Cov[Zs,a
-, Zsk0 ,a
-] = 0. Following the Ensemble-DQN update equations in Algorithm 3:
-
-K
-1 X
-Q(s0 , a; θik )
-K
-k=1
-
-=
-
-20
-
-40
-
-60
-80
-frames [millions]
-
-100
-
-120
-
-Figure 8. DQN and Averaged-DQN performance in the Atari
-game of B REAKOUT. The bold lines are single learning trials of
-the DQN and Averaged-DQN algorithm. The dashed lines present
-average of 7 independent learning trials. Every 1M frames, a performance test using -greedy policy with  = 0.05 for 500000
-frames was conducted. The shaded area presents one standard deviation (from the average). For both DQN and Averaged-DQN
-the hyperparameters used, were taken from Mnih et al. (2015).
-
-QE
-i (s0 , a) =
-=
-
-0
-
-K
-1 X k,i
-[Zs0 ,a + ysi 0 ,a ]
-K
-k=1
-
-=
-
-update equations in Algorithm 2:
-
-K
-1 X k,i
-[Zs0 ,a ] + ysi 0 ,a
-K
-
-QA
-i (s0 , a) =
-
-k=1
-
-K
-1 X k,i
-[Zs0 ,a ] + γQE
-=
-i−1 (s1 , a)
-K
-
-=
-
-k=1
-
-k=1
-
-=
-
-1
-K
-
-K
-X
-
-[Zsk,i
-]+
-0 ,a
-
-k=1
-
-K
-X
-
-γ
-K
-
-[Zsk,i−1
-] + γysi−1
-.
-1 ,a
-2 ,a
-
-M
-−1
-X
-
-γm
-
-m=0
-
-K
-1 X k,i−m
-Zsm ,a .
-K
-
-K
-1 X i+1−k
-[Zs0 ,a + ysi+1−k
-]
-0 ,a
-K
-
-K
-K
-γ X A
-1 X i+1−k
-[Zs0 ,a ] +
-Qi−k (s1 , a)
-=
-K
-K
-k=1
-
-k=1
-
-K
-K
-K
-1 X i+1−k
-γ XX
-=
-[Zs0 ,a ] + 2
-Q(s1 , a; θi+1−k−k0 ).
-K
-K
-0
-k=1
-
-k=1 k =1
-
-k=1
-
-Since the TAEs are uncorrelated by assumption, we get
-Var[QE
-i (s0 , a)] =
-
-=
-
-k=1
-
-k=1
-
-as above, and noting that
-By iteratively expanding ysi−1
-2 ,a
-j
-ysM −1 ,a = 0 for all times (terminal state), we obtain,
-QE
-i (s0 , a) =
-
-K
-1 X
-Q(s0 , a; θi+1−k )
-K
-
-M
-−1
-X
-m=0
-
-1 2m 2
-γ σsm .
-K
-
-By iteratively expanding Q(s1 , a; θi+1−k−k0 ) as above,
-and noting that ysjM −1 ,a = 0 for all times (terminal state),
-we get
-QA
-i (s0 , a) =
-
-C. Averaged DQN TAE Variance Calculation
-in a unidirectional MDP (Section 5.3)
-i
-i
-Recall that E[Zs,a
-] = 0, Var[Zs,a
-] = σs2 , and for i 6= j:
-i
-Cov[Zs,a
-, Zsj0 ,a0 ] = 0. Further assume that for all s 6=
-0
-i
-s : Cov[Zs,a
-, Zsi0 ,a ] = 0. Following the Averaged-DQN
-
-K
-K
-K
-γ X X i+1−k−k0
-1 X i+1−k
-Zs0 ,a + 2
-Zs1 ,a
-K
-K
-0
-k=1
-
-+ ··· +
-
-M −1
-
-γ
-KM
-
-K X
-K
-X
-j1 =1 j2 =1
-
-k=1 k =1
-
-···
-
-K
-X
-
-1 −···−jM
-Zsi+1−j
-.
-M −1 ,a
-
-jM =1
-
-Since the TAEs in different states are uncorrelated by assumption the latter sums are uncorrelated and we may cal-
-
-Averaged-DQN: Variance Reduction and Stabilization for Deep Reinforcement Learning
-
-culate the variance of each separately. For L = 1, . . . , M ,
-denote
+maximizes the following approximation of Equation 2:
 "
-#
-K
-K
-K
-X
-1 X X
-VL = Var
-...
-Zi +i +...+iL ,
-K L i =1 i =2 i =1 1 2
-1
+E
 
-1
+(S,E)∼D
 
-L
+"
+E
 
-where to simplify notation ZL , ZL+1 , . . . , ZK·L are independent and identically distributed (i.i.d. ) TAEs random
-variables, with E[Zl ] = 0 and E[(Zl )2 ] = σz2 .
-Since the random variables are zero-mean and i.i.d. we
-have that:
-KL
+π(S,T )
 
-X
- 
-1
-nj,L Zj 2
-VL = 2L Ez [(
-K
-j=L
-
-=
-
-KL
-σz2 X
-(nj,L )2 ,
-K 2L
-j=L
-
-To continue, we denote the Discrete Fourier Transform
-N −1
-N −1
-(DFT) of uK = (uK
-n )n=0 as U = (Un )n=0 , and by using Parseval’s theorem we have that
-VL =
-
-N −1
-σz2 X
-|(uK ∗ uK . . . ∗ uK )n |2
-K 2L n=0
-
-N −1
-σz2 1 X
-= 2L
-|Un |2L ,
-K N n=0
-
-where N is the length of the vectors u and U and is
-taken large enough so that the sum includes all nonzero elements of the convolution. We denote DK,m =
-PN −1
-1
-1
-2(m+1)
-, and now we can write
-n=0 |Un |
-K 2(m+1) N
-Averaged-DQN variance as:
-Var[QA
-i (s0 , a)] =
-
-M
-−1
+T
 X
 
-DK,m γ 2m σs2m .
+##
+R̃(Stu , St , st )
 
-m=0
++ R(E, ST , sT )
 
-where nj,L is the number of times Zj is counted in the
-multiple summation above. The problem is reduced now to
-evaluating nj,L for j ∈ {L, . . . , K · L}, where nj,L is the
-number of solutions for the following equation:
-i1 + i2 + . . . + iL = j,
+,
 
-Next we bound DK,m in order to compare Averaged-DQN
-to Ensemble-DQN, and to DQN.
-For K > 1, m > 0:
+t=1
+
+(3)
+in which R̃(Stu , St , st ) is a prediction reward for unlabeled
+items in the support set. We assume labels for the full
+support set are available during training. We compute
+R̃(Stu , St , st ) using a fast prediction module, and compute
+R(E, St , st ) using a slow prediction module. The fast and
+slow prediction rewards can be obtained by substituting the
+appropriate predictions into Equation 1. Sections 3.2.5 and
+3.2.6 describe these modules in detail.
+
+(x̂,ŷ)∈E
+
+3.2. Model Architecture Details
+which gives log-likelihood of the predictions p(ŷ|x̂, st , St )
+on the evaluation set. The prediction ŷ conditions on: the
+test item x̂, the current control state st , and the current
+labeled/unlabeled support set St . For tests on Omniglot (see
+Section 4.1), we use negative cross-entropy on the class
+labels, and for MovieLens (see Section 4.2), we use the
+negative Root Mean Squared Error (RMSE).
+At each step t of active learning, the model requests the
+u
+label for an item x from the set St−1
+and updates its control
+state from st−1 to st based on the response. Together, st
+and St determine the model’s predictions for test items
+and the model’s decision about which label to request next.
+Algorithm 1 describes this process in detail, and Section 3.2
+formally describes the functions used in Algorithm 1.
+The idealized objective for training our model is:
+"
+maximize
+θ
+
+E
+
+(S,E)∼D
+
+"
+E
+
+π(S,T )
+
+T
+X
+
+##
+R(E, St , st )
+
+,
 
 (2)
 
-over i1 , . . . , iL ∈ {1, . . . , K}. The calculation can be done
-recursively, by noting that
+t=1
 
-DK,m
+in which T is the max number of label queries to perform,
+(S, E) indicates an episode sampled from some distribution D, and π(S, T ) indicates unrolling the model’s active
+learning policy π for T steps on support set S. Unrolling π
+produces the intermediate states {(S1 , s1 ), ..., (ST , sT )}.
+To optimize this objective, our model repeatedly samples an
+episode (S, E), then unrolls π for T steps of active learning, and maximizes the prediction reward R(E, St , st ) at
+each step. Alternately, our model could maximize only the
+reward at the final step. We maximize reward at each step in
+order to promote anytime behaviour – i.e. the model should
+perform as well as possible after each label query. Anytime
+behaviour is desirable in many practical settings, e.g. for
+movie recommendations the model should be robust to early
+termination while eliciting the preferences of a new user.
+During training, for computational efficiency, our model
 
-N −1
-1 X
-|Un |2(m+1)
-= 2(m+1)
-N n=0
-K
+Our model comprises multiple modules: context-free and
+context-sensitive encoding, controller, selection, reading,
+fast prediction, and slow prediction. We present an overview
+of our model in Fig. 1 and Alg. 1, which describe how our
+model’s modules perform active learning. The rest of this
+subsection describes the individual modules in more detail.
+Algorithm 1 End-to-end active learning loop (for Eq. 3)
+1: # encode items in S with context-sensitive encoder
+2: # and encode items in E with context-free encoder
+3: S = {(x, y)}, S0u = {(x, ·)}, S0k = ∅, E = {(x̂, ŷ)}
+4: for t = 1 . . . T do
+5:
+# select next instance
+u
+k
+6:
+i ← SELECT(St−1
+, St−1
+, st−1 )
+7:
+# read labeled instance and update controller
+8:
+(xi , yi ) ← READ(S, i)
+9:
+st ← UPDATE(st−1 , xi , yi )
+10:
+# update known / unknown set
+k
+∪ {(xi , yi )}
+11:
+Stk ← St−1
+u
+u
+\ {(xi , ·)}
+12:
+St ← St−1
+13:
+# perform fast prediction
+14:
+LSt ← FAST-PRED(S, Stu , Stk , st )
+15: end for
+16: # perform slow prediction
+u
+k
+17: LE
+T ← SLOW-PRED(E, ST , ST , sT )
 
-1
+3.2.1. C ONTEXT-[F REE |S ENSITIVE ] E NCODING
+The context-free encoder associates each item with an embedding independent of the context in which the item was
+presented. For our Omniglot tests, this encoder is a convnet with two convolutional layers that downsample via
+strided convolution, followed by another convolutional layer
+and a fully-connected linear layer which produces the final context-free embedding. For our MovieLens tests, this
+encoder is a simple look-up-table mapping movie ids to
 
-=
+Learning Algorithms for Active Learning
+controller LSTM
 
-N −1
-1 X
-|Un /K|2(m+1)
-N n=0
+Reward
 
-<
+select
 
-Since the final goal of this calculation is bounding the variance reduction coefficient, we will calculate the solution in
-the frequency domain where the bound can be easily obtained.
+read
 
-N −1
-1 X
-|Un /K|2
-N n=0
+Reward
 
-=
+predict
 
-N −1
-1 X K2
-|u |
-K 2 n=0 n
+item labels
+visible
 
-Denote
+fast predictor
 
-=
+attend
 
-1
-K
+hidden
 
-nj,L =
+contextual
+encoding
 
-K
-X
+held-out
+item
 
-nj−i,L−1 .
+support set
 
-i=1
+matching networks
+style slow-predictor
 
-(
-uK
-j
+Figure 1. A summary of the modules in our model. Items in the support and evaluation set are embedded using a context-free encoder.
+Final embeddings for support set items are computed by processing their context-free embeddings with a context-sensitive encoder. The
+selection module places a distribution over unlabelled items in Stu using a gated combination of controller-item similarity features and
+item-item similarity features. The read module copies the selected item and its label, and transforms them for input to the controller,
+which then updates its state from st−1 to st . Fast predictions are made within the support set S based on sharpened item-item similarity
+features. Slow predictions are made for items in the held-out set E using a Matching Network-style function which incorporates masking
+to account for known/unknown labels, and conditions on the state st . We train this system end-to-end with Reinforcement Learning.
 
-=
-
-1 if j ∈ {1, . . . , K}
-0 otherwise
-,
-
-For L = 1 (base case), we trivially get that for any j ∈ Z:
-nj,1 = uK
-j ,
-and we can rewrite our recursive formula for nj,L as:
-nj,L =
-
-∞
-X
-i=−∞
-
-nj−i,L−1 · uK
+embeddings. We denote the context-free encoding of item
+xi ∈ S as x0i , and similarly define x̂0i for x̂i ∈ E.
+The context-sensitive encoder produces an embedding x00i
+for each item xi ∈ S based on the context-free embeddings
+x0j : ∀xj ∈ S. The context-sensitive encoder is not applied
+to items in the evaluation set. Our model uses a modified
+form of the encoder from Matching Networks (Vinyals et al.,
+2016). Specifically, we run a bidirectional LSTM (Hochreiter & Schmidhuber, 1997; Schuster & Paliwal, 1997) over
+all context-free embeddings for the support set, and then
+add a linear function of the concatenated forwards and backwards states to the context-free embedding x0i to get x00i .
+We can write this as follows:
 i
+h
+x00i = x0i + We ~hi ; h~i ,
 
-≡ (nj−1,L−1 ∗ uK )j
+3.2.3. C ONTROLLER
+At each step t, the controller receives an input rt from
+the reading module which encodes the most recently read
+item/label pair. Additional inputs could take advantage of
+task-specific information. The control module performs an
+LSTM update:
+st = LSTM(st−1 , rt ).
+We initialize s0 for each episode (S, E) using the final state
+of the backwards LSTM in the context-sensitive encoder
+which processed the support set S. In principal, this allows
+the controller to condition its behaviour on the full unlabeled
+contents of the support set (Alg. 1, line 9).
+3.2.4. S ELECTION
 
-= (uK ∗ uK . . . ∗ uK )j ,
-{z
-}
-|
-L times
+(4)
 
-where ∗ is the discrete convolution.
+in which ~hi gives the forward encoder state for item xi ,
+h~i gives the backward encoder state, and We is a trainable
+matrix. We compute the forward states ~hi as in a standard
+LSTM, processing the support set items xi sequentially
+following a random order. We compute the backward states
+h~i by processing the sequence of concatenated x0i and ~hi
+vectors in reverse.
+3.2.2. R EADING
+This module concatenates the embedding x00i and label yi
+for the item indicated by the selection module, and linearly transforms them before passing them to the controller
+(Alg. 1, line 8).
 
+At each step t, the selection module places a distribution
+Ptu over all unlabeled items xui ∈ Stu . It then samples the
+index of an item to label from Ptu , and feeds it to the reading
+module (Alg. 1, line 6).
+Our model computes Ptu using a gated, linear combination of features which measure controller-item similarity
+and item-item similarity. For each item, we compute the
+controller-item similarity features:
+bit = x00i  Wb st ,
+where Wb is a trainable matrix and  indicates elementwise
+multiplication. We also compute the following six itemitem similarity features: [max|mean|min] cosine similarity
+to any labeled item, and [max|mean|min] cosine similarity
+to any unlabeled item. We concatenate the controller-item
+
+Learning Algorithms for Active Learning
+
+similarity features and item-item similarity features to get a
+vector dit . We also compute a gating vector: gt = σ(Wg st ),
+in which Wg is a trainable matrix and σ(·) indicates the
+standard sigmoid.
+For each xui ∈ Stu , we compute the selection logit:
+pit = (gt  dit )> wp ,
+where wp indicates a trainable vector. Finally, we compute
+Ptu by normalizing over the logits pit : ∀xui ∈ Stu via softmax. This module performs worse when the controller-item
+or item-item features are removed. Our model intelligently
+adapts these heuristics to the task at hand. We provide
+pseudo-code for how these modules interact during active
+learning in Algorithm 1.
+3.2.5. FAST P REDICTION
+The fast prediction module makes an attention-based prediction for each unlabeled item xui ∈ Stu using its cosine
+similarities to the labeled items xkj ∈ Stk , which are sharpened by a non-negative matching score γti between xui and
+the control state st . The cosine similarities are taken between the context-sensitive embeddings x00i and x00j of the
+respective items. These do not change with t and may be
+precomputed before unrolling the active learning policy.
+Predictions from this module are thus fast to compute while
+unrolling the policy (Alg. 1, line 14). The precomputed cosine similarities may be reused in the selection module for
+computing item-item similarity features, further amortizing
+their cost.
+For each unlabeled xui , we compute a set of attention
+weights over the labeled xkj ∈ Stk by applying a softmax to
+the relevant cosine similarities, using γti as a temperature for
+the softmax. We compute the sharpening term as follows:
+γti = exp((x00i )> Wγ st ),
+where Wγ indicates a trainable matrix. This module performs significantly worse without the sharpening term. The
+final fast prediction is formed by taking a convex combination of the labels yj for the labeled xkj ∈ Stk using the
+computed attention weights.
+3.2.6. S LOW P REDICTION
+The slow prediction module implements a modified Matching Network prediction, which accounts for the distinction
+between labeled and unlabeled items in St , and conditions
+on the active learning control state st (Alg. 1, line 17).
+Given the context-free embedding x̂0 for some held-out
+example x̂ ∈ E, the state st , and required initial values, this
+module predicts a label by iterating the steps:
+1. mk = LSTM(mk−1 , x̃k−1 , x̂0 , st )
+
+2. x̂00 = x̂0 + Wm mk
+3. ãk = attend(x̂00 , Stk )
+4. x̃k , ỹk = attRead(ãk , Stk )
+Here, LSTM is an LSTM update, mk is the matching state
+at step k, x̂00 is the match-sensitive embedding of x̂ at step
+k, Wm is a trainable matrix, ãk are the matching attention
+weights at step k, x̃k is the “item attention” result from step
+k, and ỹk is the “label attention” result from step k. For
+details of the attend and attRead functions, refer to Vinyals
+et al. (2016). As a final prediction, this module returns
+the label attention result ỹK from the Kth (final) step of
+iterative matching. In our tests we fix K = 3.
+Note: our model contains many linear transforms W v. Our
+model adds bias and gain terms to all of these transforms,
+as described for weight normalization (Salimans & Kingma,
+2016). We omit these terms for brevity. Similarly, we use
+layer normalization in our active learning and matching
+controller LSTMs (Ba et al., 2016).
+3.3. Training the Model
+We optimize the parameters of our model using a combination of backpropagation and policy gradients. For a clear
+review of optimization techniques for general stochastic
+computation graphs, see Schulman et al. (2016a).
+Using the notation from Section 3.1 and following the approach of (Schulman et al., 2016a), we can write the gradient
+of our training objective as follows:
+∇θ R(S, E, θ) =
+(5)
+
+
+h
+i
+~
+~ + ∇θ R(S)
+~ ,
+E
+∇θ log p(S|(S,
+E)) R(S)
+
+~
+p(S|(S,E))
+
+in which R(S, E, θ) denotes the expected reward won by
+the active learning model while working on episode (S, E).
+~ denotes the set of intermediate states {(St , st )} generated
+S
+~ denotes the
+by the model while working with (S, E). R(S)
+sum of rewards (as described in Equation 3) received by
+the model while working on episode (S, E). In the term
+~ are
+~ all decisions made by the model to produce S
+∇θ R(S),
+treated as constant. Taking the expectation of Equation 5
+with respect to episodes (S, E) ∼ D gives us an unbiased
+gradient estimator for the objective in Equation 3.
+Rather than using the gradients in Equation 5 directly, we
+optimize the model parameters using Generalized Advantage Estimation (Schulman et al., 2016b), which provides
+an actor-critic approach for approximately optimizing the
+policy gradients in Equation 5. For more details on how
+Generalized Advantage Estimation helps reach a favourable
+bias-variance trade-off in policy gradient estimation, see the
+source paper (Schulman et al., 2016b). We apply the GAE
+updates using ADAM (Kingma & Ba, 2015).
+
+Learning Algorithms for Active Learning
+
+Support Set
+@t=5
+Support Set
+@ t = 10
+
+Support Set
+@t=9
+
+Support Set
+@t=8
+
+Support Set
+@t=7
+
+Support Set
+@t=6
+
+Time
+
+Support Set
+@t=4
+
+Support Set
+@t=3
+
+Support Set
+@t=2
+
+Support Set
+@t=1
+
+Classes
+
+Figure 2. A rollout of our active learning policy for Omniglot, using a support set of 20 items from 10 different classes with 2 items
+per class. Each row represents the support set at different active
+iterations. For visualization purposes, each column represents a
+class. Unlabeled items have white background while selected items
+have black background. In this case, the model behaves optimally
+by selecting at each step an item with a yet-unseen label.
+
+4. Experiments
+4.1. Omniglot
+We run our first experiments on the Omniglot dataset (Lake
+et al., 2015) consisting of 1623 characters from 50 different alphabets each hand-written by 20 different persons.
+Following Vinyals et al. (2016), we divide the dataset into
+1200 characters for training and keep the rest for testing.
+When measuring test performance, our model interacts with
+characters it did not encounter during training.
+For the context-free embedding function we use a threelayer convolutional network. The first two layers use 5 × 5
+convolutions with 64 filters and downsample with a double
+stride. The third layer uses a 3 × 3 convolution with 64
+
+filters and no downsampling. These layers produce a 7 ×
+7 × 64 feature map that we flatten and pass through a fully
+connected layer. All convolutional layers use the leaky
+ReLU nonlinearity (Maas et al., 2013).
+We setup N -way, K-shot Omniglot classification as follows.
+We randomly pick N character classes from the available
+train/test classes. Then, we build a support set by randomly
+sampling 5 items for each character class, e.g. in the 5-way
+setting, there are 25-items in the support set. The held-out
+set is always obtained by randomly sampling 1 item per
+class. In our active learning setting, K-shot is proportional
+to how many labels the model can acquire. In the N -way,
+K-shot setting, the model asks for N K labels before performing held-out prediction. For example, in 5-way, 1-shot
+classification, the model asks for 5 labels. Following each
+label query, we also measure anytime performance of the
+fast prediction module on the items remaining in Stu . Note
+that the 1-shot setting is particularly challenging for our
+model, as it needs to ask for different classes at each step,
+and the ability to identify missing classes is limited by the
+accuracy of the underlying one-shot classifier.
+We compare our active learner to four baselines. To compute a pessimistic estimate of potential performance, we use
+a matching network where we label N K items chosen at
+random from the full support set (Matching Net (random)).
+As the labels are randomly sampled, it is possible that a
+given class is never represented among the labeled items
+and the model cannot classify perfectly, even in principle.
+To compute an optimistic estimate of potential performance,
+we measure the “ideal” matching network accuracy by labeling a class-balanced subset of items from the full support
+set (Matching Net (balanced)). This baseline represents
+a highly-performant policy that the active learner can, in
+principle, learn. For the last baseline (Min-Max-Cos), we
+formulate a heuristic policy. At each active learning step,
+we select the item which has minimum maximum cosine
+similarity to unlabeled items in the support set. This heuristic selects item that are different from each other, a strategy
+well-suited to the Omniglot classification task where items
+are drawn from a consistent set of underlying classes.
+We report the results in Table 1. Matching Networks operating on a randomly sampled set of labels suffer the most
+in 1-shot scenarios, where the probability of all classes
+being represented is particularly low (especially in the 10way case). Overall, the active policy nearly matches the
+performance of the optimistic balanced Matching Network
+baseline. Degradation of performance by 2.2% is observed
+for the 1-shot, 10-way case. This is not surprising since
+augmenting the number of classes in the support set, while
+keeping the number of shots fixed, considerably increases
+the difficulty of the problem for the active learner. Figure 2
+shows a roll-out of the model policy in the 10-way setting.
+
+Learning Algorithms for Active Learning
+Table 1. Results for our active learner and baselines for the N -way, K-shot classification settings.
+
+5-way
+
+Model
+
+10-way
+
+1-shot
+
+2-shot
+
+3-shot
+
+1-shot
+
+2-shot
+
+3-shot
+
+Matching Net (random)
+Matching Net (balanced)
+Active MN
+
+69.8%±0.10
+97.9%±0.07
+97.4%±0.11
+
+93.1%±0.07
+98.9%±0.07
+99.0%±0.08
+
+98.5%±0.04
+99.2%±0.06
+99.3%±0.03
+
+67.3%±0.10
+96.5%±0.04
+94.3%±0.24
+
+91.2%±0.06
+98.3%±0.03
+98.0%±0.07
+
+97.6%±0.06
+98.7%±0.05
+98.5%±0.06
+
+Min-Max-Cos
+
+97.4%±0.11
+
+99.3%±0.02
+
+99.4%±0.04
+
+93.5%±0.11
+
+98.4%±0.02
+
+98.8%±0.03
+
+Figure 3 provides results for the more challenging setting
+of 20-way classification. We tested two properties of our
+model: its anytime performance beyond the 1-shot setting,
+and its ability to generalize to problems with more classes
+than were seen during training. The model performed well
+on 20-way classification, and quickly approached the optimistic estimate after acquiring more labels. We also found
+that policies trained for as little as 10-way classification
+could generalize to the 20-way setting.
+Our model relies on a number of moving parts. When designing the architecture, we followed the simple approach of
+minimizing changes to the original Matching Network from
+Vinyals et al. (2016). We now provide ablation test results
+for several parts of our model. In the 10-way, 1-shot setting
+accuracy dropped from 94.5 to 86.0 when we removed attention temperature from the fast prediction module. Reducing
+the number of matching steps from 3 to 2 or 1 had no significant effect in this setting. Removing the context-sensitive
+encoder also had no significant effect. Streamlining our
+architecture is clearly a useful topic for future work aimed
+at scaling our approach to more realistic settings.
+4.2. MovieLens
+4.2.1. S ETUP
+We test our model in the “cold-start” collaborative filtering scenario using the publicly available MovieLens-20M
+dataset.1 The dataset contains approximately 20M ratings
+on 27K movies by 138K users. The ratings are on an ordinal
+10-point scale, from 0.5 to 5 with intervals of 0.5. We subsample the dataset by selecting 4000 movies and 6000 users
+with the most ratings. After filtering, the dataset contains
+approximately 1M ratings. We partition the data randomly
+into 5000 training users and 1000 test users. The training
+set represents the users already in the system who are used
+to fit the model parameters. We use the test users to evaluate
+our active learning approach. For each user, we randomly
+pick 50 ratings to include in the support set (movies that the
+user can be queried about) and 10 movies and ratings for the
+held-out set. We ensure that movies in the held-out set and
 1
-where we have used the easily verified facts that K
-|Un | ≤
-1
-1, K |Un | = 1 only if n = 0, and Parseval’s theorem again.
+Available at http://grouplens.org/datasets/
+movielens/
 
-D. Computational Cost Experiments
-We have experimented with different number of averaged
-networks on the ALE to show the added computational cost
-of in both training and testing. The results are summarized in Figure 9. During testing, we have only forwards
-passes of the states through the Q-networks (no backpropogations). A naive evaluation of the added cost of K − 1
-Q-networks in testing would predicts a K times slower
-testing time (compared to DQN (K = 1)). In Figure 9
-we see this is not the case. The faster testing speeds are
-since same state is being forward in the K Q-networks, the
+in the support set do not overlap. We train our active learner
+to minimize the mean-squared error (MSE) with respect
+to the true rating. We adapt the prediction modules of our
+model to output the rating for a held-out item as follows:
+we compute a convex combination of the ratings of “visible”
+movies in the support set (the movies the active learner has
+already queried about), where the weights are given by the
+final attention step of the slow predictor. Although more
+complex strategies are possible, we empirically found this
+simple strategy to work well in our experiments. For evaluation, we sample 25000 episodes (i.e. 50 support ratings
+and 10 held-out ratings from the same user) from the test
+set and we compute the average per-user root mean-squared
+error (RMSE), i.e. we average the ratings in the held-out set
+of each test episode and then average across test episodes.
+We report the average performance obtained by 3 runs with
+different random seeds.
+4.2.2. M OVIE E MBEDDINGS
+For each movie, we pretrain an embedding vector by decomposing the full user/movie rating matrix using a latent factor
+model (Koren, 2010). This process only uses the training set.
+For each user u and movie m, we estimate the true rating
+ru,m with a linear model r̂u,m = x>
+u xm + bu + bm + β,
+where xu , xm are the user and movie embedding respectively and bu , bm , β are the user, movie, and global bias,
+respectively. We train the latent factor model by minimizing
+the mean squared error between true rating r and predicted
+rating r̂. We use the trained xm as input representations for
+the movies throughout our experiments.
+4.2.3. R ESULTS
+In Figure 4 we report the results of our active model against
+various baselines. The Regression baseline performs regularized linear regression on movies from the support set
+whose ratings have been observed incrementally in random
+order. Because of the small amount of training data, for
+each additional label we tune the regularization parameter
+by monitoring performance on a separate set of validation
+episodes. The Gaussian Process baseline selects the next
+movie to label in proportion to the variance of the predictive posterior distribution over its rating. This gives an
 
-Averaged-DQN: Variance Reduction and Stabilization for Deep Reinforcement Learning
+Learning Algorithms for Active Learning
+Support set: 100 items, 20 classes, 5 items/class
 
-GPU carries out the forward-passes simultaneously. During training time the added computational cost is again
-k − 1 more forward-passes through the Q-networks, this
-time only while learning. For the reason the k − 1 network
-are being used only during learning, the effect of averaging
-more networks is less significant.
+Support set: 100 items, 20 classes, 5 items/class
 
-FPS vs The Number of Averaged Q-networks
-Testing FPS
-Naive Testing FPS calculation
-Training FPS
+100
 
-Frames Per Second [FPS]
-
-3500
-3000
-2500
-
-action). For minimization of the DQN loss function RMSProp (with momentum parameter 0.95) was used.
-E.2. Hyper-parameters
-The discount factor was set to γ = 0.99, and the optimizer
-learning rate to α = 0.00025. The steps between target network updates were 10,000. Training is done over 120M
-frames. The agent is evaluated every 1M/2M steps (according to the figure). The size of the experience replay
-memory is 1M tuples. The ER buffer gets sampled to update the network every 4 steps with mini batches of size
-32. The exploration policy used is an -greedy policy with
- decreasing linearly from 1 to 0.1 over 1M steps.
-
-2000
-1500
-
-F. Comparison to Double-DQN
-
-1000
-500
-0
-
-0
-
-5
-10
-15
 20
-The number of averaged Q-networks (K)
+
+95
+
+18
+
+85
+80
+
+MN balanced (1-shot)
+MN balanced (2-shot)
+MN random
+Random policy
+Active policy
+
+75
+70
+65
+60
+
+20
 
 25
 
-Figure 9. Testing and training speeds. As the number of averagedQ networks increases speed get slower. However, due to implicit
-parallel execution of forward passes in the GPU not as slow as a
-navie prediction.
+30
 
-E. Experimental Details for the Arcade
-Learning Environment Domain
-We have selected three popular games of Atari to experiment with Averaged-DQN. We have used the exact setup proposed by Mnih et al. (2015) for the
-experiments, we only provide the details here for
-completeness.
-The full implementation is available at https://bitbucket.org/oronanschel/
-atari_release_averaged_dqn.
-Each episode starts by executing a no-op action for one up
-to 30 times uniformly. We have used a frame skipping
-where each agent action is repeated four times before the
-next frame is observed. The rewards obtained from the environment are clipped between -1 and 1.
-E.1. Network Architecture
-The network input is a 84x84x4 tensor. It contains a concatenation of the last four observed frames. Each frame is
-rescaled (to a 84x84 image), and gray-scale. We have used
-three convolutional layers followed by a fully-connected
-hidden layer of 512 units. The first convolution layer convolves the input with 32 filters of size 8 (stride 4), the second, has 64 layers of size 4 (stride 2), the final one has 64
-filters of size 3 (stride 1). The activation unit for all of the
-layers a was Rectifier Linear Units (ReLu). The fully connected layer output is the different Q-values (one for each
-
-As can be seen in Figures 10, ??, 11, for all three games, the
-Averaged-DQN results outperform both DQN and DoubleDQN. Interestingly, Double-DQN predicts lower values
-estimates than Averaged-DQN. Combined with the fact
-that Double-DQN outputs have polices that are inferior to
-Averaged-DQN, this supports the hypothesis that DoubleDQN underestimates the values.
-
-Averaged-DQN: Variance Reduction and Stabilization for Deep Reinforcement Learning
-
-Breakout
-12000
-
-Averaged score per episode
-
-400
-Averaged score per episode
-
-Seaquest
-
-DQN
-Double - DQN
-Averaged DQN, K=10
-
-300
-
-200
-
-DQN
-Double - DQN
-Averaged DQN, K=10
-
-10000
-
-8000
-
-6000
-
-4000
-
-100
-2000
-
-0
-
-0
-
-20
+35
 
 40
 
-60
-80
-frames [millions]
+45
 
-100
+50
 
-0
+Unique labels
 
-120
+Accuracy
 
-0
+90
 
-20
+16
+14
 
-40
+Oracle Policy
+Random Policy
+Active Policy (5c)
+Active Policy (10c)
+Active Policy (15c)
+Active Policy (20c)
 
-60
-80
-frames [millions]
+12
+10
+8
+6
+5
 
-Breakout
 10
 
-120
+15
 
-Seaquest
-17.5
+20
 
-DQN
-Double - DQN
-Averaged DQN, K=10
+25
 
-15.0
+30
 
-8
+Labels requested
 
-DQN
-Double - DQN
-Averaged DQN, K=10
+Labels requested
 
-12.5
-Value estimates
+Figure 3. Experiment results for our model and baselines on Omniglot. The left plot shows how prediction accuracy improves with the
+number of labels requested in a challenging 20-way setting. After 20 label requests (corresponding to a 20-way, 1-shot problem), the
+active policy outperforms random policy and random MN baselines, but is inferior to the balanced MN. After 30 labels, the active policy
+nearly matches the performance of the balanced MN using 40 labels (20-way, 2-shot). The right plot shows the number of unique labels
+with respect to the number of requested labels for models trained on problems with 5-20 classes, and tested on 20-way classification. This
+gives an idea of how models search for labels from unseen groups and generalize to problems with different numbers of classes.
+Support set: 50 movies
 
-Value estimates
+1.30
+1.20
+1.10
 
-100
+RMSE
 
-6
+selects the unrated movie which differs most from the rated
+movies. Entropy Sampling selects movies in proportion to
+rating prediction entropy.
 
-4
+Regression
+Gaussian Process
+Popular-Entropy
+Min-Max-Cos
+Entropy Sampling
+Active MN
 
-10.0
-7.5
-5.0
-2.5
+1.00
+0.90
+0.80
+0.70
+
+1
 
 2
 
-0.0
+3
 
-0
+4
 
-−2.5
-20
+5
 
-40
+6
 
-60
-80
-frames [millions]
+7
 
-100
+8
 
-120
+9
 
-Figure 10. DQN, Double-DQN, and Averaged-DQN (K = 10)
-on the Atari game of Breakout. We see that Average-DQN predicts a higher estimated value than Double-DQN, while demonstrating better policies.
+10
 
-20
+Number of labels requested
 
-40
+Figure 4. Performance of the model and baselines measured with
+RMSE on the Movielens dataset.
 
-60
-80
-frames [millions]
+idea of the impact of using MN one-shot capabilities rather
+than standard regression techniques. The Popular-Entropy,
+Min-Max-Cos, Entropy Sampling baselines train our model
+end-to-end, but using a fixed selection policy. Specifically,
+we train our architecture end-to-end, but instead of training an active learning policy through the select module we
+choose items from the support set incrementally according
+to a heuristic policy. This gives an idea of the importance of
+learning the selection policy. The Popular-Entropy policy,
+adapted from the cold-start work of Rashid et al. (2002), a
+priori scores each item in the support set according to the
+logarithm of its popularity multiplied by the entropy of the
+item’s ratings measured across users. This strategy aims
+to collect first the ratings for those movies that are both
+popular and have been rated differently by different users.
+Although it is simplistic, the policy achieves competitive
+performance for bootstrapping a system from a cold-start
+setting (Elahi et al., 2016). The Min-Max-Cos policy is
+identical to the synonymous baseline used for Omniglot, i.e.
+it selects the unrated movie which has minimum maximum
+cosine similarity to any of the rated movies. Roughly, this
 
-100
+The active policy learned end-to-end outperforms the baselines in terms of RMSE, particularly after requesting only
+the first few labels. After 10 ratings, our model achieves an
+improvement of 2.5% in RMSE against the best baseline.
+Unsurprisingly, the gap diminishes with a higher number
+of labels requested. After observing 5 labels, the PopularEntropy baseline and our architecture equipped with the
+Min-Max-Cos heuristic converge toward the active policy
+but never quite match it. For MovieLens, where labels are
+user-dependent and not tied to an underlying class, a datadriven selection policy may adapt better to the task. This
+contrasts with the Omniglot setting, where there is no aspect of personalization and Active MN and Min-Max-Cos
+perform similarly. The heuristic is designed not to select
+items similar to those it has already seen, but doing so can
+be beneficial in personalized settings (Elahi et al., 2016).
 
-120
+5. Conclusion
+We introduced a model that learns active learning algorithms
+end-to-end. Our goal was to move away from engineered
+selection heuristics towards strategies learned directly from
+data. Our model leverages labeled instances from different
+but related tasks to learn a selection strategy for the task at
+hand, while simultaneously adapting its representation of
+the data and its prediction function. We evaluated the model
+on “active” variants of one-shot learning tasks for Omniglot,
+demonstrating that its policy approaches an optimistic performance estimate. On a cold-start collaborative filtering
+task derived from MovieLens, the model outperforms several baselines and shows promise for application in more
+realistic settings.
 
-Figure 11. DQN, Double-DQN, and Averaged-DQN (K = 10)
-performance on the Atari game of Seaquest. Averaged-DQN
-provides significantly improved results over DQN while DoubleDQN does not.
+Learning Algorithms for Active Learning
+
+References
+Aggarwal, Charu C. Recommender Systems. Springer, 2016.
+Ba, Jimmy Lei, Kiros, Jamie Ryan, and Hinton, Geoffrey E. Layer
+normalization. arXiv preprint arXiv:1607.06450, 2016.
+Chang, Kai-Wei, Krishnamurthy, Akshay, Agarwal, Alekh, III,
+Hal Daumé, and Langford, John. Learning to search better than
+your teacher. International Conference on Machine Learning
+(ICML), 2015.
+Cohn, David A, Ghahramani, Zoubin, and Jordan, Michael I. Active learning with statistical models. Journal of artificial intelligence research, 4(1):129–145, 1996.
+
+Kawale, Jaya, Bui, Hung H, Kveton, Branislav, Tran-Thanh, Long,
+and Chawla, Sanjay. Efficient thompson sampling for online
+matrix-factorization recommendation. In Advances in Neural
+Information Processing Systems (NIPS). 2015.
+Kingma, Diederik P and Ba, Jimmy. Adam: A method for stochastic optimization. arXiv:1412.6980v2 [cs.LG], 2015.
+Koch, Gregory. Siamese neural networks for one-shot image
+recognition. PhD thesis, University of Toronto, 2015.
+Koren, Yehuda. Factor in the neighbors: Scalable and accurate collaborative filtering. ACM Transactions on Knowledge Discovery
+from Data (TKDD), 4(1):1, 2010.
+
+Elahi, Mehdi, Ricci, Francesco, and Rubens, Neil. A survey of
+active learning in collaborative filtering recommender systems.
+Computer Science Review, 20:29–50, 2016.
+
+Krizhevsky, Alex, Sutskever, Ilya, and Hinton, Geoffrey E. Imagenet classification with deep neural networks. In Advances in
+Neural Information Processing Systems (NIPS), 2012.
+
+Gilad-Bachrach, Ran, Navot, Amir, and Tishby, Naftali. Query by
+committee made real. In Proceedings of the 18th International
+Conference on Neural Information Processing Systems, pp. 443–
+450. MIT Press, 2005.
+
+Lake, Brenden M, Salakhutdinov, Ruslan, and Tenenbaum,
+Joshua B. Human-level concept learning through probabilistic
+program induction. Science, 350(6266):1332–1338, 2015.
+
+Golbandi, Nadav, Koren, Yehuda, and Lempel, Ronny. On bootstrapping recommender systems. In Proceedings of the 19th
+ACM International Conference on Information and Knowledge
+Management, CIKM ’10, 2010.
+Golbandi, Nadav, Koren, Yehuda, and Lempel, Ronny. Adaptive
+bootstrapping of recommender systems using decision trees. In
+Proceedings of the Fourth ACM International Conference on
+Web Search and Data Mining, WSDM ’11, 2011.
+Hannun, Awni, Case, Carl, Casper, Jared, Catanzaro, Bryan,
+Diamos, Greg, Elsen, Erich, Prenger, Ryan, Satheesh, Sanjeev, Sengupta, Shubho, Coates, Adam, and Ng, Andrew Y.
+Deep speech: Scaling up end-to-end speech recognition. arXiv
+preprint arXiv:1412.5567v2, 2014.
+Harpale, Abhay S and Yang, Yiming. Personalized active learning
+for collaborative filtering. In Proceedings of the 31st annual
+international ACM SIGIR conference on Research and development in information retrieval, pp. 91–98. ACM, 2008.
+He, Kaiming, Zhang, Xiangyu, Ren, Shaoqing, and Sun, Jian.
+Deep residual learning for image recognition. In Conference on
+Computer Vision and Pattern Recognition (CVPR), 2016.
+
+Lewis, David D and Gale, William A. A sequential algorithm for
+training text classifiers. In Proceedings of the 17th annual international ACM SIGIR conference on Research and development
+in information retrieval, pp. 3–12. Springer-Verlag New York,
+Inc., 1994.
+Lika, Blerina, Kolomvatsos, Kostas, and Hadjiefthymiades,
+Stathes. Facing the cold start problem in recommender systems.
+Expert Systems with Applications, 41(4):2065–2073, 2014.
+Maas, Andrew L, Hannun, Awni Y, and Ng, Andrew Y. Rectifier nonlinearities improve neural network acoustic models.
+International Conference on Machine Learning (ICML), 2013.
+Rashid, Al Mamunur, Albert, Istvan, Cosley, Dan, Lam, Shyong K,
+McNee, Sean M, Konstan, Joseph A, and Riedl, John. Getting
+to know you: learning new user preferences in recommender
+systems. In Proceedings of the 7th international conference on
+Intelligent user interfaces, pp. 127–134. ACM, 2002.
+Rashid, Al Mamunur, Karypis, George, and Riedl, John. Learning
+preferences of new users in recommender systems: an information theoretic approach. ACM SIGKDD Explorations Newsletter,
+10(2):90–100, 2008.
+
+Hochreiter, Sepp and Schmidhuber, Jürgen. Long short-term memory. Neural Computation, 9.8:1735–1780, 1997.
+
+Ross, Stéphane and Bagnell, J. Andrew.
+Reinforcement
+and imitation learning via interactive no-regret learning.
+arXiv:14065979v1 [cs.LG], 2014.
+
+Hoi, Steven CH, Jin, Rong, Zhu, Jianke, and Lyu, Michael R.
+Batch mode active learning and its application to medical image classification. In Proceedings of the 23rd international
+conference on Machine learning, pp. 417–424. ACM, 2006.
+
+Salimans, Tim and Kingma, Diederik P. Weight normalization: A
+simple reparameterization to accelerate training of deep neural networks. In Advances in Neural Information Processing
+Systems (NIPS). 2016.
+
+Houlsby, Neil, Huszár, Ferenc, Ghahramani, Zoubin, and Lengyel,
+Máté. Bayesian active learning for classification and preference
+learning. arXiv preprint arXiv:1112.5745, 2011.
+
+Santoro, Adam, Bartunov, Sergey, Botvinick, Matthew, Wierstra,
+Daan, and Lillicrap, Timothy. One-shot learning with memoryaugmented neural networks. arXiv preprint arXiv:1605.06065,
+2016.
+
+Houlsby, Neil, Hernandez, Jose, and Ghahramani, Zoubin. Coldstart active learning with robust ordinal matrix factorization. In
+Proceedings of The 31st International Conference on Machine
+Learning, pp. 766–774, 2014.
+
+Schölkopf, Bernhard and Smola, Alexander J. Learning with
+kernels: support vector machines, regularization, optimization,
+and beyond, 2002.
+
+Learning Algorithms for Active Learning
+Schulman, John, Heess, Nicolas, Weber, Theophane, and Abbeel,
+Pieter. Gradient estimation using stochastic computation graphs.
+In Advances in Neural Information Processing Systems (NIPS),
+2016a.
+Schulman, John, Moritz, Philipp, Levine, Sergey, Jordan,
+Michael I, and Abbeel, Pieter. High-dimensional continuous
+control using generalized advantage estimation. In International
+Conference on Learning Representations (ICLR), 2016b.
+Schuster, M. and Paliwal, K.K. Bidirectional recurrent neural
+networks. Transactions on Signal Processing, 45(11), 1997.
+Settles, Burr. Active learning literature survey. University of
+Wisconsin, Madison, 52(55-66):11, 2010.
+Sun, Mingxuan, Li, Fuxin, Lee, Joonseok, Zhou, Ke, Lebanon,
+Guy, and Zha, Hongyuan. Learning multiple-question decision
+trees for cold-start recommendation. In Proceedings of the Sixth
+ACM International Conference on Web Search and Data Mining,
+WSDM ’13, 2013a.
+Sun, Mingxuan, Li, Fuxin, Lee, Joonseok, Zhou, Ke, Lebanon,
+Guy, and Zha, Hongyuan. Learning multiple-question decision
+trees for cold-start recommendation. In Proceedings of the sixth
+ACM international conference on Web search and data mining,
+pp. 445–454. ACM, 2013b.
+Sun, Wen, Venkatraman, Arun, Gordon, Geoffrey J, Boots, Byron,
+and Bagnell, J Andrew. Deeply aggrevated: Differentiable imitation learning for sequential prediction. International Conference
+on Machine Learning (ICML), 2017.
+Tong, Simon and Chang, Edward. Support vector machine active
+learning for image retrieval. In Proceedings of the ninth ACM
+international conference on Multimedia, pp. 107–118. ACM,
+2001.
+Vinyals, Oriol, Blundell, Charles, Lillicrap, Tim, Wierstra, Daan,
+et al. Matching networks for one shot learning. In Advances in
+Neural Information Processing Systems (NIPS), pp. 3630–3638,
+2016.
+Woodward, Mark and Finn, Chelsea. Active one-shot learning. In
+NIPS Workshop, 2016.
+Wu, Yonghui, Schuster, Mike, Chen, Zhifeng, Le, Quoc V.,
+Norouzi, Mohammad, Macherey, Wolfgang, Krikun, Maxim,
+Cao, Yuan, Gao, Qin, Macherey, Klaus, Klingner, Jeff, Shah,
+Apurva, Johnson, Melvin, Liu, Xiaobing, Kaiser, Lukasz,
+Gouws, Stephan, Kato, Yoshikiyo, Kudo, Taku, Kazawa, Hideto,
+Stevens, Keith, Kurian, George, Patil, Nishant, Wang, Wei,
+Young, Cliff, Smith, Jason, Riesa, Jason, Rudnick, Alex,
+Vinyals, Oriol, Corrado, Greg, Hughes, Macduff, and Dean,
+Jeffrey. Google’s neural machine translation system: Bridging
+the gap between human and machine translation. arXiv preprint
+arXiv:1609.08144, 2016.
+Zhang, Jiakai and Cho, Kyunghyun. Query-efficient imitation
+learning for end-to-end autonomous driving. American Association for Artificial Intelligence (AAAI), 2017.
+Zilberstein, Shlomo. Using anytime algorithms in intelligent systems. AI magazine, 17(3):73, 1996.
 
 

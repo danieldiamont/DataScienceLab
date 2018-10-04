@@ -1,1255 +1,1068 @@
-Dynamic Word Embeddings
+Sliced Wasserstein Kernel for Persistence Diagrams
 
-Robert Bamler 1 Stephan Mandt 1
+Mathieu Carrière 1 Marco Cuturi 2 Steve Oudot 1
 
 Abstract
-We present a probabilistic language model for
-time-stamped text data which tracks the semantic evolution of individual words over time.
-The model represents words and contexts by
-latent trajectories in an embedding space. At
-each moment in time, the embedding vectors
-are inferred from a probabilistic version of
-word2vec (Mikolov et al., 2013b). These embedding vectors are connected in time through
-a latent diffusion process. We describe two
-scalable variational inference algorithms—skipgram smoothing and skip-gram filtering—that allow us to train the model jointly over all times;
-thus learning on all data while simultaneously allowing word and context vectors to drift. Experimental results on three different corpora demonstrate that our dynamic model infers word embedding trajectories that are more interpretable
-and lead to higher predictive likelihoods than
-competing methods that are based on static models trained separately on time slices.
+Persistence diagrams (PDs) play a key role in
+topological data analysis (TDA), in which they
+are routinely used to describe topological properties of complicated shapes. PDs enjoy strong
+stability properties and have proven their utility
+in various learning contexts. They do not, however, live in a space naturally endowed with a
+Hilbert structure and are usually compared with
+non-Hilbertian distances, such as the bottleneck
+distance. To incorporate PDs in a convex learning pipeline, several kernels have been proposed
+with a strong emphasis on the stability of the resulting RKHS distance w.r.t. perturbations of the
+PDs. In this article, we use the Sliced Wasserstein approximation of the Wasserstein distance
+to define a new kernel for PDs, which is not only
+provably stable but also discriminative (with a
+bound depending on the number of points in the
+PDs) w.r.t. the first diagram distance between
+PDs. We also demonstrate its practicality, by developing an approximation technique to reduce
+kernel computation time, and show that our proposal compares favorably to existing kernels for
+PDs on several benchmarks.
 
 1. Introduction
-Language evolves over time and words change their meaning due to cultural shifts, technological inventions, or political events. We consider the problem of detecting shifts
-in the meaning and usage of words over a given time span
-based on text data. Capturing these semantic shifts requires
-a dynamic language model.
-Word embeddings are a powerful tool for modeling semantic relations between individual words (Bengio et al.,
-2003; Mikolov et al., 2013a; Pennington et al., 2014; Mnih
-& Kavukcuoglu, 2013; Levy & Goldberg, 2014; Vilnis &
-McCallum, 2014; Rudolph et al., 2016). Word embed1
-Disney Research, 4720 Forbes Avenue, Pittsburgh,
-PA 15213, USA. Correspondence to:
-Robert Bamler
-<Robert.Bamler@disneyresearch.com>,
-Stephan
-Mandt
-<Stephan.Mandt@disneyresearch.com>.
+Topological Data Analysis (TDA) is an emerging trend in
+data science, grounded on topological methods to design
+descriptors for complex data—see e.g. (Carlsson, 2009) for
+an introduction to the subject. The descriptors of TDA can
+be used in various contexts, in particular statistical learning and geometric inference, where they provide useful insight into the structure of data. Applications of TDA can
+be found in a number of scientific areas, including computer vision (Li et al., 2014), materials science (Hiraoka
+et al., 2016), and brain science (Singh et al., 2008), to name
+1
 
+INRIA Saclay 2 CREST, ENSAE, Université Paris
+Saclay.
+Correspondence to: Mathieu Carrière <mathieu.carriere@inria.fr>.
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-dings model the distribution of words based on their surrounding words in a training corpus, and summarize these
-statistics in terms of low-dimensional vector representations. Geometric distances between word vectors reflect
-semantic similarity (Mikolov et al., 2013a) and difference
-vectors encode semantic and syntactic relations (Mikolov
-et al., 2013c), which shows that they are sensible representations of language. Pre-trained word embeddings are useful for various supervised tasks, including sentiment analysis (Socher et al., 2013b), semantic parsing (Socher et al.,
-2013a), and computer vision (Fu & Sigal, 2016). As unsupervised models, they have also been used for the exploration of word analogies and linguistics (Mikolov et al.,
-2013c).
-Word embeddings are currently formulated as static models, which assumes that the meaning of any given word is
-the same across the entire text corpus. In this paper, we
-propose a generalization of word embeddings to sequential
-data, such as corpora of historic texts or streams of text in
-social media.
-Current approaches to learning word embeddings in a dynamic context rely on grouping the data into time bins
-and training the embeddings separately on these bins (Kim
-et al., 2014; Kulkarni et al., 2015; Hamilton et al., 2016).
-This approach, however, raises three fundamental problems. First, since word embedding models are non-convex,
-training them twice on the same data will lead to different
-results. Thus, embedding vectors at successive times can
-only be approximately related to each other, and only if the
-embedding dimension is large (Hamilton et al., 2016). Second, dividing a corpus into separate time bins may lead to
-training sets that are too small to train a word embedding
-model. Hence, one runs the risk of overfitting to few data
-whenever the required temporal resolution is fine-grained,
-as we show in the experimental section. Third, due to the
-finite corpus size the learned word embedding vectors are
-subject to random noise. It is difficult to disambiguate this
-noise from systematic semantic drifts between subsequent
-times, in particular over short time spans, where we expect
-only minor semantic drift.
-In this paper, we circumvent these problems by introducing
-a dynamic word embedding model. Our contributions are
-as follows:
-
-Dynamic Word Embeddings
-1.0
-
-1. marginal
-
-cosine distance
-
-2. computer
-
-text
-productivity
-photographs
-diminishing
-elasticity
-preface
-references
-aggregate
-memorandum
-utility
-
-0.8
-0.6
-
-exact
-accurate
-sampling
-observer
-clever
-
-software
-user
-machine
-device
-printer
-
-quam
-aut
-quod
-Arizona
-auf
-
-3. versus
-
-4. commitment
-
-Effects
-Effect
-Influence
-Amer
-pp.
-
-nomination
-offender
-custody
-assignment
-voting
-
-5. radio
-
-willingness
-loyalty
-dedication
-adherence
-devotion
-
-peripheral
-basal
-os
-cortex
-nuclear
-
-TV
-telephone
-newspapers
-phone
-computer
-
-0.4
-0.2
-0.0
-1.0
-
-date
-6. potential
-
-objective
-perception
-subjective
-verb
-verbs
-
-cosine distance
-
-0.8
-0.6
-
-date
-7. notably
-
-possibilities
-potentially
-possibility
-risks
-likelihood
-
-materially
-faithfully
-effectually
-clearly
-abundantly
-
-8.date
-peer
-
-especially
-particularly
-including
-notable
-exemplified
-
-nobleman
-lawyer
-knight
-member
-nobility
-
-date
-10. software
-
-date
-9. significantly
-emphatically considerably
-substantially
-significant
-gestures
-greatly
-smiled
-materially
-sharply
-slightly
-
-classroom
-cognitive
-networks
-teacher
-parent
-
-processing
-Planning
-Freud
-enzyme
-specialized
-
-computer
-Web
-technology
-applications
-design
-
-0.4
-0.2
-0.0
-
-1850
-
-1900
-
-1950
-date
-
-2000
-
-1850
-
-1900
-
-1950
-
-2000
-
-1850
-
-1900
-
-date
-
-1950
-
-2000
-
-1850
-
-1900
-
-date
-
-1950
-date
-
-2000
-
-1850
-
-1900
-
-1950
-
-2000
-
-date
-
-Figure 1. Evolution of the 10 words that changed the most in cosine distance from 1850 to 2008 on Google books, using skip-gram
-filtering (proposed). Red (blue) curves correspond to the five closest words at the beginning (end) of the time span, respectively.
-
-• We derive a probabilistic state space model where
-word and context embeddings evolve in time according to a diffusion process. It generalizes the skip-gram
-model (Mikolov et al., 2013b; Barkan, 2017) to a dynamic setup, which allows end-to-end training. This
-leads to continuous embedding trajectories, smoothes
-out noise in the word-context statistics, and allows us
-to share information across all times.
-• We propose two scalable black-box variational inference algorithms (Ranganath et al., 2014; Rezende
-et al., 2014) for filtering and smoothing. These algorithms find word embeddings that generalize better to held-out data. Our smoothing algorithm carries
-out efficient black-box variational inference for structured Gaussian variational distributions with tridiagonal precision matrices, and applies more broadly.
-• We analyze three massive text corpora that span over
-long periods of time. Our approach allows us to automatically find the words whose meaning changes the
-most. It results in smooth word embedding trajectories and therefore allows us to measure and visualize the continuous dynamics of the entire embedding
-cloud as it deforms over time.
-Figure 1 exemplifies our method. The plot shows a fit of
-our dynamic skip-gram model to Google books (we give
-details in section 5). We show the ten words whose meaning changed most drastically in terms of cosine distance
-over the last 150 years. We thereby automatically discover words such as “computer” or “radio” whose meaning
-changed due to technological advances, but also words like
-
-“peer” and “notably” whose semantic shift is less obvious.
-Our paper is structured as follows. In section 2 we discuss
-related work, and we introduce our model in section 3. In
-section 4 we present two efficient variational inference algorithms for our dynamic model. We show experimental
-results in section 5. Section 6 summarizes our findings.
-
-2. Related Work
-Probabilistic models that have been extended to latent time
-series models are ubiquitous (Blei & Lafferty, 2006; Wang
-et al., 2008; Sahoo et al., 2012; Gultekin & Paisley, 2014;
-Charlin et al., 2015; Ranganath et al., 2015; Jerfel et al.,
-2017), but none of them relate to word embeddings. The
-closest of these models is the dynamic topic model (Blei &
-Lafferty, 2006; Wang et al., 2008), which learns the evolution of latent topics over time. Topic models are based
-on bag-of-word representations and thus treat words as
-symbols without modelling their semantic relations. They
-therefore serve a different purpose.
-Mikolov et al. (2013a;b) proposed the skip-gram model
-with negative sampling (word2vec) as a scalable word embedding approach that relies on stochastic gradient descent. This approach has been formulated in a Bayesian
-setup (Barkan, 2017), which we discuss separately in section 3.1. These models, however, do not allow the word
-embedding vectors to change over time.
-Several authors have analyzed different statistics of text
-data to analyze semantic changes of words over time (Mihalcea & Nastase, 2012; Sagi et al., 2011; Kim et al., 2014;
-
-Dynamic Word Embeddings
-
-trained end-to-end and scales to massive data by means of
-approximate Bayesian inference.
-
-Figure 2. a) Bayesian skip-gram model (Barkan, 2017). b) The
-dynamic skip-gram model (proposed) connects T copies of the
-Bayesian skip-gram model via a latent time series prior on the
-embeddings.
-
-Kulkarni et al., 2015; Hamilton et al., 2016). None of them
-explicitly model a dynamical process; instead, they slice
-the data into different time bins, fit the model separately
-on each bin, and further analyze the embedding vectors in
-post-processing. By construction, these static models can
-therefore not share statistical strength across time. This
-limits the applicability of static models to very large corpora.
-Most related to our approach are methods based on word
-embeddings. Kim et al. (2014) fit word2vec separately on
-different time bins, where the word vectors obtained for
-the previous bin are used to initialize the algorithm for the
-next time bin. The bins have to be sufficiently large and the
-found trajectories are not as smooth as ours, as we demonstrate in this paper. Hamilton et al. (2016) also trained
-word2vec separately on several large corpora from different decades. If the embedding dimension is large enough
-(and hence the optimization problem less non-convex), the
-authors argue that word embeddings at nearby times approximately differ by a global rotation in addition to a small
-semantic drift, and they approximately compute this rotation. As the latter does not exist in a strict sense, it is
-difficult to distinguish artifacts of the approximate rotation
-from a true semantic drift. As discussed in this paper, both
-variants result in trajectories which are noisier.1
-
-3. Model
-We propose the dynamic skip-gram model, a generalization of the skip-gram model (word2vec) (Mikolov et al.,
-2013b) to sequential text data. The model finds word embedding vectors that continuously drift over time, allowing
-to track changes in language and word usage over short and
-long periods of time. Dynamic skip-gram is a probabilistic
-model which combines a Bayesian version of the skip-gram
-model (Barkan, 2017) with a latent time series. It is jointly
-1
-
-Rudolph & Blei (2017) independently developed a similar
-model, using a different likelihood model. Their approach uses
-a non-Bayesian treatment of the latent embedding trajectories,
-which makes the approach less robust to noise when the data per
-time step is small.
-
-The observed data consist of sequences of words from a
-finite vocabulary of size L. In section 3.1, all sequences
-(sentences from books, articles, or tweets) are considered
-time-independent; in section 3.2 they will be associated
-with different time stamps. The goal is to maximize the
-probability of every word that occurs in the data given its
-surrounding words within a so-called context window. As
-detailed below, the model learns two vectors ui , vi ∈ Rd
-for each word i in the vocabulary, where d is the embedding dimension. We refer to ui as the word embedding
-vector and to vi as the context embedding vector.
-3.1. Bayesian Skip-Gram Model
-The Bayesian skip-gram model (Barkan, 2017) is a probabilistic version of word2vec (Mikolov et al., 2013b) and
-forms the basis of our approach. The graphical model is
-shown in Figure 2a). For each pair of words i, j in the
-vocabulary, the model assigns probabilities that word i appears in the context of word j. This probability is σ(u>
-i vj )
-with the sigmoid function σ(x) = 1/(1 + e−x ). Let zij ∈
-{0, 1} be an indicator variable that denotes a draw from that
-probability distribution, hence p(zij = 1) = σ(u>
-i vj ). The
-generative model assumes that many word-word pairs (i, j)
-are uniformly drawn from the vocabulary and tested for being a word-context pair; hence a separate random indicator
-zij is associated with each drawn pair.
-Focusing on words and their neighbors in a context window, we collect evidence of word-word pairs for which
-zij = 1. These are called the positive examples. Denote n+
-ij the number of times that a word-context pair
-(i, j) is observed in the corpus. This is a sufficient statistic of the model, and its contribution to the likelihood is
-n+
->
-ij . However, the generative prop(n+
-ij |ui , vj ) = σ(ui vj )
-cess also assumes the possibility to reject word-word pairs
-if zij = 0. Thus, one needs to construct a fictitious second training set of rejected word-word pairs, called negative examples. Let the corresponding counts be n−
-ij . The
-total likelihood of both positive and negative examples is
-then
-p(n+ , n− |U, V ) =
-
-L
-Y
-
-+
-
-−
-
-nij
-nij
-σ(u>
-σ(−u>
-. (1)
-i vj )
-i vj )
-
-i,j=1
-
-Above we used the antisymmetry σ(−x) = 1 − σ(x). In
-our notation, dropping the subscript indices for n+ and n−
-denotes the entire L × L matrices, U = (u1 , · · · , uL ) ∈
-Rd×L is the matrix of all word embedding vectors, and V
-is defined analogously for the context vectors. To construct negative examples, one typically chooses n−
-ij ∝
-P (i)P (j)3/4 (Mikolov et al., 2013b), where P (i) is the
-
-Dynamic Word Embeddings
-
-frequency of word i in the training corpus. Thus, n− is
-well-defined up to a constant factor which has to be tuned.
-Defining n± = (n+ , n− ) the combination of both positive
-and negative examples, the resulting log likelihood is
-log p(n± |U, V ) =
-L
+a few. The tools developed in TDA are built upon persistent homology theory (Edelsbrunner & Harer, 2010; Oudot,
+2015), and their main output is a descriptor called persistence diagram (PD), which encodes the topology of a space
+at all scales in the form of a point cloud with multiplicities
+in the plane R2 —see Section 2.1 for more details.
+PDs as features. The main strength of PDs is their stability with respect to perturbations of the data (Chazal et al.,
+2009b; 2013). On the downside, their use in learning tasks
+is not straightforward. Indeed, a large class of learning
+methods, such as SVM or PCA, requires a Hilbert structure on the descriptors space, which is not the case for the
+space of PDs. Actually, many simple operators of Rn , such
+as addition, average or scalar product, have no analogues
+in that space. Mapping PDs to vectors in Rn or in some
+infinite-dimensional Hilbert space is one possible approach
+to facilitate their use in discriminative settings.
+Related work. A series of recent contributions have proposed kernels for PDs, falling into two classes. The first
+class of methods builds explicit feature maps: One can,
+for instance, compute and sample functions extracted from
+PDs (Bubenik, 2015; Adams et al., 2017; Robins & Turner,
+2016); sort the entries of the distance matrices of the
+PDs (Carrière et al., 2015); treat the PD points as roots
+of a complex polynomial, whose coefficients are concatenated (Fabio & Ferri, 2015). The second class of methods, which is more relevant to our work, defines implicitly
+feature maps by focusing instead on building kernels for
+PDs. For instance, Reininghaus et al. (2015) use solutions
+of the heat differential equation in the plane and compare
+them with the usual L2 (R2 ) dot product. Kusano et al.
+(2016) handle a PD as a discrete measure on the plane, and
+follow by using kernel mean embeddings with Gaussian
+kernels—see Section 4 for precise definitions. Both kernels are provably stable, in the sense that the metric they
+induce in their respective reproducing kernel Hilbert space
+(RKHS) is bounded above by the distance between PDs.
+Although these kernels are injective, there is no evidence
+that their induced RKHS distances are discriminative and
+therefore follow the geometry of the bottleneck distances,
+which are more widely accepted distances to compare PDs.
+Contributions. In this article, we use the sliced Wasserstein (SW) distance (Rabin et al., 2011) to define a new ker-
+
+Sliced Wasserstein Kernel for Persistence Diagrams
+
+nel for PDs, which we prove to be both stable and discriminative. Specifically, we provide distortion bounds on the
+SW distance that quantify its ability to mimic bottleneck
+distances between PDs. This is in contrast to other kernels
+for PDs, which only focus on stability. We also propose
+a simple approximation algorithm to speed up the computation of that kernel, confirm experimentally its discriminative power and show that it outperforms experimentally
+both proposals of (Kusano et al., 2016) and (Reininghaus
+et al., 2015) in several supervised classification problems.
+
+2. Background on TDA and Kernels
+We briefly review in this section relevant material on TDA,
+notably persistence diagrams, and technical properties of
+positive and negative definite kernel functions.
+
+P
+P
+is defined as: c(Γ) := ( x c(x) + y c0 (y))1/p . We then
+define the pth diagram distance dp as the cost of the best
+partial bijection between the PDs:
+dp (Dg1 , Dg2 ) = inf c(Γ).
+Γ
+
+In the particular case p = +∞, the cost of Γ is defined
+as c(Γ) := max{maxx δ(x) + maxy δ 0 (y)}. The corresponding distance d∞ is often called the bottleneck distance. One can show that dp → d∞ when p → +∞. A
+fundamental property of PDs is their stability with respect
+to (small) perturbations of their originating functions. Indeed, the stability theorem (Bauer & Lesnick, 2015; Chazal
+et al., 2009a; 2016; Cohen-Steiner et al., 2007) asserts that
+for any f, g : X → R, we have
+d∞ (Dg f, Dg g) ≤ kf − gk∞ ,
+
+(1)
+
+2.1. Persistent Homology
+
+See again Figure 1 for an illustration.
+
+Persistent homology (Zomorodian & Carlsson, 2005;
+Edelsbrunner & Harer, 2008; Oudot, 2015) is a technique
+inherited from algebraic topology for computing stable signatures on real-valued functions. Given f : X → R as
+input, persistent homology outputs a planar point set with
+multiplicities, called the persistence diagram of f and denoted by Dg f . See Figure 1 for an example. To understand the meaning of each point in this diagram, it suffices
+to know that, to compute Dg f , persistent homology considers the family of sublevel sets of f , i.e. the sets of the
+form f −1 ((−∞, t]) for t ∈ R, and it records the topological events (e.g. creation or merge of a connected component, creation or filling of a loop, void, etc.) that occur in f −1 ((−∞, t]) as t ranges from −∞ to +∞. Then,
+each point p ∈ Dg f represents the lifespan of a particular topological feature (connected component, loop, void,
+etc.), with its creation and destruction times as coordinates.
+See again Figure 1 for an illustration.
+
+In practice, PDs can be used as descriptors for data via the
+choice of appropriate filtering functions f , e.g. distance to
+the data in the ambient space, eccentricity, curvature, etc.
+The main strengths of the obtained descriptors are: (a) to
+be provably stable as mentioned previously; (b) to be invariant under reparametrization of the data; and (c) to encode information about the topology of the data, which is
+complementary and of an essentially different nature compared to geometric or statistical quantities. These properties have made persistence diagrams useful in a variety of
+contexts, including the ones mentioned in the introduction
+of the paper. For further details on persistent homology and
+on applications of PDs, the interested reader can refer e.g.
+to (Oudot, 2015) and the references therein.
+
+For the interested reader, we point out that the mathematical tool used by persistent homology to track the topological events in the family of sublevel sets is homological
+algebra, which turns the parametrized family of sublevel
+sets into a parametrized family of vector spaces and linear
+maps. Computing persistent homology then boils down to
+computing a family of bases for the vector spaces, which
+are compatible with the linear maps.
+Distance between PDs. We now define the pth diagram
+distance between PDs. Let p ∈ N and Dg1 , Dg2 be two
+PDs. Let Γ : Dg1 ⊇ A → B ⊆ Dg2 be a partial bijection
+between Dg1 and Dg2 . Then, for any point x ∈ A, the
+cost of x is defined as c(x) := kx − Γ(x)kp∞ , and for any
+point y ∈ (Dg1 t Dg2 ) \ (A t B), the cost of y is defined
+as c0 (y) := ky − π∆ (y)kp∞ , where π∆ is the projection
+onto the diagonal ∆ = {(x, x) | x ∈ R}. The cost c(Γ)
+
+2.2. Kernel Methods
+Positive Definite Kernels. Given a set X, a function
+k : X × X → R is called a positive definite kernel if
+for all integers n, for all families x1 , ..., xn of points in
+X, the matrix [k(xi , xj )]i,j is itself positive semi-definite.
+For brevity we will refer to positive definite kernels as
+kernels in the rest of the paper. It is known that kernels
+generalize scalar products, in the sense that, given a kernel k, there exists a Reproducing Kernel Hilbert Space
+(RKHS) Hk and a feature map φ : X → Hk such that
+k(x1 , x2 ) = hφ(x1 ), φ(x2 )iHk . A kernel k also induces a
+distance dk on X that can be computed as the Hilbert norm
+of the difference between two embeddings:
+def.
+
+d2k (x1 , x2 ) = k(x1 , x1 ) + k(x2 , x2 ) − 2 k(x1 , x2 ).
+We will be particularly interested in this distance, since one
+of the goals we will aim for will be that of designing a kernel k for persistence diagrams such that dk has low distortion with respect to d1 .
+
+Sliced Wasserstein Kernel for Persistence Diagrams
+R
+
++∞
+
+R
+
+s0
+
+s
+
+f (s)
+
+p
+p0
+q
+
+q0
 X
 
-
-−
->
->
-n+
-ij log σ(ui vj ) + nij log σ(−ui vj ) . (2)
+(a)
 
-In practice, σ0  σt , so the damping to the origin is very
-weak. This is also called Ornstein-Uhlenbeck process (Uhlenbeck & Ornstein, 1930). We recover the Wiener process
-for σ0 → ∞, but σ0 < ∞ prevents the latent time series
-from diverging to infinity. At time index t = 1, we define
-p(U1 |U0 ) ≡ N (0, σ02 I) and do the same for V1 .
-Our joint distribution factorizes as follows:
+X
 
-i,j=1
+-∞
 
-This is exactly the objective of the (non-Bayesian) skipgram model, see (Mikolov et al., 2013b). The count matrices n+ and n− are either pre-computed for the entire
-corpus, or estimated based on stochastic subsamples from
-the data in a sequential way, as done by word2vec. Barkan
-(2017) gives an approximate Bayesian treatment of the
-model with Gaussian priors on the embeddings.
-3.2. Dynamic Skip-Gram Model
-The key extension of our approach is to use a Kalman filter as a prior for the time-evolution of the latent embeddings (Welch & Bishop, 1995). This allows us to share
-information across all times while still allowing the embeddings to drift.
-Notation. We consider a corpus of T documents which
-were written at time stamps τ1 < . . . < τT . For each time
-step t ∈ {1, . . . , T } the sufficient statistics of word-context
-−
-pairs are encoded in the L × L matrices n+
-t , nt of positive
-+
-and negative counts with matrix elements nij,t and n−
-ij,t ,
-d×L
-respectively. Denote Ut = (u1,t , · · · , uL,t ) ∈ R
-the
-matrix of word embeddings at time t, and define Vt correspondingly for the context vectors. Let U, V ∈ RT ×d×L
-denote the tensors of word and context embeddings across
-all times, respectively.
-Model. The graphical model is shown in Figure 2b). We
-consider a diffusion process of the embedding vectors over
-time. The variance σt2 of the transition kernel is
-σt2 = D(τt+1 − τt ),
+f (p)
 
+(b)
+
++∞
+
+(c)
+
+Figure 1. Sketch of persistent homology: (a) the horizontal lines are the boundaries of sublevel sets f ((−∞, t]), which are colored in
+decreasing shades of grey. The vertical dotted lines are the boundaries of their different connected components. For instance, a new
+connected component is created in the sublevel set f −1 ((−∞, t]) when t = f (p), and it is merged (destroyed) when t = f (s); its
+lifespan is represented by a copy of the point with coordinates (f (p), f (s)) in the persistence diagram of f (Figure (c)); (b) a piecewiselinear approximation g (blue) of the function f (red) from sampled values; (c) superposition of Dg f (red) and Dg g (blue), showing the
+partial matching of minimum cost (magenta) between the two persistence diagrams.
+
+Negative Definite and RBF Kernels. A standard way
+to construct a kernel is to exponentiate the negative of a
+Euclidean distance. Indeed, the Gaussian kernel for vectors with parameter σ >0 does follow
+that template ap
+kx−yk2
+proach: kσ (x, y) = exp − 2σ2 . An important theorem of Berg et al. (1984) (Theorem 3.2.2, p.74) states that
+such an approach to build kernels, namely setting
+
+
+f (x, y)
+def.
+kσ (x, y) = exp −
+,
+2σ 2
+for an arbitrary function f can only yield a valid positive
+definite kernel for all σ > 0 if and only if f is a negative semi-definite function, namely that, for allP
+integers n,
+n
+∀x
+,
+...,
+x
+∈
+X,
+∀a
+,
+...,
+a
+∈
+R
+such
+that
+1
+n
+1
+n
+i ai = 0,
+P
+a
+a
+f
+(x
+,
+x
+)
+≤
+0.
+i
+j
+i
+j
+i,j
+Unfortunately, as observed in Appendix A of Reininghaus
+et al. (2014), d1 is not negative semi-definite (it only suffices to sample a family of point clouds to observe experimentally that more often than not the inequality above will
+be violated for a particular weight vector a). In this article,
+we use an approximation of d1 with the Sliced Wasserstein
+distance, which is provably negative semi-definite, and we
+use it to define a RBF kernel that can be easily tuned thanks
+to its bandwidth parameter σ.
+2.3. Wasserstein distance for unnormalized measures
+on R
+The Wasserstein distance (Villani, 2009, §6) is a distance
+between probability measures. For reasons that will become clear in the next section, we will focus on a variant of
+that distance: the 1-Wasserstein distance for nonnegative,
+not necessarily normalized, measures on the real line (Santambrogio, 2015, §2). Let µ and ν be two nonnegative mea-
+
+sures on the real line such that |µ| = µ(R) and |ν| = ν(R)
+are equal to the same number r. We define the three following objects:
+
+W(µ, ν) =
+
+ZZ
+
+inf
+|x − y|P (dx, dy)
+R×R
+Z
+Qr (µ, ν) = r |M −1 (x) − N −1 (x)|dx
+R
+Z
+L(µ, ν) =
+inf
+f (x)[µ(dx) − ν(dx)]
+P ∈Π(µ,ν)
+
+f ∈1−Lipschitz
+
+(2)
 (3)
-
-where D is a global diffusion constant and (τt+1 −τt ) is the
-time between subsequent observations (Welch & Bishop,
-1995). At every time step t, we add an additional Gaussian
-prior with zero mean and variance σ02 which prevents the
-embedding vectors from growing very large, thus
-p(Ut+1 |Ut ) ∝ N (Ut , σt2 ) N (0, σ02 ).
-Computing the normalization, this results in
-
-
-1
-Ut
-,
-I
-,
-Ut+1 |Ut ∼ N
-1 + σt2 /σ02 σt−2 + σ0−2
-
-
-Vt
-1
-Vt+1 |Vt ∼ N
-,
-I .
-1 + σt2 /σ02 σt−2 + σ0−2
-
 (4)
 
-p(n± , U, V ) =
+R
 
-TY
-−1
+where Π(µ, ν) is the set of measures on R2 with marginals
+µ and ν, and M −1 and N −1 the generalized quantile functions of the probability measures µ/r and ν/r respectively.
+Proposition 2.1. We have W = Qr = L. Additionally (i)
+Qr is negative definite on the space of measures of mass r;
+(ii) for any three positive measures µ, ν, γ such that |µ| =
+|ν|, we have L(µ + γ, ν + γ) = L(µ, ν).
+Equation (2) is the generic Kantorovich formulation of optimal transport, which is easily generalized to other cost
+functions and spaces, the variant being that we consider an
+unnormalized mass by reflecting it directly in the set Π.
+The equality between (2) and (3) is only valid for probability measures on the real line. Because the cost function
+| · | is homogeneous, we see that the scaling factor r can be
+removed when considering the quantile function and multiplied back. The equality between (2) and (4) is due to the
+well known Kantorovich duality for a distance cost (Villani, 2009, Particular case 5.4) which can also be trivially
+generalized to unnormalized measures, proving therefore
+the main statement of the proposition. The definition of
+Qr shows that the Wasserstein distance is the l1 norm of
 
-p(Ut+1 |Ut ) p(Vt+1 |Vt )
+Sliced Wasserstein Kernel for Persistence Diagrams
 
-t=0
+rM −1 − rN −1 , and is therefore a negative definite kernel
+(as the l1 distance between two direct representations of µ
+and ν as functions rM −1 and rN −1 ), proving point (i).
+The second statement is immediate.
+We conclude with an important practical remark:Pfor two
+n
+unnormalized
+Pn uniform empirical measures µ = i=1 δxi
+and ν =
+i=1 δyi of the same size, with ordered x1 ≤
+·P
+· · ≤ xn and y1 ≤ · · · ≤ yn , one has: L(µ, ν) =
+n
+n
+i=1 |xi −yi | = kX −Y k1 , where X = (x1 , ..., xn ) ∈ R
+n
+and Y = (y1 , ..., yn ) ∈ R .
 
-×
+3. The Sliced Wasserstein Kernel
+In this section we define a new kernel between PDs, called
+the Sliced Wasserstein (SW) kernel, based on the Sliced
+Wasserstein metric of Rabin et al. (2011). The idea underlying this metric is to slice the plane with lines passing
+through the origin, to project the measures onto these lines
+where W is computed, and to integrate those distances over
+all possible lines. Formally:
+Definition 3.1. Given θ ∈ R2 with kθk2 = 1, let L(θ)
+denote the line {λ θ | λ ∈ R}, and let πθ : R2 → L(θ)
+be the orthogonal projectionPonto L(θ). Let Dg1 , Dg2
+θ
+be two PDs, and let µθ1 :=
+p∈Dg1 δπθ (p) and µ1∆ :=
+P
+θ
+p∈Dg1 δπθ ◦π∆ (p) , and similarly for µ2 , where π∆ is the
+orthogonal projection onto the diagonal. Then, the Sliced
+Wasserstein distance is defined as:
+Z
+def. 1
+W(µθ1 + µθ2∆ , µθ2 + µθ1∆ )dθ.
+SW(Dg1 , Dg2 ) =
+2π S1
+Note that, by symmetry, one can restrict on the half-circle
+[− π2 , π2 ] and normalize by π instead of 2π. Since Qr is negative semi-definite, we can deduce that SW itself is negative semi-definite:
+Lemma 3.2. Let X be the set of bounded and finite PDs.
+Then, SW is negative semi-definite on X.
+P
+Proof. Let n ∈ N∗ , a1 , ..., an ∈ R such that i ai = 0 and
+θ
+θ
+Dg1 , ..., Dgn ∈ X. Given 1 ≤ i ≤
+P
+Pn, we let µ̃i := µi +
+θ
+δ
+, µ̃
+:=
+q∈Dgk ,k6
+p∈Dgk ,k6=i,j δπθ ◦π∆ (p)
+P=i πθ ◦π∆ (q) ij∆
+and d = i |Dgi |. Then:
+X
+ai aj W(µθi + µθj∆ , µθj + µθi∆ )
+i,j
 
-T Y
-L
-Y
+=
 
-p(n±
-ij,t |ui,t , vj,t ) (7)
+X
 
-t=1 i,j=1
+=
 
-The prior model enforces that the model learns embedding
-vectors which vary smoothly across time. This allows to associate words unambiguously with each other and to detect
-semantic changes. The model efficiently shares information across the time domain, which allows to fit the model
-even in setups where the data at every given point in time
-are small, as long as the data in total are large.
+X
 
-4. Inference
-We discuss two scalable approximate inference algorithms.
-Filtering uses only information from the past; it is required
-in streaming applications where the data are revealed to
-us sequentially. Smoothing is the other inference method,
-which learns better embeddings but requires the full sequence of documents ahead of time.
-In Bayesian inference, we start by formulating a joint distribution (Eq. 7) over observations n± and parameters U
-and V , and we are interested in the posterior distribution
-over parameters conditioned on observations,
-p(U, V |n± ) = R
+i,j
 
-p(n± , U, V )
-p(n± , U, V ) dU dV
+i,j
 
-(8)
+=
 
-The problem is that the normalization is intractable. In variational inference (VI) (Jordan et al., 1999; Blei et al., 2016)
-one sidesteps this problem and approximates the posterior
-with a simpler variational distribution qλ (U, V ) by minimizing the Kullback-Leibler (KL) divergence to the posterior. Here, λ summarizes all parameters of the variational
-distribution, such as the means and variances of a Gaussian,
-see below. Minimizing the KL divergence is equivalent to
-optimizing the evidence lower bound (ELBO) (Blei et al.,
-2016),
+X
+i,j
 
-(5)
+ai aj L(µθi + µθj∆ , µθj + µθi∆ )
+ai aj L(µθi + µθj∆ + µθij∆ , µθj + µθi∆ + µθij∆ )
+ai aj L(µ̃θi , µ̃θj ) =
 
-L(λ) = Eqλ [log p(n± , U, V )]−Eqλ [log qλ (U, V )]. (9)
+X
+i,j
 
-(6)
+ai aj Qd (µ̃θi , µ̃θj ) ≤ 0
 
-For a restricted class of models, the ELBO can be computed in closed-form (Hoffman et al., 2013). Our model is
+The result follows by linearity of integration.
 
-Dynamic Word Embeddings
-
-non-conjugate and requires instead black-box VI using the
-reparameterization trick (Rezende et al., 2014; Kingma &
-Welling, 2014).
-4.1. Skip-Gram Filtering
-In many applications such as streaming, the data arrive sequentially. Thus, we can only condition our model on past
-and not on future observations. We will first describe inference in such a (Kalman) filtering setup (Kalman et al.,
-1960; Welch & Bishop, 1995).
-In the filtering scenario, the inference algorithm iteratively
-updates the variational distribution q as evidence from each
-time step t becomes available. We thereby use a variational
-distribution that factorizes across all times, q(U, V ) =
-QT
-t=1 q(Ut , Vt ) and we update the variational factor at a
-given time t based on the evidence at time t and the approximate posterior of the previous time step. Furthermore, at
-every time t we use a fully-factorized distribution:
-q(Ut , Vt ) =
-
-L
-Y
-
-N (ui,t ; µui,t , Σui,t ) N (vi,t ; µvi,t .Σvi,t ),
-
-i=1
-
-The variational parameters are the means µui,t , µvi,t ∈ Rd
-and the covariance matrices Σui,t and Σvi,t , which we restrict to be diagonal (mean-field approximation).
-We now describe how we sequentially compute q(Ut , Vt )
-and use the result to proceed to the next time step. As other
-Markovian dynamical systems, our model assumes the following recursion,
-±
-±
-p(Ut , Vt |n±
-1:t ) ∝ p(nt |Ut , Vt ) p(Ut , Vt |n1:t−1 ).
-
-(10)
-
-Within our variational approximation, the ELBO
-P (Eq. 9)
-therefore separates into a sum of T terms, L = t Lt with
-±
-Lt = E[log p(n±
-t |Ut , Vt )] + E[log p(Ut , Vt |n1:t−1 )]
-
-− E[log q(Ut , Vt )],
-
-(11)
-
-where all expectations are taken under q(Ut , Vt ). We compute the entropy term −E[log q] in Eq. 11 analytically and
-estimate the gradient of the log likelihood by sampling
-from the variational distribution and using the reparameterization trick (Kingma & Welling, 2014; Salimans &
-Kingma, 2016). However, the second term of Eq. 11, containing the prior at time t, is still intractable. We approximate the prior as
-p(Ut , Vt |n±
-1:t−1 ) ≡
-
-
-p(Ut , Vt |Ut−1 , Vt−1 )
-
-
-≈ Eq(Ut−1 ,Vt−1 ) p(Ut , Vt |Ut−1 , Vt−1 ) .
-
-Ep(Ut−1 ,Vt−1 |n±
-
-1:t−1 )
-
-(12)
-
-The remaining expectation involves only Gaussians and
-can be carried-out analytically. The resulting approximate
-
-prior is a fully factorized distribution p(Ut , Vt |n±
-1:t−1 ) ≈
-QL
-N
-(u
-;
-µ̃
-,
-Σ̃
-)
-N
-(v
-;
-µ̃
-,
-Σ̃
-)
-with
-i,t
-ui,t
-ui,t
-i,t
-vi,t
-vit
-i=1
-
-2 −1
-µ̃ui,t = Σ̃ui,t Σui,t−1 + σt I
-µui,t−1 ;
-h
-i−1
-(13)
-
-−1
-Σ̃ui,t = Σui,t−1 + σt2 I
-+ (1/σ02 )I
+Hence, the theorem of Berg et al. (1984) allows us to define
+a valid kernel with:
+
+
+SW(Dg1 , Dg2 )
+def.
+kSW (Dg1 , Dg2 ) = exp −
 .
-Analogous update equations hold for µ̃vi,t and Σ̃vi,t . Thus,
-the second contribution in Eq. 11 (the prior) yields a closedform expression. We can therefore compute its gradient.
-4.2. Skip-Gram Smoothing
-In contrast to filtering, where inference is conditioned on
-past observations until a given time t, (Kalman) smoothing
-performs inference based on the entire sequence of observations n±
-1:T . This approach results in smoother trajectories
-and typically higher likelihoods than with filtering, because
-evidence is used from both future and past observations.
-Besides the new inference scheme, we also use a different
-variational distribution. As the model is fitted jointly to all
-time steps, we are no longer restricted to a variational distribution that factorizes in time. For simplicity we focus here
-on the variational distribution for the word embeddings U ;
-the context embeddings V are treated identically. We use a
-factorized distribution over both embedding space and vocabulary space,
-q(U1:T ) =
+(5)
+2σ 2
+Metric equivalence. We now give the main theoretical
+result of this article, which states that SW is equivalent
+to d1 . This has to be compared with (Reininghaus et al.,
+2015) and (Kusano et al., 2016), which only prove stability and injectivity. Our equivalence result states that the
+kSW , in addition to be stable and injective, also preserves
+the metric between PDs, which should intuitively lead to
+an improvement of the classification power. This intuition
+is illustrated in Section 4 and Figure 4, where we show an
+improvement of classification accuracies on several benchmark applications.
+Theorem 3.3. Let X be the set of bounded PDs with cardinalities bounded by N ∈ N∗ . Let Dg1 , Dg2 ∈ X. Then,
+one has:
+√
+d1 (Dg1 , Dg2 )
+≤ SW(Dg1 , Dg2 ) ≤ 2 2d1 (Dg1 , Dg2 ),
+2M
+where M = 1 + 2N (2N − 1).
+Proof. Let sθ : Dg1 ∪ π∆ (Dg2 ) → Dg2 ∪ π∆ (Dg1 ) be the
+one-to-one bijection between Dg1 ∪ π∆ (Dg2 ) and Dg2 ∪
+π∆ (Dg1 ) induced by W(µθ1 + µθ2∆ , µθ2 + µθ1∆ ), and let s
+be the one-to-one bijection between Dg1 ∪ π∆ (Dg2 ) and
+Dg2 ∪ π∆ (Dg1 ) induced by the partial bijection achieving
+d1 (Dg1 , Dg2 ).
+Upper bound. Recall that kθk2 = 1. We have:
+X
+W(µθ1 + µθ2∆ , µθ2 + µθ1∆ ) =
+|hp − sθ (p), θi|
+X
+√ X
+kp − s(p)k∞
+≤
+|hp − s(p), θi| ≤ 2
+√
+≤ 2 2d1 (Dg1 , Dg2 ),
+where the sum is taken over all p ∈ Dg1 ∪ π∆ (Dg2 ). The
+upper bound follows by linearity.
+Lower bound. The idea is to use the fact that sθ is a
+piecewise-constant function of θ, and that it has at most
+2 + 2N (2N − 1) critical values Θ0 , ..., ΘM in [− π2 , π2 ]. Indeed, it suffices to look at all θ such that hp1 −p2 , θi = 0 for
+some p1 , p2 in Dg1 ∪ π∆ (Dg2 ) or Dg2 ∪ π∆ (Dg1 ). Then:
+Z Θi+1 X
+|hp − sθ (p), θi|dθ
+Θi
 
-L Y
-d
-Y
+=
+≥
 
-q(uik,1:T ).
+X
+X
 
-(14)
+Θi
 
-i=1 k=1
+kp − s (p)k2
 
-In the time domain, our variational approximation is structured. To simplify the notation we now drop the indices
-for words i and embedding dimension k, hence we write
-q(u1:T ) for q(uik,1:T ) where we focus on a single factor.
-This factor is a multivariate Gaussian distribution in the
-time domain with tridiagonal precision matrix Λ,
-q(u1:T ) = N (µ, Λ−1 )
+Z
 
-(15)
+Θi+1
 
-Both the means µ = µ1:T and the entries of the tridiagonal precision matrix Λ ∈ RT ×T are variational parameters.
-This gives our variational distribution the interpretation of a
-posterior of a Kalman filter (Blei & Lafferty, 2006), which
-captures correlations in time.
-We fit the variational parameters by training the model
-jointly on all time steps, using black-box VI and the reparameterization trick. As the computational complexity of
-an update step scales as Θ(L2 ), we first pretrain the model
-by drawing minibatches of L0 < L random words and
-L0 random contexts from the vocabulary (Hoffman et al.,
-2013). We then switch to the full batch to reduce the sampling noise. Since the variational distribution does not factorize in the time domain we always include all time steps
-{1, . . . , T } in the minibatch.
+Θi
 
-Dynamic Word Embeddings
+|cos(∠(p − sΘi (p), θ))|dθ
 
-We also derive an efficient algorithm that allows us to estimate the reparametrization gradient using Θ(T ) time and
-memory, while a naive implementation of black-box variational inference with our structured variational distribution
-would require Θ(T 2 ) of both resources. The main idea is to
-parametrize Λ = B > B in terms of its Cholesky decomposition B, which is bidiagonal (Kılıç & Stanica, 2013), and
-to express gradients of B −1 in terms of gradients of B. We
-use mirror ascent (Ben-Tal et al., 2001; Beck & Teboulle,
-2003) to enforce positive definiteness of B. The algorithm
-is detailed in our supplementary material.
+kp − sΘi (p)k2 (Θi+1 − Θi )2 /2π
 
-5. Experiments
-We evaluate our method on three time-stamped text corpora. We demonstrate that our algorithms find smoother
-embedding trajectories than methods based on a static
-model. This allows us to track semantic changes of individual words by following nearest-neighbor relations over
-time. In our quantitative analysis, we find higher predictive
-likelihoods on held-out data compared to our baselines.
-Algorithms and Baselines. We report results from our
-proposed algorithms from section 4 and compare against
-baselines from section 2:
-• SGI denotes the non-Bayesian skip-gram model
-with independent random initializations of word vectors (Mikolov et al., 2013b). We used our own implementation of the model by dropping the Kalman filtering prior and point-estimating embedding vectors.
-Word vectors at nearby times are made comparable by
-approximate orthogonal transformations, which corresponds to Hamilton et al. (2016).
-• SGP denotes the same approach as above, but with
-word and context vectors being pre-initialized with the
-values from the previous year, as in Kim et al. (2014).
-• DSG-F: dynamic skip-gram filtering (proposed).
-• DSG-S: dynamic skip-gram smoothing (proposed).
-Data and preprocessing. Our three corpora exemplify
-opposite limits both in the covered time span and in the
-amount of text per time step.
-1. We used data from the Google books corpus2 (Michel
-et al., 2011) from the last two centuries (T = 209).
-This amounts to 5 million digitized books and approximately 1010 observed words. The corpus consists of
-n-gram tables with n ∈ {1, . . . , 5}, annotated by year
-of publication. We considered the years from 1800 to
+≥ (Θi+1 − Θi )2 d1 (Dg1 , Dg2 )/2π,
+
+Sliced Wasserstein Kernel for Persistence Diagrams
+
+where the sum is again taken over all p ∈ Dg1 ∪ π∆ (Dg2 ),
+and where the inequality used to lower bound the integral
+of the cosine is obtained by concavity. The lower bound
+follows then from the Cauchy-Schwarz inequality.
+Note that the lower bound depends on the cardinalities of
+the PDs, and it becomes close to 0 if the PDs have a large
+number of points. On the other hand, the upper bound is
+oblivious to the cardinality. A corollary of Theorem 3.3
+is that dkSW , the distance induced by kSW in its RKHS, is
+also equivalent to d1 in a broader sense: there exist continuous, positive and monotone functions g, h such that
+g(0) = h(0) = 0 and g ◦ d1 ≤ dkSW ≤ h ◦ d1 .
+When the condition on the cardinalities of PDs is relaxed, e.g. when we only assume the PDs to be finite and
+bounded, with no uniform bound, the feature map φSW associated to kSW remains continuous and injective w.r.t. d1 .
+This means that kSW can be turned into a universal kernel
+by considering exp(kSW ) (cf Theorem 1 in (Kwitt et al.,
+2015)). This can be useful in a variety of tasks, including
+tests on distributions of PDs.
+Computation. In practice, we propose to approximate
+kSW in O(N log(N )) time using Algorithm 1. This algorithm first samples M directions in the half-circle S+
+1 ; it
+then computes, for each sample θi and for each PD Dg,
+the scalar products between the points of Dg and θi , to sort
+them next in a vector Vθi (Dg). Finally, the `1 -norm between the vectors is averaged
+PM over the sampled directions:
+1
+SWM (Dg1 , Dg2 ) = M
+i=1 kVθi (Dg1 ) − Vθi (Dg2 )k1 .
+Note that one can easily adapt the proof of Lemma 3.2 to
+show that SWM is negative semi-definite by using the linearity of the sum. Hence, this approximation remains a
+kernel. If the two PDs have cardinalities bounded by N ,
+then the running time of this procedure is O(M N log(N )).
+This approximation of kSW is useful since, as shown in
+Section 4, we have observed empirically that just a few
+directions are sufficient to get good classification accuracies. Note that the exact computation of kSW is also possible in O(N 2 log(N )) time using the algorithm described
+in (Carrière et al., 2017).
+
+4. Experiments
+In this section, we compare kSW to kPSS and kPWG on
+several benchmark applications for which PDs have been
+proven useful. We compare these kernels in terms of classification accuracies and computational cost. We review
+first our experimental setting, and then all our tasks.
+Experimental setting All kernels are handled with
+the LIBSVM (Chang & Lin, 2011) implementation
+of C-SVM, and results are averaged over 10 runs
+on a 2.4GHz Intel Xeon E5530 Quad Core.
+The
+
+Algorithm 1 Computation of SWM
+Input: Dg1 = {p11 ... p1N1 }, Dg2 = {p21 ... p2N2 }, M .
+Add π∆ (Dg1 ) to Dg2 and vice-versa.
+Let SWM = 0; θ = −π/2; s = π/M ;
+for i = 1 ... M do
+Store the products hp1k , θi in an array V1 ;
+Store the products hp2k , θi in an array V2 ;
+Sort V1 and V2 in ascending order;
+SWM = SWM + skV1 − V2 k1 ;
+θ = θ + s;
+end for
+Output: (1/π)SWM ;
+
+TASK
+O RBIT
+T EXTURE
+H UMAN
+A IRPLANE
+A NT
+B IRD
+F OUR L EG
+O CTOPUS
+F ISH
+
+T RAINING
+175
+240
+415
+300
+364
+257
+438
+334
+304
+
+T EST
+75
+240
+1618
+980
+1141
+832
+1097
+1447
+905
+
+L ABELS
+5
+24
+8
+4
+5
+4
+6
 2
-http://storage.googleapis.com/books/
-ngrams/books/datasetsv2.html
-
-2008 (the latest available). In 1800, the size of the data
-is approximately ∼ 7 · 107 words. We used the 5-gram
-counts, resulting in a context window size of 4.
-2. We used the “State of the Union” (SoU) addresses of
-U.S. presidents, which spans more than two centuries,
-resulting in T = 230 different time steps and approximately 106 observed words.3 Some presidents gave
-both a written and an oral address; if these were less
-than a week apart we concatenated them and used the
-average date. We converted all words to lower case
-and constructed the positive sample counts n+
-ij using
-a context window size of 4.
-3. We used a Twitter corpus of news tweets for 21 randomly drawn dates from 2010 to 2016. The median
-number of tweets per day is 722. We converted all
-tweets to lower case and used a context window size
-of 4, which we restricted to stay within single tweets.
-Hyperparameters. The vocabulary for each corpus was
-constructed from the 10,000 most frequent words throughout the given time period. In the Google books corpus, the
-number of words per year grows by a factor of 200 from the
-year 1800 to 2008. To avoid that the vocabulary is dominated by modern words we normalized the word frequencies separately for each year before adding them up.
-For the Google books corpus, we chose the embedding
-dimension d = 200, which was also used in Kim et al.
-(2014). We set d = 100 for SoU and Twitter, as d = 200
-resulted inPoverfittingPon these much smaller corpora. The
-+
-ratio η = ij n−
-ij,t /
-ij nij,t of negative to positive wordcontext pairs was η = 1. The precise construction of the
-matrices n±
-t is explained in the supplementary material.
-We used the global prior variance σ02 = 1 for all corpora
-and all algorithms, including the baselines. The diffusion
-constant D controls the time scale on which information
-is shared between time steps. The optimal value for D
-depends on the application. A single corpus may exhibit
-semantic shifts of words on different time scales, and the
-optimal choice for D depends on the time scale in which
-one is interested. We used D = 10−3 per year for Google
-books and SoU, and D = 1 per year for the Twitter corpus,
-which spans a much shorter time range. In the supplementary material, we provide details of the optimization procedure.
-Qualitative results. We show that our approach results in
-smooth word embedding trajectories on all three corpora.
-We can automatically detect words that undergo significant
-semantic changes over time.
-Figure 1 in the introduction shows a fit of the dynamic
-skip-gram filtering algorithm to the Google books corpus.
 3
 
-http://www.presidency.ucsb.edu/sou.php
+Table 1. Number of instances in the training set, the test set and
+number of labels of the different applications.
 
-Dynamic Word Embeddings
-
-Figure 3. Word embeddings over a sequence of years trained on
-Google books, using DSG-F (proposed, top row) and compared
-to the static method by Hamilton et al. (2016) (bottom). We used
-dynamic t-SNE (Rauber et al., 2016) for dimensionality reduction. Colored lines in the second to fourth column indicate the trajectories from the previous year. Our method infers smoother trajectories with only few words that move quickly. Figure 4 shows
-that these effects persist in the original embedding space.
-
-Here, we show the ten words whose word vectors change
-most drastically over the last 150 years in terms of cosine distance. Figure 3 visualizes word embedding clouds
-over four subsequent years of Google books, where we
-compare DSG-F against SGI. We mapped the normalized embedding vectors to two dimensions using dynamic
-t-SNE (Rauber et al., 2016) (see supplement for details).
-Lines indicate shifts of word vectors relative to the preceding year. In our model only few words change their position
-in the embedding space rapidly, while embeddings using
-SGI show strong fluctuations, making the cloud’s motion
-hard to track.
-Figure 4 visualizes the smoothness of the trajectories directly in the embedding space (without the projection to
-two dimensions). We consider differences between word
-vectors in the year 1998 and the subsequent 10 years.
-In more detail, we compute histograms of the Euclidean
-distances ||uit − ui,t+δ || over the word indexes i, where
-δ = 1, . . . , 10 (as discussed previously, SGI uses a global
-rotation to optimally align embeddings first). In our model,
-embedding vectors gradually move away from their original position as time progresses, indicating a directed motion. In contrast, both baseline models show only little directed motion after the first time step, suggesting that most
-temporal changes are due to finite-size fluctuations of n±
-ij,t .
-Initialization schemes alone, thus, seem to have a minor
-effect on smoothness.
-Our approach allows us to detect semantic shifts in the usage of specific words. Figures 5 and 1 both show the cosine
-distance between a given word and its neighboring words
-(colored lines) as a function of time. Figure 5 shows results
-on all three corpora and focuses on a comparison across
-methods. We see that DSG-S and DSG-F (both proposed)
-
-Figure 4. Histogram of distances between word vectors in the
-year 1998 and their positions in subsequent years (colors).
-DSG-F (top panel) displays a continuous growth of these distances over time, indicating a directed motion. In contrast, in
-SGP (middle) (Kim et al., 2014) and SGI (bottom) (Hamilton
-et al., 2016), the distribution of distances jumps from the first to
-the second year but then remains largely stationary, indicating absence of a directed drift; i.e. almost all motion is random.
-
-result in trajectories which display less noise than the baselines SGP and SGI. The fact that the baselines predict zero
-cosine distance (no correlation) between the chosen word
-pairs on the SoU and Twitter corpora suggests that these
-corpora are too small to successfully fit these models, in
-contrast to our approach which shares information in the
-time domain. Note that as in dynamic topic models, skipgram smoothing (DSG-S) may diffuse information into the
-past (see ”presidential” to ”clinton-trump” in Fig. 5).
-Quantitative results. We show that our approach generalizes better to unseen data. We thereby analyze held-out
-predictive likelihoods on word-context pairs at a given time
-t, where t is excluded from the training set,
-1
-|n±
-t |
-
-log p(n±
-t |Ũt , Ṽt ).
-
-(16)
-
-
+cost factor C is cross-validated in the following grid:
+{0.001, 0.01, 0.1, 1, 10, 100, 1000}. Table 1 summarizes
+the number of labels, and the number of training and test instances for each task. Figure 2 illustrate how we use PDs to
+represent complex data. We first describe the two baselines
+we considered, along with their parameterization, followed
+by our proposal.
+PSS. The Persistence Scale Space kernel kPSS (Reininghaus et al., 2015) is defined as the scalar product of
+the two solutions of the heat diffusion equation with initial Dirac sources located at the PD points. It has the
+following closed form expression:
+kPSS (Dg
+ 1 , Dg2 )2 =
+
 P
-+
-−
-Above, |n±
-t | =
-i,j nij,t + nij,t denotes the total number of word-context pairs at time τt . Since inference is different in all approaches, the definitions of word and context embedding matrices Ũt and Ṽt in Eq. 16 have to be
-adjusted:
-• For SGI and SGP, we did a chronological pass
-through the time sequence and used the embeddings
-Ũt = Ut−1 and Ṽt = Vt−1 from the previous time
-step to predict the statistics n±
-ij,t at time step t.
-• For DSG-F, we did the same pass to test n±
-ij,t . We
-thereby set Ũt and Ṽt to be the modes Ut−1 , Vt−1 of
-the approximate posterior at the previous time step.
-• For DSG-S, we held out 10%, 10% and 20% of the
-documents from the Google books, SoU, and Twitter
-corpora for testing, respectively. After training, we
-estimated the word (context) embeddings Ũt (Ṽt ) in
+P
+kp−qk2
+1
+− exp − kp−q̄k
+,
+p∈Dg1
+q∈Dg2 exp −
+8πt
+8t
+8t
 
-cos. distance cos. distance
+where q̄ = (y, x) is the symmetric of q = (x, y) along the
+diagonal. Since there is no clear heuristic on how to tune
+t, this parameter is chosen in the applications by ten-fold
+cross-validation with random 50%-50% training-test splits
+and with the following set of NPSS = 13 values: 0.001,
+0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10, 50, 100, 500 and 1000.
+PWG. Let K, p, ρ be positive parameters.
+Let kρ
+be the Gaussian kernel with parameter ρ and associated RKHS
+P Hρ . Let Dg1 , Dg2 be ptwo PDs, and let
+µ1 :=
+x∈Dg1 arctan(Kd∞ (x, ∆) )kρ (·, x) ∈ Hρ
+be the kernel mean embedding of Dg1 weigthed by
+the diagonal distances. Let µ2 be defined similarly.
 
-Dynamic Word Embeddings
+Sliced Wasserstein Kernel for Persistence Diagrams
+TASK
+kPSS (10−3 ) kPWG (103 ) kSW (6)
+kPSS (10−3 )
+kPWG (103 )
+kSW (6) −N C
+O RBIT
+63.6 ± 1.2
+77.7 ± 1.2
+83.7 ± 0.5
+N (124 ± 8.4) N (144 ± 14)
+415 ± 7.9
+T EXTURE 98.8 ± 0.0
+95.8 ± 0.0
+96.1 ± 0.4
+N (165 ± 27)
+N (101 ± 9.6) 482 ± 68
+TASK
+kPSS
+kPWG
+kSW
+kPSS
+kPWG
+kSW − N C kSW (10) −N C
+H UMAN
+68.5 ± 2.0 64.2 ± 1.2
+74.0 ± 0.2
+N (29 ± 0.3)
+N (318 ± 22)
+2270 ± 336 107 ± 14
+A IRPLANE 65.4 ± 2.4 61.3 ± 2.9
+72.6 ± 0.2
+N (0.8 ± 0.03)
+N (5.6 ± 0.02) 44 ± 5.4
+10 ± 1.6
+A NT
+86.3 ± 1.0 87.4 ± 0.5
+92.3 ± 0.2
+N (1.7 ± 0.01)
+N (12 ± 0.5)
+92 ± 2.8
+16 ± 0.4
+B IRD
+67.7 ± 1.8 72.0 ± 1.2 67.0 ± 0.5
+N (0.5 ± 0.01)
+N (3.6 ± 0.02) 27 ± 1.6
+6.6 ± 0.8
+F OUR L EG
+67.0 ± 2.5 64.0 ± 0.6
+73.0 ± 0.4
+N (10 ± 0.07)
+N (113 ± 13)
+604 ± 25
+52 ± 3.2
+O CTOPUS
+77.6 ± 1.0 78.6 ± 1.3
+85.2 ± 0.5
+N (1.4 ± 0.01)
+N (11 ± 0.8)
+75 ± 1.4
+14 ± 2.1
+F ISH
+76.1 ± 1.6 79.8 ± 0.5 75.0 ± 0.4
+N (1.2 ± 0.004) N (9.6 ± 0.03) 72 ± 4.8
+12 ± 1.1
+Table 2. Classification accuracies (%) and Gram matrices computation time (s) for the benchmark applications. As explained in the
+text, N represents the size of the set of possible parameters, and we have N = 13 for kPSS , N = 5 × 5 × 5 = 125 for kPWG and
+N = 3 × 5 = 15 for kSW . C is a constant that depends only on the training size. In all our applications, it is less than 0.1s.
 
-1.0
+Label = 1
 
-Google Books
+Label = Head
+Label = Canvas
 
-"State of the Union" addresses
+Label = 2
 
-Twitter
+Label = Carpet
 
-"computer" to "accurate"
+Label = Foot
 
-"community" to "nature"
+Figure 2. Examples of PDs computed on orbits, texture images and 3D shapes.
 
-"presidential" to "barack"
+Let τ > 0. The Persistence Weighted Gaussian kernel kPWG (Kusano et al., 2016; 2017) is defined as
+kµ1 −µ2 kHρ
+kPWG (Dg1 , Dg2 ) = exp −
+, i.e.
+the
+2τ 2
+Gaussian kernel with parameter τ on Hρ . The authors
+in (Kusano et al., 2016) provide heuristics to compute
+K, ρ and τ and give a rule of thumb to tune p. Hence,
+in the applications we select p according to the rule of
+thumb, and we use ten-fold cross-validation with random
+50%-50% training-test splits to chose K, ρ and τ . The
+ranges of possible values is obtained by multiplying the
+values computed with the heuristics with the following
+range of 5 factors: 0.01, 0.1, 1, 10 and 100, leading to
+NPWG = 5 × 5 × 5 = 125 different sets of parameters.
 
-date
-"computer"
-to "machine"
+Parameter Tuning. The bandwidth of kSW is, in practice,
+easier to tune than the parameters of its two competitors
+when using grid search. Indeed, as is the case for all infinitely divisible kernels, the Gram matrix does not need to
+be recomputed for each choice of σ, since it only suffices
+to compute all the Sliced Wasserstein distances between
+PDs in the training set once. On the contrary, neither kPSS
+nor kPWG share this property, and require recomputations
+for each hyperparameter choice. Note however that this
+improvement may no longer hold if one uses other methods to tune parameters. For instance, using kPWG without
+cross-validation is possible with the heuristics given by the
+authors in (Kusano et al., 2016), and leads to smaller training times, but also to worse accuracies.
 
-"community" date
-to "transportation"
+Parameters for kSW . The kernel we propose has only
+one parameter, the bandwidth σ in Eq. (5), which we
+choose using ten-fold cross-validation with random 50%50% training-test splits. The range of possible values is
+obtained by computing the squareroot of the median, the
+first and the last deciles of all SW(Dgi , Dgj ) in the training set, then by multiplying these values by the following
+range of 5 factors: 0.01, 0.1, 1, 10 and 100, leading to
+NSW = 5 × 3 = 15 possible values.
 
-2010 "presidential"
-2011 2012 2013
-2014 2015 2016
-to "clinton-trump"
-date
+4.1. 3D shape segmentation
+Our first task, whose goal is to produce point classifiers for
+3D shapes, follows that presented in (Carrière et al., 2015).
+Data. We use some categories of the mesh segmentation
+benchmark of Chen et al. (Chen et al., 2009), which contains 3D shapes classified in several categories (“airplane”,
+“human”, “ant”...). For each category, our goal is to design
+a classifier that can assign, to each point in the shape, a
 
-DSG-S
-DSG-F
-SGI
-SGP
+log( SW approx / SW exact )
+
+Sliced Wasserstein Kernel for Persistence Diagrams
+2
+1.5
+1
+0.5
+0
+1 2 3 4 5 6 7 8 9 10 11 12100
+
+log( SW approx / SW exact )
+
+Number of directions
+0.5
+0
+-0.5
+-1
+-1.5
+1 2 3 4 5 6 7 8 9 10 11 12100
+
+Number of directions
+
+Figure 3. The first row corresponds to the orbit recognition and the texture classification while the second row corresponds to 3D shape
+segmentation. On each row, the left plot shows the dependence of the accuracy on the number of directions, the middle plot shows the
+dependence of a single Gram matrix computation time, and the right plot shows the dependence of the ratio of the approximation of SW
+and the exact SW. Since the box plot of the ratio for orbit recognition is very similar to that of 3D shape segmentation, we only give the
+box plot of texture classification in the first row.
+
+label that describes the relative location of that point in the
+shape. For instance, possible labels are, for the human category, “head”, “torso”, “arm”... To train classifiers, we compute a PD per point using the geodesic distance function to
+this point—see (Carrière et al., 2015) for details. We use
+1-dimensional persistent homology (0-dimensional would
+not be informative since the shapes are connected, leading
+to solely one point with coordinates (0, +∞) per PD). For
+each category, the training set contains one hundredth of
+the points of the first five 3D shapes, and the test set contains one hundredth of the points of the remaining shapes
+in that category. Points in training and test sets are evenly
+sampled. See Figure 2. Here, we focus on comparison
+between PDs, and not on achieving state-of-the-art results.
+It has been proven that PDs bring complementary information to classical descriptors in this task—see (Carrière
+et al., 2015), hence reinforcing their discriminative power
+with appropriate kernels is of great interest. Finally, since
+data points are in R3 , we set the p parameter of kPWG to 5.
+
+other competitors. Moreover, according to Figure 3, using
+even less directions would slightly decrease the accuracies,
+but still outperform the competitors performances, while
+decreasing even more the training times.
+
+Results. Classification accuracies are given in Table 2. For
+most categories, kSW outperforms competing kernels by a
+significant margin. The variance of the results over the run
+is also less than that of its competitors. However, training times are not better in general. Hence, we also provide
+the results for an approximation of kSW with 10 directions.
+As one can see from Table 2 and from Figure 3, this approximation leaves the accuracies almost unchanged, while
+the training times become comparable with the ones of the
+
+Depending on the values of r, the orbits may exhibit
+very different behaviors. For instance, as one can see in
+Figure 2, when r is 2, there seems to be no interesting
+topological features in the orbit, while voids form when r
+is 1. Following (Adams et al., 2017), we use 5 different
+parameters r = 2.5, 3.5, 4, 4.1, 4.3, that act as labels. For
+each parameter, we generate 100 orbits with 1000 points
+and random initial positions. We then compute the PDs of
+the distance functions to the point clouds with the GUDHI
+
+4.2. Orbit recognition
+In our second experiment, we use synthetized data. The
+goal is to retrieve parameters of dynamical system orbits,
+following an experiment proposed in (Adams et al., 2017).
+Data. We study the linked twist map, a discrete dynamical
+system modeling fluid flow. It was used in (Hertzsch et al.,
+2007) to model flows in DNA microarrays. Its orbits can
+be computed given a parameter r > 0 and initial positions
+(x0 , y0 ) ∈ [0, 1] × [0, 1] as follows:
+
+
+xn+1 = xn + ryn (1 − yn )
+mod 1
+yn+1 = yn + rxn+1 (1 − xn+1 ) mod 1
+
+Sliced Wasserstein Kernel for Persistence Diagrams
+
+Results. Since the PDs contain thousands of points, we use
+kernel approximations to speed up the computation of the
+Gram matrices. In order for the approximation error to be
+bounded by 10−3 , we use an approximation of kSW with 6
+directions (as one can see from Figure 3, this has a small
+impact on the accuracy), we approximate kPWG with 1000
+random Fourier features (Rahimi & Recht, 2008), and we
+approximate kPSS using Fast Gauss Transform (Morariu
+et al., 2009) with a normalized error of 10−10 . One can see
+from Table 2 that the accuracy is increased a lot with kSW .
+Concerning training times, there is also a large improvement since we tune the parameters with grid search. Indeed, each Gram matrix needs not be recomputed for each
+parameter when using kSW .
+
+2.5
+PSS
+PWG
+SW
+exp(-d1)
+
+2
+
+1.5
+
+Distance in RKHS
+
+library (The GUDHI Project, 2015) and we use them (in all
+homological dimensions) to produce an orbit classifier that
+predicts the parameter values, by training over a 70%-30%
+training-test split of the data. Since data points are in R2 ,
+we set the p parameter of kPWG to 4.
+
+1
 
 0.5
-0.0
-1.0
-0.5
-0.0
-1800
 
-1850
+0
 
-1900
-date
+-0.5
 
-1950
+-1
+0.2
 
-20001800
+0.4
 
-1850
+0.6
 
-1900
-date
+0.8
 
-1950
+1
 
-2000
+1.2
 
-2010 2011 2012 2013 2014 2015 2016
-date
+1.4
 
-normalized log(predictive likelihood)
+First Diagram Distance
 
-Figure 5. Smoothness of word embedding trajectories, compared across different methods. We plot the cosine distance between two
-words (see captions) over time. High values indicate similarity. Our methods (DSG-S and DSG-F) find more interpretable trajectories
-than the baselines (SGI and SGP). The different performance is most pronounced when the corpus is small (SoU and Twitter).
-Google books
-−0.52
-−0.53
+Figure 4. We show how the metric d1 is distorted. Each point represents a pair of PDs and its abscissae is the first diagram distance
+between them. Depending on the point color, its ordinate is the
+logarithm of the distance between PDs in the RKHS induced by
+either kPSS (blue points), kPWG (green points), kSW (red points)
+and a Gaussian kernel on d1 (black points).
 
-"State of the Union" addresses
+4.3. Texture classification
+Our last experiment is inspired from (Reininghaus et al.,
+2015) and (Li et al., 2014). We use the OUTEX00000 data
+base (Ojala et al., 2002) for texture classification.
+Data. PDs are obtained for each texture image by computing first the sign component of CLBP descriptors (Guo
+et al., 2010) with radius R = 1 and P = 8 neighbors
+for each image, and then compute the persistent homology
+of this descriptor using the GUDHI library (The GUDHI
+Project, 2015). See Figure 2. Note that, contrary to the
+experiment of (Reininghaus et al., 2015), we do not downsample the images to 32 × 32 images, but keep the original
+128 × 128 images. Following (Reininghaus et al., 2015),
+we restrict the focus to 0-dimensional persistent homology.
+We also use the first 50%-50% training-test split given in
+the database to produce classifiers. Since data points are in
+R2 , we set the p parameter of kPWG to 4.
+Results We use the same approximation procedure as in
+Section 4.2. According to Figure 3, even though the approximation of SW is rough, this has again a small impact
+on the accuracy, while reducing the training time by a significant margin. As one can see from Table 2, using kPSS
+leads to almost state-of-the-art results (Ojala et al., 2002;
+Guo et al., 2010), closely followed by the accuracies of
+kSW and kPWG . The best timing is given by kSW , again
+because we use grid search. Hence, kSW almost achieves
+the best result, and its training time is better than the ones
+of its competitors, due to the grid search parameter tuning.
+Metric Distortion. To illustrate the equivalence theorem,
+we also show in Figure 4 a scatter plot where each point
 
-−0.54
+represents the comparison of two PDs taken from the Airplane segmentation data set. Similar plots can be obtained
+with the other datasets considered here. For all points, the
+x-axis quantifies the first diagram distance d1 for that pair,
+while the y-axis is the logarithm of the RKHS distance induced by either kSW , kPSS , kPWG or a Gaussian kernel
+directly applied to d1 , to obtain comparable quantities. We
+use the parameters given by the cross-validation procedure
+described above. One can see that the distances induced
+by kSW are less spread than the others, suggesting that the
+metric induced by kSW is more discriminative. Moreover
+the distances given by kSW and the Gaussian kernel on d1
+exhibit the same behavior, suggesting that kSW is the best
+natural equivalent of a Gaussian kernel for PDs.
 
-Twitter
+5. Conclusion
+In this article, we introduce the Sliced Wasserstein kernel,
+a new kernel for PDs that is provably equivalent to the first
+diagram distance between PDs. We provide fast algorithms
+to approximate it, and show on several datasets substantial
+improvements in accuracy and training times (when tuning
+parameters is done with grid search) over competing kernels. A particularly appealing property of that kernel is that
+it is infinitely divisible, substantially facilitating the tuning
+of parameters through cross validation.
+Acknowledgements. We thank the anonymous referees
+for their insightful comments. SO was supported by ERC
+grant Gudhi and by ANR project TopData. MC was supported by a chaire de l’IDEX Paris Saclay.
 
-−0.65
-
-−0.65
-
-−0.70
-
-−0.70
-
-−0.75
-
-−0.75
-
-−0.80
-
-−0.80
-
-−0.55
-−0.56
-1800
-
-−0.54
-
-−0.56
-1800
-
-DSG-S
-DSG-F
-−0.53
-SGI
-1980 2000
-SGP
-1850
-1900
-1950
-date of test books
-
-−0.840
-−0.845
-
-−0.52
-−0.55
-
-−0.835
-
-1820
-
-2000
-
-DSG-S
-DSG-F
-SGI
-SGP
-
-−0.85
-1800
-
-−0.768
-−0.85
-
-−0.770
-1882 1884
-
-1850
-1900
-1950
-date of test SoU address
-
-2000
-
-DSG-S
-DSG-F
-SGI
-SGP
-
-2015
-
-2010 2011 2012 2013 2014 2015 2016
-date of test tweets
-
-Figure 6. Predictive log-likelihoods (Eq. 16) for two proposed versions of the dynamic skip-gram model (DSG-F & DSG-S) and two
-competing methods SGI (Hamilton et al., 2016) and SGP (Kim et al., 2014) on three different corpora (high values are better).
-
-Eq. 16 by linear interpolation between the values of
-Ut−1 (Vt−1 ) and Ut+1 (Vt+1 ) in the mode of the variational distribution, taking into account that the time
-stamps τt are in general not equally spaced.
-
-formation in both time directions and uses a more flexible
-variational distribution.
-
-The predictive likelihoods as a function of time τt are
-shown in Figure 6. For the Google Books corpus (left panel
-in figure 6), the predictive log-likelihood grows over time
-with all four methods. This must be an artifact of the corpus since SGI does not carry any information of the past.
-A possible explanation is the growing number of words per
-year from 1800 to 2008 in the Google Books corpus. On
-all three corpora, differences between the two implementations of the static model (SGI and SGP) are small, which
-suggests that pre-initializing the embeddings with the previous result may improve their continuity but seems to have
-little impact on the predictive power. Log-likelihoods for
-the skip-gram filter (DSG-F) grow over the first few time
-steps as the filter sees more data, and then saturate. The
-improvement of our approach over the static model is particularly pronounced in the SoU and Twitter corpora, which
-are much smaller than the massive Google books corpus.
-There, sharing information between across time is crucial
-because there is little data at every time slice. Skip-gram
-smoothing outperforms skip-gram filtering as it shares in-
-
-We presented the dynamic skip-gram model: a Bayesian
-probabilistic model that combines word2vec with a latent
-continuous time series. We showed experimentally that
-both dynamic skip-gram filtering (which conditions only
-on past observations) and dynamic skip-gram smoothing
-(which uses all data) lead to smoothly changing embedding
-vectors that are better at predicting word-context statistics
-at held-out time steps. The benefits are most drastic when
-the data at individual time steps is small, such that fitting a
-static word embedding model is hard. Our approach may
-be used as a data mining and anomaly detection tool when
-streaming text on social media, as well as a tool for historians and social scientists interested in the evolution of
-language.
-
-6. Conclusions
-
-Acknowledgements
-We would like to thank Marius Kloft, Cheng Zhang,
-Andreas Lehrmann, Brian McWilliams, Romann Weber,
-Michael Clements, and Ari Pakman for valuable feedback.
-
-Dynamic Word Embeddings
+Sliced Wasserstein Kernel for Persistence Diagrams
 
 References
-Barkan, Oren. Bayesian Neural Word Embedding. In Proceedings of the Thirty-First AAAI Conference on Artificial Intelligence, 2017.
-Beck, Amir and Teboulle, Marc. Mirror Descent and Nonlinear Projected Subgradient Methods for Convex Optimization. Operations Research Letters, 31(3):167–175,
-2003.
-Ben-Tal, Aharon, Margalit, Tamar, and Nemirovski,
-Arkadi. The Ordered Subsets Mirror Descent Optimization Method with Applications to Tomography. SIAM
-Journal on Optimization, 12(1):79–108, 2001.
-Bengio, Yoshua, Ducharme, Réjean, Vincent, Pascal, and
-Jauvin, Christian. A Neural Probabilistic Language
-Model. Journal of Machine Learning Research, 3:1137–
-1155, 2003.
-Blei, David M and Lafferty, John D. Dynamic Topic Models. In Proceedings of the 23rd International Conference
-on Machine Learning, pp. 113–120. ACM, 2006.
-Blei, David M., Kucukelbir, Alp, and McAuliffe, Jon D.
-Variational Inference: A Review for Statisticians. arXiv
-preprint arXiv:1601.00670, 2016.
-Charlin, Laurent, Ranganath, Rajesh, McInerney, James,
-and Blei, David M. Dynamic Poisson Factorization.
-In Proceedings of the 9th ACM Conference on Recommender Systems, pp. 155–162, 2015.
-Fu, Yanwei and Sigal, Leonid.
-Semi-Supervised
-Vocabulary-Informed Learning.
-In Proceedings of
-the IEEE Conference on Computer Vision and Pattern
-Recognition, pp. 5337–5346, 2016.
-Gultekin, San and Paisley, John. A Collaborative Kalman
-Filter for Time-Evolving Dyadic Processes. In Proceedings of the 2nd International Conference on Data Mining, pp. 140–149, 2014.
-Hamilton, William L, Leskovec, Jure, and Jurafsky, Dan.
-Diachronic word embeddings reveal statistical laws of
-semantic change. In Proceedings of the 54th Annual
-Meeting of the Association for Computational Linguistics, pp. 1489–1501, 2016.
-Hoffman, Matthew D, Blei, David M, Wang, Chong, and
-Paisley, John William. Stochastic Variational Inference.
-Journal of Machine Learning Research, 14(1):1303–
-1347, 2013.
-Jerfel, Ghassen, Basbug, Mehmet E, and Engelhardt, Barbara E. Dynamic Compound Poisson Factorization. In
-Artificial Intelligence and Statistics, 2017.
-
-Jordan, Michael I, Ghahramani, Zoubin, Jaakkola,
-Tommi S, and Saul, Lawrence K. An Introduction to
-Variational Methods for Graphical Models. Machine
-learning, 37(2):183–233, 1999.
-Kalman, Rudolph Emil et al. A New Approach to Linear
-Filtering and Prediction Problems. Journal of Basic Engineering, 82(1):35–45, 1960.
-Kılıç, Emrah and Stanica, Pantelimon. The Inverse of
-Banded Matrices. Journal of Computational and Applied
-Mathematics, 237(1):126–135, 2013.
-Kim, Yoon, Chiu, Yi-I, Hanaki, Kentaro, Hegde, Darshan, and Petrov, Slav. Temporal Analysis of Language
-Through Neural Language Models. In Proceedings of
-the ACL 2014 Workshop on Language Technologies and
-Computational Social Science, pp. 61–65, 2014.
-Kingma, Diederik P and Welling, Max. Auto-Encoding
-Variational Bayes. In Proceedings of the 2nd International Conference on Learning Representations (ICLR),
-2014.
-Kulkarni, Vivek, Al-Rfou, Rami, Perozzi, Bryan, and
-Skiena, Steven. Statistically Significant Detection of
-Linguistic Change. In Proceedings of the 24th International Conference on World Wide Web, pp. 625–635,
-2015.
-Levy, Omer and Goldberg, Yoav. Neural Word Embedding
-as Implicit Matrix Factorization. In Advances in Neural
-Information Processing Systems, pp. 2177–2185, 2014.
-Michel, Jean-Baptiste, Shen, Yuan Kui, Aiden,
-Aviva Presser, Veres, Adrian, Gray, Matthew K,
-Pickett, Joseph P, Hoiberg, Dale, Clancy, Dan, Norvig,
-Peter, Orwant, Jon, et al. Quantitative Analysis of
-Culture Using Millions of Digitized Books. Science,
-331(6014):176–182, 2011.
-Mihalcea, Rada and Nastase, Vivi. Word Epoch Disambiguation: Finding how Words Change Over Time.
-In Proceedings of the 50th Annual Meeting of the Association for Computational Linguistics: Short PapersVolume 2, pp. 259–263, 2012.
-Mikolov, Tomas, Chen, Kai, Corrado, Greg, and Dean, Jeffrey. Efficient Estimation of Word Representations in
-Vector Space. arXiv preprint arXiv:1301.3781, 2013a.
-Mikolov, Tomas, Sutskever, Ilya, Chen, Kai, Corrado,
-Greg S, and Dean, Jeff. Distributed Representations of
-Words and Phrases and their Compositionality. In Advances in Neural Information Processing Systems 26, pp.
-3111–3119. 2013b.
-
-Dynamic Word Embeddings
-
-Mikolov, Tomas, Yih, Wen-tau, and Zweig, Geoffrey. Linguistic Regularities in Continuous Space Word Representations. In Proceedings of the 2013 Conference of
-the North American Chapter of the Association for Computational Linguistics: Human Language Technologies
-(NAACL-HLT-2013), pp. 746–751, 2013c.
-
-Socher, Richard, Bauer, John, Manning, Christopher D,
-and Ng, Andrew Y. Parsing with Compositional Vector
-Grammars. In ACL (1), pp. 455–465, 2013a.
-
-Mnih, Andriy and Kavukcuoglu, Koray. Learning Word
-Embeddings Efficiently with Noise-Contrastive Estimation. In Advances in Neural Information Processing Systems, pp. 2265–2273, 2013.
-
-Socher, Richard, Perelygin, Alex, Wu, Jean Y, Chuang, Jason, Manning, Christopher D, Ng, Andrew Y, and Potts,
-Christopher. Recursive Deep Models for Semantic Compositionality over a Sentiment Treebank. In Proceedings
-of the 2013 Conference on Empirical Methods in Natural Language Processing (EMNLP), volume 1631, pp.
-1642, 2013b.
-
-Pennington, Jeffrey, Socher, Richard, and Manning,
-Christopher D. Glove: Global Vectors for Word Representation. In EMNLP, volume 14, pp. 1532–43, 2014.
-
-Uhlenbeck, George E and Ornstein, Leonard S. On the
-Theory of the Brownian Motion. Physical Review, 36
-(5):823, 1930.
-
-Ranganath, Rajesh, Gerrish, Sean, and Blei, David M.
-Black Box Variational Inference. In AISTATS, pp. 814–
-822, 2014.
-
-Vilnis, Luke and McCallum, Andrew. Word Representations via Gaussian Embedding. In Proceedings of the
-2nd International Conference on Learning Representations (ICLR), 2014.
-
-Ranganath, Rajesh, Perotte, Adler J, Elhadad, Noémie, and
-Blei, David M. The Survival Filter: Joint Survival Analysis with a Latent Time Series. In UAI, pp. 742–751,
-2015.
-
-Wang, Chong, Blei, David, and Heckerman, David. Continuous time dynamic topic models. In Proceedings of
-the Twenty-Fourth Conference on Uncertainty in Artificial Intelligence, pp. 579–586, 2008.
-
-Rauber, Paulo E., Falcão, Alexandre X., and Telea, Alexandru C. Visualizing Time-Dependent Data Using Dynamic t-SNE. In EuroVis 2016 - Short Papers, 2016.
-
-Welch, Greg and Bishop, Gary. An Introduction to the
-Kalman Filter. 1995.
-
-Rezende, Danilo Jimenez, Mohamed, Shakir, and Wierstra,
-Daan. Stochastic Backpropagation and Approximate Inference in Deep Generative Models. In The 31st International Conference on Machine Learning (ICML), 2014.
-Rudolph, Maja and Blei, David. Dynamic Bernoulli
-Embeddings for Language Evolution. arXiv preprint
-arXiv:1703.08052, 2017.
-Rudolph, Maja, Ruiz, Francisco, Mandt, Stephan, and Blei,
-David. Exponential Family Embeddings. In Advances
-in Neural Information Processing Systems, pp. 478–486,
+Adams, H., Emerson, T., Kirby, M., Neville, R., Peterson,
+C., Shipman, P., Chepushtanova, S., Hanson, E., Motta,
+F., and Ziegelmeier, L. Persistence Images: A Stable
+Vector Representation of Persistent Homology. Journal
+Machine Learning Research, 18(8):1–35, 2017.
+Bauer, U. and Lesnick, M. Induced matchings and the algebraic stability of persistence barcodes. Journal of Computational Geometry, 6(2):162–191, 2015.
+Berg, C., Christensen, J., and Ressel, P. Harmonic Analysis
+on Semigroups: Theory of Positive Definite and Related
+Functions. Springer, 1984.
+Bubenik, P. Statistical Topological Data Analysis using
+Persistence Landscapes. Journal Machine Learning Research, 16:77–102, 2015.
+Carlsson, G. Topology and data. Bulletin American Mathematical Society, 46:255–308, 2009.
+Carrière, M., Oudot, S., and Ovsjanikov, M. Stable Topological Signatures for Points on 3D Shapes. In Proceedings 13th Symposium Geometry Processing, 2015.
+Carrière, M., Cuturi, M., and Oudot, S.
+Sliced
+Wasserstein Kernel for Persistence Diagrams. CoRR,
+abs/1706.03358, 2017.
+Chang, C. and Lin, C. LIBSVM: A library for support vector machines. ACM Transactions on Intelligent Systems and Technology, 2:27:1–27:27, 2011. Software available at http://www.csie.ntu.edu.
+tw/˜cjlin/libsvm.
+Chazal, F., Cohen-Steiner, D., Glisse, M., Guibas, L., and
+Oudot, S. Proximity of persistence modules and their diagrams. In Proceedings 25th Symposium Computational
+Geometry, pp. 237–246, 2009a.
+Chazal, F., Cohen-Steiner, D., Guibas, L., Mémoli, F.,
+and Oudot, S. Gromov-Hausdorff Stable Signatures for
+Shapes using Persistence. Computer Graphics Forum,
+pp. 1393–1403, 2009b.
+Chazal, F., de Silva, V., and Oudot, S. Persistence stability
+for geometric complexes. Geometriae Dedicata, pp. 1–
+22, 2013.
+Chazal, F., de Silva, V., Glisse, M., and Oudot, S. The
+structure and stability of persistence modules. Springer,
 2016.
-Sagi, Eyal, Kaufmann, Stefan, and Clark, Brady. Tracing Semantic Change with Latent Semantic Analysis.
-Current Methods in Historical Semantics, pp. 161–183,
-2011.
-Sahoo, Nachiketa, Singh, Param Vir, and Mukhopadhyay,
-Tridas. A Hidden Markov Model for Collaborative Filtering. MIS Quarterly, 36(4):1329–1356, 2012.
-Salimans, Tim and Kingma, Diederik P. Weight Normalization: A Simple Reparameterization to Accelerate Training of Deep Neural Networks. In Advances in Neural
-Information Processing Systems, pp. 901–901, 2016.
+Chen, X., Golovinskiy, A., and Funkhouser, T. A Benchmark for 3D Mesh Segmentation. ACM Trans. Graph.,
+28(3):73:1–73:12, 2009.
+
+Cohen-Steiner, D., Edelsbrunner, H., and Harer, J. Stability
+of persistence diagrams. Discrete Computational Geometry, 37(1):103–120, 2007.
+Edelsbrunner, H. and Harer, J. Computational Topology:
+an introduction. AMS Bookstore, 2010.
+Edelsbrunner, Herbert and Harer, John.
+Persistent
+homology-a survey. Contemporary mathematics, 453:
+257–282, 2008.
+Fabio, B. Di and Ferri, M. Comparing persistence diagrams
+through complex vectors. CoRR, abs/1505.01335, 2015.
+Guo, Z., Zhang, L., and Zhang, D. A completed modeling
+of local binary pattern operator for texture classification.
+IEEE Trans. Image Processing, pp. 1657–1663, 2010.
+Hertzsch, J.-M., Sturman, R., and Wiggins, S. DNA microarrays: design principles for maximizing ergodic,
+chaotic mixing. In Small, volume 3, pp. 202–218, 2007.
+Hiraoka, Y., Nakamura, T., Hirata, A., Escolar, E., Matsue,
+K., and Nishiura, Y. Hierarchical structures of amorphous solids characterized by persistent homology. In
+Proceedings National Academy of Science, volume 26,
+2016.
+Kusano, G., Fukumizu, K., and Hiraoka, Y. Persistence
+Weighted Gaussian Kernel for Topological Data Analysis. In Proceedings 33rd International Conference on
+Machine Learning, pp. 2004–2013, 2016.
+Kusano, G., Fukumizu, K., and Hiraoka, Y. Kernel
+method for persistence diagrams via kernel embedding
+and weight factor. CoRR, abs/1706.03472, 2017.
+Kwitt, Roland, Huber, Stefan, Niethammer, Marc, Lin,
+Weili, and Bauer, Ulrich. Statistical Topological Data
+Analysis - A Kernel Perspective. In Advances in Neural Information Processing Systems 28, pp. 3070–3078,
+2015.
+Li, C., Ovsjanikov, M., and Chazal, F. PersistenceBased Structural Recognition. In Proceedings Conference Computer Vision Pattern Recognition, pp. 2003–
+2010, 2014.
+Morariu, V., Srinivasan, B., Raykar, V., Duraiswami, R.,
+and Davis, L. Automatic online tuning for fast Gaussian
+summation. In Advances Neural Information Processing
+Systems 21, pp. 1113–1120, 2009.
+Ojala, T., Mäenpää, T., Pietikäinen, M., Viertola, J.,
+Kyllönen, J., and Huovinen, S. Outex - new framework
+for empirical evaluation of texture analysis algorithms.
+In Proceedings 16th International Conference Pattern
+Recognition, pp. 701–706, 2002.
+
+Sliced Wasserstein Kernel for Persistence Diagrams
+
+Oudot, S. Persistence Theory: From Quiver Representations to Data Analysis. American Mathematical Society,
+2015.
+Rabin, J., Peyré, G., Delon, J., and Bernot, M. Wasserstein
+barycenter and its application to texture mixing. In International Conference Scale Space Variational Methods
+Computer Vision, pp. 435–446, 2011.
+Rahimi, A. and Recht, B. Random Features for Large-Scale
+Kernel Machines. In Advances Neural Information Processing Systems 20, pp. 1177–1184, 2008.
+Reininghaus, J., Huber, S., Bauer, U., and Kwitt, R. A Stable Multi-Scale Kernel for Topological Machine Learning. CoRR, abs/1412.6821, 2014.
+Reininghaus, J., Huber, S., Bauer, U., and Kwitt, R. A Stable Multi-Scale Kernel for Topological Machine Learning. In Proceedings Conference Computer Vision Pattern
+Recognition, 2015.
+Robins, V. and Turner, K. Principal Component Analysis of
+Persistent Homology Rank Functions with case studies
+of Spatial Point Patterns, Sphere Packing and Colloids.
+Physica D: Nonlinear Phenomena, 334:1–186, 2016.
+Santambrogio, Filippo. Optimal transport for applied mathematicians. Birkäuser, 2015.
+Singh, G., Memoli, F., Ishkhanov, T., Sapiro, G., Carlsson,
+G., and Ringach, D. Topological analysis of population
+activity in visual cortex. Journal of Vision, 8, 2008.
+The GUDHI Project. GUDHI User and Reference Manual.
+GUDHI Editorial Board, 2015. URL http://gudhi.
+gforge.inria.fr/doc/latest/.
+Villani, C. Optimal transport : old and new. Springer,
+2009.
+Zomorodian, Afra and Carlsson, Gunnar. Computing persistent homology. Discrete & Computational Geometry,
+33(2):249–274, 2005.
 
 

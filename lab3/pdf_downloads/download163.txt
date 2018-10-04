@@ -1,1558 +1,834 @@
-Stochastic Generative Hashing
-Bo Dai* 1 Ruiqi Guo* 2 Sanjiv Kumar 2 Niao He 3 Le Song 1
+Toward Controlled Generation of Text
+Zhiting Hu 1 2 Zichao Yang 1 Xiaodan Liang 1 2 Ruslan Salakhutdinov 1 Eric P. Xing 1 2
 
 Abstract
-Learning-based binary hashing has become a
-powerful paradigm for fast search and retrieval
-in massive databases. However, due to the requirement of discrete outputs for the hash functions, learning such functions is known to be
-very challenging. In addition, the objective functions adopted by existing hashing techniques are
-mostly chosen heuristically. In this paper, we
-propose a novel generative approach to learn
-hash functions through Minimum Description
-Length principle such that the learned hash codes
-maximally compress the dataset and can also
-be used to regenerate the inputs. We also develop an efficient learning algorithm based on the
-stochastic distributional gradient, which avoids
-the notorious difficulty caused by binary output
-constraints, to jointly optimize the parameters
-of the hash function and the associated generative model. Extensive experiments on a variety
-of large-scale datasets show that the proposed
-method achieves better retrieval results than the
-existing state-of-the-art methods.
+Generic generation and manipulation of text is
+challenging and has limited success compared
+to recent deep generative modeling in visual domain. This paper aims at generating plausible
+text sentences, whose attributes are controlled by
+learning disentangled latent representations with
+designated semantics. We propose a new neural generative model which combines variational
+auto-encoders (VAEs) and holistic attribute discriminators for effective imposition of semantic
+structures. The model can alternatively be seen
+as enhancing VAEs with the wake-sleep algorithm for leveraging fake samples as extra training data. With differentiable approximation to
+discrete text samples, explicit constraints on independent attribute controls, and efficient collaborative learning of generator and discriminators, our model learns interpretable representations from even only word annotations, and produces short sentences with desired attributes of
+sentiment and tenses. Quantitative experiments
+using trained classifiers as evaluators validate the
+accuracy of sentence and attribute generation.
 
 1. Introduction
-Search for similar items in web-scale datasets is a fundamental step in a number of applications, especially in image and document retrieval. Formally, given a reference
-d
-dataset X = {xi }N
-i=1 with x 2 X ⇢ R , we want to retrieve similar items from X for a given query y according
-to some similarity measure sim(x, y). When the negative
-Euclidean distance is used, i.e., sim(x, y) = kx yk2 ,
-this corresponds to L2 Nearest Neighbor Search (L2NNS)
-problem; when the inner product is used, i.e., sim(x, y) =
-x> y, it becomes a Maximum Inner Product Search (MIPS)
-problem. In this work, we focus on L2NNS for simplicity,
-however our method handles MIPS problems as well, as
-*
-Equal contribution . This work was done during internship at
-Google Research NY. 1 Georgia Institute of Technology. 2 Google
-Research, NYC 3 University of Illinois at Urbana-Champaign.
-Correspondence to: Bo Dai <bodai@gatech.edu>.
+There is a surge of research interest in deep generative
+models (Hu et al., 2017), such as Variational Autoencoders
+(VAEs) (Kingma & Welling, 2013), Generative Adversarial Nets (GANs) (Goodfellow et al., 2014), and autoregressive models (van den Oord et al., 2016). Despite their
+impressive advances in visual domain, such as image generation (Radford et al., 2015), learning interpretable image
+representations (Chen et al., 2016), and image editing (Zhu
+et al., 2016), applications to natural language generation
+have been relatively less studied. Even generating realistic sentences is challenging as the generative models are
+1
 
+Carnegie Mellon University 2 Petuum, Inc.. Correspondence
+to: Zhiting Hu <zhitingh@cs.cmu.edu>.
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-shown in the supplementary material D. Brute-force linear
-search is expensive for large datasets. To alleviate the time
-and storage bottlenecks, two research directions have been
-studied extensively: (1) partition the dataset so that only
-a subset of data points is searched; (2) represent the data
-as codes so that similarity computation can be carried out
-more efficiently. The former often resorts to search-tree or
-bucket-based lookup; while the latter relies on binary hashing or quantization. These two groups of techniques are
-orthogonal and are typically employed together in practice.
-In this work, we focus on speeding up search via binary
-hashing. Hashing for similarity search was popularized by
-influential works such as Locality Sensitive Hashing (Indyk
-and Motwani, 1998; Gionis et al., 1999; Charikar , 2002).
-The crux of binary hashing is to utilize a hash function,
-f (·) : X ! {0, 1}l , which maps the original samples in
-X 2 Rd to l-bit binary vectors h 2 {0, 1}l while preserving the similarity measure, e.g., Euclidean distance or inner product. Search with such binary representations can
-be efficiently conducted using Hamming distance computation, which is supported via POPCNT on modern CPUs
-and GPUs. Quantization based techniques (Babenko and
-Lempitsky, 2014; Jegou et al., 2011; Zhang et al., 2014b)
-have been shown to give stronger empirical results but
-tend to be less efficient than Hamming search over binary
-codes (Douze et al., 2015; He et al., 2013).
-Data-dependent hash functions are well-known to perform
-better than randomized ones (Wang et al., 2014). Learning hash functions or binary codes has been discussed in
-several papers, including spectral hashing (Weiss et al.,
-2009), semi-supervised hashing (Wang et al., 2010), iterative quantization (Gong and Lazebnik, 2011), and others (Liu et al., 2011; Gong et al., 2013; Yu et al., 2014; Shen
-et al., 2015; Guo et al., 2016). The main idea behind these
-works is to optimize some objective function that captures
-the preferred properties of the hash function in a supervised
-or unsupervised fashion.
-Even though these methods have shown promising performance in several applications, they suffer from two main
-drawbacks: (1) the objective functions are often heuristically constructed without a principled characterization of
-goodness of hash codes, and (2) when optimizing, the binary constraints are crudely handled through some relaxation, leading to inferior results (Liu et al., 2014). In this
+required to capture complex semantic structures underlying sentences. Previous work have been mostly limited
+to task-specific applications in supervised settings, including machine translation (Bahdanau et al., 2014) and image
+captioning (Vinyals et al., 2015). However, autoencoder
+frameworks (Sutskever et al., 2014) and recurrent neural
+network language models (Mikolov et al., 2010) do not apply to generic text generation from arbitrary hidden representations due to the unsmoothness of effective hidden
+codes (Bowman et al., 2015). Very few recent attempts of
+using VAEs (Bowman et al., 2015; Tang et al., 2016) and
+GANs (Yu et al., 2017; Zhang et al., 2016) have been made
+to investigate generic text generation, while their generated
+text is largely randomized and uncontrollable.
+In this paper we tackle the problem of controlled generation
+of text. That is, we focus on generating realistic sentences,
+whose attributes can be controlled by learning disentangled
+latent representations. To enable the manipulation of generated sentences, a few challenges need to be addressed.
+A first challenge comes from the discrete nature of text
+samples. The resulting non-differentiability hinders the use
+of global discriminators that assess generated samples and
+back-propagate gradients to guide the optimization of generators in a holistic manner, as shown to be highly effective
+in continuous image generation and representation modeling (Chen et al., 2016; Larsen et al., 2016; Dosovitskiy &
+Brox, 2016). A number of recent approaches attempt to address the non-differentiability through policy learning (Yu
+et al., 2017) which tends to suffer from high variance during training, or continuous approximations (Zhang et al.,
+2016; Kusner & Hernndez-Lobato, 2016) where only preliminary qualitative results are presented. As an alternative to the discriminator based learning, semi-supervised
+VAEs (Kingma et al., 2014) minimize element-wise reconstruction error on observed examples and are applicable to
+discrete visibles. This, however, loses the holistic view of
+full sentences and can be inferior especially for modeling
+global abstract attributes (e.g., sentiment).
+Another challenge for controllable generation relates to
+learning disentangled latent representations. Interpretability expects each part of the latent representation to govern
+and only focus on one aspect of the samples. Prior methods (Chen et al., 2016; Odena et al., 2016) on structured
+representation learning lack explicit enforcement of the in-
 
-Stochastic Generative Hashing
+Toward Controlled Generation of Text
 
-work, we introduce Stochastic Generative Hashing (SGH)
-to address these two key issues. We propose a generative model which captures both the encoding of binary
-codes h from input x and the decoding of input x from
-h. This provides a principled hash learning framework,
-where the hash function is learned by Minimum Description Length (MDL) principle. Therefore, its generated
-codes can compress the dataset maximally. Such a generative model also enables us to optimize distributions over
-discrete hash codes without the necessity to handle discrete
-variables. Furthermore, we introduce a novel distributional
-stochastic gradient descent method which exploits distributional derivatives and generates higher quality hash codes.
-Prior work on binary autoencoders (Carreira-Perpinán and
-Raziperchikolaei, 2015) also takes a generative view of
-hashing but still uses relaxation of binary constraints when
-optimizing the parameters, leading to inferior performance
-as shown in the experiment section. We also show that binary autoencoders can be seen as a special case of our formulation. In this work, we mainly focus on the unsupervised setting1 .
+dependence property on the full latent representation, and
+varying individual code may result in unexpected variation
+of other unspecified attributes besides the desired one.
+In this paper, we propose a new text generative model
+that addresses the above issues, permitting highly disentangled representations with designated semantic structure,
+and generating sentences with dynamically specified attributes. We base our generator on VAEs in combination
+with holistic discriminators of attributes for effective imposition of structures on the latent code. End-to-end optimization is enabled with differentiable softmax approximation which anneals smoothly to discrete case and helps fast
+convergence. The probabilistic encoder of VAE also functions as an additional discriminator to capture variations
+of implicitly modeled aspects, and guide the generator to
+avoid entanglement during attribute code manipulation.
+Our model can be interpreted as enhancing VAEs with
+an extended wake-sleep procedure (Hinton et al., 1995),
+where the sleep phase enables incorporation of generated
+samples for learning both the generator and discriminators
+in an alternating manner. The generator and the discriminators effectively provide feedback signals to each other,
+resulting in an efficient mutual bootstrapping framework.
+We show a little supervision (e.g., 100s of annotated sentences) is sufficient to learn structured representations.
+Quantitative experiments demonstrate the efficacy of our
+method. We apply our model to generate sentences with
+controlled sentiment and tenses. Our method improves
+over previous generative models on the accuracy of generating specified attributes as well as performing classification using generated samples. We show our method learns
+highly disentangled representations from only word-level
+labels, and produces plausible short sentences.
 
-binarization efficiently. For example, (Gong and Lazebnik,
-2011; Gong et al., 2012) imposed an orthogonality constraint on the projection matrix, while (Yu et al., 2014) proposed to use circulant constraints, and (Zhang et al., 2014a)
-introduced Kronecker Product structure. Although such
-constraints alleviate the difficulty with optimization, they
-substantially reduce the model flexibility. In contrast, we
-avoid such constraints and propose to optimize the distributions over the binary variables to avoid directly working
-with binary variables. This is attained by resorting to the
-stochastic neuron reparametrization (Section 2.4), which
-allows us to back-propagate through the layers of weights
-using the stochsastic gradient estimator.
+2. Related Work
+Remarkable progress has been made in deep generative
+modeling. Hu et al. (2017) provide a unified view of a
+diverse set of deep generative methods. Variational Autoencoders (VAEs) (Kingma & Welling, 2013) consist of
+encoder and generator networks which encode a data example to a latent representation and generate samples from the
+latent space, respectively. The model is trained by maximizing a variational lower bound on the data log-likelihood
+under the generative model. A KL divergence loss is minimized to match the posterior of the latent code with a prior,
+which enables every latent code from the prior to decode
+into a plausible sentence. Without the KL regularization,
+VAEs degenerate to autoencoders and become inapplicable
+for the generic generation. The vanilla VAEs are incompatible with discrete latents as they hinder differentiable
+parameterization for learning the encoder. Wake-sleep al-
 
-2. Stochastic Generative Hashing
+gorithm (Hinton et al., 1995) introduced for learning deep
+directed graphical models shares similarity with VAEs by
+also combining an inference network with the generator.
+The wake phase updates the generator with samples generated from the inference network on training data, while the
+sleep phase updates the inference network based on samples from the generator. Our method combines VAEs with
+an extended wake-sleep in which the sleep procedure updates both the generator and inference network (discriminators), enabling collaborative semi-supervised learning.
+Besides reconstruction in raw data space, discriminatorbased metric provides a different way for generator learning, i.e., the discriminator assesses generated samples and
+feedbacks learning signals. For instance, GANs (Goodfellow et al., 2014) use a discriminator to feedback the
+probability of a sample being recognized as a real example. Larsen et al. (2016) combine VAEs with GANs for
+enhanced image generation. Dosovitskiy & Brox (2016);
+Taigman et al. (2017) use discriminators to measure highlevel perceptual similarity. Applying discriminators to text
+generation is hard due to the non-differentiability of discrete samples (Yu et al., 2017; Zhang et al., 2016; Kusner
+& Hernndez-Lobato, 2016). Bowman et al. (2015); Tang
+et al. (2016); Yang et al. (2017) instead use VAEs without
+discriminators. All these text generation methods do not
+learn disentangled latent representations, resulting in randomized and uncontrollable samples. In contrast, disentangled generation in visual domain has made impressive
+progress. E.g., InfoGAN (Chen et al., 2016), which resembles the extended sleep procedure of our joint VAE/wakesleep algorithm, disentangles latent representation in an unsupervised manner. The semantic of each dimension is
+observed after training rather than designated by users in
+a controlled way. Siddharth et al. (2017); Kingma et al.
+(2014) base on VAEs and obtain disentangled image representations with semi-supervised learning. Zhou & Neubig (2017) extend semi-supervised VAEs for text transduction. In contrast, our model combines VAEs with discriminators which provide a better, holistic metric compared to
+element-wise reconstruction. Moreover, most of these approaches have only focused on the disentanglement of the
+structured part of latent representations, while ignoring potential dependence of the structured code with attributes not
+explicitly encoded. We address this by introducing an independency constraint, and show its effectiveness for improved interpretability.
 
-In the following sections, we first introduce the generative
-hashing model p(x|h) in Section 2.1. Then, we describe the
-corresponding process of generating hash codes given input
-x, q(h|x) in Section 2.2. Finally, we describe the training procedure based on the Minimum Description Length
-(MDL) principle and the stochastic neuron reparametrization in Sections 2.3 and 2.4. We also introduce the distributional stochastic gradient descent algorithm in Section 3.
+3. Controlled Generation of Text
+Our model aims to generate plausible sentences conditioned on representation vectors which are endowed with
+designated semantic structures. For instance, to control
+sentence sentiment, our model allocates one dimension of
 
-We start by first formalizing the two key issues that motivate the development of the proposed algorithm.
-Generative view. Given an input x 2 Rd , most hashing works in the literature emphasize modeling the forward process of generating binary codes from input, i.e.,
-h(x) 2 {0, 1}l , to ensure that the generated hash codes preserve the local neighborhood structure in the original space.
-Few works focus on modeling the reverse process of generating input from binary codes, so that the reconstructed
-input has small reconstruction error. In fact, the generative
-view provides a natural learning objective for hashing. Following this intuition, we model the process of generating x
-from h, p(x|h), and derive the corresponding hash function
-q(h|x) from the generative process. Our approach is not
-tied to any specific choice of p(x|h) but can adapt to any
-generative model appropriate for the domain. In this work,
-we show that even using a simple generative model (Section 2.1) already achieves the state-of-the-art performance.
-Binary constraints. The other issue arises from dealing
-with binary constraints. One popular approach is to relax
-the constraints from {0, 1} (Weiss et al., 2009), but this
-often leads to a large optimality gap between the relaxed
-and non-relaxed objectives. Another approach is to enforce
-the model parameterization to have a particular structure
-so that when applying alternating optimization, the algorithm can alternate between updating the parameters and
-1
+Toward Controlled Generation of Text
 
-The proposed algorithm can be extended to supervised/semisupervised setting easily as described in the supplementary material E.
+the latent representation to encode “positive” and “negative” semantics, and generates samples with desired sentiment by simply specifying a particular code. Benefiting
+from the disentangled structure, each such code is able to
+capture a salient attribute and is independent with other features. Our deep text generative model possesses several
+merits compared to prior work, as it 1) facilitates effective
+imposition of latent code semantics by enabling global discriminators to guide the discrete text generator learning;
+2) improves model interpretability by explicitly enforcing
+the constraints on independent attribute controls; 3) permits efficient semi-supervised learning and bootstrapping
+by synthesizing variational auto-encoders with a tailored
+wake-sleep approach. We first present the overview of our
+framework (§3.1), then describe the model in detail (§3.2).
+3.1. Model Overview
+We build our framework starting from variational autoencoders (§2) which have been used for text generation (Bowman et al., 2015), where sentence x̂ is generated
+conditioned on latent code z. The vanilla VAE employs an
+unstructured vector z in which the dimensions are entangled. To model and control the attributes of interest in an
+interpretable way, we augment the unstructured variables z
+with a set of structured variables c each of which targets a
+salient and independent semantic feature of sentences.
+We want our sentence generator to condition on the combined vector (z, c), and generate samples that fulfill the
+attributes as specified in the structured code c. Conditional
+generation in the context of VAEs (e.g., semi-supervised
+VAEs (Kingma et al., 2014)) is often learned by reconstructing observed examples given their feature code. However, as demonstrated in visual domain, compared to computing element-wise distances in the data space, computing
+distances in the feature space allows invariance to distracting transformations and provides a better, holistic metric.
+Thus, for each attribute code in c, we set up an individual discriminator to measure how well the generated samples match the desired attributes, and drive the generator to
+produce improved results. The difficulty of applying discriminators in our context is that text samples are discrete
+and non-differentiable, which breaks down gradient propagation from the discriminators to the generator. We use
+a continuous approximation based on softmax with a decreasing temperature, which anneals to the discrete case as
+training proceeds. This simple yet effective approach enjoys low variance and fast convergence.
+Intuitively, having an interpretable representation would
+imply that each structured code in c can independently
+control its target feature, without entangling with other attributes, especially those not explicitly modeled. We encourage the independency by enforcing those irrelevant at-
 
-Unlike (Carreira-Perpinán and Raziperchikolaei, 2015)
-which relies on solving expensive integer programs, our
-model is end-to-end trainable using distributional stochastic gradient descent (Section 3). Our algorithm requires
-no iterative steps unlike iterative quantization (ITQ) (Gong
-and Lazebnik, 2011). The training procedure is much more
-efficient with guaranteed convergence compared to alternating optimization for ITQ.
+#
 
-2.1. Generative model p(x|h)
-Unlike most works which start with the hash function h(x),
-we first introduce a generative model that defines the likelihood of generating input x given its binary code h, i.e.,
-p(x|h). It is also referred as a decoding function. The corresponding hash codes are derived from an encoding function q(h|x), described in Section 2.2.
-We use a simple Gaussian distribution to model the generation of x given h:
-p(x, h) = p(x|h)p(h), where p(x|h) = N (U h,⇢2 I)
+Encoder
+
+!
+
+"
+
+Generator
+
+#$
+
+Discriminators
+
+Figure 1. The generative model, where z is unstructured latent
+code and c is structured code targeting sentence attributes to control. Blue dashed arrows denote the proposed independency constraint (section 3.2 for details), and red arrows denote gradient
+propagation enabled by the differentiable approximation.
+
+tributes to be completely captured in the unstructured code
+z and thus be separated from c that we will manipulate.
+To this end, we reuse the VAE encoder as an additional
+discriminator for recognizing the attributes modeled in z,
+and train the generator so that these unstructured attributes
+can be recovered from the generated samples. As a result,
+varying different attribute codes will keep the unstructured
+attributes invariant as long as z is unchanged.
+Figure 1 shows the overall model structure. Our complete
+model incorporates VAEs and attribute discriminators, in
+which the VAE component trains the generator to reconstruct real sentences for generating plausible text, while the
+discriminators enforce the generator to produce attributes
+coherent with the conditioned code. The attribute discriminators are learned to fit labeled examples to entail designated semantics, as well as trained to explain samples from
+the generator. That is, the generator and the discriminators form a pair of collaborative learners and provide feedback signals to each other. The collaborative optimization
+resembles wake-sleep algorithm. We show the combined
+VAE/wake-sleep learning enables a highly efficient semisupervised framework, which requires only a little supervision to obtain interpretable representation and generation.
+3.2. Model Structure
+We now describe our model in detail, by presenting the
+learning of generator and discriminators, respectively.
+Generator Learning
+The generator G is an LSTM-RNN for generating token
+sequence x̂ = {x̂1 , . . . , x̂T } conditioned on the latent code
+(z, c), which depicts a generative distribution:
+x̂ ⇠ G(z, c) = pG (x̂|z, c)
+Y
+=
+p(x̂t |x̂<t , z, c),
 
 (1)
 
-and U =
-ui 2 R is a codebook with l codeQl
-words. The prior p(h) ⇠ B(✓) = i=1 ✓ihi (1 ✓i )1 hi
-is modeled as the multivariate Bernoulli distribution on the
-hash codes, where ✓ = [✓i ]li=1 2 [0, 1]l . Intuitively, this
-is an additive model which reconstructs x by summing the
-selected columns of U given h, with a Bernoulli prior on
-the distribution of hash codes. The joint distribution can be
-written as:
-{ui }li=1 ,
+t
 
-p(x, h) / exp (
-
-d
-
-1
-2⇢2
-
-|
-
-x > x + h> U > U h
-{z
-
-(log
-
-✓ >
-1 ✓) h
-
-kx U > hk22
-
-)
-
-2x> U h
-
-}
+where x̂<t indicates the tokens preceding x̂t . The generation thus involves a sequence of discrete decision making which samples a token from a multinomial distribution
+parametrized using softmax function at each time step t:
+x̂t ⇠ softmax(ot /⌧ ),
 
 (2)
 
-Stochastic Generative Hashing
+Toward Controlled Generation of Text
 
-This generative model can be seen as a restricted form of
-general Markov Random Fields in the sense that the parameters for modeling correlation between latent variables
-h and correlation between x and h are shared. However,
-it is more flexible compared to Gaussian Restricted Boltzmann machines (Krizhevsky, 2009; Marc’Aurelio and Geoffrey, 2010) due to an extra quadratic term for modeling
-correlation between latent variables. We first show that this
-generative model preserves local neighborhood structure of
-the x when the Frobenius norm of U is bounded.
-Proposition 1 If kU kF is bounded, then the Gaussian reconstruction error, kx U hx k2 is a surrogate for Euclidean
-neighborhood preservation.
-Proof Given two points x, y 2 Rd , their Euclidean distance is bounded by
-=
-6
-6
-
-kx yk2
-k(x U > hx ) (y U > hy ) + (U > hx U > hy )k2
-kx U > hx k2 + ky U > hy k2 + kU > (hx hy )k2
-kx U > hx k2 + ky U > hy k2 + kU kF khx hy k2
-
-where hx and hy denote the binary latent variables corresponding to x and y, respectively. Therefore, we have
-
-kx yk2 kU kF khx hy k2 6 kx U > hx k2 +ky U > hy k2
-which means minimizing the Gaussian reconstruction error, i.e., log p(x|h), will lead to Euclidean neighborhood
-preservation.
-A similar argument can be made with respect to MIPS
-neighborhood preservation as shown in the supplementary material D. Note that the choice of p(x|h) is not
-unique, and any generative model that leads to neighborhood preservation can be used here. In fact, one can even
-use more sophisticated models with multiple layers and
-nonlinear functions. In our experiments, we find complex
-generative models tend to perform similarly to the Gaussian model on datasets such as SIFT-1M and GIST-1M.
-Therefore, we use the Gaussian model for simplicity.
-2.2. Encoding model q(h|x)
-Even with the simple Gaussian model (1), computing the
-posterior p(h|x) = p(x,h)
-p(x) is not tractable, and finding
-the MAP solution of the posterior involves solving an expensive integer programming subproblem. Inspired by
-the recent work on variational auto-encoder (Kingma and
-Welling, 2013; Mnih and Gregor, 2014; Gregor et al.,
-2014), we propose to bypass these difficulties by parameterizing the encoding function as
-q(h|x) =
-
-l
-Y
-
-q(hk = 1|x)hk q(hk = 0|x)1
-
-hk
-
-,
+where ot is the logit vector as the inputs to the softmax
+function, and ⌧ > 0 is the temperature normally set to 1.
+The unstructured part z of the representation is modeled
+as continuous variables with standard Gaussian prior p(z),
+while the structured code c can contain both continuous and discrete variables to encode different attributes
+(e.g., sentiment categories, formality) with appropriate
+prior p(c). Given observation x, the base VAE includes
+a conditional probabilistic encoder E to infer the latents z:
+z ⇠ E(x) = qE (z|x).
 
 (3)
 
-k=1
+Let ✓G and ✓E denote the parameters of the generator G
+and the encoder E, respectively. The VAE is then optimized to minimize the reconstruction error of observed real
+sentences, and at the same time regularize the encoder to be
+close to the prior p(z):
+LVAE (✓G , ✓E ; x) =
 
-to approximate the exact posterior p(h|x). With the linear
-parametrization, h = [hk ]lk=1 ⇠ B( (W > x)) with W =
-[wk ]lk=1 . At the training step, a hash code is obtained by
-sampling from B( (W > x)). At the inference step, it is
-
-still possible to sample h. More directly, the MAP solution
-of the encoding function (3) is readily given by
-sign(W > x) + 1
-h(x) = argmax q(h|x) =
-2
-h
-This involves only a linear projection followed by a sign
-operation, which is common in the hashing literature.
-Computing h(x) in our model thus has the same amount
-of computation as ITQ (Gong and Lazebnik, 2011), except
-without the orthogonality constraints.
-2.3. Training Objective
-Since our goal is to reconstruct x using the least information in binary codes, we train the variational auto-encoder
-using the Minimal Description Length (MDL) principle,
-which finds the best parameters that maximally compress
-the training data. The MDL principle seeks to minimize
-the expected amount of information to communicate x:
-X
-L(x) =
-q(h|x)(L(h) + L(x|h))
-h
-
-where L(h) =
-log p(h) + log q(h|x) is the description length of the hashed representation h and L(x|h) =
-log p(x|h) is the description length of x having already
-communicated h in (Hinton and Van Camp, 1993; Hinton
-and Zemel, 1994; Mnih and Gregor, 2014). By summing
-over all training examples x, we obtain the following training objective, which we wish to minimize with respect to
-the parameters of p(x|h) and q(h|x):
-X
-min
-H(⇥) :=
-L(x; ⇥)
-⇥={W,U, ,⇢}
-
-=
-
-XX
-x
-
-x
-
-q(h|x)(log p(x, h)
-
-log q(h|x)),
-
+KL(qE (z|x)kp(z))
 (4)
++ EqE (z|x)qD (c|x) [log pG (x|z, c)] ,
 
-h
+where KL(·k·) is the KL-divergence; and qD (c|x) is the
+conditional distribution defined by the discriminator D for
+each structured variable in c:
+D(x) = qD (c|x).
 
-where U, ⇢ and := log 1 ✓ ✓ are parameters of the generative model p(x, h) as defined in (1), and W comes
-from the encoding function q(h|x) defined in (3). This
-objective is sometimes called Helmholtz (variational) free
-energy (Williams, 1980; Zellner, 1988; Dai et al., 2016).
-When the true posterior p(h|x) falls into the family of (3),
-q(h|x) becomes the true posterior p(h|x), which leads to
-the shortest description length to represent x.
-We emphasize that this objective no longer includes binary variables h as parameters and therefore avoids optimizing with discrete variables directly. This paves the
-way for continuous optimization methods such as stochastic gradient descent (SGD) to be applied in training. As
-far as we are aware, this is the first time such a procedure
-has been used in the problem of unsupervised learning to
-hash. Our methodology serves as a viable alternative to the
-relaxation-based approaches commonly used in the past.
-2.4. Reparametrization via Stochastic Neuron
-Using the training objective of (4), we can directly compute the gradients w.r.t. parameters of p(x|h). However, we
-
-Stochastic Generative Hashing
-
-cannot compute the stochastic gradients w.r.t. W because
-it depends on the stochastic binary variables h. In order to
-back-propagate through stochastic nodes of h, two possible
-solutions have been proposed. First, the reparametrization
-trick (Kingma and Welling, 2013) which works by introducing auxiliary noise variables in the model. However, it
-is difficult to apply when the stochastic variables are discrete, as is the case for h in our model. On the other hand,
-the gradient estimators based on REINFORCE trick (Bengio et al., 2013) suffer from high variance. Although some
-variance reduction remedies have been proposed (Mnih and
-Gregor, 2014; Gu et al., 2015), they are either biased or require complicated extra computation in practice.
-In next section, we first provide an unbiased estimator
-of the gradient w.r.t. W derived based on distributional
-derivative, and then, we derive a simple and efficient approximator. Before we derive the estimator, we first introduce the stochastic neuron for reparametrizing Bernoulli
-distribution. A stochastic neuron reparameterizes each
-Bernoulli variable hk (z) with z 2 (0, 1). Introducing random variables ⇠ ⇠ U(0, 1), the stochastic neuron is defined
-(
-as
-1
-if z > ⇠
-h̃(z, ⇠) :=
-.
 (5)
-0
-if z < ⇠
-Because P(h̃(z, ⇠) = 1) = z, we have h̃(z, ⇠) ⇠ B(z). We
-use the stochastic neuron (5) to reparameterize our binary
-variables h by replacing [hk ]lk=1 (x) ⇠ B( (wk> x)) with
-[h̃k ( (wk> x), ⇠k )]lk=1 . Note that h̃ now behaves deterministically given ⇠. This gives us the reparameterized version
-of our original training objective (4):
-i
-X
-X h
-H̃(⇥) =
-H̃(⇥; x) :=
-E⇠ `(h̃, x) ,
-(6)
-x
 
-x
+Here, for notational simplicity, we assume only one structured variable and thus one discriminator, though our
+model specification can straightforwardly be applied to
+many attributes. The distribution over (z, c) factors into
+qE and qD as we are learning disentangled representations. Note that here the discriminator D and code c are
+not learned with the VAE loss, but instead optimized with
+the objectives described shortly. Besides the reconstruction loss which drives the generator to produce realistic
+sentences, the discriminator provides extra learning signals
+which enforce the generator to produce coherent attribute
+that matches the structured code in c. However, as it is
+impossible to propagate gradients from the discriminator
+through the discrete samples, we resort to a deterministic
+continuous approximation. The approximation replaces the
+sampled token x̂t (represented as a one-hot vector) at each
+step with the probability vector in Eq.(2) which is differentiable w.r.t the generator’s parameters. The probability
+vector is used as the output at the current step and the input
+to the next step along the sequence of decision making. The
+e ⌧ (z, c), is
+resulting “soft” generated sentence, denoted as G
+fed into the discriminator1 to measure the fitness to the target attribute, leading to the following loss for improving G:
 
-where `(h̃, x)
-:=
-log p(x, h̃( (W x), ⇠)) +
-log q(h̃( (W > x), ⇠)|x) with ⇠ ⇠ U(0, 1). With such
-a reformulation, the new objective can now be optimized
-by exploiting the distributional stochastic gradient descent,
-which will be explained in the next section.
->
+1
 
-3. Distributional Stochastic Gradient Descent
-For the objective in (6), given a point x randomly sampled
-b
-from {xi }N
-i=1 , the stochastic gradient rU, ,⇢ H̃(⇥; x) can
-be easily computed in the standard way. However, with the
-reparameterization, the function H̃(⇥; x) is no longer differentiable with respect to W due to the discontinuity of
-the stochastic neuron h̃(z, ⇠). Namely, the SGD algorithm
-is not readily applicable. To overcome this difficulty, we
-will adopt the notion of distributional derivative for generalized functions or distributions (Grubb, 2008).
-3.1. Distributional derivative of Stochastic Neuron
-Let ⌦ ⇢ Rd be an open set. Denote C01 (⌦) as the space of
-the functions that are infinitely differentiable with compact
-
-Algorithm 1 Distributional-SGD
-Input: {xi }N
-i=1
-1: Initialize ⇥0 = {W, U, , ⇢} randomly.
-2: for i = 1, . . . , t do
-3:
-Sample xi uniformly from {xi }N
-i=1 .
-4:
-Sample ⇠i ⇠ U([0, 1]l ).
-b ⇥ H̃(⇥i ; xi ) or
-5:
-Compute stochastic gradients r
-b̃
-r H̃(⇥ ; x ), defined in (8) and (10), respectively.
-⇥
-
-6:
-
-i
-
-i
-
-Update parameters as
-b
-⇥i+1 = ⇥i
-i r⇥ H̃(⇥i ; xi ), or
-b̃ H̃(⇥ ; x ), respectively.
-⇥
-=⇥
-r
-i+1
-
-i
-
-i
-
-⇥
-
-i
-
-i
-
-7: end for
-
-support in ⌦. Let D0 (⌦) be the space of continuous linear
-functionals on C01 (⌦), which can be considered as the dual
-space. The elements in space D0 (⌦) are often called general distributions. We emphasize this definition of distributions is more general than that of traditional probability
-distributions.
-Definition 2 (Distributional derivative) (Grubb, 2008)
-Let u 2 D0 (⌦), then a distribution v is called the distributional
-Z derivative of
-Z u, denoted as v = Du, if it satisfies
-v dx =
-
-⌦
-
-u@ dx,
-
-⌦
-
-8 2 C01 (⌦).
-
-It is straightforward to verify that for given ⇠, the function h̃(z, ⇠) 2 D0 (⌦) and moreover, Dz h̃(z, ⇠) = ⇠ (z),
-which is exactly the Dirac- function. Based on the definition of distributional derivatives and chain rules, we are
-able to compute the distributional derivative of the function
-H̃(⇥; x), which is provided in the following lemma.
-Lemma 3 For a given sample x, the distributional derivative of function H̃(⇥; x) w.r.t. W is given by
-DW H̃(⇥; x) =
 h
->
->
-E⇠
-h̃ `(h̃( (W x), ⇠)) (W x) • (1
+i
+e ⌧ (z, c)) .
+LAttr,c (✓G ) = Ep(z)p(c) log qD (c|G
+
+(6)
+
+The probability vector thus functions to average over the
+word embedding matrix to obtain a “soft” word embedding at
+each step.
+
+The temperature ⌧ (Eq.2) is set to ⌧ ! 0 as training proceeds, yielding increasingly peaked distributions that finally emulate discrete case. The simple deterministic approximation effectively leads to reduced variance and fast
+convergence during training, which enables efficient learning of the conditional generator. The diversity of generation results is guaranteed since we use the approximation
+only for attribute modeling and the base sentence generation is learned through VAEs.
+With the objective in Eq.(6), each structured attribute of
+generated sentences is controlled through the corresponding code in c and is independent with other variables in the
+latent representation. However, it is still possible that other
+attributes not explicitly modeled may also entangle with the
+code in c, and thus varying a dimension of c can yield unexpected variation of these attributes we are not interested in.
+To address this, we introduce the independency constraint
+which separates these attributes with c by enforcing them
+to be fully captured by the unstructured part z. Therefore,
+besides the attributes explicitly encoded in c, we also train
+the generator so that other non-explicit attributes can be
+correctly recognized from the generated samples and match
+the unstructured code z. Instead of building a new discriminator, we reuse the variational encoder E which serves
+precisely to infer the latents z in the base VAE. The loss
+is in the same form as with Eq.(6) except replacing the discriminator conditional qD with the encoder conditional qE :
+h
+i
+e ⌧ (z, c)) .
+LAttr,z (✓G ) = Ep(z)p(c) log qE (z|G
 
 (7)
-i
-(W x))x>
->
 
-where • denotes point-wise product
-and
-h̃ `(h̃) denotes
-h
-i
-the finite difference defined as
-= `(h̃1k ) `(h̃0k ),
-h̃ `(h̃)
-k
+Note that, as the discriminator in Eq.(6), the encoder now
+performs inference over generated samples from the prior,
+as opposed to observed examples as in VAEs.
+Combining Eqs.(4)-(7) we obtain the generator objective:
+min✓G LG = LVAE +
 
-where [h̃ik ]l = h̃l if k 6= l, otherwise [h̃ik ]l = i, i 2 {0, 1}.
+c LAttr,c
 
-We can therefore combine distributional derivative estimators (7) with stochastic gradient descent algorithm (see e.g.,
-(Nemirovski et al., 2009) and its variants (Kingma and Ba,
-2014; Bottou et al., 2016)), which we designate as Distributional SGD. The detail is presented in Algorithm 1, where
-we denote
-h
-i
-b ⇥ H̃(⇥i ; xi ) = D
-b W H̃(⇥i ; xi ), r
-b U, ,⇢ H̃(⇥i ; xi ) (8)
-r
++
 
-as the unbiased stochastic estimator of the gradient at ⇥i
-constructed by sample xi , ⇠i . Compared to the existing
-algorithms for learning to hash which require substantial
-effort on optimizing over binary variables, e.g., (CarreiraPerpinán and Raziperchikolaei, 2015), the proposed distri-
+z LAttr,z ,
 
-Stochastic Generative Hashing
+(8)
 
-butional SGD is much simpler and also amenable to online
-settings (Huang et al., 2013; Leng et al., 2015).
-In general, the distributional derivative estimator (7) requires two forward passes of the model for each dimension. To further accelerate the computation, we approximate the distributional derivative DW H̃(⇥; x) by exploiting the mean value theorem and Taylor expansion by
-D̃W H̃(⇥; x) :=
-h
-E⇠ rh̃ `(h̃( (W > x), ⇠)) (W > x) • (1
+where c and z are balancing parameters. The variational encoder is trained by minimizing the VAE loss, i.e.,
+min✓E LVAE .
+Discriminator Learning
+The discriminator D is trained to accurately infer the sentence attribute and evaluate the error of recovering the desired feature as specified in the latent code. For instance,
+for categorical attribute, the discriminator can be formulated as a sentence classifier; while for continuous target
+a probabilistic regressor can be used. The discriminator
+is learned in a different way compared to the VAE encoder,
+since the target attributes can be discrete which are not supported in the VAE framework. Moreover, in contrast to the
+unstructured code z which is learned in an unsupervised
+manner, the structured variable c uses labeled examples to
+
+Toward Controlled Generation of Text
+
+Algorithm 1 Controlled Generation of Text
+Input: A large corpus of unlabeled sentences X = {x}
+A few sentence attribute labels XL = {(xL , cL )}
+Parameters: c , z , u , – balancing parameters
+1: Initialize the base VAE by minimizing Eq.(4) on X with c
+sampled from prior p(c)
+2: repeat
+3:
+Train the discriminator D by Eq.(11)
+4:
+Train the generator G and the encoder E by Eq.(8) and
+minimizing Eq.(4), respectively.
+5: until convergence
+Output: Sentence generator G conditioned on disentangled representation (z, c)
+
+entail designated semantics. We derive an efficient semisupervised learning method for the discriminator.
+Formally, let ✓D denote the parameters of the discriminator. To learn specified semantic meaning, we use a set of
+labeled examples XL = {(xL , cL )} to train the discriminator D with the following objective:
+Ls (✓D ) = EXL [log qD (cL |xL )] .
 
 (9)
-i
-(W x))x ,
->
 
->
-
-which can be computed for each dimension in one pass.
-Then, we can exploit this estimator
-h
-i
-b̃ H̃(⇥ ; x ) = D
-b̃ H̃(⇥ ; x ), r
-b U, ,⇢ H̃(⇥i ; xi ) (10)
-r
+Besides, the conditional generator G is also capable of synthesizing (noisy) sentence-attribute pairs (x̂, c) which can
+be used to augment training data for semi-supervised learning. To alleviate the issue of noisy data and ensure robustness of model optimization, we incorporate a minimum
+entropy regularization term (Grandvalet et al., 2004; Reed
+et al., 2014). The resulting objective is thus:
 ⇥
-i
-i
-W
-i
-i
+⇤
+Lu (✓D ) = EpG (x̂|z,c)p(z)p(c) log qD (c|x̂) + H(qD (c0 |x̂)) ,
+(10)
 
-in Algorithm 1. Interestingly, the approximate stochastic gradient estimator of the stochastic neuron we established through the distributional derivative coincides with
-the heuristic “pseudo-gradient” constructed (Raiko et al.,
-2014). Please refer to the supplementary material A for
-details for the derivation of the approximate gradient estimator (9).
-3.2. Convergence of Distributional SGD
-One caveat here is that due to the potential discrepancy
-of the distributional derivative and the traditional gradient,
-whether the distributional derivative is still a descent direction and whether the SGD algorithm integrated with distributional derivative converges or not remains unclear in
-general. However, for our learning to hash problem, one
-can easily show that the distributional derivative in (7) is
-indeed the true gradient.
-Proposition 4 The distributional derivative DW H̃(⇥; x)
-is equivalent to the traditional gradient rW H(⇥; x).
-
-Proof First of all, by definition, we have H̃(⇥; x) =
-H(⇥; x). One can easily verify that under mild condition,
-both DW H̃(⇥; x) and rW H(⇥; x) are continuous and 1norm bounded. Hence, it suffices to show that for any distribution u 2 C 1 (⌦) and Du, ru 2 L1 (⌦), Du = ru. For
-any 2 C01 (⌦),
-R by definition ofRthe distributional derivative, we have ⌦ Du dx
-u@ dx.
-On the other
-⌦
-R =
-R
-hand,
-we
-always
-have
-ru
-dx
-=
-u@
-dx. Hence,
-⌦
-R
-(Du ru) dx = 0 for all 2 C01 (⌦). By the Du Bois⌦
-Reymond’s lemma (see Lemma 3.2 in (Grubb, 2008)), we
-have Du = ru.
-Consequently, the distributional SGD algorithm enjoys the
-same convergence property as the traditional SGD algorithm. Applying theorem 2.1 in (Ghadimi and Lan, 2013),
-we arrive at
-Theorem 5 Under the assumption that H is L-Lipschitz
-smooth and the variance of the stochastic distributional
-gradient (8) is bounded by 2 in the distributional SGD,
-t
-for the solution ⇥R sampled from the trajectory {⇥i }i=1
-
-with probability P (R = i) =
-p
-O 1/ t , we have
-E
-
-
-
-r⇥ H̃(⇥R )
-
-2
-
-2
-Pt
-
-i
-
-i=1 2
-
-⇠O
-
-✓
-
-L
-
-2
-i
-
-i
-
-L
-
-1
-p
-t
-
-2
-i
-
-◆
+where H(qD (c0 |x̂)) is the empirical Shannon entropy of
+distribution qD evaluated on the generated sentence x̂; and
+is the balancing parameter. Intuitively, the minimum
+entropy regularization encourages the model to have high
+confidence in predicting labels.
+The joint training objective of the discriminator using both
+labeled examples and synthesized samples is then given as:
+min✓D LD = Ls +
 
 where
 
-i
+u
 
-⇠
+u Lu ,
 
-.
-
-We emphasize that although the estimator proposed in (7)
-and the REINFORCE gradient estimator are both unbiased,
-the latter is known to suffer from high variance. Hence, our
-algorithm is expected to converge faster even without extra
-variance reduction techniques, e.g., (Gregor et al., 2014; Gu
-et al., 2015).
-In fact, even with the approximate gradient estimators (9),
-the proposed distributional SGD is also converging in terms
-of first-order conditions. For the detailed proof of theorem 5 and the convergence with approximate distributional
-derivative, please refer to the supplementary material B.
-
-4. Connections
-The proposed stochastic generative hashing is a general
-framework. In this section, we reveal the connection to
-several existing algorithms.
-Iterative Quantization (ITQ). If we fix some ⇢ > 0, and
-U = W R where W is formed by eigenvectors of the covariance matrix and R is an orthogonal matrix, we have
-U > U = I. If we assume the joint distribution as
-p(x, h) / N (W Rh, ⇢2 I)B(✓),
-
-and parametrize q(h|xi ) = bi (h), then from the objective
-in (4) and ignoring the irrelevant terms, we obtain the optimization
-N
-X
-min
-kxi W Rbi k2 ,
 (11)
-R,b
-
-i=1
-
-which is exactly the objective of iterative quantization (Gong and Lazebnik, 2011).
-
-Binary Autoencoder (BA). If we use the deterministic linear encoding function, i.e., q(h|x) = 1+sign(W > x) (h), and
-2
-
-prefix some ⇢ > 0, and ignore the irrelevant terms, the optimization (4) reduces to
-N
-X
-2
-1 + sign(W > x)
-min
-xi U h , s.t. h =
-, (12)
-U,W
-2
-i=1
-which is the objective of a binary autoencoder (CarreiraPerpinán and Raziperchikolaei, 2015).
-
-In BA, the encoding procedure is deterministic, therefore,
-the entropy term Eq(h|x) [log q(h|x)] = 0. In fact, the entropy term, if non-zero, performs like a regularization and
-helps to avoid wasting bits. Moreover, without the stochasticity, the optimization (12) becomes extremely difficult
-due to the binary constraints. While for the proposed algorithm, we exploit the stochasticity to bypass such difficulty
-in optimization. The stochasticity enables us to accelerate
-the optimization as shown in section 5.3.
 
-Stochastic Generative Hashing
-
-We used several benchmarks datasets, i.e., (1) MNIST
-which contains 60,000 digit images of size 28 ⇥ 28 pixels,
-(2) CIFAR-10 which contains 60,000 32 ⇥ 32 pixel color
-images in 10 classes, (3) SIFT-1M and (4) SIFT-1B
-which contain 106 and 109 samples, each of which is a 128
-dimensional vector, and (5) GIST-1M which contains 106
-samples, each of which is a 960 dimensional vector.
-5.1. Reconstruction loss
-Because our method has a generative model p(x|h), we can
-easily compute the regenerated input x̃ = argmax p(x|h),
-and then compute the L2 loss of the regenerated input and
-the original x, i.e., kx x̃k22 . ITQ also trains by minimizing the binary quantization loss, as described in Equation
-(2) in (Gong and Lazebnik, 2011), which is essentially L2
-reconstruction loss when the magnitude of the feature vectors is compatible with the radius of the binary cube. We
-plotted the L2 reconstruction loss of our method and ITQ
-on SIFT-1M in Figure 1(a) and on MNIST and GIST-1M
-in Figure 4, where the x-axis indicates the number of examples seen by the training algorithm and the y-axis shows
-the average L2 reconstruction loss. The training time comparison is listed in Table 1. Our method (SGH) arrives
-at a better reconstruction loss with comparable or even
-less time compared to ITQ. The lower reconstruction loss
-demonstrates our claim that the flexibility of the proposed
-
-2
-
-1.5
-
-1
-
-0.5
-
-0
-0
-
-0.5
-
-1
-
-1.5
-
-number of samples visited
-
-SIFT Training Time
-
-15000
-
-8 bits ITQ
-16 bits ITQ
-32 bits ITQ
-64 bits ITQ
-8 bits SGH
-16 bits SGH
-32 bits SGH
-64 bits SGH
-
-2.5
-
-L2 reconstruction error
-
-In this section, we evaluate the performance of the proposed distributional SGD on commonly used datasets in
-hashing. Due to the efficiency consideration, we conduct
-the experiments mainly with the approximate gradient estimator (9). We evaluate the model and algorithm from
-several aspects to demonstrate the power of the proposed
-SGH: (1) Reconstruction loss. To demonstrate the flexibility of generative modeling, we compare the L2 reconstruction error to that of ITQ (Gong and Lazebnik, 2011), showing the benefits of modeling without the orthogonality constraints. (2) Nearest neighbor retrieval. We show Recall
-K@N plots on standard large scale nearest neighbor search
-benchmark datasets of MNIST, SIFT-1M, GIST-1M and
-SIFT-1B, for all of which we achieve state-of-the-art
-among binary hashing methods. (3) Convergence of the
-distributional SGD. We evaluate the reconstruction error
-showing that the proposed algorithm indeed converges, verifying the theorems. (4) Training time. The existing generative works require a significant amount of time for training the model. In contrast, our SGD algorithm is very fast
-to train both in terms of number of examples needed and the
-wall time. (5) Reconstruction visualization. Due to the
-generative nature of our model, we can regenerate the original input with very few bits. On MNIST and CIFAR10,
-we qualitatively illustrate the templates that correspond to
-each bit and the resulting reconstruction.
-
-SIFT L2 reconstruction error
-
-3
-
-Training Time (sec)
-
-5. Experiments
-
-2
-
-2.5
-# 10 6
-
-(a) Reconstruction Error
-
-BA
-SGH
-
-10000
-
-5000
-
-0
-
-8
-
-16
-
-32
-
-64
-
-bits of hashing codes
-
-(b) Training Time
-
-Figure 1: (a) Convergence of reconstruction error with
-number of samples seen by SGD, and (b) training time
-comparison of BA and SGH on SIFT-1M over the course
-of training with varying number of bits.
-Table 1: Training time on SIFT-1M in second.
-Method 8 bits 16 bits 32 bits 64 bits
-SGH
-28.32 29.38
-37.28
-55.03
-ITQ
-92.82 121.73 173.65 259.13
-model afforded by removing the orthogonality constraints
-indeed brings extra modeling ability. Note that ITQ is generally regarded as a technique with fast training among the
-existing binary hashing algorithms, and most other algorithms (He et al., 2013; Heo et al., 2012; Carreira-Perpinán
-and Raziperchikolaei, 2015) take much more time to train.
-5.2. Large scale nearest neighbor retrieval
-We compared the stochastic generative hashing on an
-L2NNS task with several state-of-the-art unsupervised algorithms, including K-means hashing (KMH) (He et al.,
-2013), iterative quantization (ITQ) (Gong and Lazebnik, 2011), spectral hashing (SH) (Weiss et al., 2009),
-spherical hashing (SpH) (Heo et al., 2012), binary autoencoder (BA) (Carreira-Perpinán and Raziperchikolaei,
-2015), and scalable graph hashing (GH) (Jiang and Li,
-2015). We demonstrate the performance of our binary
-codes by doing standard benchmark experiments of Approximate Nearest Neighbor (ANN) search by comparing
-the retrieval recall. In particular, we compare with other unsupervised techniques that also generate binary codes. For
-each query, linear search in Hamming space is conducted
-to find the approximate neighbors.
-Following the experimental setting of (He et al., 2013),
-we plot the Recall10@N curve for MNIST, SIFT-1M,
-GIST-1M, and SIFT-1B datasets under varying number
-of bits (16, 32 and 64) in Figure 2. On the SIFT-1B
-datasets, we only compared with ITQ since the training cost
-of the other competitors is prohibitive. The recall is defined
-as the fraction of retrieved true nearest neighbors to the total number of true nearest neighbors. The Recall10@N is
-the recall of 10 ground truth neighbors in the N retrieved
-samples. Note that Recall10@N is generally a more chal-
-
-Stochastic Generative Hashing
-SIFT1M 16 bit Recall 10@M
-
-0.25
-
-Recall
-
-0.5
-
-SGH
-BA
-SpH
-SH
-ITQ
-KMH
-GH
-
-0.3
-0.2
-0.1
-
-0.15
-
-0.1
-
-0.05
-
-400
-
-600
-
-800
-
-1
-
-200
-
-400
-
-600
-
-800
-
-1000
-
-0
-
-M - number of retrieved items
-
-MNIST 32 bit Recall 10@M
-
-SIFT1M 32 bit Recall 10@M
-
-0.6
-
-0.6
-
-Recall
-
-Recall
-
-0.7
-
-SGH
-BA
-SpH
-SH
-ITQ
-KMH
-GH
-
-0.4
-0.3
-0.2
-0.1
-
-0.5
-
-0.25
-
-0.4
-
-0.2
-
-SGH
-BA
-SpH
-SH
-ITQ
-KMH
-GH
-
-0.3
-
-0.2
-
-0.1
-
-0
-200
-
-400
-
-600
-
-800
-
-1000
-
-MNIST 64 bit Recall 10@M
-
-1
-
-200
-
-400
-
-600
-
-800
-
-1000
-
-0.3
-
-0.3
-
-0.3
-0.2
-
-0.2
-
-0.1
-
-0
-0
-
-200
-
-400
-
-600
-
-800
-
-M - number of retrieved items
-
-1000
-
-0
-
-200
-
-400
-
-600
-
-800
-
-200
-
-400
-
-600
-
-800
-
-0.04
-
-1000
-
-SGH
-ITQ
-
-0.25
-0.2
-
-1000
-
-M - number of retrieved items
-
-200
-
-400
-
-600
-
-800
-
-1000
-
-M - number of retrieved items
-SIFT1B 64 bit Recall 10@M
-
-0.3
-
-0.25
-
-0.2
-
-0.15
-
-SGH
-ITQ
-
-0.1
-
-0.15
-0.1
-
-0.05
-
-0.05
-0
-
-0
-0
-
-0.05
-
-0
-
-GIST 64 bit Recall 10@M
-
-0.5
-
-0.1
-
-0.06
-
-SGH
-BA
-SpH
-SH
-ITQ
-KMH
-GH
-
-0.35
-
-Recall
-
-0.4
-
-0.07
-
-0
-
-0.4
-
-SGH
-BA
-SpH
-SH
-ITQ
-KMH
-GH
-
-1000
-
-0.08
-
-0.01
-
-0.45
-
-0.4
-
-800
-
-SIFT1B 32 bit Recall 10@M
-
-0.09
-
-M - number of retrieved items
-
-0.6
-
-Recall
-
-Recall
-
-0.5
-
-600
-
-0.03
-
-0
-
-0.7
-
-0.6
-
-400
-
-0.02
-
-0.8
-
-SGH
-BA
-SpH
-SH
-ITQ
-KMH
-GH
-
-200
-
-M - number of retrieved items
-
-0.05
-
-SIFT1M 64 bit Recall 10@M
-
-0.8
-
-0.7
-
-1000
-
-SGH
-BA
-SpH
-SH
-ITQ
-KMH
-GH
-
-0.15
-
-M - number of retrieved items
-
-0.9
-
-800
-
-0
-0
-
-M - number of retrieved items
-
-600
-
-0.1
-
-0
-
-0
-
-400
-
-GIST 32 bit Recall 10@M
-
-0.3
-
-Recall
-
-0.8
-
-200
-
-0
-
-M - number of retrieved items
-
-0.9
-
-0.5
-
-SGH
-ITQ
-
-0
-
-0
-0
-
-1000
-
-M - number of retrieved items
-1
-
-2
-
-0.5
-
-0
-200
-
-3
-2.5
-
-1.5
-
-0.05
-
-0
-0
-
-4
-3.5
-
-Recall
-
-0.4
-
-0.1
-
-SIFT1B 16 bit Recall 10@M
-
-4.5
-
-Recall
-
-Recall
-
-0.6
-
-# 10 -3
-
-5
-
-SGH
-BA
-SpH
-SH
-ITQ
-KMH
-GH
-
-Recall
-
-0.2
-
-0.7
-
-GIST 16 bit Recall 10@M
-
-0.15
-
-SGH
-BA
-SpH
-SH
-ITQ
-KMH
-GH
-
-0.8
-
-Recall
-
-MNIST 16 bit Recall 10@M
-
-0.9
-
-0
-
-200
-
-400
-
-600
-
-800
-
-M - number of retrieved items
-
-1000
-
-0
-
-200
-
-400
-
-600
-
-800
-
-1000
-
-M - number of retrieved items
-
-Figure 2: L2NNS comparison on MNIST, SIFT-1M, and GIST-1M and SIFT-1B with the length of binary codes varying
-from 16 to 64 bits. We evaluate the performance with Recall 10@M (fraction of top 10 ground truth neighbors in retrieved
-M), where M increases up to 1000.
-lenging criteria than Recall@N (which is essentially Recall1@N), and better characterizes the retrieval results. For
-completeness, results of various Recall K@N curves can
-be found in the supplementary material which show similar trend as the Recall10@N curves.
-
-and shown in Figure 4 in supplementary material C. Obviously, the proposed algorithm converges quickly, no matter
-how many bits are used. It is reasonable that with more
-bits, the model fits the data better and the reconstruction
-error can be reduced further.
-
-Figure 2 shows that the proposed SGH consistently performs the best across all bit settings and all datasets. The
-searching time is the same, because all algorithms use the
-same optimized implementation of POPCNT based Hamming distance computation and priority queue. We point
-out that many of the baselines need significant parameter
-tuning for each experiment to achieve a reasonable recall,
-except for ITQ and our method, where we fix hyperparameters for all our experiments and used a batch size of 500
-and learning rate of 0.01 with stepsize decay. Our method
-is less sensitive to hyperparameters.
-
-In line with the expectation, our distributional SGD trains
-much faster since it bypasses integer programming. We
-benchmark the actual time taken to train our method to
-convergence and compare that to binary autoencoder hashing (BA) (Carreira-Perpinán and Raziperchikolaei, 2015)
-on SIFT-1M, GIST-1M and MINST. We illustrate the performance on SIFT-1M in Figure 1(b) . The results on
-GIST-1M and MNIST datasets follow a similar trend as
-shown in the supplementary material C. Empirically, BA
-takes significantly more time to train on all bit settings
-due to the expensive cost for solving integer programming
-subproblem. Our experiments were run on AMD 2.4GHz
-Opteron CPUs⇥4 and 32G memory. Our implementation
-of stochastic generative hashing as well as the whole training procedure was done in TensorFlow. We have released
-our code on GitHub2 . For the competing methods, we di-
-
-5.3. Empirical study of Distributional SGD
-We demonstrate the convergence of the Adam (Kingma
-and Ba, 2014) with distributional derivative numerically on
-SIFT-1M, GIST-1M and MINST from 8 bits to 64 bits.
-The convergence curves on SIFT-1M are shown in Figure 1 (a). The results on GIST-1M and MNIST are similar
-
-2
-
-https://github.com/doubling/Stochastic Generative Hashing
-
-Stochastic Generative Hashing
-
-(a) Templates and re-generated images on MNIST
-
-(b) Templates and re-generated images on CIFAR-10
-
-Figure 3: Illustration of MNIST and CIFAR-10 templates (left) and regenerated images (right) from different methods
-with 64 hidden binary variables. In MNIST, the four rows and their number of bits used to encode them are, from the top:
-(1) original image, 28 ⇥ 28 ⇥ 8 = 6272 bits; (2) PCA with 64 components 64 ⇥ 32 = 2048 bits; (3) SGH, 64 bits; (4) ITQ,
-64 bits. In CIFAR : (1) original image, 30 ⇥ 30 ⇥ 24 = 21600 bits; (2) PCA with 64 components 64 ⇥ 32 = 2048 bits; (3)
-SGH, 64 bits; (4) ITQ, 64 bits. The SGH reconstruction tends to be much better than that of ITQ, and is on par with PCA
-which uses 32 times more bits!
-rectly used the code released by the authors.
-5.4. Visualization of reconstruction
-One important aspect of utilizing a generative model for a
-hash function is that one can generate the input from its
-hash code. When the inputs are images, this corresponds
-to image generation, which allows us to visually inspect
-what the hash bits encode, as well as the differences in the
-original and generated images.
-In our experiments on MNIST and CIFAR-10, we first visualize the “template” which corresponds to each hash bit,
-i.e., each column of the decoding dictionary U . This gives
-an interesting insight into what each hash bit represents.
-Unlike PCA components, where the top few look like averaged images and the rest are high frequency noise, each of
-our image template encodes distinct information and looks
-much like filter banks of convolution neural networks. Empirically, each template also looks quite different and encodes somewhat meaningful information, indicating that no
-bits are wasted or duplicated. Note that we obtain this representation as a by-product, without explicitly setting up
-the model with supervised information, similar to the case
-in convolution neural nets.
-We also compare the reconstruction ability of SGH with
-the that of ITQ and real valued PCA in Figure 3. For ITQ
-and SGH, we use a 64-bit hash code. For PCA, we kept 64
-components, which amounts to 64 ⇥ 32 = 2048 bits. Visually comparing with SGH, ITQ reconstructed images look
-much less recognizable on MNIST and much more blurry
-on CIFAR-10. Compared to PCA, SGH achieves similar
-
-visual quality while using a significantly lower (32⇥ less)
-number of bits!
-
-6. Conclusion
-In this paper, we have proposed a novel generative approach to learn binary hash functions. We have justified
-from a theoretical angle that the proposed algorithm is
-able to provide a good hash function that preserves Euclidean neighborhoods, while achieving fast learning and
-retrieval. Extensive experimental results justify the flexibility of our model, especially in reconstructing the input
-from the hash codes. Comparisons with approximate nearest neighbor search over several benchmarks demonstrate
-the advantage of the proposed algorithm empirically. We
-emphasize that the proposed generative hashing is a general framework which can be extended to semi-supervised
-settings and other learning to hash scenarios as detailed in
-the supplementary material. Moreover, the proposed distributional SGD with the unbiased gradient estimator and its
-approximator can be applied to general integer programming problems, which may be of independent interest.
-
-Acknowledgements
-LS is supported in part by NSF IIS-1218749, NIH BIGDATA 1R01GM108341, NSF CAREER IIS-1350983, NSF
-IIS-1639792 EAGER, ONR N00014-15-1-2340, NVIDIA,
-Intel and Amazon AWS.
-
-Stochastic Generative Hashing
+is the balancing parameter.
+
+Summarization and Discussion
+We have derived our model and its learning procedure. The
+generator is first initialized by training the base VAE on a
+large corpus of unlabeled sentences, through the objective
+of minimizing Eq.(4) with the latent code c at this time
+sampled from the prior distribution p(c). The full model is
+then trained by alternating the optimization of the generator
+and the discriminator, as summarized in Algorithm 1.
+
+4(0)
+
+'			)
+
+4(1)
+
+'			)
+
+,3(1|.)
+
+,2 (0|.)
+
+,3(1|.)
+
+,- (.|0, 1)
+
+,- (.|0, 1)
+
+"∼+
+
+	"# ∼ %(', ))
+
+Figure 2. Left: The VAE and wake procedure, corresponding to
+Eq.(4). Right: The sleep procedure, corresponding to Eqs.(6)(7) and (10). Black arrows denote inference and generation; red
+dashed arrows denote gradient propagation. The two steps in the
+sleep procedure, i.e., optimizing the discriminator and the generator, respectively, are performed in an alternating manner.
+
+Our model can be viewed as combining the VAE framework with an extended wake-sleep method, as illustrated in
+Figure 2. Specifically, in Eq.(10), samples are produced
+by the generator and used as targets for maximum likelihood training of the discriminator. This resembles the
+sleep phase of wake-sleep. Eqs.(6)-(7) further leverage the
+generated samples to improve the generator. We can see
+the above together as an extended sleep procedure based
+on “dream” samples obtained by ancestral sampling from
+the generative network. On the other hand, Eq.(4) samples
+c from the discriminator distribution qD (c|x) on observation x, to form a target for training the generator, which
+corresponds to the wake phase. The effective combination
+enables discrete latent code, holistic discriminator metrics,
+and efficient mutual bootstrapping.
+Training of the discriminators need supervised data to impose designated semantics. Discriminators for different attributes can be trained independently on separate labeled
+sets. That is, the model does not require a sentence to be
+annotated with all attributes, but instead needs only independent labeled data for each individual attribute. Moreover, as the labeled data are used only for learning attribute
+semantics instead of direct sentence generation, we are allowed to extend the data scope beyond labeled sentences
+to, e.g., labeled words or phrases. As shown in the experiments (section 4), our method is able to effectively lift the
+word level knowledge to sentence level and generate convincing sentences. Finally, with the augmented unsupervised training in the sleep phrase, we show a little supervision is sufficient for learning structured representations.
+
+4. Experiments
+We apply our model to generate short sentences (length 
+15) with controlled sentiment and tense. Quantitative experiments using trained classifiers as evaluators show our
+model gives improved generation accuracy. Disentangled
+representation is learned with a few labels or only word
+annotations. We also validate the effect of the proposed
+independency constraint for interpretable generation.
+
+Toward Controlled Generation of Text
+
+Datasets
+Sentence corpus. We use a large IMDB text corpus (Diao
+et al., 2014) for training the generative models. This is
+a collection of 350K movie reviews. We select sentences
+containing at most 15 words, and replace infrequent words
+with the token “<unk>”. The resulting dataset contains
+around 1.4M sentences with the vocabulary size of 16K.
+Sentiment. To control the sentiment (“positive” or “negative”) of generated sentences, we test on the following labeled sentiment data: (1) Stanford Sentiment Treebank-2
+(SST-full) (Socher et al., 2013) consists of 6920/872/1821
+movie review sentences with binary sentiment annotations
+in the train/dev/test sets, respectively. We use the 2837
+training examples with sentence length  15, and evaluate classification accuracy on the original test set. (2) SSTsmall. To study the size of labeled data required in the
+semi-supervised learning for accurate attribute control, we
+sample a small subset from SST-full, containing only 250
+labeled sentences for training. (3) Lexicon. We also investigate the effectiveness of our model in terms of using
+word-level labels for sentence-level control. The lexicon
+from (Wilson et al., 2005) contains 2700 words with sentiment labels. We use the lexicon for training by treating the
+words as sentences, and evaluate on the SST-full test set.
+(4) IMDB. We collect a dataset from the IMDB corpus
+by randomly selecting positive and negative movie reviews.
+The dataset has 5K/1K/10K sentences in train/dev/test.
+Tense. The second attribute is the tense of the main verb
+in a sentence. Though no corpus with sentence tense annotations is readily available, our method is able to learn
+from only labeled words and generate desired sentences.
+We compile from the TimeBank (timeml.org) dataset and
+obtain a lexicon of 5250 words and phrases labeled with
+one of {“past”, “present”, “future”}. The lexicon mainly
+consists of verbs in different tenses (e.g., “was”, “will be”)
+as well as time expressions (e.g., “in the future”).
+Parameter Setting
+The generator and encoder are set as single-layer LSTM
+RNNs with input/hidden dimension of 300 and max sample
+length of 15. Discriminators are set as ConvNets. Detailed
+configurations are in the supplements. To avoid vanishingly
+small KL term in the VAE module (Eq.4) (Bowman et al.,
+2015), we use a KL term weight linearly annealing from 0
+to 1 during training. Balancing parameters are set to c =
+is selected on the dev sets. At test
+z = u = 0.1, and
+time sentences are generated with Eq.(1).
+4.1. Accuracy of Generated Attributes
+We quantitatively measure sentence attribute control by
+evaluating the accuracy of generating designated sentiment,
+and the effect of using samples for training classifiers.
+We compare with semi-supervised VAE (S-VAE) (Kingma
+
+Model
+S-VAE
+Ours
+
+Dataset
+SST-full
+
+SST-small
+
+Lexicon
+
+0.822
+0.851
+
+0.679
+0.707
+
+0.660
+0.701
+
+Table 1. Sentiment accuracy of generated sentences. S-VAE
+(Kingma et al., 2014) and our model are trained on the three sentiment datasets and generate 30K sentences, respectively.
+
+et al., 2014), one of the few existing deep models capable
+of conditional text generation. S-VAE learns to reconstruct
+observed sentences given attribute code, and no discriminators are used. See §2 and 3.1 for more discussions.
+
+We use a state-of-the-art sentiment classifier (Hu et al.,
+2016a) which achieves 90% accuracy on the SST test set, to
+automatically evaluate the sentiment generation accuracy.
+Specifically, we generate sentences given sentiment code c,
+and use the pre-trained sentiment classifier to assign sentiment labels to the generated sentences. The accuracy is
+calculated as the percentage of the predictions that match
+the sentiment code c. Table 1 shows the results on 30K
+sentences by the two models which are trained with SSTfull, SST-small, and Lexicon, respectively. We see that our
+method consistently outperforms S-VAE on all datasets. In
+particular, trained with only 250 labeled examples in SSTsmall, our model achieves reasonable generation accuracy,
+demonstrating the ability of learning disentangled representations with very little supervision. More importantly,
+given only word-level annotations in Lexicon, our model
+successfully transfers the knowledge to sentence level and
+generates desired sentiments reasonably well. Compared to
+our method that drives learning by directly assessing generated sentences, S-VAE attempts to capture sentiment semantics only by reconstructing labeled words, which is less
+efficient and gives inferior performance.
+We next use the generated samples to augment the sentiment datasets and train sentiment classifiers. While
+not aiming to build best-performing classifiers on these
+datasets, the classification accuracy serves as an auxiliary
+measure of the sentence generation quality. That is, higherquality sentences with more accurate sentiment attribute
+can predictably help yield stronger sentiment classifiers.
+Figure 3 shows the accuracy of classifiers trained on the
+four datasets with different augmentations. “Std” is a ConvNet trained on the standard original datasets, with the
+same network structure as with the sentiment discriminator
+in our model. “H-reg” additionally imposes the minimum
+entropy regularization on the generated sentences. “Ours”
+incorporates the minimum entropy regularization and the
+sentiment attribute code c of the generated sentences, as
+in Eq.(10). S-VAE uses the same protocol as our method
+to augment with the data generated by the S-VAE model.
+Comparison in Figure 3 shows that our method consistently
+gives the best performance on four datasets. For instance,
+
+Toward Controlled Generation of Text
+
+with specified tense attributes. Table 4 further shows generated sentences with varying code z in different settings
+of structured attribute factors. We obtain samples that are
+diverse in content while consistent in sentiment and tense.
+
+Figure 3. Test-set accuracy of classifiers trained on four sentiment
+datasets augmented with different methods (see text for details).
+The first three datasets use the SST-full test set for evaluation.
+
+on Lexicon, our approach achieves 0.733 accuracy, compared to 0.701 of “Std”. The improvement of “H-Reg”
+over “Std” shows positive effect of the minimum entropy
+regularization on generated sentences. Further incorporating the conditioned sentiment code of the generated samples, as in “Ours” and “S-VAE”, provides additional performance gains, indicating the advantages of conditional generation for automatic creation of labeled data. Consistent
+with the above experiment, our model outperforms S-VAE.
+4.2. Disentangled Representation
+We study the interpretability of generation and the explicit
+independency constraint (Eq.7) for disentangled control.
+Table 2 compares the samples generated by models with
+and without the constraint term, respectively. In the left
+column where the constraint applies, each pair of sentences, conditioned on different sentiment codes, are highly
+relevant in terms of, e.g., subject, tone, and wording which
+are not explicitly modeled in the structured code c while instead implicitly encoded in the unstructured code z. Varying the sentiment code precisely changes the sentiment of
+the sentences (and paraphrases slightly to ensure fluency),
+while keeping other aspects unchanged. In contrast, the
+results in the right column, where the independency constraint is unactivated, show that varying the sentiment code
+not only changes the polarity of samples, but can also
+change other aspects unexpected to control, making the
+generation results less interpretable and predictable.
+We demonstrate the power of learned disentangled representation by varying one attribute variable at a time. Table 3
+shows the generation results. We see that each attribute
+variable in our model successfully controls its corresponding attribute, and is disentangled with other attribute code.
+The right column of the table shows meaningful variation
+of sentence tense as the tense code varies. Note that the
+semantic of tense is learned only from a lexicon without
+complete sentence examples. Our model successfully captures the key ingredients (e.g., verb “was” for past tense and
+“will be” for future tense) and combines with the knowledge of well-formed sentences to generate realistic samples
+
+We also occasionally observed failure cases as in Table 5,
+such as implausible sentences, unexpected variations of
+irrelevant attributes, and inaccurate attribute generations.
+Improved modeling is expected such as using dilated convolutions as decoder, and decoding with beam search, etc.
+Better quantitative evaluations are also desired.
+
+5. Discussions
+We have proposed a deep generative model that learns interpretable latent representations and generates sentences
+with specified attributes. We obtained meaningful generation with restricted sentence length, and improved accuracy
+on sentiment and tense attributes. In the future we would
+like to improve the modeling and training as above, and
+extend to generate longer sentences/paragraphs and control
+more attributes with fine-grained structures.
+Our approach combines VAEs with attribute discriminators and imposes explicit independency constraints
+on attribute controls, enabling disentangled latent code.
+Semi-supervised learning within the joint VAE/wake-sleep
+framework is effective with little or incomplete supervision. Hu et al. (2017) develop a unified view of a diverse
+set of deep generative paradigms, including GANs, VAEs,
+and wake-sleep algorithm. Our model can be alternatively
+motivated under the view as enhancing VAEs with the extended sleep phase and by leveraging generated samples.
+Interpretability of the latent representations not only allows
+dynamic control of generated attributes, but also provides
+an interface that connects the end-to-end neural model with
+conventional structured methods. For instance, we can encode structured constraints (e.g., logic rules or probabilistic
+structured models) on the interpretable latent code, to incorporate prior knowledge or human intentions (Hu et al.,
+2016a;b); or plug the disentangled generation model into
+dialog systems to generate natural language responses from
+structured dialog states (Young et al., 2013).
+Though we have focused on the generation capacity of our
+model, the proposed collaborative semi-supervised learning framework also helps improve the discriminators by
+generating labeled samples for data augmentation (e.g., see
+Figure 3). More generally, for any discriminative task, we
+can build a conditional generative model to synthesize additional labeled data. The accurate attribute generation of
+our approach can offer larger performance gains compared
+to previous generative methods.
+Acknowledgments This research is supported by NSF
+IIS1447676, ONR N000141410684, and ONR N000141712463.
+
+Toward Controlled Generation of Text
+
+w/ independency constraint
+
+w/o independency constraint
+
+the film is strictly routine !
+the film is full of imagination .
+
+the acting is bad .
+the movie is so much fun .
+
+after watching this movie , i felt that disappointed .
+after seeing this film , i ’m a fan .
+
+none of this is very original .
+highly recommended viewing for its courage , and ideas .
+
+the acting is uniformly bad either .
+the performances are uniformly good .
+
+too bland
+highly watchable
+
+this is just awful .
+this is pure genius .
+
+i can analyze this movie without more than three words .
+i highly recommend this film to anyone who appreciates music .
+
+Table 2. Samples from models with or without independency constraint on attribute control (i.e., Eq.7). Each pair of sentences are
+generated with sentiment code set to “negative” and “positive”, respectively, while fixing the unstructured code z. The SST-full dataset
+is used for learning the sentiment representation.
+
+Varying the code of tense
+i thought the movie was too bland and too much
+i guess the movie is too bland and too much
+i guess the film will have been too bland
+
+this was one of the outstanding thrillers of the last decade
+this is one of the outstanding thrillers of the all time
+this will be one of the great thrillers of the all time
+
+Table 3. Each triple of sentences is generated by varying the tense code while fixing the sentiment code and z.
+
+Varying the unstructured code z
+(“negative”, “past”)
+the acting was also kind of hit or miss .
+i wish i ’d never seen it
+by the end i was so lost i just did n’t care anymore
+
+(“positive”, “past”)
+his acting was impeccable
+this was spectacular , i saw it in theaters twice
+it was a lot of fun
+
+(“negative”, “present”)
+the movie is very close to the show in plot and characters
+the era seems impossibly distant
+i think by the end of the film , it has confused itself
+
+(“positive”, “present”)
+this is one of the better dance films
+i ’ve always been a big fan of the smart dialogue .
+i recommend you go see this, especially if you hurt
+
+(“negative”, “future”)
+i wo n’t watch the movie
+and that would be devastating !
+i wo n’t get into the story because there really is n’t one
+
+(“positive”, “future”)
+i hope he ’ll make more movies in the future
+i will definitely be buying this on dvd
+you will be thinking about it afterwards, i promise you
+
+Table 4. Samples by varying the unstructured code z given sentiment (“positive”/“negative”) and tense (“past”/“present”/“future”) code.
+
+Failure cases
+the plot is not so original
+the plot weaves us into <unk>
+
+it does n’t get any better the other dance movies
+it does n’t reach them , but the stories look
+
+he is a horrible actor ’s most part
+he ’s a better actor than a standup
+
+i just think so
+i just think !
+
+Table 5. Failure cases when varying sentiment code with other codes fixed.
+
+Toward Controlled Generation of Text
 
 References
-Babenko, Artem and Lempitsky, Victor. Additive quantization for extreme vector compression. In roceedings of
-the IEEE Conference on Computer Vision and Pattern
-Recognition, 2014.
-Yoshua Bengio, Nicholas Léonard, and Aaron Courville.
-Estimating or propagating gradients through stochastic
-neurons for conditional computation. arXiv preprint
-arXiv:1308.3432, 2013.
-Léon Bottou, Frank E Curtis, and Jorge Nocedal. Optimization methods for large-scale machine learning. arXiv
-preprint arXiv:1606.04838, 2016.
-Miguel A Carreira-Perpinán and Ramin Raziperchikolaei.
-Hashing with binary autoencoders. In Proceedings of
-the IEEE Conference on Computer Vision and Pattern
-Recognition, pages 557–566, 2015.
-Charikar, Moses S. Similarity estimation techniques from
-rounding algorithms. Proceedings of the thiry-fourth annual ACM symposium on Theory of computing, pages
-380–388, 2002. ‘’
-Bo Dai, Niao He, Hanjun Dai, and Le Song. Provable
-bayesian inference via particle mirror descent. In Proceedings of the 19th International Conference on Artificial Intelligence and Statistics, pages 985–994, 2016.
-
-Karol Gregor, Ivo Danihelka, Andriy Mnih, Charles Blundell, and Daan Wierstra. Deep autoregressive networks.
-In Proceedings of The 31st International Conference on
-Machine Learning, pages 1242–1250, 2014.
-Gerd Grubb. Distributions and operators, volume 252.
-Springer Science & Business Media, 2008.
-Shixiang Gu, Sergey Levine, Ilya Sutskever, and Andriy
-Mnih. Muprop: Unbiased backpropagation for stochastic neural networks. arXiv preprint arXiv:1511.05176,
-2015.
-Ruiqi Guo, Sanjiv Kumar, Krzysztof Choromanski, and
-David Simcha. Quantization based fast inner product
-search. 19th International Conference on Artificial Intelligence and Statistics, 2016.
-Kaiming He, Fang Wen, and Jian Sun. K-means hashing:
-An affinity-preserving quantization method for learning binary compact codes. In Proceedings of the IEEE
-conference on computer vision and pattern recognition,
-pages 2938–2945, 2013.
-Jae-Pil Heo, Youngwoon Lee, Junfeng He, Shih-Fu Chang,
-and Sung-Eui Yoon. Spherical hashing. In Computer Vision and Pattern Recognition (CVPR), 2012 IEEE Conference on, pages 2957–2964. IEEE, 2012.
-
-Matthijs Douze, Hervé Jégou, and Florent Perronnin. Polysemous codes. In European Conference on Computer
-Vision, 2016.
-
-Geoffrey E Hinton and Drew Van Camp. Keeping the neural networks simple by minimizing the description length
-of the weights. In Proceedings of the sixth annual conference on Computational learning theory, pages 5–13.
-ACM, 1993.
-
-Saeed Ghadimi and Guanghui Lan. Stochastic first-and
-zeroth-order methods for nonconvex stochastic programming. SIAM Journal on Optimization, 23(4):2341–2368,
+Bahdanau, Dzmitry, Cho, Kyunghyun, and Bengio,
+Yoshua. Neural machine translation by jointly learning
+to align and translate. arXiv preprint arXiv:1409.0473,
+2014.
+Bowman, Samuel R, Vilnis, Luke, Vinyals, Oriol, Dai, Andrew M, Jozefowicz, Rafal, and Bengio, Samy. Generating sentences from a continuous space. arXiv preprint
+arXiv:1511.06349, 2015.
+Chen, Xi, Duan, Yan, Houthooft, Rein, Schulman, John,
+Sutskever, Ilya, and Abbeel, Pieter. InfoGAN: Interpretable representation learning by information maximizing generative adversarial nets. In Advances in
+Neural Information Processing Systems, pp. 2172–2180,
+2016.
+Diao, Qiming, Qiu, Minghui, Wu, Chao-Yuan, Smola,
+Alexander J, Jiang, Jing, and Wang, Chong. Jointly modeling aspects, ratings and sentiments for movie recommendation (JMARS). In Proceedings of the 20th ACM
+SIGKDD international conference on Knowledge discovery and data mining, pp. 193–202. ACM, 2014.
+Dosovitskiy, Alexey and Brox, Thomas. Generating images with perceptual similarity metrics based on deep
+networks. arXiv preprint arXiv:1602.02644, 2016.
+Goodfellow, Ian, Pouget-Abadie, Jean, Mirza, Mehdi, Xu,
+Bing, Warde-Farley, David, Ozair, Sherjil, Courville,
+Aaron, and Bengio, Yoshua. Generative adversarial nets.
+In Advances in Neural Information Processing Systems,
+pp. 2672–2680, 2014.
+Grandvalet, Yves, Bengio, Yoshua, et al. Semi-supervised
+learning by entropy minimization. In NIPS, volume 17,
+pp. 529–536, 2004.
+Hinton, Geoffrey E, Dayan, Peter, Frey, Brendan J, and
+Neal, Radford M. The “wake-sleep” algorithm for unsupervised neural networks. Science, 268(5214):1158,
+1995.
+Hu, Zhiting, Ma, Xuezhe, Liu, Zhengzhong, Hovy, Eduard,
+and Xing, Eric. Harnessing deep neural networks with
+logic rules. In ACL, 2016a.
+Hu, Zhiting, Yang, Zichao, Salakhutdinov, Ruslan, and
+Xing, Eric P. Deep neural networks with massive learned
+knowledge. In EMNLP, 2016b.
+Hu, Zhiting, Yang, Zichao, Salakhutdinov, Ruslan, and
+Xing, Eric P. On unifying deep generative models. arXiv
+preprint arXiv:1706.00550, 2017.
+Kingma, Diederik P and Welling, Max. Auto-encoding
+variational Bayes. arXiv preprint arXiv:1312.6114,
 2013.
 
-Geoffrey E Hinton and Richard S Zemel. Autoencoders,
-minimum description length and helmholtz free energy.
-In Advances in Neural Information Processing Systems,
-pages 3–10, 1994.
-
-Aristides Gionis, Piotr Indyk, Rajeev Motwani, et al. Similarity search in high dimensions via hashing. In VLDB,
-volume 99, pages 518–529, 1999.
-
-Long-Kai Huang, Qiang Yang, and Wei-Shi Zheng. Online
-hashing. In Proceedings of the Twenty-Third international joint conference on Artificial Intelligence, pages
-1422–1428. AAAI Press, 2013.
-
-Yunchao Gong and Svetlana Lazebnik. Iterative quantization: A procrustean approach to learning binary codes.
-In Computer Vision and Pattern Recognition (CVPR),
-2011 IEEE Conference on, pages 817–824. IEEE, 2011.
-Yunchao Gong, Sanjiv Kumar, Vishal Verma, and Svetlana
-Lazebnik. Angular quantization-based binary codes for
-fast similarity search. In Advances in neural information
-processing systems, 2012.
-Yunchao Gong, Sanjiv Kumar, Henry A Rowley, and
-Svetlana Lazebnik. Learning binary codes for highdimensional data using bilinear projections. In Proceedings of the IEEE Conference on Computer Vision and
-Pattern Recognition, pages 484–491, 2013.
-
-Piotr Indyk and Rajeev Motwani. Approximate nearest
-neighbors: towards removing the curse of dimensionality. In Proceedings of the thirtieth annual ACM symposium on Theory of computing, pages 604–613. ACM,
-1998.
-Herve Jegou, Matthijs Douze, and Cordelia Schmid. Product quantization for nearest neighbor search. IEEE transactions on pattern analysis and machine intelligence, 33
-(1):117–128, 2011.
-Qing-Yuan Jiang and Wu-Jun Li. Scalable Graph Hashing
-with Feature Transformation. In Twenty-Fourth International Joint Conference on Artificial Intelligence, 2015.
-
-Stochastic Generative Hashing
-
-Diederik Kingma and Jimmy Ba.
-method for stochastic optimization.
-arXiv:1412.6980, 2014.
-
-Adam:
-A
-arXiv preprint
-
-Yair Weiss, Antonio Torralba, and Rob Fergus. Spectral
-hashing. In Advances in neural information processing
-systems, pages 1753–1760, 2009.
-
-Diederik P Kingma and Max Welling. Auto-encoding variational bayes. arXiv preprint arXiv:1312.6114, 2013.
-
-P. M. Williams. Bayesian conditionalisation and the principle of minimum information. British Journal for the
-Philosophy of Science, 31(2):131–144, 1980.
-
-Alex Krizhevsky. Learning multiple layers of features from
-tiny images. 2009.
-Cong Leng, Jiaxiang Wu, Jian Cheng, Xiao Bai, and Hanqing Lu. Online sketching hashing. In 2015 IEEE
-Conference on Computer Vision and Pattern Recognition
-(CVPR), pages 2503–2511. IEEE, 2015.
-Wei Liu, Jun Wang, Sanjiv Kumar, and Shih-Fu Chang.
-Hashing with graphs. In Proceedings of the 28th international conference on machine learning (ICML-11),
-pages 1–8, 2011.
-Wei Liu , Cun Mu, Sanjiv Kumar and Shih-Fu Chang. Discrete graph hashing. In Advances in Neural Information
-Processing Systems (NIPS), 2014.
-Ranzato Marc’Aurelio and E Hinton Geoffrey. Modeling
-pixel means and covariances using factorized third-order
-boltzmann machines. In Computer Vision and Pattern
-Recognition (CVPR), 2010 IEEE Conference on, pages
-2551–2558. IEEE, 2010.
-Andriy Mnih and Karol Gregor. Neural variational inference and learning in belief networks. arXiv preprint
-arXiv:1402.0030, 2014.
-Arkadi Nemirovski, Anatoli Juditsky, Guanghui Lan, and
-Alexander Shapiro. Robust stochastic approximation approach to stochastic programming. SIAM Journal on optimization, 19(4):1574–1609, 2009.
-Tapani Raiko, Mathias Berglund, Guillaume Alain, and
-Laurent Dinh. Techniques for learning binary stochastic feedforward neural networks.
-arXiv preprint
-arXiv:1406.2989, 2014.
-Fumin Shen, Wei Liu, Shaoting Zhang, Yang Yang, and
-Heng Tao Shen. Learning binary codes for maximum
-inner product search. In 2015 IEEE International Conference on Computer Vision (ICCV), pages 4148–4156.
-IEEE, 2015.
-Jun Wang, Sanjiv Kumar, and Shih-Fu Chang. Semisupervised hashing for scalable image retrieval. In Computer Vision and Pattern Recognition (CVPR), 2010.
-Jingdong Wang, Heng Tao Shen, Jingkuan Song, and Jianqiu Ji. Hashing for similarity search: A survey. arXiv
-preprint arXiv:1408.2927, 2014.
-
-Felix X Yu, Sanjiv Kumar, Yunchao Gong, and Shih-Fu
-Chang. Circulant binary embedding. In International
-conference on machine learning, volume 6, page 7,
+Kingma, Diederik P, Mohamed, Shakir, Rezende,
+Danilo Jimenez, and Welling, Max. Semi-supervised
+learning with deep generative models. In Advances in
+Neural Information Processing Systems, pp. 3581–3589,
 2014.
-Arnold Zellner. Optimal Information Processing and
-Bayes’s Theorem. The American Statistician, 42(4),
-November 1988.
-Peichao Zhang, Wei Zhang, Wu-Jun Li, and Minyi Guo.
-Supervised hashing with latent factor models. In Proceedings of the 37th international ACM SIGIR conference on Research & development in information retrieval, pages 173–182. ACM, 2014a.
-Ting Zhang, Chao Du, and Jingdong Wang. Composite
-quantization for approximate nearest neighbor search. In
-Proceedings of the 31st International Conference on Machine Learning (ICML-14), pages 838–846, 2014b.
-Han Zhu, Mingsheng Long, Jianmin Wang, and Yue Cao.
-Deep hashing network for efficient similarity retrieval.
-In Thirtieth AAAI Conference on Artificial Intelligence,
-2016.
+Kusner, Matt and Hernndez-Lobato, Jos. GANs for sequences of discrete elements with the Gumbel-softmax
+distribution. arXiv preprint arXiv:1611.04051, 2016.
+Larsen, Anders Boesen Lindbo, Sønderby, Søren Kaae,
+and Winther, Ole. Autoencoding beyond pixels using
+a learned similarity metric. In ICML, 2016.
+Mikolov, Tomas, Karafiát, Martin, Burget, Lukas, Cernockỳ, Jan, and Khudanpur, Sanjeev. Recurrent neural network based language model. In Interspeech, volume 2, pp. 3, 2010.
+Odena, Augustus, Olah, Christopher, and Shlens, Jonathon.
+Conditional image synthesis with auxiliary classifier
+GANs. arXiv preprint arXiv:1610.09585, 2016.
+Radford, Alec, Metz, Luke, and Chintala, Soumith. Unsupervised representation learning with deep convolutional generative adversarial networks. arXiv preprint
+arXiv:1511.06434, 2015.
+Reed, Scott, Lee, Honglak, Anguelov, Dragomir, Szegedy,
+Christian, Erhan, Dumitru, and Rabinovich, Andrew.
+Training deep neural networks on noisy labels with bootstrapping. arXiv preprint arXiv:1412.6596, 2014.
+Siddharth, N., Paige, Brooks, Desmaison, Alban, Meent,
+Jan-Willem van de, Wood, Frank, Goodman, Noah D.,
+Kohli, Pushmeet, and Torr, Philip H.S. Learning disentangled representations in deep generative models. 2017.
+Socher, Richard, Perelygin, Alex, Wu, Jean Y, Chuang,
+Jason, Manning, Christopher D, Ng, Andrew Y, Potts,
+Christopher, et al. Recursive deep models for semantic
+compositionality over a sentiment treebank. In Proceedings of the conference on empirical methods in natural
+language processing (EMNLP), volume 1631, pp. 1642.
+Citeseer, 2013.
+Sutskever, Ilya, Vinyals, Oriol, and Le, Quoc V. Sequence to sequence learning with neural networks. In
+Advances in neural information processing systems, pp.
+3104–3112, 2014.
+Taigman, Yaniv, Polyak, Adam, and Wolf, Lior. Unsupervised cross-domain image generation. In ICLR, 2017.
+Tang, Shuai, Jin, Hailin, Fang, Chen, and Wang, Zhaowen.
+Unsupervised sentence representation learning with adversarial auto-encoder. 2016.
+
+Toward Controlled Generation of Text
+
+van den Oord, Aaron, Kalchbrenner, Nal, and
+Kavukcuoglu, Koray. Pixel recurrent neural networks.
+In ICML, 2016.
+Vinyals, Oriol, Toshev, Alexander, Bengio, Samy, and Erhan, Dumitru. Show and tell: A neural image caption
+generator. In Proceedings of the IEEE Conference on
+Computer Vision and Pattern Recognition, pp. 3156–
+3164, 2015.
+Wilson, Theresa, Wiebe, Janyce, and Hoffmann, Paul. Recognizing contextual polarity in phrase-level sentiment
+analysis. In Proceedings of the conference on human
+language technology and empirical methods in natural language processing, pp. 347–354. Association for
+Computational Linguistics, 2005.
+Yang, Zichao, Hu, Zhiting, Salakhutdinov, Ruslan, and
+Berg-Kirkpatrick, Taylor. Improved variational autoencoders for text modeling using dilated convolutions. In
+ICML, 2017.
+
+Young, Steve, Gašić, Milica, Thomson, Blaise, and
+Williams, Jason D. POMDP-based statistical spoken dialog systems: A review. Proceedings of the IEEE, 101
+(5):1160–1179, 2013.
+Yu, Lantao, Zhang, Weinan, Wang, Jun, and Yu, Yong. SeqGAN: sequence generative adversarial nets with policy
+gradient. In AAAI, 2017.
+Zhang, Yizhe, Gan, Zhe, and Carin, Lawrence. Generating text via adversarial training. In NIPS Workshop on
+Adversarial Training, 2016.
+Zhou, Chunting and Neubig, Graham. Multi-space variational encoder-decoders for semi-supervised labeled sequence transduction. In ACL, 2017.
+Zhu, Jun-Yan, Krähenbühl, Philipp, Shechtman, Eli, and
+Efros, Alexei A. Generative visual manipulation on the
+natural image manifold. In European Conference on
+Computer Vision, pp. 597–613. Springer, 2016.
 
 

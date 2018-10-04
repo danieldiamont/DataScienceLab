@@ -1,1707 +1,871 @@
-Reinforcement Learning with Deep Energy-Based Policies
-
-Tuomas Haarnoja * 1 Haoran Tang * 2 Pieter Abbeel 1 3 4 Sergey Levine 1
+A Laplacian Framework for Option Discovery in Reinforcement Learning
+Marlos C. Machado 1 Marc G. Bellemare 2 Michael Bowling 1
 
 Abstract
-We propose a method for learning expressive
-energy-based policies for continuous states and
-actions, which has been feasible only in tabular
-domains before. We apply our method to learning maximum entropy policies, resulting into a
-new algorithm, called soft Q-learning, that expresses the optimal policy via a Boltzmann distribution. We use the recently proposed amortized Stein variational gradient descent to learn
-a stochastic sampling network that approximates
-samples from this distribution. The benefits of
-the proposed algorithm include improved exploration and compositionality that allows transferring skills between tasks, which we confirm in
-simulated experiments with swimming and walking robots. We also draw a connection to actorcritic methods, which can be viewed performing approximate inference on the corresponding
-energy-based model.
+Representation learning and option discovery are
+two of the biggest challenges in reinforcement
+learning (RL). Proto-value functions (PVFs) are
+a well-known approach for representation learning in MDPs. In this paper we address the option discovery problem by showing how PVFs
+implicitly define options. We do it by introducing eigenpurposes, intrinsic reward functions derived from the learned representations. The options discovered from eigenpurposes traverse the
+principal directions of the state space. They are
+useful for multiple tasks because they are discovered without taking the environment’s rewards
+into consideration. Moreover, different options
+act at different time scales, making them helpful for exploration. We demonstrate features of
+eigenpurposes in traditional tabular domains as
+well as in Atari 2600 games.
 
 1. Introduction
-Deep reinforcement learning (deep RL) has emerged as a
-promising direction for autonomous acquisition of complex behaviors (Mnih et al., 2015; Silver et al., 2016), due
-to its ability to process complex sensory input (Jaderberg
-et al., 2016) and to acquire elaborate behavior skills using
-general-purpose neural network representations (Levine
-et al., 2016). Deep reinforcement learning methods can
-be used to optimize deterministic (Lillicrap et al., 2015)
-and stochastic (Schulman et al., 2015a; Mnih et al., 2016)
-policies. However, most deep RL methods operate on the
-conventional deterministic notion of optimality, where the
-optimal solution, at least under full observability, is always
-a deterministic policy (Sutton & Barto, 1998). Although
-*
-Equal contribution 1 UC Berkeley, Department of Electrical Engineering and Computer Sciences 2 UC Berkeley, Department of Mathematics 3 OpenAI 4 International
-Computer Science Institute.
-Correspondence to: Haoran Tang <hrtang@math.berkeley.edu>, Tuomas Haarnoja
-<haarnoja@berkeley.edu>.
+Two important challenges in reinforcement learning (RL)
+are the problems of representation learning and of automatic discovery of skills. Proto-value functions (PVFs)
+are a well-known solution for the problem of representation learning (Mahadevan, 2005; Mahadevan & Maggioni,
+2007); while the problem of skill discovery is generally
+posed under the options framework (Sutton et al., 1999;
+Precup, 2000), which models skills as options.
+In this paper, we tie together representation learning and
+option discovery by showing how PVFs implicitly define
+options. One of our main contributions is to introduce
+the concepts of eigenpurpose and eigenbehavior. Eigenpurposes are intrinsic reward functions that incentivize the
+agent to traverse the state space by following the principal
+directions of the learned representation. Each intrinsic reward function leads to a different eigenbehavior, which is
+1
+University of Alberta 2 Google DeepMind. Correspondence
+to: Marlos C. Machado <machado@ualberta.ca>.
 
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-stochastic policies are desirable for exploration, this exploration is typically attained heuristically, for example by
-injecting noise (Silver et al., 2014; Lillicrap et al., 2015;
-Mnih et al., 2015) or initializing a stochastic policy with
-high entropy (Kakade, 2002; Schulman et al., 2015a; Mnih
-et al., 2016).
-In some cases, we might actually prefer to learn stochastic
-behaviors. In this paper, we explore two potential reasons
-for this: exploration in the presence of multimodal objectives, and compositionality attained via pretraining. Other
-benefits include robustness in the face of uncertain dynamics (Ziebart, 2010), imitation learning (Ziebart et al., 2008),
-and improved convergence and computational properties
-(Gu et al., 2016a). Multi-modality also has application in
-real robot tasks, as demonstrated in (Daniel et al., 2012).
-However, in order to learn such policies, we must define an
-objective that promotes stochasticity.
-In which cases is a stochastic policy actually the optimal
-solution? As discussed in prior work, a stochastic policy
-emerges as the optimal answer when we consider the connection between optimal control and probabilistic inference
-(Todorov, 2008). While there are multiple instantiations of
-this framework, they typically include the cost or reward
-function as an additional factor in a factor graph, and infer the optimal conditional distribution over actions conditioned on states. The solution can be shown to optimize
-an entropy-augmented reinforcement learning objective or
-to correspond to the solution to a maximum entropy learning problem (Toussaint, 2009). Intuitively, framing control
-as inference produces policies that aim to capture not only
-the single deterministic behavior that has the lowest cost,
-but the entire range of low-cost behaviors, explicitly maximizing the entropy of the corresponding policy. Instead
-of learning the best way to perform the task, the resulting policies try to learn all of the ways of performing the
-task. It should now be apparent why such policies might
-be preferred: if we can learn all of the ways that a given
-task might be performed, the resulting policy can serve as
-a good initialization for finetuning to a more specific behavior (e.g. first learning all the ways that a robot could
-move forward, and then using this as an initialization to
-learn separate running and bounding skills); a better exploration mechanism for seeking out the best mode in a multimodal reward landscape; and a more robust behavior in the
+the optimal policy for that reward function. In this paper we
+introduce an algorithm for option discovery that leverages
+these ideas. The options we discover are task-independent
+because, as PVFs, the eigenpurposes are obtained without
+any information about the environment’s reward structure.
+We first present these ideas in the tabular case and then
+show how they can be generalized to the function approximation case.
+Exploration, while traditionally a separate problem from
+option discovery, can also be addressed through the careful
+construction of options (McGovern & Barto, 2001; Şimşek
+et al., 2005; Solway et al., 2014; Kulkarni et al., 2016).
+In this paper, we provide evidence that not all options capable of accelerating planning are useful for exploration.
+We show that options traditionally used in the literature to
+speed up planning hinder the agents’ performance if used
+for random exploration during learning. Our options have
+two important properties that allow them to improve exploration: (i) they operate at different time scales, and (ii) they
+can be easily sequenced. Having options that operate at
+different time scales allows agents to make finely timed actions while also decreasing the likelihood the agent will explore only a small portion of the state space. Moreover, because our options are defined across the whole state space,
+multiple options are available in every state, which allows
+them to be easily sequenced.
 
-Reinforcement Learning with Deep Energy-Based Policies
+2. Background
+We generally indicate random variables by capital letters
+(e.g., Rt ), vectors by bold letters (e.g., ✓), functions by lowercase letters (e.g., v), and sets by calligraphic font (e.g., S).
+2.1. Reinforcement Learning
+In the RL framework (Sutton & Barto, 1998), an agent aims
+to maximize cumulative reward by taking actions in an environment. These actions affect the agent’s next state and
+the rewards it experiences. We use the MDP formalism
+throughout this paper. An MDP is a 5-tuple hS, A, r, p, i.
+At time t the agent is in state st 2 S where it takes action
+at 2 A that leads to the next state st+1 2 S according to
+the transition probability kernel p(s0 |s, a), which encodes
+Pr(St+1 = s0 |St = s, At = a). The agent also observes
+a reward Rt+1 ⇠ r(s, a). The agent’s goal is to learn a
 
-face of adversarial perturbations, where the ability to perform the same task in multiple different ways can provide
-the agent with more options to recover from perturbations.
-Unfortunately, solving such maximum entropy stochastic
-policy learning problems in the general case is challenging. A number of methods have been proposed, including Z-learning (Todorov, 2007), maximum entropy inverse
-RL (Ziebart et al., 2008), approximate inference using message passing (Toussaint, 2009), Ψ-learning (Rawlik et al.,
-2012), and G-learning (Fox et al., 2016), as well as more
-recent proposals in deep RL such as PGQ (O’Donoghue
-et al., 2016), but these generally operate either on simple
-tabular representations, which are difficult to apply to continuous or high-dimensional domains, or employ a simple
-parametric representation of the policy distribution, such
-as a conditional Gaussian. Therefore, although the policy
-is optimized to perform the desired skill in many different
-ways, the resulting distribution is typically very limited in
-terms of its representational power, even if the parameters
-of that distribution are represented by an expressive function approximator, such as a neural network.
-How can we extend the framework of maximum entropy
-policy search to arbitrary policy distributions? In this paper, we borrow an idea from energy-based models, which in
-turn reveals an intriguing connection between Q-learning,
-actor-critic algorithms, and probabilistic inference. In our
-method, we formulate a stochastic policy as a (conditional) energy-based model (EBM), with the energy function corresponding to the “soft” Q-function obtained when
-optimizing the maximum entropy objective. In highdimensional continuous spaces, sampling from this policy,
-just as with any general EBM, becomes intractable. We
-borrow from the recent literature on EBMs to devise an approximate sampling procedure based on training a separate
-sampling network, which is optimized to produce unbiased
-samples from the policy EBM. This sampling network can
-then be used both for updating the EBM and for action selection. In the parlance of reinforcement learning, the sampling network is the actor in an actor-critic algorithm. This
-reveals an intriguing connection: entropy regularized actorcritic algorithms can be viewed as approximate Q-learning
-methods, with the actor serving the role of an approximate
-sampler from an intractable posterior. We explore this connection further in the paper, and in the course of this discuss
-connections to popular deep RL methods such as deterministic policy gradient (DPG) (Silver et al., 2014; Lillicrap
-et al., 2015), normalized advantage functions (NAF) (Gu
-et al., 2016b), and PGQ (O’Donoghue et al., 2016).
-The principal contribution of this work is a tractable,
-efficient algorithm for optimizing arbitrary multimodal
-stochastic policies represented by energy-based models, as
-well as a discussion that relates this method to other recent
+A Laplacian Framework for Option Discovery in Reinforcement Learning
 
-algorithms in RL and probabilistic inference. In our experimental evaluation, we explore two potential applications of
-our approach. First, we demonstrate improved exploration
-performance in tasks with multi-modal reward landscapes,
-where conventional deterministic or unimodal methods are
-at high risk of falling into suboptimal local optima. Second,
-we explore how our method can be used to provide a degree
-of compositionality in reinforcement learning by showing
-that stochastic energy-based policies can serve as a much
-better initialization for learning new skills than either random policies or policies pretrained with conventional maximum reward objectives.
-
-2. Preliminaries
-In this section, we will define the reinforcement learning
-problem that we are addressing and briefly summarize the
-maximum entropy policy search objective. We will also
-present a few useful identities that we will build on in our
-algorithm, which will be presented in Section 3.
-2.1. Maximum Entropy Reinforcement Learning
-We will address learning of maximum entropy policies with
-approximate inference for reinforcement learning in continuous action spaces. Our reinforcement learning problem can be defined as policy search in an infinite-horizon
-Markov decision process (MDP), which consists of the tuple (S, A, ps , r), The state space S and action space A are
-assumed to be continuous, and the state transition probability ps : S × S × A → [0, ∞) represents the probability
-density of the next state st+1 ∈ S given the current state
-st ∈ S and action at ∈ A. The environment emits a reward r : S × A → [rmin , rmax ] on each transition, which
-we will abbreviate as rt , r(st , at ) to simplify notation.
-We will also use ρπ (st ) and ρπ (st , at ) to denote the state
-and state-action marginals of the trajectory distribution induced by a policy π(at |st ).
-Our goal is to learn a policy π(at |st ). We can define the
-standard reinforcement learning objective in terms of the
-above quantities as
-X
-∗
-πstd
-= arg max
-E(st ,at )∼ρπ [r(st , at )] .
-(1)
-π
-
-t
-
-Maximum entropy RL augments the reward with an entropy term, such that the optimal policy aims to maximize
-its entropy at each visited state:
-(2)
-∗
-πMaxEnt
-= arg maxπ
-
-P
-
-t
-
-E(st ,at )∼ρπ [r(st , at )+αH(π( · |st ))] ,
-
-where α is an optional but convenient parameter that can
-be used to determine the relative importance of entropy and
-reward.1 Optimization problems of this type have been explored in a number of prior works (Kappen, 2005; Todorov,
-1
-
-In principle, 1/α can be folded into the reward function,
-eliminating the need for an explicit multiplier, but in practice, it is
-often convenient to keep α as a hyperparameter.
-
-Reinforcement Learning with Deep Energy-Based Policies
-
-2007; Ziebart et al., 2008), which are covered in more detail in Section 4. Note that this objective differs qualitatively from the behavior of Boltzmann exploration (Sallans & Hinton, 2004) and PGQ (O’Donoghue et al., 2016),
-which greedily maximize entropy at the current time step,
-but do not explicitly optimize for policies that aim to reach
-states where they will have high entropy in the future. This
-distinction is crucial, since the maximum entropy objective
-can be shown to maximize the entropy of the entire trajectory distribution for the policy π, while the greedy Boltzmann exploration approach does not (Ziebart et al., 2008;
-Levine & Abbeel, 2014). As we will discuss in Section 5,
-this maximum entropy formulation has a number of benefits, such as improved exploration in multimodal problems
-and better pretraining for later adaptation.
-If we wish to extend either the conventional or the maximum entropy RL objective to infinite horizon problems, it
-is convenient to also introduce a discount factor γ to ensure
-that the sum of expected rewards (and entropies) is finite.
-In the context of policy search algorithms, the use of a discount factor is actually a somewhat nuanced choice, and
-writing down the precise objective that is optimized when
-using the discount factor is non-trivial (Thomas, 2014). We
-defer the full derivation of the discounted objective to Appendix A, since it is unwieldy to write out explicitly, but
-we will use the discount γ in the following derivations and
-in our final algorithm.
-2.2. Soft Value Functions and Energy-Based Models
-Optimizing the maximum entropy objective in (2) provides
-us with a framework for training stochastic policies, but we
-must still choose a representation for these policies. The
-choices in prior work include discrete multinomial distributions (O’Donoghue et al., 2016) and Gaussian distributions (Rawlik et al., 2012). However, if we want to use a
-very general class of distributions that can represent complex, multimodal behaviors, we can instead opt for using
-general energy-based policies of the form
-π(at |st ) ∝ exp (−E(st , at )) ,
-
-(3)
-
-where E is an energy function that could be represented,
-for example, by a deep neural network. If we use a
-universal function approximator for E, we can represent
-any distribution π(at |st ). There is a close connection
-between such energy-based models and soft versions of
-value functions and Q-functions, where we set E(st , at ) =
-− α1 Qsoft (st , at ) and use the following theorem:
-Theorem 1. Let the soft Q-function be defined by
-Q∗soft (st , at ) = rt +
-(4)
-"∞
-#
-X
-∗
-E(st+1 ,... )∼ρπ
-γ l (rt+l +αH (πMaxEnt
-( · |st+l ))) ,
-l=1
-
-and soft value function by
-
-
-Z
-1 ∗
-∗
-Vsoft
-Qsoft (st , a0 ) da0 .
-(st ) = α log
-exp
-α
-A
-
-(5)
-
-Then the optimal policy for (2) is given by
-∗
-πMaxEnt
-(at |st ) = exp
-
-1
-∗
-∗
-α (Qsoft (st , at )−Vsoft (st ))
-
-
-
-. (6)
-
-Proof. See Appendix A.1 as well as (Ziebart, 2010).
-Theorem 1 connects the maximum entropy objective in (2)
-and energy-based models, where α1 Qsoft (st , at ) acts as the
-negative energy, and α1 Vsoft (st ) serves as the log-partition
-function. As with the standard Q-function and value function, we can relate the Q-function to the value function at a
-future state via a soft Bellman equation:
-Theorem 2. The soft Q-function in (4) satisfies the soft
-Bellman equation
-∗
-Q∗soft (st , at ) = rt + γ Est+1 ∼ps [Vsoft
-(st+1 )] ,
-
-(7)
-
-∗
-where the soft value function Vsoft
-is given by (5).
-
-Proof. See Appendix A.2, as well as (Ziebart, 2010).
-The soft Bellman equation is a generalization of the conventional (hard) equation, where we can recover the more
-standard equation as α → 0, which causes (5) to approach
-a hard maximum over the actions. In the next section, we
-will discuss how we can use these identities to derive a
-Q-learning style algorithm for learning maximum entropy
-policies, and how we can make this practical for arbitrary
-Q-function representations via an approximate inference
-procedure.
-
-3. Training Expressive Energy-Based Models
-via Soft Q-Learning
-In this section, we will present our proposed reinforcement
-learning algorithm, which is based on the soft Q-function
-described in the previous section, but can be implemented
-via a tractable stochastic gradient descent procedure with
-approximate sampling. We will first describe the general
-case of soft Q-learning, and then present the inference procedure that makes it tractable to use with deep neural network representations in high-dimensional continuous state
-and action spaces. In the process, we will relate this Qlearning procedure to inference in energy-based models
-and actor-critic algorithms.
-3.1. Soft Q-Iteration
-We can obtain a solution to (7) by iteratively updating esti∗
-mates of Vsoft
-and Q∗soft . This leads to a fixed-point iteration that resembles Q-iteration:
-Theorem 3. Soft Q-iteration.R Let Qsoft ( · , · ) and Vsoft ( · )
-be bounded and assume that A exp α1 Qsoft ( · , a0 ) da0 <
-
-Reinforcement Learning with Deep Energy-Based Policies
-
-∞ and that Q∗soft < ∞ exists. Then the fixed-point iteration
-Qsoft (st , at ) ← rt +γ Est+1 ∼ps [Vsoft (st+1 )] , ∀st , at (8)
-
-
-Z
-1
-0
-Qsoft (st , a ) da0, ∀st (9)
-Vsoft (st ) ← α log exp
-α
-A
-∗
-converges to Q∗soft and Vsoft
-, respectively.
-
-Proof. See Appendix A.2 as well as (Fox et al., 2016).
-We refer to the updates in (8) and (9) as the soft Bellman
-backup operator that acts on the soft value function, and
-denote it by T . The maximum entropy policy in (6) can
-then be recovered by iteratively applying this operator until convergence. However, there are several practicalities
-that need to be considered in order to make use of the algorithm. First, the soft Bellman backup cannot be performed
-exactly in continuous or large state and action spaces, and
-second, sampling from the energy-based model in (6) is intractable in general. We will address these challenges in
-the following sections.
-3.2. Soft Q-Learning
-This section discusses how the Bellman backup in Theorem 3 can be implemented in a practical algorithm that
-uses a finite set of samples from the environment, resulting
-in a method similar to Q-learning. Since the soft Bellman
-backup is a contraction (see Appendix A.2), the optimal
-value function is the fixed point of the Bellman backup,
-and we can find it by optimizing for a Q-function for which
-the soft Bellman error |T Q − Q| is minimized at all states
-and actions. While this procedure is still intractable due to
-the integral in (9) and the infinite set of all states and actions, we can express it as a stochastic optimization, which
-leads to a stochastic gradient descent update procedure. We
-will model the soft Q-function with a function approximator with parameters θ and denote it as Qθsoft (st , at ).
-To convert Theorem 3 into a stochastic optimization
-problem, we first express the soft value function in terms
-of an expectation via importance sampling:
-"
-#
-exp α1 Qθsoft (st , a0 )
-θ
-, (10)
-Vsoft (st ) = α log Eqa0
-qa0 (a0 )
-where qa0 can be an arbitrary distribution over the action
-space. Second,
-g1 (x) = g2 (x) ∀x ∈
- by noting the identity
-
-X ⇔ Ex∼q (g1 (x) − g2 (x))2 = 0, where q can be any
-strictly positive density function on X, we can express the
-soft Q-iteration in an equivalent form as minimizing
-JQ (θ) = Est ∼qst ,at ∼qat
-
- 
-1
-2
-
-2 
-Q̂θ̄soft (st , at )−Qθsoft (st , at )
-, (11)
-
-where qst , qat are positive over S and A respectively,
-θ̄
-Q̂θ̄soft (st , at ) = rt + γEst+1 ∼ps [Vsoft
-(st+1 )] is a target Qθ̄
-value, with Vsoft (st+1 ) given by (10) and θ being replaced
-by the target parameters, θ̄.
-
-This stochastic optimization problem can be solved approximately using stochastic gradient descent using sampled states and actions. While the sampling distributions qst and qat can be arbitrary, we typically use real
-samples from rollouts
- of the current policy π(at |st ) ∝
-exp α1 Qθsoft (st , at ) . For qa0 we have more options. A
-convenient choice is a uniform distribution. However, this
-choice can scale poorly to high dimensions. A better choice
-is to use the current policy, which produces an unbiased
-estimate of the soft value as can be confirmed by substitution. This overall procedure yields an iterative approach
-that optimizes over the Q-values, which we summarize in
-Section 3.4.
-However, in continuous spaces, we still need a
-tractable way to sample
-from the policy π(at |st ) ∝
-
-exp α1 Qθsoft (st , at ) , both to take on-policy actions and,
-if so desired, to generate action samples for estimating
-the soft value function. Since the form of the policy is so
-general, sampling from it is intractable. We will therefore
-use an approximate sampling procedure, as discussed in
-the following section.
-3.3. Approximate Sampling and Stein Variational
-Gradient Descent (SVGD)
-In this section we describe how we can approximately sample from the soft Q-function. Existing approaches that sample from energy-based distributions generally fall into two
-categories: methods that use Markov chain Monte Carlo
-(MCMC) based sampling (Sallans & Hinton, 2004), and
-methods that learn a stochastic sampling network trained
-to output approximate samples from the target distribution
-(Zhao et al., 2016; Kim & Bengio, 2016). Since sampling
-via MCMC is not tractable when the inference must be
-performed online (e.g. when executing a policy), we will
-use a sampling network based on Stein variational gradient descent (SVGD) (Liu & Wang, 2016) and amortized
-SVGD (Wang & Liu, 2016). Amortized SVGD has several
-intriguing properties: First, it provides us with a stochastic sampling network that we can query for extremely fast
-sample generation. Second, it can be shown to converge
-to an accurate estimate of the posterior distribution of an
-EBM. Third, the resulting algorithm, as we will show later,
-strongly resembles actor-critic algorithm, which provides
-for a simple and computationally efficient implementation
-and sheds light on the connection between our algorithm
-and prior actor-critic methods.
-Formally, we want to learn a state-conditioned stochastic
-neural network at = f φ (ξ; st ), parametrized by φ, that
-maps noise samples ξ drawn from a normal Gaussian, or
-other arbitrary distribution, into unbiased action samples
-from the target EBM corresponding to Qθsoft . We denote
-the induced distribution of the actions as π φ (at |st ), and we
-want to find parameters φ so that the induced distribution
-
-Reinforcement Learning with Deep Energy-Based Policies
-
-approximates the energy-based distribution in terms of the
-KL divergence
-Jπ (φ; st ) =
-(12)
-
-
-
-
-
-
-1
-θ
-θ
+policy µ : S ⇥ A ! [0, 1] ⇥that
+the expected
+⇤
+P1maximizes
 .
-DKL π φ ( · |st ) 
- exp α Qsoft (st , · ) − Vsoft
-(i)
+k
+discounted return Gt = Ep,µ
+Rt+k+1 |st , where
+k=0
+2 [0, 1) is the discount factor.
 
-Suppose we “perturb” a set of independent samples at =
-f φ (ξ (i) ; st ) in appropriate directions ∆f φ (ξ (i) ; st ), the induced KL divergence can be reduced. Stein variational gradient descent (Liu & Wang, 2016) provides the most greedy
-directions as a functional
-h
-
-∆f φ ( · ; st ) = Eat ∼πφ κ(at , f φ ( · ; st ))∇a0 Qθsoft (st , a0 )a0 =at
+It is common to use the policy improvement theorem (Bellman, 1957) when learning to maximize Gt . One technique
+is to alternate between solving the Bellman equations for
+the action-value function qµk (s, a),
+⇥
+⇤
+.
+qµk (s, a) = Eµk ,p Gt |St = s, At = a
+X
+X
+⇥
+⇤
+=
+p(s0 , r|s, a) r +
+µk (a0 |s0 )qµk (s0 , a0 )
+s0 ,r
 
-i
-
-+ α ∇a0 κ(a0 , f φ ( · ; st ))a0 =at ,
+a0
 
-(13)
+and making the next policy, µk+1 , greedy w.r.t. qµk ,
+.
+µk+1 = arg max qµk (s, a),
+a2A
 
-where κ is a kernel function (typically Gaussian, see details in Appendix D.1). To be precise, ∆f φ is the optimal
-direction in the reproducing kernel Hilbert space of κ, and
-is thus not strictly speaking the gradient of (12), but it turns
-φ
-π
-out that we can set ∂J
-∂at ∝ ∆f as explained in (Wang &
-Liu, 2016). With this assumption, we can use the chain
-rule and backpropagate the Stein variational gradient into
-the policy network according to
-
-
-∂Jπ (φ; st )
-∂f φ (ξ; st )
-φ
-∝ Eξ ∆f (ξ; st )
-,
-(14)
-∂φ
-∂φ
-and use any gradient-based optimization method to learn
-the optimal sampling network parameters. The sampling
-network f φ can be viewed as an actor in an actor-critic algorithm. We will discuss this connection in Section 4, but
-first we will summarize our complete maximum entropy
-policy learning algorithm.
+until converging to an optimal policy µ⇤ .
+Sometimes it is not feasible to learn a value for each stateaction pair due to the size of the state space. Generally,
+this is addressed by parameterizing qµ (s, a) with a set of
+weights ✓ 2 Rn such that qµ (s, a) ⇡ qµ (s, a, ✓). It is
+common to approximate qµ through a linear function, i.e.,
+qµ (s, a, ✓) = ✓ > (s, a), where (s, a) denotes a linear
+feature representation of state s when taking action a.
+2.2. The Options Framework
+The options framework extends RL by introducing temporally extended actions called skills or options. An option !
+is a 3-tuple ! = hI, ⇡, T i where I 2 S denotes the option’s initiation set, ⇡ : A ⇥ S ! [0, 1] denotes the option’s
+policy, and T 2 S denotes the option’s termination set. After the agent decides to follow option ! from a state in I,
+actions are selected according to ⇡ until the agent reaches a
+state in T . Intuitively, options are higher-level actions that
+extend over several time steps, generalizing MDPs to semiMarkov decision processes (SMDPs) (Puterman, 1994).
+Traditionally, options capable of moving agents to bottleneck states are sought after. Bottleneck states are those
+states that connect different densely connected regions of
+the state space (e.g., doorways) (Şimşek & Barto, 2004;
+Solway et al., 2014). They have been shown to be very
+efficient for planning as these states are the states most frequently visited when considering the shortest distance between any two states in an MDP (Solway et al., 2014).
+2.3. Proto-Value Functions
+Proto-value functions (PVFs) are learned representations
+that capture large-scale temporal properties of an environment (Mahadevan, 2005; Mahadevan & Maggioni, 2007).
+They are obtained by diagonalizing a diffusion model,
+which is constructed from the MDP’s transition matrix. A
+diffusion model captures information flow on a graph, and
 
-Algorithm 1 Soft Q-learning
-θ, φ ∼ some initialization distributions.
-Assign target parameters: θ̄ ← θ, φ̄ ← φ.
-D ← empty replay memory.
-for each epoch do
-for each t do
-Collect experience
-Sample an action for st using f φ :
-at ← f φ (ξ; st ) where ξ ∼ N (0, I).
-Sample next state from the environment:
-st+1 ∼ ps (st+1 |st , at ).
-Save the new experience in the replay memory:
-D ← D ∪ {(st , at , r(st , at ), st+1 )} .
-Sample a minibatch from the replay memory
-(i)
-(i) (i) (i)
-{(st , at , rt , st+1 )}N
-i=0 ∼ D.
-Update the soft Q-function parameters
-(i)
-Sample {a(i,j) }M
-j=0 ∼ qa0 for each st+1 .
-(i)
+it is commonly defined by the combinatorial graph Laplacian matrix L = D A, where A is the graph’s adjacency matrix and D the diagonal matrix whose entries are
+the row sums of A. Notice that the adjacency matrix A
+easily generalizes to a weight matrix W . PVFs are defined to be the eigenvectors obtained after the eigendecomposition of L. Different diffusion models can be used to
+generate PVFs, such as the normalized graph Laplacian
+1
+1
+L = D 2 (D A)D 2 , which we use in this paper.
 
-θ̄
-Compute empirical soft values V̂soft
-(st+1 ) in (10).
-ˆ
-Compute empirical gradient ∇θ JQ of (11).
-ˆ θ JQ using ADAM.
-Update θ according to ∇
-Update policy
-(i)
-Sample {ξ (i,j) }M
-j=0 ∼ N (0, I) for each st .
-(i,j)
+3. Option Discovery through the Laplacian
+PVFs capture the large-scale geometry of the environment,
+such as symmetries and bottlenecks. They are task independent, in the sense that they do not use information related to reward functions. Moreover, they are defined over
+the whole state space since each eigenvector induces a realvalued mapping over each state. We can imagine that options with these properties should also be useful. In this
+section we show how to use PVFs to discover options.
+Let us start with an example. Consider the traditional 4room domain depicted in Figure 1c. Gray squares represent walls and white squares represent accessible states.
+Four actions are available: up, down, right, and left. The
+transitions are deterministic and the agent is not allowed to
+move into a wall. Ideally, we would like to discover options
+that move the agent from room to room. Thus, we should
+be able to automatically distinguish between the different
+rooms in the environment. This is exactly what PVFs do,
+as depicted in Figure 2 (left). Instead of interpreting a PVF
+as a basis function, we can interpret the PVF in our example as a desire to reach the highest point of the plot, corresponding to the centre of the room. Because the sign of an
+eigenvector is arbitrary, a PVF can also be interpreted as a
+desire to reach the lowest point of the plot, corresponding
+to the opposite room. In this paper we use the eigenvectors
+in both directions (i.e., both signs).
+An eigenpurpose formalizes the interpretation above by
+defining an intrinsic reward function. We can see it as
+defining a purpose for the agent, that is, to maximize the
+discounted sum of these rewards.
+Definition 3.1 (Eigenpurpose). An eigenpurpose is the intrinsic reward function rie (s, s0 ) of a proto-value function
+e 2 R|S| such that
+rie (s, s0 )
 
-(i)
+=
 
-= f φ (ξ (i,j) , st ).
-Compute actions at
-φ
-Compute ∆f using empirical estimate of (13).
-ˆ φ Jπ .
-Compute empiricial estimate of (14): ∇
-ˆ φ Jπ using ADAM.
-Update φ according to ∇
-end for
-if epoch mod update interval = 0 then
-Update target parameters: θ̄ ← θ, φ̄ ← φ.
-end if
-end for
+e> ( (s0 )
 
-3.4. Algorithm Summary
-To summarize, we propose the soft Q-learning algorithm
-for learning maximum entropy policies in continuous domains. The algorithm proceeds by alternating between collecting new experience from the environment, and updating
-the soft Q-function and sampling network parameters. The
-experience is stored in a replay memory buffer D as standard in deep Q-learning (Mnih et al., 2013), and the parameters are updated using random minibatches from this
-memory. The soft Q-function updates use a delayed version of the target values (Mnih et al., 2015). For optimization, we use the ADAM (Kingma & Ba, 2015) optimizer and empirical estimates of the gradients, which we
-ˆ The exact formulae used to compute the gradenote by ∇.
-dient estimates is deferred to Appendix C, which also discusses other implementation details, but we summarize an
-overview of soft Q-learning in Algorithm 1.
+(s)),
 
-4. Related Work
-Maximum entropy policies emerge as the solution when
-we cast optimal control as probabilistic inference. In the
+(1)
 
-case of linear-quadratic systems, the mean of the maximum entropy policy is exactly the optimal deterministic
-policy (Todorov, 2008), which has been exploited to construct practical path planning methods based on iterative
-linearization and probabilistic inference techniques (Toussaint, 2009). In discrete state spaces, the maximum entropy
-policy can be obtained exactly. This has been explored in
-the context of linearly solvable MDPs (Todorov, 2007) and,
-in the case of inverse reinforcement learning, MaxEnt IRL
-(Ziebart et al., 2008). In continuous systems and continuous time, path integral control studies maximum entropy
-policies and maximum entropy planning (Kappen, 2005).
-In contrast to these prior methods, our work is focused on
-extending the maximum entropy policy search framework
-to high-dimensional continuous spaces and highly multimodal objectives, via expressive general-purpose energy
-functions represented by deep neural networks. A number of related methods have also used maximum entropy
-policy optimization as an intermediate step for optimizing
-policies under a standard expected reward objective (Pe-
+where (x) denotes the feature representation of state x.
+Notice that an eigenpurpose, in the tabular case, can be
+written as rie (s, s0 ) = e[s0 ] e[s].
+We can now define a new MDP to learn the option associated with the purpose, Mei = hS, A [ {?}, rie , p, i, where
 
-Reinforcement Learning with Deep Energy-Based Policies
+A Laplacian Framework for Option Discovery in Reinforcement Learning
 
-ters et al., 2010; Neumann, 2011; Rawlik et al., 2012; Fox
-et al., 2016). Among these, the work of Rawlik et al. (2012)
-resembles ours in that it also makes use of a temporal difference style update to a soft Q-function. However, unlike
-this prior work, we focus on general-purpose energy functions with approximate sampling, rather than analytically
-normalizable distributions. A recent work (Liu et al., 2017)
-also considers an entropy regularized objective, though the
-entropy is on policy parameters, not on sampled actions.
-Thus the resulting policy may not represent an arbitrarily complex multi-modal distribution with a single parameter. The form of our sampler resembles the stochastic
-networks proposed in recent work on hierarchical learning (Florensa et al., 2017). However this prior work uses
-a task-specific reward bonus system to encourage stochastic behavior, while our approach is derived from optimizing
-a general maximum entropy objective.
-A closely related concept to maximum entropy policies is
-Boltzmann exploration, which uses the exponential of the
-standard Q-function as the probability of an action (Kaelbling et al., 1996). A number of prior works have also explored representing policies as energy-based models, with
-the Q-value obtained from an energy model such as a restricted Boltzmann machine (RBM) (Sallans & Hinton,
-2004; Elfwing et al., 2010; Otsuka et al., 2010; Heess
-et al., 2012). Although these methods are closely related,
-they have not, to our knowledge, been extended to the
-case of deep network models, have not made extensive use
-of approximate inference techniques, and have not been
-demonstrated on the complex continuous tasks. More recently, O’Donoghue et al. (2016) drew a connection between Boltzmann exploration and entropy-regularized policy gradient, though in a theoretical framework that differs
-from maximum entropy policy search: unlike the full maximum entropy framework, the approach of O’Donoghue
-et al. (2016) only optimizes for maximizing entropy at the
-current time step, rather than planning for visiting future
-states where entropy will be further maximized. This prior
-method also does not demonstrate learning complex multimodal policies in continuous action spaces.
-Although we motivate our method as Q-learning, its structure resembles an actor-critic algorithm. It is particularly instructive to observe the connection between our approach and the deep deterministic policy gradient method
-(DDPG) (Lillicrap et al., 2015), which updates a Qfunction critic according to (hard) Bellman updates, and
-then backpropagates the Q-value gradient into the actor,
-similarly to NFQCA (Hafner & Riedmiller, 2011). Our actor update differs only in the addition of the κ term. Indeed,
-without this term, our actor would estimate a maximum a
-posteriori (MAP) action, rather than capturing the entire
-EBM distribution. This suggests an intriguing connection
-between our method and DDPG: if we simply modify the
+(a) 10⇥10 grid
 
-DDPG critic updates to estimate soft Q-values, we recover
-the MAP variant of our method. Furthermore, this connection allows us to cast DDPG as simply an approximate
-Q-learning method, where the actor serves the role of an
-approximate maximizer. This helps explain the good performance of DDPG on off-policy data. We can also make
-a connection between our method and policy gradients. In
-Appendix B, we show that the policy gradient for a policy
-represented as an energy-based model closely corresponds
-to the update in soft Q-learning. Similar derivation is presented in a concurrent work (Schulman et al., 2017).
+(b) I-Maze
 
-5. Experiments
-Our experiments aim to answer the following questions:
-(1) Does our soft Q-learning method accurately capture a
-multi-modal policy distribution? (2) Can soft Q-learning
-with energy-based policies aid exploration for complex
-tasks that require tracking multiple modes? (3) Can a maximum entropy policy serve as a good initialization for finetuning on different tasks, when compared to pretraining
-with a standard deterministic objective? We compare our
-algorithm to DDPG (Lillicrap et al., 2015), which has been
-shown to achieve better sample efficiency on the continuous control problems that we consider than other recent
-techniques such as REINFORCE (Williams, 1992), TRPO
-(Schulman et al., 2015a), and A3C (Mnih et al., 2016). This
-comparison is particularly interesting since, as discussed
-in Section 4, DDPG closely corresponds to a deterministic
-maximum a posteriori variant of our method. The detailed
-experimental setup can be found in Appendix D. Videos
-of all experiments2 and example source code3 are available
-online.
-5.1. Didactic Example: Multi-Goal Environment
-In order to verify that amortized SVGD can correctly
-draw samples from
-energy-based policies of the form
-
-exp Qθsoft (s, a) , and that our complete algorithm can successful learn to represent multi-modal behavior, we designed a simple “multi-goal” environment, in which the
-agent is a 2D point mass trying to reach one of four symmetrically placed goals. The reward is defined as a mixture
-of Gaussians, with means placed at the goal positions. An
-optimal strategy is to go to an arbitrary goal, and the optimal maximum entropy policy should be able to choose
-each of the four goals at random. The final policy obtained
-with our method is illustrated in Figure 1. The Q-values indeed have complex shapes, being unimodal at s = (−2, 0),
-convex at s = (0, 0), and bimodal at s = (2.5, 2.5). The
-stochastic policy samples actions closely following the energy landscape, hence learning diverse trajectories that lead
-to all four goals. In comparison, a policy trained with
-DDPG randomly commits to a single goal.
+(c) 4-room domain
+
+Figure 1. Domains used for evaluation.
+
+the reward function is defined as in (1) and the action set is
+augmented by the action terminate (?), which allows the
+agent to leave Mei without any cost. The state space and
+the transition probability kernel remain unchanged from the
+original problem. The discount rate can be chosen arbitrarily, although it impacts the timescale the option encodes.
+With Mei we define a new state-value function v⇡e (s), for
+policy ⇡, as the expected value of the cumulative discounted intrinsic reward if the agent starts in state s and
+follows policy ⇡ until termination. Similarly, we define a
+new action-value function q⇡e (s, a) as the expected value
+of the cumulative discounted intrinsic reward if the agent
+starts in state s, takes action a, and then follows policy ⇡
+until termination. We can also describe the optimal value
+function for any eigenpurpose obtained through e:
+v⇤e (s)
+
+=
+
+max v⇡e (s)
+⇡
+
+and
+
+q⇤e (s, a)
+
+=
+
+max q⇡e (s, a).
+⇡
+
+These definitions naturally lead us to eigenbehaviors.
+Definition 3.2 (Eigenbehavior). An eigenbehavior is a policy e : S ! A that is optimal with respect to the eigenpurpose rie , i.e., e (s) = arg maxa2A q⇤e (s, a).
+Finding the optimal policy ⇡⇤e now becomes a traditional
+RL problem, with a different reward function. Importantly,
+this reward function tends to be dense, avoiding challenging situations due to exploration issues. In this paper we
+use policy iteration to solve for an optimal policy.
+If each eigenpurpose defines an option, its corresponding
+eigenbehavior is the option’s policy. Thus, we need to define the option’s initiation and termination set. An option
+should be available in every state where it is possible to
+achieve its purpose, and to terminate when it is achieved.
+When defining the MDP to learn the option, we augmented
+the agent’s action set with the terminate action, allowing
+the agent to interrupt the option anytime. We want options
+to terminate when the agent achieves its purpose, i.e., when
+it is unable to accumulate further positive intrinsic rewards.
+With the defined reward function, this happens when the
+agent reaches the state with largest value in the eigenpurpose (or a local maximum when < 1). Any subsequent
+reward will be negative. We are able to formalize this con-
+
+Figure 2. Second PVF (left) and its corresponding option (right)
+in the 4-room domain. Action terminate is depicted in red (top
+right corner), other actions are depicted as arrows.
+
+.
+dition by defining q (s, ?) = 0 for all e . When the terminate action is selected, control is returned to the higher
+level policy (Dietterich, 2000). An option following a policy e terminates when q e (s, a)  0 for all a 2 A. We
+define the initiation set to be all states in which there exists
+an action a 2 A such that q e (s, a) > 0. Thus, the option’s
+policy is ⇡ e (s) = arg maxa2A[{?} q⇡e (s, a). We refer to
+the options discovered with our approach as eigenoptions.
+The eigenoption corresponding to the example at the beginning of this section is depicted in Figure 2 (right).
+For any eigenoption, there is always at least one state in
+which it terminates, as we now show.
+Theorem 3.1 (Option’s Termination). Consider an
+eigenoption o = hIo , ⇡o , To i and
+< 1. Then, in an
+MDP with finite state space, To is nonempty.
+Proof. We can write the Bellman equation in the matrix
+form: v = r + T v, where v is a finite column vector with
+one entry per state encoding its value function. From (1)
+we have r = T w w with w = (s)> e, where e denotes
+the eigenpurpose of interest. Therefore:
+v + w = Tw + Tv
+= (1
+)T w + T (v + w)
+)(I
+
+T)
+
+1
+
+)||(I
+
+T)
+
+1
+
+T)
+
+1
+
+= (1
+||v + w||1 = (1
+||v + w||1  (1
+
+)||(I
+
+||v + w||1  (1
+
+)
+
+1
+(1
+
+)
+
+T w.
+T w||1
+T ||1 ||w||1
+
+||w||1
+
+||v + w||1  ||w||1
+We can shift w by any finite constant without changing the
+reward, i.e.,
+P T w w = T (w+ ) (w+ ) because T 1 =
+1 since j Ti,j = 1. Hence, we can assume w 0. Let
+s⇤ = arg maxs ws⇤ , so that ws⇤ = ||w||1 . Clearly vs⇤ 
+0, otherwise ||v + w||1
+|vs⇤ + ws⇤ | = vs⇤ + ws⇤ >
+ws⇤ = ||w||1 , arriving at a contradiction.
+
+A Laplacian Framework for Option Discovery in Reinforcement Learning
+
+Figure 3. Options obtained from the four smallest eigenvectors in the 10⇥10 grid. Action terminate is depicted in red.
+
+Figure 4. Options obtained from the four smallest eigenvectors in the I-Maze domain. Action terminate is depicted in red.
+
+This result is applicable in both the tabular and linear function approximation case. An algorithm that does not rely
+on knowing the underlying graph is provided in Section 5.
+
+4. Empirical Evaluation
+We used three MDPs in our empirical study (c.f. Figure 1):
+an open room, an I-Maze, and the 4-room domain. Their
+transitions are deterministic and gray squares denote walls.
+Agents have access to four actions: up, down, right, and
+left. When an action that would have taken the agent into
+a wall is chosen, the agent’s state does not change. We
+demonstrate three aspects of our framework:1
+• How the eigenoptions present specific purposes. Interestingly, options leading to bottlenecks are not the
+first ones we discover.
+• How eigenoptions improve exploration by reducing
+the expected number of steps required to navigate between any two states.
+• How eigenoptions help agents to accumulate reward
+faster. We show how few options may hurt the agents’
+performance while enough options speed up learning.
+4.1. Discovered Options
+In the PVF theory, the “smoothest” eigenvectors, corresponding to the smallest eigenvalues, are preferred (Mahadevan & Maggioni, 2007). The same intuition applies to
+eigenoptions, with the eigenpurposes corresponding to the
+smallest eigenvalues being preferred. Figures 3, 4, and 5
+depict the first eigenoptions discovered in the three domains used for evaluation.
+Eigenoptions do not necessarily look for bottleneck states,
+1
+
+Python code can be found at:
+https://github.com/mcmachado/options
+
+allowing us to apply our algorithm in many environments in
+which there are no obvious, or meaningful, bottlenecks. We
+discover meaningful options in these environments, such as
+walking down a corridor, or going to the corners of an open
+room. Interestingly, doorways are not the first options we
+discover in the 4-room domain (the fifth eigenoption is the
+first to terminate at the entrance of a doorway). In the next
+sections we provide empirical evidence that eigenoptions
+are useful, and often more so than bottleneck options.
+4.2. Exploration
+A major challenge for agents to explore an environment
+is to be decisive, avoiding the dithering commonly observed in random walks (Machado & Bowling, 2016; Osband et al., 2016). Options provide such decisiveness by
+operating in a higher level of abstraction. Agents performing a random walk, when equipped with options, are expected to cover larger distances in the state space, navigating back and forth between subgoals instead of dithering
+around the starting state. However, options need to satisfy
+two conditions to improve exploration: (1) they have to be
+available in several parts of the state space, ensuring the
+agent always has access to many different options; and (2)
+they have to operate at different time scales. For instance,
+in the 4-room domain, it is unlikely an agent randomly selects enough primitive actions leading it to a corner if all
+options move the agent between doorways. An important
+result in this section is to show that it is very unlikely for
+an agent to explore the whole environment if it keeps going
+back and forth between similar high-level goals.
+Eigenoptions satisfy both conditions. As demonstrated in
+Section 4.1, eigenoptions are often defined in the whole
+state space, allowing sequencing. Moreover, PVFs can be
+seen as a “frequency” basis, with different PVFs being associated with different frequencies (Mahadevan & Maggioni, 2007). The corresponding eigenoptions also operate
+
+A Laplacian Framework for Option Discovery in Reinforcement Learning
+
+Figure 5. Options obtained from the four smallest eigenvectors in the 4-room domain. Action terminate is depicted in red.
+
+Primitive actions
+
+Options
+
+Primitive actions
+
+Primitive actions
+
+Options
+Options
+
+Primitive actions
+Options
+
+(a) 10⇥10 grid
+
+(b) I-Maze
+
+(c) 4-room domain
+
+(d) Bottleneck options
+
+Figure 6. Expected number of steps between any two states when following a random walk. Figure 6d shows the performance of options
+that look for doorways in the 4-room domain.
+
+at different frequencies, with the length of a trajectory until
+termination varying. This behavior can be seen when comparing the second and fourth eigenoptions in the 10 ⇥ 10
+grid (Figure 3). The fourth eigenoption terminates, on expectation, twice as often as the second eigenoption.
+
+agents spend their time. Options that are much longer than
+primitive actions reduce the likelihood that an agent will
+deviate much from the options’ trajectories, since sampling
+an option may undo dozens of primitive actions. This biasing is often observed when fewer options are available.
+
+In this section we show that eigenoptions improve exploration. We do so by introducing a new metric, which we
+call diffusion time. Diffusion time encodes the expected
+number of steps required to navigate between two states
+randomly chosen in the MDP while following a random
+walk. A small expected number of steps implies that it is
+more likely that the agent will reach all states with a random walk. We discuss how this metric can be computed in
+the Appendix.
+
+The discussion above can be made clearer with an example. In the 4-room domain, if the only options available are
+those leading the agent to doorways (c.f. Appendix), it is
+less likely the agent will reach the outer corners. To do so
+the agent would have to select enough consecutive primitive actions without sampling an option. Also, it is very
+likely agents will be always moving between rooms, never
+really exploring inside a room. These issues are mitigated
+with eigenoptions. The first eigenoptions lead agents to individual rooms, but other eigenoptions operate in different
+time scales, allowing agents to explore different parts of
+rooms.
+
+Figure 6 depicts, for our the three environments, the diffusion time with options and the diffusion time using only
+primitive actions. We add options incrementally in order of
+increasing eigenvalue when computing the diffusion time
+for different sets of options.
+The first options added hurt exploration, but when enough
+options are added, exploration is greatly improved when
+compared to a random walk using only primitive actions.
+The fact that few options hurt exploration may be surprising at first, based on the fact that few useful options are generally sought after in the literature. However, this is a major difference between using options for planning and for
+learning. In planning, options shortcut the agents’ trajectories, pruning the search space. All other actions are still
+taken into consideration. When exploring, a uniformly random policy over options and primitive actions skews where
+
+Figure 6d supports the intuition that options leading to bottleneck states are not sufficient, by themselves, for exploration. It shows how the diffusion time in the 4-room domain is increased when only bottleneck options are used.
+As in the PVF literature, the ideal number of options to be
+used by an agent can be seen as a model selection problem.
+4.3. Accumulating Rewards
+We now illustrate the usefulness of our options when the
+agent’s goal is to accumulate reward. We also study the
+impact of an increasing number of options in such a task.
+In these experiments, the agent starts at the bottom left cor-
+
+A Laplacian Framework for Option Discovery in Reinforcement Learning
+256 options
+
+128 options
+
+64 options
+
+64 options
+
+64 options
+
+128 options
+
+256 options
+
+128 options
+
+4 options
+
+Primitive
+actions
+
+2 options
+
+4 options
+
+Primitive
+actions
+
+2 options
+8 options
+
+4 options
+
+2 options
+
+8 options
+
+(a) 10⇥10 grid
+
+8 options
+
+(b) I-Maze
+
+Primitive
+actions
+
+(c) 4-room domain
+
+Figure 7. The agents’ performance accumulating reward as options are added to the action set in their behavior policy. These results use
+the eigenpurposes directly obtained from the eigendecomposition as well as their negation.
+
+ner and its goal is to reach the top right corner. The agent
+observes a reward of 0 until the goal is reached, when it
+observes a reward of +1. We used Q-Learning (Watkins &
+Dayan, 1992) (↵ = 0.1, = 0.9) to learn a policy over
+primitive actions. The behavior policy chooses uniformly
+over primitive actions and options, following them until termination. Figure 7 depicts, after learning for a given number of episodes, the average over 100 trials of the agents’
+final performance. Episodes were 100 time steps long, and
+we learned for 250 episodes in the 10 ⇥ 10 grid and in the
+I-Maze, and for 500 episodes in the 4-room domain.
+In most scenarios eigenoptions improve performance. As
+in the previous section, exceptions occur when only a few
+options are added to the agent’s action set. The best results
+were obtained using 64 options. Despite being an additional parameter, our results show that the agent’s performance is fairly robust across different numbers of options.
+Eigenoptions are task-independent by construction. Additional results in the appendix show how the same set of
+eigenoptions is able to speed-up learning in different tasks.
+In the appendix we also compare eigenoptions to random
+options, that is, options that use a random state as subgoal.
+
+5. Approximate Option Discovery
+So far we have assumed that agents have access to the adjacency matrix representing the underlying MDP. However,
+in practical settings this is generally not true. In fact, the
+number of states in these settings is often so large that
+agents rarely visit the same state twice. These problems
+are generally tackled with sample-based methods and some
+sort of function approximation.
+In this section we propose a sample-based approach for option discovery that asymptotically discovers eigenoptions.
+We then extend this algorithm to linear function approximation. We provide anecdotal evidence in Atari 2600
+games that this relatively naı̈ve sample-based approach to
+function approximation discovers purposeful options.
+
+5.1. Sample-based Option Discovery
+In the online setting, agents must sample trajectories. Naturally, one can sample trajectories until one is able to perfectly construct the MDP’s adjacency matrix, as suggested
+by Mahadevan & Maggioni (2007). However, this approach does not easily extend to linear function approximation. In this section we provide an approach that does
+not build the adjacency matrix allowing us to extend the
+concept of eigenpurposes to linear function approximation.
+In our algorithm, a sample transition is added to a matrix T if it was not previously encountered. The transition is added as the difference between the current and
+previous observations, i.e., (s0 )
+(s). In the tabular
+case we define (s) to be the one-hot encoding of state s.
+Once enough transitions have been sampled, we perform
+a singular value decomposition on the matrix T such that
+T = U ⌃V > . We use the columns of V , which correspond
+to the right-eigenvectors of T , to generate the eigenpurposes. The intrinsic reward and the termination criterion
+for an eigenbehavior are the same as before.
+Matrix T is known as the incidence matrix. If all transitions
+in the graph are sampled once, for tabular representations,
+this algorithm discovers the same options we obtain with
+the combinatorial Laplacian. The theorem below states the
+equivalence between the obtained eigenpurposes.
+Theorem 5.1. Consider the SVD of T = UT ⌃T VT> , with
+each row of T consisting of the difference between observations, i.e., (s0 )
+(s). In the tabular case, if all transitions in the MDP have been sampled once, the orthonormal
+eigenvectors of L are the columns of VT> .
+Proof. Given the SVD decomposition of a matrix A =
+U ⌃V > , the columns of V are the eigenvectors of
+A> A (Strang, 2005). We know that T > T = 2L, where
+L = D W (Lemma 5.1, c.f. Appendix). Thus, the
+columns of VT are the eigenvectors of T > T , which can be
+rewritten as 2(D W ). Therefore, the columns of VT are
+also the eigenvectors of L.
+
+A Laplacian Framework for Option Discovery in Reinforcement Learning
+
+Option #811
+
+Option #836
+Option #1005
+
+Option #994
+
+Option #807
+Option #455
+
+Figure 8. Options in F REEWAY (c.f. text for details).
+
+There is a trade-off between reconstructing the adjacency
+matrix and constructing the incidence matrix. In MDPs in
+which states are sparsely connected, such as the I-Maze, the
+latter is preferred since it has fewer transitions than states.
+However, what makes this result interesting is the fact that
+our algorithm can be easily generalized to linear function
+approximation.
+5.2. Function Approximation
+An adjacency matrix is not very useful when the agent has
+access only to features of the state. However, we can use
+the intuition about the incidence matrix to propose an algorithm compatible with linear function approximation.
+In fact, to apply the algorithm proposed in the previous section, we just need to define what constitutes a new transition. We define two vectors, t and t0 , to be identical if
+and only if t t0 = 0. We then use a set data structure to
+avoid duplicates when storing (s0 )
+(s). This is a naı̈ve
+approach, but it provides encouraging evidence eigenoptions generalize to linear function approximation. We expect more involved methods to perform even better.
+We tested our method in the ALE (Bellemare et al., 2013).
+The agent’s representation consists of the emulator’s RAM
+state (1,024 bits). The final incidence matrix in which we
+ran the SVD had 25,000 rows, which we sampled uniformly from the set of observed transitions. We provide
+further details of the experimental setup in the appendix.
+In the tabular case we start selecting eigenpurposes generated by the eigenvectors with smallest eigenvalue, because
+these are the “smoothest” ones. However, it is not clear
+such intuition holds here because we are in the function approximation setting and the matrix of transitions does not
+contain all possible transitions. Therefore, we analyzed, for
+each game, all 1,024 discovered options.
+We approximate these options greedily (
+= 0)
+with the ALE emulator’s look-ahead.
+The next
+action a0 for
+an eigenpurpose e is selected as
+R
+arg maxb2A s0 p(s0 |s, b) rie (s, s0 ).
+Even with such a myopic action selection mechanism we
+
+Figure 9. Options in M ONTEZUMA’ S R EV. (c.f. text for details).
+
+were able to obtain options that clearly demonstrate intent.
+In F REEWAY, a game in which a chicken is expected to
+cross the road while avoiding cars, we observe options in
+which the agent clearly wants to reach a specific lane in the
+street. Figure 8 (left) depicts where the chicken tends to
+be when the option is executed. On the right we see a histogram representing the chicken’s height during an episode.
+We can clearly see how the chicken’s height varies for different options, and how a random walk over primitive actions (rand) does not explore the environment properly. Remarkably, option #445 scores 28 points at the end of the
+episode, without ever explicitly taking the reward signal
+into consideration. This performance is very close to those
+obtained by state-of-the-art algorithms.
+In M ONTEZUMA’ S R EVENGE, a game in which the agent
+needs to navigate through a room to pickup a key so it can
+open a door, we also observe the agent having the clear
+intent of reaching particular positions on the screen, such
+as staircases, ropes and doors (Figure 9). Interestingly, the
+options we discover are very similar to those handcrafted
+by Kulkarni et al. (2016) when evaluating the usefulness of
+options to tackle such a game. A video of the highlighted
+options can be found online.2
+
+6. Related Work
+Most algorithms for option discovery can be seen as topdown approaches. Agents use trajectories leading to informative rewards3 as a starting point, decomposing and refining them into options. There are many approaches based
+on this principle, such as methods that use the observed
+rewards to generate intrinsic rewards leading to new value
+functions (e.g., McGovern & Barto, 2001; Menache et al.,
+2002; Konidaris & Barto, 2009), methods that use the observed rewards to climb a gradient (e.g., Mankowitz et al.,
+2016; Vezhnevets et al., 2016; Bacon et al., 2017), or to do
 2
+
+https://youtu.be/2BVicx4CDWA
+We define an informative reward to be the signal that informs
+the agent it has reached a goal. For example, when trying to escape from a maze, we consider 0 to be an informative reward if
+the agent observes rewards of value 1 in every time step it is inside the maze. A different example is a positive reward observed
+by an agent that typically observes rewards of value 0.
 3
 
-https://sites.google.com/view/softqlearning/home
-https://github.com/haarnoja/softqlearning
+A Laplacian Framework for Option Discovery in Reinforcement Learning
 
-Reinforcement Learning with Deep Energy-Based Policies
+probabilistic inference (Daniel et al., 2016). However, such
+approaches are not applicable in large state spaces with
+sparse rewards. If informative rewards are unlikely to be
+found by an agent using only primitive actions, requiring
+long or specific sequences of actions, options are equally
+unlikely to be discovered.
+Our algorithm can be seen as a bottom-up approach, in
+which options are constructed before the agent observes
+any informative reward. These options are composed to
+generate the desired policy. Options discovered this way
+tend to be independent of an agent’s intention, and are
+potentially useful in many different tasks (Gregor et al.,
+2016). Such options can also be seen as being useful for
+exploration by allowing agents to commit to a behavior for
+an extended period of time (Machado & Bowling, 2016).
+Among the approaches to discover options without using
+extrinsic rewards are the use of global or local graph centrality measures (Şimşek & Barto, 2004; Şimşek et al.,
+2005; Şimşek & Barto, 2008) and clustering of states (Mannor et al., 2004; Bacon, 2013; Lakshminarayanan et al.,
+2016). Interestingly, Şimşek et al. (2005) and Lakshminarayanan et al. (2016) also use the graph Laplacian in their
+algorithm, but to identify bottleneck states.
+Baranes & Oudeyer (2013) and Moulin-Frier & Oudeyer
+(2013) show how one can build policies to explicitly assist agents to explore the environment. The proposed algorithms self-generate subgoals in order to maximize learning
+progress. The policies built can be seen as options. Recently, Solway et al. (2014) proved that “optimal hierarchy
+minimizes the geometric mean number of trial-and-error
+attempts necessary for the agent to discover the optimal
+policy for any selected task (...)”. Our experiments confirm
+this result, although we propose diffusion time as a different
+metric to evaluate how options improve exploration.
+The idea of discovering options by learning to control parts
+of the environment is also related to our work. Eigenpurposes encode different rates of change in the agents representation of the world, while the corresponding options
+aim at maximizing such change. Others have also proposed ways to discover options based on the idea of learning to control the environment. Hengst (2002), for instance,
+proposes an algorithm that explicitly models changes in
+the variables that form the agent’s representation. Recently, Gregor et al. (2016) proposed an algorithm in which
+agents discover options by maximizing a notion of empowerment (Salge et al., 2014), where the agent aims at getting
+to states with a maximal set of available intrinsic options.
+Continual Curiosity driven Skill Acquisition (CCSA)
+(Kompella et al., In Press) is the closest approach to ours.
+CCSA also discovers skills that maximize an intrinsic reward obtained by some extracted representation. While we
+use PVFs, CCSA uses Incremental Slow Feature Analysis
 
-(a) Swimming snake
+(SFA) (Kompella et al., 2011) to define the intrinsic reward
+function. Sprekeler (2011) has shown that, given a specific choice of adjacency function, PVFs are equivalent to
+SFA (Wiskott & Sejnowski, 2002). SFA becomes an approximation of PVFs if the function space used in the SFA
+does not allow arbitrary mappings from the observed data
+to an embedding. Our method differs in how we define
+the initiation and termination sets, as well as in the objective being maximized. CCSA acquires skills that produce
+a large variation in the slow-feature outputs, leading to options that seek for bottlenecks. Our approach does not seek
+for bottlenecks, focusing on traversing different directions
+of the learned representation.
 
-(b) Quadrupedal robot
+7. Conclusion
+Being able to properly abstract MDPs into SMDPs can reduce the overall expense of learning (Sutton et al., 1999;
+Solway et al., 2014), mainly when the learned options are
+reused in multiple tasks. On the other hand, the wrong hierarchy can hinder the agents’ learning process, moving the
+agent away from desired goal states. Current algorithms
+for option discovery often depend on an initial informative
+reward signal, which may not be readily available in large
+MDPs. In this paper, we introduced an approach that is effective in different environments, for a multitude of tasks.
+Our algorithm uses the graph Laplacian, being directly related to the concept of proto-value functions. The learned
+representation informs the agent what are meaningful options to be sought after. The discovered options can be seen
+as traversing each one of the dimensions in the learned representation. We believe successful algorithms in the future
+will be able to simultaneously discover representations and
+options. Agents will use their learned representation to discover options, which will be used to further explore the
+environment, improving the agent’s representation.
+Interestingly, the options first discovered by our approach
+do not necessarily find bottlenecks, which are commonly
+sought after. In this paper we showed how bottleneck options can hinder exploration strategies if naively added to
+the agent’s action set, and how the options we discover can
+help an agent to explore. Also, we have shown how the
+discovered options can be used to accumulate reward in a
+multitude of tasks, leveraging their exploratory properties.
+There are several exciting avenues for future work. As
+noted, SFA can be seen as an approximation to PVFs.
+It would be interesting to compare such an approach to
+eigenoptions. It would also be interesting to see if the options we discover can be generated incrementally and with
+incomplete graphs. Finally, one can also imagine extensions to the proposed algorithm where a hierarchy of options is built.
 
-Figure 2. Simulated robots used in our experiments.
+A Laplacian Framework for Option Discovery in Reinforcement Learning
 
-Figure 1. Illustration of the 2D multi-goal environment. Left: trajectories from a policy learned with our method (solid blue lines).
-The x and y axes correspond to 2D positions (states). The agent
-is initialized at the origin. The goals are depicted as red dots,
-and the level curves show the reward. Right: Q-values at three
-selected states, depicted by level curves (red: high values, blue:
-low values). The x and y axes correspond to 2D velocity (actions)
-bounded between -1 and 1. Actions sampled from the policy are
-shown as blue stars. Note that, in regions (e.g. (2.5, 2.5)) between
-the goals, the method chooses multimodal actions.
-
-5.2. Learning Multi-Modal Policies for Exploration
-Though not all environments have a clear multi-modal
-reward landscape as in the “multi-goal” example, multimodality is prevalent in a variety of tasks. For example,
-a chess player might try various strategies before settling
-on one that seems most effective, and an agent navigating a
-maze may need to try various paths before finding the exit.
-During the learning process, it is often best to keep trying
-multiple available options until the agent is confident that
-one of them is the best (similar to a bandit problem (Lai
-& Robbins, 1985)). However, deep RL algorithms for continuous control typically use unimodal action distributions,
-which are not well suited to capture such multi-modality.
-As a consequence, such algorithms may prematurely commit to one mode and converge to suboptimal behavior.
-To evaluate how maximum entropy policies might aid exploration, we constructed simulated continuous control environments where tracking multiple modes is important
-for success. The first experiment uses a simulated swimming snake (see Figure 2), which receives a reward equal
-to its speed along the x-axis, either forward or backward.
-However, once the swimmer swims far enough forward, it
-crosses a “finish line” and receives a larger reward. Therefore, the best learning strategy is to explore in both directions until the bonus reward is discovered, and then commit to swimming forward. As illustrated in Figure 6 in
-Appendix D.3, our method is able to recover this strategy,
-keeping track of both modes until the finish line is discovered. All stochastic policies eventually commit to swim-
-
-(a) Swimmer (higher is better) (b) Quadruped (lower is better)
-Figure 3. Comparison of soft Q-learning and DDPG on the swimmer snake task and the quadrupedal robot maze task. (a) Shows
-the maximum traveled forward distance since the beginning of
-training for several runs of each algorithm; there is a large reward after crossing the finish line. (b) Shows our method was
-able to reach a low distance to the goal faster and more consistently. The different lines show the minimum distance to the goal
-since the beginning of training. For both domains, all runs of our
-method cross the threshold line, acquiring the more optimal strategy, while some runs of DDPG do not.
-
-ming forward. The deterministic DDPG method shown in
-the comparison commits to a mode prematurely, with only
-80% of the policies converging on a forward motion, and
-20% choosing the suboptimal backward mode.
-The second experiment studies a more complex task with a
-continuous range of equally good options prior to discovery of a sparse reward goal. In this task, a quadrupedal
-3D robot (adapted from Schulman et al. (2015b)) needs to
-find a path through a maze to a target position (see Figure 2). The reward function is a Gaussian centered at the
-target. The agent may choose either the upper or lower passage, which appear identical at first, but the upper passage
-is blocked by a barrier. Similar to the swimmer experiment, the optimal strategy requires exploring both directions and choosing the better one. Figure 3(b) compares
-the performance of DDPG and our method. The curves
-show the minimum distance to the target achieved so far
-and the threshold equals the minimum possible distance if
-the robot chooses the upper passage. Therefore, successful
-exploration means reaching below the threshold. All policies trained with our method manage to succeed, while only
-60% policies trained with DDPG converge to choosing the
-lower passage.
-
-Reinforcement Learning with Deep Energy-Based Policies
-
-(a)
-(b)
-(c)
-(d)
-Figure 4. Quadrupedal robot (a) was trained to walk in random directions in an empty pretraining environment (details in Figure 7,
-see Appendix D.3), and then finetuned on a variety of tasks, including a wide (b), narrow (c), and U-shaped hallway (d).
-
-5.3. Accelerating Training on Complex Tasks with
-Pretrained Maximum Entropy Policies
-A standard way to accelerate deep neural network training is task-specific initialization (Goodfellow et al., 2016),
-where a network trained for one task is used as initialization for another task. The first task might be something
-highly general, such as classifying a large image dataset,
-while the second task might be more specific, such as finegrained classification with a small dataset. Pretraining has
-also been explored in the context of RL (Shelhamer et al.,
-2016). However, in RL, near-optimal policies are often
-near-deterministic, which makes them poor initializers for
-new tasks. In this section, we explore how our energybased policies can be trained with fairly broad objectives
-to produce an initializer for more quickly learning more
-specific tasks.
-We demonstrate this on a variant of the
-quadrupedal robot task. The pretraining
-phase involves learning to locomote in
-an arbitrary direction, with a reward that
-simply equals the speed of the center of
-mass. The resulting policy moves the
-agent quickly to an randomly chosen direction. An overhead plot of the center of mass traces is shown above to
-illustrate this. This pretraining is similar in some ways to
-recent work on modulated controllers (Heess et al., 2016)
-and hierarchical models (Florensa et al., 2017). However,
-in contrast to these prior works, we do not require any taskspecific high-level goal generator or reward.
-Figure 4 also shows a variety of test environments that we
-used to finetune the running policy for a specific task. In
-the hallway environments, the agent receives the same reward, but the walls block sideways motion, so the optimal
-solution requires learning to run in a particular direction.
-Narrow hallways require choosing a more specific direction, but also allow the agent to use the walls to funnel
-itself. The U-shaped maze requires the agent to learn a
-curved trajectory in order to arrive at the target, with the
-reward given by a Gaussian bump at the target location.
-As illustrated in Figure 7 in Appendix D.3, the pretrained
-policy explores the space extensively and in all directions.
-This gives a good initialization for the policy, allowing it to
-
-Figure 5. Performance in the downstream task with fine-tuning
-(MaxEnt) or training from scratch (DDPG). The x-axis shows the
-training iterations. The y-axis shows the average discounted return. Solid lines are average values over 10 random seeds. Shaded
-regions correspond to one standard deviation.
-
-learn the behaviors in the test environments more quickly
-than training a policy with DDPG from a random initialization, as shown in Figure 5. We also evaluated an alternative
-pretraining method based on deterministic policies learned
-with DDPG. However, deterministic pretraining chooses
-an arbitrary but consistent direction in the training environment, providing a poor initialization for finetuning to a
-specific task, as shown in the results plots.
-
-6. Discussion and Future Work
-We presented a method for learning stochastic energybased policies with approximate inference via Stein variational gradient descent (SVGD). Our approach can be
-viewed as a type of soft Q-learning method, with the additional contribution of using approximate inference to obtain complex multimodal policies. The sampling network
-trained as part of SVGD can also be viewed as tking the role
-of an actor in an actor-critic algorithm. Our experimental
-results show that our method can effectively capture complex multi-modal behavior on problems ranging from toy
-point mass tasks to complex torque control of simulated
-walking and swimming robots. The applications of training such stochastic policies include improved exploration
-in the case of multimodal objectives and compositionality
-via pretraining general-purpose stochastic policies that can
-then be efficiently finetuned into task-specific behaviors.
-While our work explores some potential applications of
-energy-based policies with approximate inference, an exciting avenue for future work would be to further study
-their capability to represent complex behavioral repertoires
-and their potential for composability. In the context of linearly solvable MDPs, several prior works have shown that
-policies trained for different tasks can be composed to create new optimal policies (Da Silva et al., 2009; Todorov,
-2009). While these prior works have only explored simple,
-tractable representations, our method could be used to extend these results to complex and highly multi-modal deep
-neural network models, making them suitable for composable control of complex high-dimensional systems, such as
-humanoid robots. This composability could be used in future work to create a huge variety of near-optimal skills
-from a collection of energy-based policy building blocks.
-
-Reinforcement Learning with Deep Energy-Based Policies
-
-7. Acknowledgements
-We thank Qiang Liu for insightful discussion of SVGD,
-and thank Vitchyr Pong and Shane Gu for help with implementing DDPG. Haoran Tang and Tuomas Haarnoja are
-supported by Berkeley Deep Drive.
+Acknowledgements
+The authors would like to thank Will Dabney, Rémi Munos
+and Csaba Szepesvári for useful discussions. This work
+was supported by grants from Alberta Innovates Technology Futures and the Alberta Machine Intelligence Institute
+(Amii). Computing resources were provided by Compute
+Canada through CalculQuébec.
 
 References
-Da Silva, M., Durand, F., and Popović, J. Linear Bellman
-combination for control of character animation. ACM
-Trans. on Graphs, 28(3):82, 2009.
-Daniel, C., Neumann, G., and Peters, J. Hierarchical relative entropy policy search. In AISTATS, pp. 273–281,
-2012.
-Elfwing, S., Otsuka, M., Uchibe, E., and Doya, K. Freeenergy based reinforcement learning for vision-based
-navigation with high-dimensional sensory inputs. In Int.
-Conf. on Neural Information Processing, pp. 215–222.
-Springer, 2010.
-Florensa, C., Duan, Y., and P., Abbeel. Stochastic neural
-networks for hierarchical reinforcement learning. In Int.
-Conf. on Learning Representations, 2017.
-Fox, R., Pakman, A., and Tishby, N. Taming the noise
-in reinforcement learning via soft updates. In Conf. on
-Uncertainty in Artificial Intelligence, 2016.
-Goodfellow, Ian, Bengio, Yoshua, and Courville, Aaron.
-Deep learning. chapter 8.7.4. MIT Press, 2016. http:
-//www.deeplearningbook.org.
-Gu, S., Lillicrap, T., Ghahramani, Z., Turner, R. E., and
-Levine, S. Q-prop: Sample-efficient policy gradient with
-an off-policy critic. arXiv preprint arXiv:1611.02247,
-2016a.
-Gu, S., Lillicrap, T., Sutskever, I., and Levine, S. Continuous deep Q-learning with model-based acceleration. In
-Int. Conf. on Machine Learning, pp. 2829–2838, 2016b.
-Hafner, R. and Riedmiller, M. Reinforcement learning in
-feedback control. Machine Learning, 84(1-2):137–169,
-2011.
-Heess, N., Silver, D., and Teh, Y. W. Actor-critic reinforcement learning with energy-based policies. In Workshop
-on Reinforcement Learning, pp. 43. Citeseer, 2012.
-Heess, N., Wayne, G., Tassa, Y., Lillicrap, T., Riedmiller,
-M., and Silver, D. Learning and transfer of modulated
-locomotor controllers. arXiv preprint arXiv:1610.05182,
-2016.
-
-Jaderberg, M., Mnih, V., Czarnecki, W. M., Schaul, T.,
-Leibo, J. Z., Silver, D., and Kavukcuoglu, K. Reinforcement learning with unsupervised auxiliary tasks. arXiv
-preprint arXiv:1611.05397, 2016.
-Kaelbling, L. P., Littman, M. L., and Moore, A. W. Reinforcement learning: A survey. Journal of artificial intelligence research, 4:237–285, 1996.
-Kakade, S. A natural policy gradient. Advances in Neural
-Information Processing Systems, 2:1531–1538, 2002.
-Kappen, H. J. Path integrals and symmetry breaking for
-optimal control theory. Journal of Statistical Mechanics:
-Theory And Experiment, 2005(11):P11011, 2005.
-Kim, T. and Bengio, Y. Deep directed generative models
-with energy-based probability estimation. arXiv preprint
-arXiv:1606.03439, 2016.
-Kingma, D. and Ba, J. Adam: A method for stochastic
-optimization. 2015.
-Lai, T. L. and Robbins, H. Asymptotically efficient adaptive allocation rules. Advances in Applied Mathematics,
-6(1):4–22, 1985.
-Levine, S. and Abbeel, P. Learning neural network policies
-with guided policy search under unknown dynamics. In
-Advances in Neural Information Processing Systems, pp.
-1071–1079, 2014.
-Levine, S., Finn, C., Darrell, T., and Abbeel, P. End-to-end
-training of deep visuomotor policies. Journal of Machine
-Learning Research, 17(39):1–40, 2016.
-Lillicrap, T. P., Hunt, J. J., Pritzel, A., Heess, N., Erez,
-T., Tassa, Y., Silver, D., and Wierstra, D. Continuous
-control with deep reinforcement learning. arXiv preprint
-arXiv:1509.02971, 2015.
-Liu, Q. and Wang, D. Stein variational gradient descent:
-A general purpose bayesian inference algorithm. In Advances In Neural Information Processing Systems, pp.
-2370–2378, 2016.
-Liu, Y., Ramachandran, P., Liu, Q., and Peng, J.
-Stein variational policy gradient.
-arXiv preprint
-arXiv:1704.02399, 2017.
-Mnih, V., Kavukcuoglu, K., Silver, D., Graves, A.,
-Antonoglou, I., Wierstra, D., and Riedmiller, M. Playing
-atari with deep reinforcement learning. arXiv preprint
-arXiv:1312.5602, 2013.
-Mnih, V., Kavukcuoglu, K., Silver, D., Rusu, A. A, Veness, J., Bellemare, M. G., Graves, A., Riedmiller, M.,
-Fidjeland, A. K., Ostrovski, G., et al. Human-level control through deep reinforcement learning. Nature, 518
-(7540):529–533, 2015.
-
-Reinforcement Learning with Deep Energy-Based Policies
-
-Mnih, V., Badia, A. P., Mirza, M., Graves, A., Lillicrap,
-T. P., Harley, T., Silver, D., and Kavukcuoglu, K. Asynchronous methods for deep reinforcement learning. In
-Int. Conf. on Machine Learning, 2016.
-Neumann, G. Variational inference for policy search in
-changing situations. In Int. Conf. on Machine Learning,
-pp. 817–824, 2011.
-O’Donoghue, B., Munos, R., Kavukcuoglu, K., and Mnih,
-V. PGQ: Combining policy gradient and Q-learning.
-arXiv preprint arXiv:1611.01626, 2016.
-Otsuka, M., Yoshimoto, J., and Doya, K. Free-energybased reinforcement learning in a partially observable
-environment. In ESANN, 2010.
-Peters, J., Mülling, K., and Altun, Y. Relative entropy policy search. In AAAI Conf. on Artificial Intelligence, pp.
-1607–1612, 2010.
-Rawlik, K., Toussaint, M., and Vijayakumar, S. On
-stochastic optimal control and reinforcement learning by
-approximate inference. Proceedings of Robotics: Science and Systems VIII, 2012.
-Sallans, B. and Hinton, G. E. Reinforcement learning with
-factored states and actions. Journal of Machine Learning
-Research, 5(Aug):1063–1088, 2004.
-Schulman, J., Levine, S., Abbeel, P., Jordan, M. I., and
-Moritz, P. Trust region policy optimization. In Int. Conf
-on Machine Learning, pp. 1889–1897, 2015a.
-Schulman, J., Moritz, P., Levine, S., Jordan, M., and
-Abbeel, P. High-dimensional continuous control using generalized advantage estimation. arXiv preprint
-arXiv:1506.02438, 2015b.
-Schulman, J., Abbeel, P., and Chen, X. Equivalence
-between policy gradients and soft Q-learning. arXiv
-preprint arXiv:1704.06440, 2017.
-Shelhamer, E., Mahmoudieh, P., Argus, M., and Darrell, T.
-Loss is its own reward: Self-supervision for reinforcement learning. arXiv preprint arXiv:1612.07307, 2016.
-Silver, D., Lever, G., Heess, N., Degris, T., Wierstra, D.,
-and Riedmiller, M. Deterministic policy gradient algorithms. In Int. Conf on Machine Learning, 2014.
-Silver, D., Huang, A., Maddison, C. J., Guez, A., Sifre, L.,
-van den Driessche, G., Schrittwieser, J., Antonoglou, I.,
-Panneershelvam, V., Lanctot, M., Dieleman, S., Grewe,
-D., Nham, J., Kalchbrenner, N., Sutskever, I., Lillicrap,
-T., Leach, M., Kavukcuoglu, K., Graepel, T., and Hassabis, D. Mastering the game of go with deep neural
-networks and tree search. Nature, 529(7587):484–489,
-Jan 2016. ISSN 0028-0836. Article.
-
-Sutton, R. S. and Barto, A. G. Reinforcement learning: An
-introduction, volume 1. MIT press Cambridge, 1998.
-Thomas, P. Bias in natural actor-critic algorithms. In Int.
-Conf. on Machine Learning, pp. 441–448, 2014.
-Todorov, E. Linearly-solvable Markov decision problems.
-In Advances in Neural Information Processing Systems,
-pp. 1369–1376. MIT Press, 2007.
-Todorov, E. General duality between optimal control and
-estimation. In IEEE Conf. on Decision and Control, pp.
-4286–4292. IEEE, 2008.
-Todorov, E. Compositionality of optimal control laws. In
-Advances in Neural Information Processing Systems, pp.
-1856–1864, 2009.
-Toussaint, M. Robot trajectory optimization using approximate inference. In Int. Conf. on Machine Learning, pp.
-1049–1056. ACM, 2009.
-Uhlenbeck, G. E. and Ornstein, L. S. On the theory of the
-brownian motion. Physical review, 36(5):823, 1930.
-Wang, D. and Liu, Q. Learning to draw samples: With
-application to amortized mle for generative adversarial
-learning. arXiv preprint arXiv:1611.01722, 2016.
-Williams, Ronald J. Simple statistical gradient-following
-algorithms for connectionist reinforcement learning.
-Machine learning, 8(3-4):229–256, 1992.
-Zhao, J., Mathieu, M., and LeCun, Y.
-Energybased generative adversarial network. arXiv preprint
-arXiv:1609.03126, 2016.
-Ziebart, B. D. Modeling purposeful adaptive behavior with
-the principle of maximum causal entropy. PhD thesis,
-2010.
-Ziebart, B. D., Maas, A. L., Bagnell, J. A., and Dey, A. K.
-Maximum entropy inverse reinforcement learning. In
-AAAI Conference on Artificial Intelligence, pp. 1433–
-1438, 2008.
-
-Reinforcement Learning with Deep Energy-Based Policies
-
-Appendices
-A. Policy Improvement Proofs
-In this appendix, we present proofs for the theorems that allow us to show that soft Q-learning leads to policy improvement
-with respect to the maximum entropy objective. First, we define a slightly more nuanced version of the maximum entropy
-objective that allows us to incorporate a discount factor. This definition is complicated by the fact that, when using a
-discount factor for policy gradient methods, we typically do not discount the state distribution, only the rewards. In that
-sense, discounted policy gradients typically do not optimize the true discounted objective. Instead, they optimize average
-reward, with the discount serving to reduce variance, as discussed by Thomas (2014). However, for the purposes of the
-derivation, we can define the objective that is optimized under a discount factor as
-"∞
-#
-X
-X
-∗
-πMaxEnt
-= arg max
-E(st ,at )∼ρπ
-γ l−t E(sl ,al ) [r(st , at ) + αH(π( · |st ))|st , at ] .
-π
-
-t
-
-l=t
-
-This objective corresponds to maximizing the discounted expected reward and entropy for future states originating from
-every state-action tuple (st , at ) weighted by its probability ρπ under the current policy. Note that this objective still takes
-into account the entropy of the policy at future states, in contrast to greedy objectives such as Boltzmann exploration or the
-approach proposed by O’Donoghue et al. (2016).
-We can now derive policy improvement results for soft Q-learning. We start with the definition of the soft Q-value Qπsoft
-for any policy π as the expectation under π of the discounted sum of rewards and entropy :
-"∞
-#
-X
-Qπsoft (s, a) , r0 + Eτ ∼π,s0 =s,a0 =a
-γ t (rt + H(π( · |st ))) .
-(15)
-t=1
-
-Here, τ = (s0 , a0 , s1 , a1 , . . .) denotes the trajectory originating at (s, a). Notice that for convenience, we set the entropy
-parameter α to 1. The theory can be easily adapted by dividing rewards by α.
-The discounted maximum entropy policy objective can now be defined as
-X
-J(π) ,
-E(st ,at )∼ρπ [Qπsoft (st , at ) + αH(π( · |st ))] .
-
-(16)
-
-t
-
-A.1. The Maximum Entropy Policy
-If the objective function is the expected discounted sum of rewards, the policy improvement theorem (Sutton & Barto,
-1998) describes how policies can be improved monotonically. There is a similar theorem we can derive for the maximum
-entropy objective:
-Theorem 4. (Policy improvement theorem) Given a policy π, define a new policy π̃ as
-
-π̃( · |s) ∝ exp Qπsoft (s, · ) , ∀s.
-(17)
-R
-Assume that throughout our computation, Q is bounded and exp(Q(s, a)) da is bounded for any s (for both π and π̃).
-Then Qπ̃soft (s, a) ≥ Qπsoft (s, a) ∀s, a.
-The proof relies on the following observation: if one greedily maximize the sum of entropy and value with one-step
-look-ahead, then one obtains π̃ from π:
-H(π( · |s)) + Ea∼π [Qπsoft (s, a)] ≤ H(π̃( · |s)) + Ea∼π̃ [Qπsoft (s, a)] .
-
-(18)
-
-The proof is straight-forward by noticing that
-H(π( · |s)) + Ea∼π [Qπsoft (s, a)] = −DKL (π( · |s) k π̃( · |s)) + log
-
-Z
-
-exp (Qπsoft (s, a)) da
-
-(19)
-
-Reinforcement Learning with Deep Energy-Based Policies
-
-Then we can show that
-Qπsoft (s, a) = Es1 [r0 + γ(H(π( · |s1 )) + Ea1 ∼π [Qπsoft (s1 , a1 )])]
-≤ Es1 [r0 + γ(H(π̃( · |s1 )) + Ea1 ∼π̃ [Qπsoft (s1 , a1 )])]
-= Es1 [r0 + γ(H(π̃( · |s1 )) + r1 )] + γ 2 Es2 [H(π( · |s2 )) + Ea2 ∼π [Qπsoft (s2 , a2 )]]
-≤ Es1 [r0 + γ(H(π̃( · |s1 )) + r1 ] + γ 2 Es2 [H(π̃( · |s2 )) + Ea2 ∼π̃ [Qπsoft (s2 , a2 )]]
-
-
-= Es1 a2 ∼π̃,s2 r0 + γ(H(π̃( · |s1 )) + r1 ) + γ 2 (H(π̃( · |s2 )) + r2 ) + γ 3 Es3 [H(π̃( · |s3 )) + Ea3 ∼π̃ [Qπsoft (s3 , a3 )]]
-..
-.
-"
-#
-∞
-X
-t
-≤ Eτ ∼π̃ r0 +
-γ (H(π̃( · |st )) + rt )
-t=1
-
-= Qπ̃soft (s, a).
-
-(20)
-
-With Theorem 4, we start from an arbitrary policy π0 and define the policy iteration as
-i
-πi+1 ( · |s) ∝ exp (Qπsoft
-(s, · )) .
-
-(21)
-
-i
-Then Qπsoft
-(s, a) improves monotonically. Under certain regularity conditions, πi converges to π∞ . Obviously, we have
-π∞ (a|s) ∝a exp (Qπ∞ (s, a)). Since any non-optimal policy can be improved this way, the optimal policy must satisfy
-this energy-based form. Therefore we have proven Theorem 1.
-
-A.2. Soft Bellman Equation and Soft Value Iteration
-Recall the definition of the soft value function:
-π
-Vsoft
-(s)
-
-Z
-, log
-
-exp (Qπsoft (s, a)) da.
-
-(22)
-
-π
-Suppose π(a|s) = exp (Qπsoft (s, a) − Vsoft
-(s)). Then we can show that
-
-
-Qπsoft (s, a) = r(s, a) + γ Es0 ∼ps H(π( · |s0 )) + Ea0 ∼π( · |s0 ) [Qπsoft (s0 , a0 )]
-π
-= r(s, a) + γ Es0 ∼ps [Vsoft
-(s0 )] .
-
-(23)
-
-This completes the proof of Theorem 2.
-Finally, we show that the soft value iteration operator T , defined as
- Z
-
-T Q(s, a) , r(s, a) + γ Es0 ∼ps log exp Q(s0 , a0 ) da0 ,
-
-(24)
-
-is a contraction. Then Theorem 3 follows immediately.
-The following proof has also been presented by Fox et al. (2016). Define a norm on Q-values as kQ1 − Q2 k ,
-maxs,a |Q1 (s, a) − Q2 (s, a)|. Suppose ε = kQ1 − Q2 k. Then
-Z
-Z
-log exp(Q1 (s0 , a0 )) da0 ≤ log exp(Q2 (s0 , a0 ) + ε) da0
-
-
-Z
-0
-0
-0
-= log exp(ε) exp Q2 (s , a ) da
-Z
-= ε + log exp Q2 (a0 , a0 ) da0 .
-(25)
-R
-R
-Similarly, log exp Q1 (s0 , a0 ) da0 ≥ −ε + log exp Q2 (s0 , a0 ) da0 . Therefore kT Q1 − T Q2 k ≤ γε = γkQ1 − Q2 k. So
-T is a contraction. As a consequence, only one Q-value satisfies the soft Bellman equation, and thus the optimal policy
-presented in Theorem 1 is unique.
-
-Reinforcement Learning with Deep Energy-Based Policies
-
-B. Connection between Policy Gradient and Q-Learning
-We show that entropy-regularized policy gradient can be viewed as performing soft Q-learning on the maximum-entropy
-objective. First, suppose that we parametrize a stochastic policy as
-
-π φ (at |st ) , exp E φ (st , at ) − Ē φ (st ) ,
-(26)
-R
-where E φ (st , at ) is an energy function with parameters φ, and Ē φ (st ) = log A exp E φ (st , at )dat is the corresponding
-partition function. This is the most general class of policies, as we can trivially transform any given distribution p into
-exponential form by defining the energy as log p. We can write an entropy-regularized policy gradient as follows:
-i
-h
-
-
-
-∇φ JPG (φ) = E(st ,at )∼ρπφ ∇φ log π φ (at |st ) Q̂πφ (st , at ) + bφ (st ) + ∇φ Est ∼ρπφ H(π φ ( · |st )) ,
-(27)
-where ρπφ (st , at ) is the distribution induced by the policy, Q̂πφ (st , at ) is an empirical estimate of the Q-value of the
-policy, and bφ (st ) is a state-dependent baseline that we get to choose. The gradient of the entropy term is given by
-
-
-
-∇φ H(π φ ) = − ∇φ Est ∼ρπφ Eat ∼πφ (at |st ) log π φ (at |st )
-
-
-= − E(st ,at )∼ρπφ ∇φ log π φ (at |st ) log π φ (at |st ) + ∇φ log π φ (at |st )
-
-
-= − E(st ,at )∼ρπφ ∇φ log π φ (at |st ) 1 + log π φ (at |st ) ,
-(28)
-and after substituting this back into (27), noting (26), and choosing bφ (st ) = Ē φ (st ) + 1, we arrive at a simple form for the
-policy gradient:
-h
-i
-
-= E(st ,at )∼ρπφ ∇φ E φ (st , at ) − ∇φ Ē φ (st ) Q̂πφ (st , at ) − E φ (st , at ) .
-(29)
-To show that (29) indeed correponds to soft Q-learning update, we consider the Bellman error
- 
-2 
-1
-θ
-θ
-Q̂soft (st , at ) − Qsoft (st , at )
-,
-JQ (θ) = Est ∼qst ,at ∼qat
-2
-
-(30)
-
-where Q̂θsoft is an empirical estimate of the soft Q-function. There are several valid alternatives for this estimate, but in
-order to show a connection to policy gradient, we choose a specific form
-θ
-(st ),
-Q̂θsoft (st , at ) = Âθ̄soft (st , at ) + Vsoft
-
-(31)
-
-where Âθ̄soft is an empirical soft advantage function that is assumed not to contribute the gradient computation. With this
-choice, the gradient of the Bellman error becomes
-h
-i
-
-θ
-θ
-∇θ JQ (θ) = Est ∼qst ,at ∼qat ∇θ Qθsoft (st , at ) − ∇θ Vsoft
-(st ) Âθ̄soft (st , at ) + Vsoft
-(st , at ) − Qθsoft (st , at )
-h
-i
-
-θ
-= Est ∼qst ,at ∼qat ∇θ Qθsoft (st , at ) − ∇θ Vsoft
-(st ) Q̂θsoft (st , at ) − Qθsoft (st , at ) .
-(32)
-Now, if we choose E φ (st , at ) , Qθsoft (st , at ) and qst (st )qat (at ) , ρπφ (st , at ), we recover the policy gradient in (29).
-Note that the choice of using an empirical estimate of the soft advantage rather than soft Q-value makes the target independent of the soft value, and at convergence, Qθsoft approximates the soft Q-value up to an additive constant. The resulting
-policy is still correct, since the Boltzmann distribution in (26) is independent of constant shift in the energy function.
-
-C. Implementation
-C.1. Computing the Policy Update
-ˆ φ Jπ in Algorithm 1 is computed. We reuse the indices i, j
-Here we explain in full detail how the policy update direction ∇
-in this section with a different meaning than in the body of the paper for the sake of providing a cleaner presentation.
-Expectations appear in amortized SVGD in two places. First, SVGD approximates the optimal descent direction φ( · ) in
-(i)
-Equation (13) with an empirical average over the samples at = f φ (ξ (i) ). Similarly, SVGD approximates the expectation
-
-Reinforcement Learning with Deep Energy-Based Policies
-(j)
-(i)
-in Equation (14) with samples ãt = f φ (ξ˜(j) ), which can be the same or different from at . Substituting (13) into (14)
-and taking the gradient gives the empirical estimate
-
-K M 
-
-1 XX
-(i)
-(j)
-(j) 
-0 
-0
-ˆ
-∇φ Jπ (φ; st ) =
-κ(at , ãt )∇a0 Qsoft (st , a ) a0 =a(i) + ∇a0 κ(a , ãt ) a0 =a(i) ∇φ f φ (ξ˜(j) ; st ).
-t
-t
-KM j=1 i=1
-
-ˆ φ Jπ is the average of ∇
-ˆ φ Jπ (φ; st ), where st is drawn from a mini-batch.
-Finally, the update direction ∇
-C.2. Computing the Density of Sampled Actions
-Equation
-(10) states
- that the soft value can be computed by sampling from a distribution qa0 and that qa0 ( · ) ∝
-
-1 φ
-exp α Qsoft (s, · ) is optimal. A direct solution is to obtain actions from the sampling network: a0 = f φ (ξ 0 ; s). If
-the samples ξ 0 and actions a0 have the same dimension, and if the jacobian matrix
-density is
-1
-qa0 (a0 ) = pξ (ξ 0 )   0  .
-det ∂a
-∂ξ 0 
-
-∂a0
-∂ξ 0
-
-is non-singular, then the probability
-(33)
-
-In practice, the Jacobian is usually singular at the beginning of training, when the sampler f φ is not fully trained. A simple
-solution is to begin with uniform action sampling and then switch to f φ later, which is reasonable, since an untrained
-sampler is unlikely to produce better samples for estimating the partition function anyway.
-
-D. Experiments
-D.1. Hyperparameters
-Throughout all experiments, we use the following parameters for both DDPG and soft Q-learning. The Q-values are
-updated using ADAM with learning rate 0.001. The DDPG policy and soft Q-learning sampling network use ADAM with
-a learning rate of 0.0001. The algorithm uses a replay pool of size one million. Training does not start until the replay pool
-has at least 10,000 samples. Every mini-batch has size 64. Each training iteration consists of 10000 time steps, and both
-the Q-values and policy / sampling network are trained at every time step. All experiments are run for 500 epochs, except
-that the multi-goal task uses 100 epochs and the fine-tuning tasks are trained for 200 epochs. Both the Q-value and policy
-/ sampling network are neural networks comprised of two hidden layers, with 200 hidden units at each layer and ReLU
-nonlinearity. Both DDPG and soft Q-learning use additional OU Noise (Uhlenbeck & Ornstein, 1930; Lillicrap et al.,
-2015) to improve exploration. The parameters are θ = 0.15 and σ = 0.3. In addition, we found that updating the target
-parameters too frequently can destabilize training. Therefore we freeze target parameters for every 1000 time steps (except
-for the swimming snake experiment, which freezes for 5000 epochs), and then copy the current network parameters to the
-target networks directly (τ = 1).
-Soft Q-learning uses K = M = 32 action samples (see Appendix C.1) to compute the policy update, except that the multigoal experiment uses K = M = 100. The number of additional action samples to compute the soft value is KV = 50.
-d
-The kernel κ is a radial basis function, written as κ(a, a0 ) = exp(− h1 ka − a0 k22 ), where h = 2 log(M
-+1) , with d equal to
-(i)
-
-the median of pairwise distance of sampled actions at . Note that the step size h changes dynamically depending on the
-state s, as suggested in (Liu & Wang, 2016).
-The entropy coefficient α is 10 for multi-goal environment, and 0.1 for the swimming snake, maze, hallway (pretraining)
-and U-shaped maze (pretraining) experiments.
-All fine-tuning tasks anneal the entropy coefficient α quickly in order to improve performance, since the goal during finetuning is to recover a near-deterministic policy on the fine-tuning task. In particular, α is annealed log-linearly to 0.001
-Kξ
-within 20 epochs of fine-tuning. Moreover, the samples ξ are fixed to a set {ξi }i=1
-and Kξ is reduced linearly to 1 within
-20 epochs.
-D.2. Task description
-All tasks have a horizon of T = 500, except the multi-goal task, which uses T = 20. We add an additional termination
-condition to the quadrupedal 3D robot to discourage it from flipping over.
-
-Reinforcement Learning with Deep Energy-Based Policies
-
-D.3. Additional Results
-
-(a) DDPG
-
-(b) Soft Q-learning
-
-Figure 6. Forward swimming distance achieved by each policy. Each row is a policy with a unique random seed. x: training iteration,
-y: distance (positive: forward, negative: backward). Red line: the “finish line.” The blue shaded region is bounded by the maximum and
-minimum distance (which are equal for DDPG). The plot shows that our method is able to explore equally well in both directions before
-it commits to the better one.
-
-Reinforcement Learning with Deep Energy-Based Policies
-
-10
-
-10
-
-10
-
-10
-
-5
-
-5
-
-5
-
-5
-
-0
-
-0
-
-0
-
-0
-
-5
-
-5
-
-5
-
-5
-
-10
-
-10
-
-5
-
-0
-
-5
-
-10
-
-10
-
-10
-
-5
-
-0
-
-5
-
-10
-
-10
-
-10
-
-5
-
-0
-
-5
-
-10
-
-10
-
-10
-
-10
-
-10
-
-10
-
-5
-
-5
-
-5
-
-5
-
-0
-
-0
-
-0
-
-0
-
-5
-
-5
-
-5
-
-5
-
-10
-
-10
-
-5
-
-0
-
-5
-
-10
-
-10
-
-10
-
-5
-
-0
-
-5
-
-10
-
-10
-
-10
-
-5
-
-0
-
-5
-
-10
-
-10
-
-10
-
-10
-
-10
-
-10
-
-5
-
-5
-
-5
-
-5
-
-0
-
-0
-
-0
-
-0
-
-5
-
-5
-
-5
-
-5
-
-10
-
-10
-
-5
-
-0
-
-5
-
-10
-
-10
-
-10
-
-5
-
-0
-
-5
-
-10
-
-10
-
-10
-
-5
-
-0
-
-5
-
-10
-
-10
-
-10
-
-10
-
-10
-
-10
-
-5
-
-5
-
-5
-
-5
-
-0
-
-0
-
-0
-
-0
-
-5
-
-5
-
-5
-
-5
-
-10
-
-10
-
-5
-
-0
-
-5
-
-10
-
-10
-
-10
-
-5
-
-0
-
-5
-
-10
-
-10
-
-10
-
-5
-
-0
-
-5
-
-10
-
-10
-
-10
-
-10
-
-10
-
-10
-
-5
-
-5
-
-5
-
-5
-
-0
-
-0
-
-0
-
-0
-
-5
-
-5
-
-5
-
-5
-
-10
-
-10
-
-5
-
-0
-
-5
-
-10
-
-10
-
-10
-
-5
-
-0
-
-5
-
-10
-
-10
-
-10
-
-5
-
-0
-
-5
-
-10
-
-10
-
-10
-
-5
-
-0
-
-5
-
-10
-
-10
-
-5
-
-0
-
-5
-
-10
-
-10
-
-5
-
-0
-
-5
-
-10
-
-10
-
-5
-
-0
-
-5
-
-10
-
-10
-
-5
-
-0
-
-5
-
-10
-
-Figure 7. The plot shows trajectories of the quadrupedal robot during maximum entropy pretraining. The robot has diverse behavior
-and explores multiple directions. The four columns correspond to entropy coefficients α = 10, 1, 0.1, 0.01 respectively. Different rows
-correspond to policies trained with different random seeds. The x and y axes show the x and y coordinates of the center-of-mass. As α
-decreases, the training process focuses more on high rewards, therefore exploring the training ground more extensively. However, low
-α also tends to produce less diverse behavior. Therefore the trajectories are more concentrated in the fourth column.
+Bacon, Pierre-Luc. On the Bottleneck Concept for Options
+Discovery: Theoretical Underpinnings and Extension in
+Continuous State Spaces. Master’s thesis, McGill University, 2013.
+Bacon, Pierre-Luc, Harb, Jean, and Precup, Doina. The
+option-critic architecture. In Proceedings of the National
+Conference on Artificial Intelligence (AAAI), 2017.
+
+Gregor, Karol, Rezende, Danilo, and Wierstra, Daan. Variational Intrinsic Control. CoRR, abs/1611.07507, 2016.
+Hengst, Bernhard. Discovering Hierarchy in Reinforcement Learning with HEXQ. In Proceedings of the International Conference on Machine Learning (ICML),
+2002.
+Kompella, Varun Raj, Luciw, Matthew D., and Schmidhuber, Jürgen. Incremental Slow Feature Analysis. In Proceedings of the International Joint Conference on Artificial Intelligence (IJCAI), pp. 1354–1359, 2011.
+Kompella, Varun Raj, Stollenga, Marijn, Luciw, Matthew,
+and Schmidhuber, Juergen. Continual Curiosity-Driven
+Skill Acquisition from High-Dimensional Video Inputs
+for Humanoid Robots. Artificial Intelligence, In Press.
+ISSN 0004-3702. Available online 12 February 2015.
+
+Baranes, Adrien and Oudeyer, Pierre-Yves. Active learning of inverse models with intrinsically motivated goal
+exploration in robots. Robotics and Autonomous Systems, 61(1):49–73, 2013.
+
+Konidaris, George and Barto, Andrew. Skill Discovery
+in Continuous Reinforcement Learning Domains using
+Skill Chaining. In Proceedings of Advances in Neural
+Information Processing Systems (NIPS), pp. 1015–1023,
+2009.
+
+Bellemare, Marc G., Naddaf, Yavar, Veness, Joel, and
+Bowling, Michael. The Arcade Learning Environment:
+An Evaluation Platform for General Agents. Journal of
+Artificial Intelligence Research, 47:253–279, 2013.
+
+Kulkarni, Tejas D., Narasimhan, Karthik R., Saeedi, Ardavan, and Tenenbaum, Joshua B. Hierarchical Deep Reinforcement Learning: Integrating Temporal Abstraction
+and Intrinsic Motivation. ArXiv e-prints, 2016.
+
+Bellman, Richard E. Dynamic Programming. Princeton
+University Press, Princeton, NJ, 1957.
+
+Lakshminarayanan, Aravind, Krishnamurthy, Ramnandan,
+Kumar, Peeyush, and Ravindran, Balaraman. Option
+Discovery in Hierarchical Reinforcement Learning using Spatio-Temporal Clustering. CoRR, abs/1605.05359,
+2016. Presented at the ICML-16 Workshop on Abstraction in Reinforcement Learning.
+
+Şimşek, Özgür and Barto, Andrew G. Using Relative Novelty to Identify Useful Temporal Abstractions in Reinforcement Learning. In Proceedings of the International
+Conference on Machine Learning (ICML), 2004.
+Şimşek, Özgür and Barto, Andrew G. Skill Characterization Based on Betweenness. In Proceedings of Advances
+in Neural Information Processing Systems (NIPS), 2008.
+
+Machado, Marlos C. and Bowling, Michael. Learning Purposeful Behaviour in the Absence of Rewards. CoRR,
+abs/1410.4604, 2016. Presented at the ICML-16 Workshop on Abstraction in Reinforcement Learning.
+
+Şimşek, Özgür, Wolfe, Alicia P., and Barto, Andrew G.
+Identifying Useful Subgoals in Reinforcement Learning
+by Local Graph Partitioning. In Proceedings of the International Conference on Machine Learning (ICML),
+2005.
+
+Mahadevan, Sridhar. Proto-Value Functions: Developmental Reinforcement Learning. In Proceedings of the International Conference on Machine Learning (ICML), pp.
+553–560, 2005.
+
+Daniel, Christian, van Hoof, Herke, Peters, Jan, and Neumann, Gerhard. Probabilistic Inference for Determining
+Options in Reinforcement Learning. Machine Learning,
+104(2):337–357, 2016.
+
+Mahadevan, Sridhar and Maggioni, Mauro. Proto-value
+Functions: A Laplacian Framework for Learning Representation and Control in Markov Decision Processes.
+Journal of Machine Learning Research (JMLR), 8:2169–
+2231, 2007.
+
+Dietterich, Thomas G. Hierarchical Reinforcement Learning with the MAXQ Value Function Decomposition.
+Journal of Artificial Intelligence Research (JAIR), 13:
+227–303, 2000.
+
+Mankowitz, Daniel J., Mann, Timothy Arthur, and Mannor, Shie. Adaptive Skills Adaptive Partitions (ASAP).
+In Proceedings of Advances in Neural Information Processing Systems (NIPS), pp. 1588–1596, 2016.
+
+A Laplacian Framework for Option Discovery in Reinforcement Learning
+
+Mannor, Shie, Menache, Ishai, Hoze, Amit, and Klein,
+Uri. Dynamic Abstraction in Reinforcement Learning
+via Clustering. In Proceedings of the International Conference on Machine Learning (ICML), 2004.
+
+Solway, Alec, Diuk, Carlos, Córdova, Natalia, Yee, Debbie, Barto, Andrew G., Niv, Yael, and Botvinick,
+Matthew M. Optimal Behavioral Hierarchy. PLOS Computational Biology, 10(8):1–10, 2014.
+
+McGovern, Amy and Barto, Andrew G. Automatic Discovery of Subgoals in Reinforcement Learning using Diverse Density. In Proceedings of the International Conference on Machine Learning (ICML), 2001.
+
+Sprekeler, Henning. On the Relation of Slow Feature Analysis and Laplacian Eigenmaps. Neural Computation, 23
+(12):3287–3302, 2011.
+
+Menache, Ishai, Mannor, Shie, and Shimkin, Nahum. QCut - Dynamic Discovery of Sub-goals in Reinforcement
+Learning. In Proceedings of the European Conference
+on Machine Learning (ECML), 2002.
+Moulin-Frier, Clément and Oudeyer, Pierre-Yves. Exploration Strategies in Developmental Robotics: A Unified Probabilistic Framework. In Proceedings of the
+Joint IEEE International Conference on Development
+and Learning and Epigenetic Robotics (ICDL-EpiRob),
+pp. 1–6, 2013.
+
+Strang, Gilbert. Linear Algebra and Its Applications.
+Brooks Cole, 2005.
+Sutton, Richard S. and Barto, Andrew G. Reinforcement
+Learning: An Introduction. MIT Press, 1998.
+Sutton, Richard S., Precup, Doina, and Singh, Satinder. Between MDPs and semi-MDPs: A Framework for Temporal Abstraction in Reinforcement Learning. Artificial
+Intelligence, 112(12):181 – 211, 1999.
+
+Osband, Ian, Roy, Benjamin Van, and Wen, Zheng. Generalization and Exploration via Randomized Value Functions. In Proceedings of the International Conference on
+Machine Learning (ICML), pp. 2377–2386, 2016.
+
+Vezhnevets, Alexander, Mnih, Volodymyr, Osindero, Simon, Graves, Alex, Vinyals, Oriol, Agapiou, John, and
+Kavukcuoglu, Koray. Strategic Attentive Writer for
+Learning Macro-Actions. In Proceedings of Advances
+in Neural Information Processing Systems (NIPS), pp.
+3486–3494, 2016.
+
+Precup, Doina. Temporal Abstraction in Reinforcement
+Learning. PhD thesis, University of Massachusetts
+Amherst, 2000.
+
+Watkins, Christopher J. C. H. and Dayan, Peter. Technical Note: Q-Learning. Machine Learning, 8(3-4), May
+1992.
+
+Puterman, Martin L. Markov Decision Processes: Discrete
+Stochastic Dynamic Programming. John Wiley & Sons,
+Inc., New York, NY, USA, 1994.
+Salge, Christoph, Glackin, Cornelius, and Polani, Daniel.
+Empowerment – An Introduction. In Guided SelfOrganization: Inception, pp. 67–114. Springer, 2014.
+
+Wiskott, Laurenz and Sejnowski, Terrence J. Slow Feature
+Analysis: Unsupervised Learning of Invariances. Neural
+Computation, 14(4):715–770, 2002.
 
 

@@ -1,1320 +1,1538 @@
-Stochastic Gradient MCMC Methods for Hidden Markov Models
-Yi-An Ma 1 Nicholas J. Foti 1 Emily B. Fox 1
+Learning Latent Space Models with Angular Constraints
+
+Pengtao Xie 1 2 Yuntian Deng 3 Yi Zhou 4 Abhimanu Kumar 5 Yaoliang Yu 6 James Zou 7 Eric P. Xing 2
 
 Abstract
-Stochastic gradient MCMC (SG-MCMC) algorithms have proven useful in scaling Bayesian
-inference to large datasets under an assumption of i.i.d data. We instead develop an SGMCMC algorithm to learn the parameters of hidden Markov models (HMMs) for time-dependent
-data. There are two challenges to applying SGMCMC in this setting: The latent discrete states,
-and needing to break dependencies when considering minibatches. We consider a marginal likelihood representation of the HMM and propose an
-algorithm that harnesses the inherent memory decay of the process. We demonstrate the effectiveness of our algorithm on synthetic experiments
-and an ion channel recording data, with runtimes
-significantly outperforming batch MCMC.
+The large model capacity of latent space models (LSMs) enables them to achieve great performance on various applications, but meanwhile
+renders LSMs to be prone to overfitting. Several
+recent studies investigate a new type of regularization approach, which encourages components
+in LSMs to be diverse, for the sake of alleviating
+overfitting. While they have shown promising
+empirical effectiveness, in theory why larger “diversity” results in less overfitting is still unclear.
+To bridge this gap, we propose a new diversitypromoting approach that is both theoretically analyzable and empirically effective. Specifically,
+we use near-orthogonality to characterize “diversity” and impose angular constraints (ACs)
+on the components of LSMs to promote diversity. A generalization error analysis shows that
+larger diversity results in smaller estimation error and larger approximation error. An efficient
+ADMM algorithm is developed to solve the constrained LSM problems. Experiments demonstrate that ACs improve generalization performance of LSMs and outperform other diversitypromoting approaches.
 
 1. Introduction
-Stochastic gradient based algorithms have proven crucial
-in numerous areas for scaling inference algorithms to large
-datasets. The key idea is to employ noisy estimates of the
-gradient based on minibatches of data, avoiding a costly
-gradient computation using the full dataset (Robbins &
-Monro, 1951). Assuming the data are i.i.d. and the minibatches are properly scaled, the stochastic gradient is an
-unbiased estimate of the true gradient. In the context of
-Bayesian inference, such approaches have proven useful in
-scaling variational inference (Hoffman et al., 2013; Bryant
-& Sudderth, 2012; Broderick et al., 2013; Foti et al., 2014)
-and Markov chain Monte Carlo (MCMC) (Welling & Teh,
-2011; Patterson & Teh, 2013; Chen et al., 2014; Ding et al.,
-2014; Shang et al., 2015). For the latter, a primary focus
-has been on the influence of the stochastic gradient noise
-on the MCMC iterates; in contrast to many optimizationbased procedures, it is non-trivial to show that the underlying (stochastic) dynamics maintain the correct stationary
-1
-University of Washington, Seattle, WA, USA. Correspondence to: Yi-An Ma <yianma@uw.edu>.
+Latent space models (LSMs), such as sparse coding (Olshausen & Field, 1997), topic models (Blei et al., 2003)
+and neural networks, are widely used in machine learning
+to extract hidden patterns and learn latent representations
+of data. An LSM consists of a set of components. Each
+component aims at capturing one latent pattern and is pa1
+
+Machine Learning Department, Carnegie Mellon University
+Petuum Inc. 3 School of Engineering and Applied Sciences, Harvard University 4 College of Engineering and Computer Science,
+Syracuse University 5 Groupon Inc. 6 School of Computer Science,
+University of Waterloo 7 Department of Biomedical Data Science,
+Stanford University. Correspondence to: Pengtao Xie <pengtaox@cs.cmu.edu>, Eric P. Xing <eric.xing@petuum.com>.
+2
 
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-distribution in the presence of such noise. Significant headway has been made in developing such correct SG-MCMC
-procedures. These algorithms have shown great practical
-benefits and have gained significant traction.
-A separate challenge, however, is the important and often
-overlooked question of whether such stochastic gradient
-techniques can be applied to massive amounts of sequential
-or otherwise non-i.i.d. data. In such cases, crucial dependencies must be broken to form the necessary minibatches.
-This question received some attention in the stochastic variational inference (SVI) algorithm of Foti et al. (2014) for
-hidden Markov models (HMMs). In this work, we also focus in on HMMs as a simple example of a sequential data
-model, but turn our attention to SG-MCMC algorithms.
-There are many existing algorithms for inferring
-the model parameters of an HMM including Monte
-Carlo methods (Scott, 2002), expectation-maximization
-(EM) (Bishop, 2006), and variational algorithms (Beale,
-2003). All of these ideas operate by iterating between a
-local update for the latent states, followed by a global
-update of the model parameters. The local update is
-usually performed using the forward-backward algorithm
-that allows computation of any marginal, or pair-wise
-marginal, in time linear in the length of the sequence.
-In the variational context, recent work has focused on scaling these local-global inference schemes to settings with
-a large number of replicates of short sequences (Johnson
-& Willsky, 2014; Hughes et al., 2015). These methods
-utilize the fact that independent replicates of the observation sequence can be used to compute unbiased gradient estimates (Johnson & Willsky, 2014), and can be used
-to incrementally update sufficient statistics (Hughes et al.,
-2015). In contrast, the SVI-HMM algorithm of Foti et al.
-(2014) examines how to deal with extremely long observation sequences. The algorithm heuristically breaks the
-dependence between observations and performs local updates on short subsequences of observations using a limited forward-backward algorithm. These existing methods
-suffer from a number of drawbacks. The variational approaches must use an approximate posterior distribution
-for both the state- and model-parameters, which may not
-be representative of the true distributions. The methods are
-also limited to conjugate prior distributions over the parameters, which can severely limit the expressiveness of the
+rameterized by a weight vector. For instance, in a topic
+model (Blei et al., 2003), the components are referred to
+as topics, aiming at discovering the semantics underlying
+documents. Each topic is associated with a weight vector.
+The modeling power of LSMs can be very large when the
+number of components is large and the dimension of weight
+vectors is high. For instance, in the LightLDA (Yuan et al.,
+2015) topic model, the number of topics is 1 million and
+the dimension of topic vector is 50000, resulting in a topic
+matrix with 50 billion parameters. The vast model capacity of LSMs enables them to flexibly adapt to the complex
+patterns underlying data and achieve great predictive performance therefrom.
+While highly expressive, LSMs are prone to overfitting,
+because of their large amount of model parameters. A
+key ingredient to successfully train LSMs is regularization,
+which imposes certain control over the model parameters
+to reduce model complexity and improve the generalization performance on unseen data. Many regularizers have
+been proposed, including `2 regularization, `1 regularization (Tibshirani, 1996), nuclear norm (Recht et al., 2010),
+Dropout (Srivastava et al., 2014) and so on.
+Recently, a new type of regularization approaches (Yu
+et al., 2011; Zou & Adams, 2012a; Xie et al., 2015; 2016a;
+Rodrı́guez et al., 2016), which aim at encouraging the
+weight vectors of components in LSMs to be “diverse”,
+are emerging. Zou & Adams (2012b) apply Determinantal
+Point Process (Kulesza & Taskar, 2012) to encourage the
+topic vectors in LDA to be “diverse”. Bao et al. (2013) develop a softmax regularizer to promote incoherence among
+hidden units in neural network. Xie et al. (2015) propose
+an angle-based regularizer to “diversify” the weight vectors in Restricted Boltzmann Machine (RBM). While these
+approaches have demonstrated promising effectiveness on
+a wide range of empirical studies, in theory how they reduce overfitting is still unclear. One intuitive explanation
+could be: promoting diversity imposes a structural constraint on model parameters, which reduces the model capacity of LSMs and therefore alleviates overfitting. However, how to make this formal is challenging. In this paper, we aim to bridge this gap, by proposing a diversitypromoting approach that is both empirically effective and
+theoretically analyzable. We use near-orthogonality to represent “diversity” and propose to learn LSMs with angular
 
-Stochastic Gradient MCMC Methods for Hidden Markov Models
+Learning Latent Space Models with Angular Constraints
 
-model. Finally, all of the methods discussed thus far are
-susceptible to the widely known problem of underestimating posterior correlations biasing fully Bayesian analyses.
+constraints (ACs) where the angle between components is
+constrained to be close to π2 , which hence encourages the
+components to be close to orthogonal (therefore “diverse”).
+Using sparse coding and neural network as study cases, we
+analyze how ACs affect the generalization performance of
+these two LSMs. The analysis shows that the more close
+to π2 the angles are, the smaller the estimation error is and
+the larger the approximation error is. The best tradeoffs
+of these two errors can be explored by properly tuning the
+angles. We develop an alternating direction method of multipliers (ADMM) (Boyd et al., 2011) algorithm to solve
+the angle-constrained LSM (AC-LSM) problems. In various experiments, we demonstrate that ACs improve the
+generalization performance of LSMs and outperform other
+diversity-promoting regularization approaches.
 
-2. Background
+vectors is measured and the regularizer is defined as the
+mean of these angles minus their variance. A larger mean
+encourages the vectors to have larger angles overall and a
+smaller variance encourages the vectors to be evenly different from each other. Xie (2015) apply this regularizer to
+encourage the projection vectors in distance metric learning
+to be diverse and show that promoting diversity can reduce
+model size without sacrificing modeling power. Besides
+frequentist-style regularization, diversity-promoting learning is also investigated in Bayesian learning where the components are random variables. Affandi et al. (2013) apply
+DPP as a repulsive prior to encourage the location vectors
+in GMM to be far apart. Xie et al. (2016a) propose a mutual angular prior that has an inductive bias towards vectors
+having larger angles.
 
-Unfortunately, attempting to naively use subchains as in
-Foti et al. (2014) within SG-MCMC approaches is fraught
-with difficulty: The local-global structure of SVI-HMM
-does not lend itself to deriving provably correct SG-MCMC
-algorithms, stemming from two main challenges.
+The major contributions of this work are:
 
-Hidden Markov models (HMMs) are a class of discretetime doubly stochastic processes consisting of a i) latent
-discrete-valued state sequence xt ∈ {1, . . . , K} generated
-by a Markov chain and (ii) corresponding observations yt
-generated from distributions determined by the latent states
-xt . Specifically, the joint distribution of y = (y1 , · · · , yT )
-and x = (x0 , · · · , xT ), factorizes as
+In the literature of neural networks, many works have studied the “diversification” of hidden units. Le et al. (2010)
+apply a strict-orthogonality constraint over the weight parameters to make the hidden units uncorrelated (therefore
+“diverse”). In practice, this hard constraint might be too
+restrictive and hurts performance, as we will confirm in experiments. Bao et al. (2013) propose a softmax regularizer to encourage the weight vectors of hidden units to have
+small cosine similarity. Cogswell et al. (2015) propose to
+decorrelate hidden activations by minimizing their covariance. In convolutional neural networks (CNNs) where the
+number of activations is much larger than that of weight
+parameters, this regularizer is computationally prohibitive
+since it is defined over activations rather than weights.
+Henaff et al. (2016) perform a study to show that random
+orthogonal initialization of the weight matrices in recurrent neural networks improves its ability to perform longmemory tasks. Xiong et al. (2016) propose a structured
+decorrelation constraint which groups hidden units and encourages units within the same group to have strong connections during the training procedure and forces units in
+different groups to learn nonredundant representations by
+minimizing the cross-covariance between them. Rodrı́guez
+et al. (2016) show that regularizing negatively correlated
+features inhibits effective diversity and propose a solution
+which locally enforces feature orthogonality. Chen et al.
+(2017) propose a group orthogonal CNN which leverages
+side information to learn diverse feature representations.
+Mao et al. (2017) impose a stochastic decorrelation constraint based on covariance to reduce the co-adaptation of
+hidden units. Xie et al. (2017) define a kernel-based regularizer to promote diversity and analyze how it affects the
+generalize performance of neural networks (NNs). It is unclear how to generalize the analysis to other LSMs.
 
-The first challenge is that SG-MCMC methods sample
-continuous-valued parameter representations, whereas the
-HMM learning objective is typically specified in terms of
-the discrete-valued state sequence (local variables). To address this challenge, we consider an alternative approach to
-performing parameter inference for HMMs: We work directly with the marginal likelihood of the observation. We
-form stochastic gradients by only evaluating terms of the
-full gradient that depend on a small subsequence.
-The second challenge is handling the temporal dependencies, specifically: i) each subsequence-specific term in
-the stochastic gradient still requires a forward-backward
-pass on the rest of the sequence, and ii) proximal subsequences are mutually correlated. We address both of
-these issues by capitalizing on the well-known memory decay of the Markovian structure underlying the data generating process. Specifically, we approximate the full
-forward-backward passes with message passing only on
-short buffers around the considered subsequences of observations. We further restrict subsequences to be sufficiently
-far from one another to ensure that computations with
-them are uncorrelated. We provide a theoretically justified approach to estimating this buffer length and betweensubsequence gap, allowing us to prove the validity of the
-resulting SG-MCMC algorithm. In particular, the same
-theoretical guarantees are provided as in the i.i.d. setting.
+• We propose a new approach to promote diversity
+in LSMs, by imposing angular constraints (ACs) on
+components, for the sake of alleviating overfitting.
+• We perform theoretical analysis on how ACs affect the
+generalization error of two exemplar LSMs: sparse
+coding and neural networks.
+• We develop an efficient ADMM algorithm to solve the
+AC-LSM problems.
+• Empirical evaluation demonstrates that ACs are very
+effective in reducing overfitting and outperforms other
+diversity-promoting approaches.
+The rest of the paper is organized as follows. Section
+2 reviews related works. Second 3 introduces the angleconstrained LSMs and Section 4 gives the theoretical analysis. Section 5 presents experimental results and Section 6
+concludes the paper.
 
-2.1. Hidden Markov Models
+2. Related Works
+Diversity-promoting learning of latent space models has
+been widely studied recently. Ramirez et al. (2010) define a regularizer based on squared Frobenius norm to encourage the dictionary in sparse coding to be incoherent.
+Zou & Adams (2012a) use the determinantal point process
+(DPP) (Kulesza & Taskar, 2012) to encourage the location
+vectors in Gaussian mixture model (GMM) and topics in latent Dirichlet allocation (Blei et al., 2003) to be “diverse”.
+Given m vectors {wj }m
+j=1 , DPP is defined as log det(G).
+G is a kernel matrix where Gij = k(wi , wj ) and k(·, ·) is a
+kernel function. det(G) is the volume of the parallelepiped
+formed by {φ(wj )}m
+j=1 , where φ(·) denotes the reproducing kernel feature map associated with kernel k. Vectors
+with larger volume are considered to be more diverse since
+they are more spread out. Xie (2015) develop an anglebased regularizer to encourage the weight vectors of hidden
+units in restricted Boltzmann machine to be close to orthogonal. The non-obtuse angle between each pair of weight
 
-p(x, y) = π0 (x0 )
+Diversity-promoting learning has been investigated in nonLSM models as well. In multi-class classification, Malkin
+& Bilmes (2008) encourage the coefficient vectors of different classes to be diverse by maximizing the determi-
 
-T
-Y
+Learning Latent Space Models with Angular Constraints
 
-p(xt |xt−1 , A) · p(yt |xt , φ),
+nant of the covariance matrix of the coefficient vectors. In
+classifiers ensemble, Yu et al. (2011) develop a regularizer
+to encourage the coefficient vectors of support vector machines (SVMs) to have small cosine similarity and analyze
+how this regularizer affects the generalization performance.
+The analysis is specific to SVM ensemble. It is unclear how
+to generalize it to latent space models.
+
+3. Methods
+In this section, we propose Angle-Constrained Latent
+Space Models (AC-LSMs) and present an ADMM algorithm to solve them.
+3.1. Latent Space Models with Angular Constraints
+An LSM consists of m components and these components
+are parameterized by vectors W = {wj }m
+j=1 . Let L(W)
+denote the objective function of this LSM. Similar to (Bao
+et al., 2013; Xie et al., 2015; Rodrı́guez et al., 2016), we use
+angle to characterize diversity: the components are considered to be more diverse if they are close to being orthogonal, i.e., their angles are close to π2 . To encourage this, we
+require the absolute value of cosine similarity between each
+pair of components to be less than a small value τ , which
+leads to the following angle-constrained LSM (AC-LSM)
+problem
+min
+
+L(W)
+
+s.t.
+
+1 ≤ i < j ≤ m, kwi ki2 kwjj k2 ≤ τ
+
+W
+
+|w ·w |
 
 (1)
 
-t=1
+The parameter τ controls the level of near-orthogonality
+(or diversity). A smaller τ indicates that the vectors are
+more close to being orthogonality, and hence are more diverse. As will be shown later, representing diversity using
+the angular constraints facilitates theoretical analysis and is
+empirically effective as well.
 
-where A is the Markov transition matrix such that Ai,j =
-Pr(xt = i|xt−1 = j), {φk }K
-k=1 are the emission parameters, and π0 = p(x0 ) is the initial state distribution. We
-denote the parameters of interest as θ = {A, φ} and do not
-focus on performing inference on π0 .
-Traditionally, EM, variational inference, or MCMC are
-used to perform inference over θ (Scott, 2002; Beale,
-2003). These algorithms rely on the well-known forwardbackward algorithm to compute the marginal, p(xt |y1:T ),
-and pairwise-marginal, p(xt , xt+1 |y1:T ), distributions. The
-algorithm works by recursively computing a sequence of
-forward messages αt (xt ) = p(xt |y1:t ) and backwards
-messages βt (xt ) = p(yt+1:T |xt ) which can then be used
-to compute the necessary marginals (Beale, 2003). These
-marginals are then used to update or sample from the distribution of the model parameters.
-These past algorithms have found widespread use in statistics and machine learning. However, as discussed in Sec. 1,
-an alternative formulation of the HMM can provide greater
-utility in developing an SG-MCMC approach. Marginalizing over x, we obtain the marginal likelihood:
+(denoted by A) by minimizing
+the following
+objective
+Pn
+Pm
+function: L(W, A) = 12 i=1 (kxi − j=1 αij wj k22 +
+Pm
+Pm
+λ1 j=1 |αij |1 ) + λ2 j=1 kwj k22 . Applying ACs to the
+basis vectors, we obtain the following AC-SC problem:
+L(W, A)
+|w ·w |
+1 ≤ i < j ≤ m, kwi ki2 kwjj k2 ≤ τ
 
-Buffering to perform limited message passing in HMMs
-was also applied in SVI-HMM Foti et al. (2014); however,
-the buffering there was part of a latent state update. In particular, SVI-HMM iterates between buffered message passing for local updates and stochastic gradients for global updates. We, in contrast, consider stochastic gradients of a
-marginal likelihood representation and utilize buffering directly within this stochastic gradient calculation.
+minW,A
+s.t.
 
-where P (yt ) is a diagonal matrix with Pi,i (yt ) =
-p(yt |xt = i, φi ); 1T is a row vector of K ones; and
-(π 0 )i = π0 (x0 = i). The resulting posterior distribution
-of θ given y = y1:T is then:
+Neural Networks In a neural network (NN) with L hidden layers, each hidden layer l is equipped with m(l) units
+and each unit i is connected with all units in layer l − 1.
+Hidden unit i at layer l is parameterized by a weight vector
+(l)
+wi . These hidden units aim at capturing latent features
+underlying data. Applying ACs to the weight vectors of
+hidden units, we obtain the following AC-NN problem
+min L(W)
+W
 
-We evaluate the efficacy of our buffered SG-MCMC
-method for HMMs on two synthetic examples with very
-different dynamics. We compare against an unbuffered SGMCMC approach as well as against treating the data as
-i.i.d. Finally, we show the computational gains of our SGMCMC algorithm over batch MCMC by segmenting an
-ion channel dataset where a 1,000X speedup was observed.
-Collectively, our contributions make a sizable step towards
-general purpose SG-MCMC algorithms for sequential data.
+s.t.
 
-Working with the marginal likelihood and posterior alleviates the need to compute the marginals and pairwise
-marginals of xt . As such, only the forward pass of the
-forward-backward algorithm is performed. Indeed, performing the matrix multiplications in Eq. (2) from right to
-left corresponds to computing the normalizing constants of
-the forward messages. Performing the matrix multiplies
-from left to right corresponds to unnormalized messages in
-belief propagation, (cf. Fox, 2009). Perhaps most importantly for the development of our SG-MCMC algorithm,
+(l)
 
-p(y|θ) = 1T P (yT )A · · · P (y1 )A π 0 ,
+∀ 1 ≤ l ≤ L, 1 ≤ i < j ≤ m(l) ,
 
-p(θ|y) ∝ 1T P (yT )A · · · P (y1 )A π 0 · p(θ).
+Sparse Coding Given a set of data samples {xi }ni=1 ,
+where x ∈ Rd , sparse coding (SC) (Olshausen & Field,
+1997) aims to use a set of “basis” vectors (referred to as
+dictionary) W = {wj }m
+j=1 to reconstruct the data samples. Each data sample x is reconstructed by taking
+Pm a sparse
+linear combination of the basis vectors x ≈
+j=1 αj wj
+where {αj }m
+are
+the
+linear
+coefficients
+(referred
+to as
+j=1
+sparse codes) and most of them are zero. The reconstruction
+Pm error is measured using the squared `2 norm
+kx − j=1 αj wj k22 . To achieve sparsity among the coeffiPm
+cients, `1 -regularization is utilized: j=1 |αj |1 . To avoid
+the degenerated case where most coefficients are zero and
+the basis vectors are of large magnitude, `2 -regularization
+is applied to the basis vectors: kwj k22 . Putting these
+pieces together, we learn the basis vectors and sparse codes
+
+(l)
+
+|wi ·wj |
+(l)
+
+(l)
+
+kwi k2 kwj k2
+
+≤τ
+
+where W denotes weight vectors in all layers and L(W) is
+the objective function of this NN.
+3.3. Algorithm
+In this section, we develop an ADMM-based algorithm to
+solve the AC-LSM problem. To make it amenable for optimization, we first factorize each weight vector w into its
+w
+e = kwk
+`2 norm g = kwk2 and direction w
+. Under such a
+2
+e where
+factorization, w can be reparameterized as w = g w,
+e 2 = 1. Then the problem defined in Eq.(1)
+g > 0 and kwk
+can be transformed into
+min
+f
+W,G
+
+s.t.
+
+3.2. Case Studies
+In this section, we apply the ACs to two LSMs.
 
 (2)
 
+f G)
+L(W,
+e j k2 = 1
+∀j, gj ≥ 0, kw
+ei · w
+e j| ≤ τ
+∀i 6= j, |w
+
 (3)
 
-Stochastic Gradient MCMC Methods for Hidden Markov Models
+m
+f = {w
+e j }m
+where W
+j=1 and G = {gj }j=1 . We solve this
+f and G. Fixing W,
+f
+new problem by alternating between W
+the problem defined over G is: minG L(G) s.t. ∀j, gj ≥
+0, which can be solved using projected gradient descent.
+f is
+Fixing G, the sub-problem defined over W
 
-the marginal likelihood does not involve alternately updating the local state variables, xt , and the global model parameters θ. Instead, we need only explore a continuous
-space which will allow us to leverage gradient information
-to develop a computationally and statistically efficient algorithm. The major impediment to directly using Eq. (2)
-for SG-MCMC is that it is unclear how to form a stochastic
-gradient based on a subsequence to avoid the computational
-burden of gradient computations in large T settings.
+min
+f
+W
 
-One approach for devising MCMC algorithms is to utilize continuous dynamics to explore a potential function
-U (θ) ∝ − ln π(θ) for target distribution π(θ); for Bayesian
-inference, we take U (θ) ∝ − ln p(θ|y), i.e., the negative
-log posterior. Then, samples of a continuous valued parameter, θ ∈ Rd , can be drawn as (Ma et al., 2015; 2016)
-i
-h
-
-θ(t+1) ←θ(t) − t D(θ(t) ) + Q(θ(t) ) ∇U (θ(t) ) + Γ(θ(t) )
+s.t.
+
+f
+L(W)
+e j k2 = 1
+∀j, kw
+ei · w
+e j| ≤ τ
+∀i 6= j, |w
+
 (4)
 
-∂
-(Di,j (θ) + Qi,j (θ)), D(θ(t) )
-∂θj
-is a positive-definite matrix and Q(θ(t) ) a skew-symmetric
-matrix. Ma et al. (2015) proved that in the limit t → 0
-with ergodicity, the iterates θ(t) will be drawn from p(θ|y).
+which we solve using an ADMM algorithm. There are
+ei · w
+e j | ≤ τ . For
+R = m(m − 1) pairwise constraints |w
+the r-th constraint, let p(r) and q(r) be the index of the
+first and second vector respectively, i.e., the r-th constraint
+e p(r) · w
+e q(r) | ≤ τ . First, we introduce auxiliary variis |w
+(r)
+
+(r)
+
+R
+ables {v1 }R
+r=1 and {v2 }r=1 , to rewrite the problem in
+
+Learning Latent Space Models with Angular Constraints
+
+Eq.(4) into an equivalent form. For each pairwise cone p(r) · w
+e q(r) | ≤ τ , we introduce two auxiliary
+straint: |w
+(r)
+(r)
+(r)
+(r)
+e p(r) = v1 , w
+e q(r) = v2 ,
+vectors v1 and v2 , and let w
+
+Let γ1 , γ2 , λ1 ≥ 0, λ2 ≥ 0 be the KKT multipliers associated with the four constraints in this sub-problem. According to the KKT conditions, we have
+
+kv1 k2 = 1, kv2 k2 = 1, |v1 · v2 | ≤ τ . To this end,
+we obtain the following problem
+
+e p(r) )+2γ1 v1 +(λ1 −λ2 )v2 = 0 (6)
+−y1 +ρ(v1 −w
+
+(r)
+
+(r)
+
+min
+f
+W,V
+
+s.t.
+
+(r)
+
+(r)
+
+(r)
+
+(r)
+
+(r)
+
+(r)
+
+(r)
+
+(r)
+
+(r)
+
+(r)
+
+e q(r) )+2γ2 v2 +(λ1 −λ2 )v1 = 0 (7)
+−y2 +ρ(v2 −w
+
+f
+L(W)
+e j k2 = 1
+∀j, kw
+(r)
+(r)
+e p(r) = v1 , w
+e q(r) = v2
+∀r, w
+(r)
+(r)
+(r)
+(r)
+∀r, kv1 k2 = 1, kv2 k2 = 1, |v1 · v2 | ≤ τ
+(r)
+
+(r)
+
+Then we define the
+where V = {(v1 , v2 )}R
+r=1 .
+augmented Lagrangian, with Lagrange multipliers Y =
+(r)
+(r)
+{(y1 , y2 )}R
+r=1 and parameter ρ
+
+We solve these two equations by examining four cases.
+Case 1 First, we assume λ1 = 0, λ2 = 0, then (ρ +
+(r)
+(r)
+(r)
+(r)
+e p(r) and (ρ + 2γ2 )v2 = y2 +
+2γ1 )v1 = y1 + ρw
+(r)
+e q(r) . According to the primal feasibility kv1 k2 = 1
+ρw
+(r)
+
+and kv2 k2 = 1, we know
+
+f +
+L(W)
+
+min
+f
+W,V,Y
+
+(r)
+
+v1 =
+
+(r)
+
+e p(r) − v1 )
+(y1 · (w
+
+r=1
+(r)
+
+s.t.
+
+(r)
+
+(r)
+
+(r)
+
+R
 P
-For i.i.d. data, U (θ) = − s∈S ln p(ys |θ) − log p(θ). For
-independently sampled data subsets, Se ⊂ S, a noisy unbiased estimate of the potential function is given by:
-where Γi (θ) =
 
-e (θ) = − |S|
-U
-e
-|S|
+(r)
 
-Pd
+(r)
 
-j=1
+(r)
 
-X
+(5)
 
-log p(ys |θ) − log p(θ);
+e j k2 = 1
+∀j, kw
 
-Se ⊂ S. (5)
+(r)
 
-s∈Se
+(r)
 
-e (θ)—called a
-As such, a gradient computed based on U
-stochastic gradient—is a noisy, but unbiased estimator of
-the full-data gradient. The key question is whether the
-noise injected by the stochastic gradient adversely affects
-the stationary distribution of the modified dynamics (using
-e (θ) in place of ∇U (θ)). One way to analyze the impact
-∇U
-of the stochastic gradient is to make use of the central limit
-theorem and assume
-e (θ) = ∇U (θ) + N (0, V(θ)).
-∇U
+(r)
 
-Γi (θ) =
+(r)
 
-P
+(r)
 
-j
+(r)
 
-∂
-(Dij (θ) + Qij (θ))
-∂θj
+−y1 · v1 − y2 · v2
 
-end for
-b (t) )
-sample η (t) ∼ N (0, 2t D(θ(t) ) − 2t B
-θ(t+1) ←
+v1 ,v2
 
-(t)
-θ(t) +
-h η
-i
-
-e (θ(t) ) + Γ(θ(t) )
-−t D(θ(t) ) + Q(θ(t) ) ∇U
+(r)
 
-end for
+(r)
 
-2.2. Stochastic Gradient MCMC for i.i.d. Data
+e p(r) − v1 k22 + ρ2 kw
+e q(r) − v2 k22
++ ρ2 kw
+(r)
 
-+ N (0, t (2D(θ(t) ))),
+(r)
 
-Algorithm 1 SG-MCMC
-initialize θ0
-for t = 0, 1, 2 · · · , Niter do
-for i = 1 · · · n do
-
-(6)
-
-This is the SG-MCMC algorithm for i.i.d. data proposed
-by Ma et al. (2015; 2016). See Alg. 2.
-For this SG-MCMC, there are sources of error introduced
-via (i) discretizing the continuous stochastic dynamics and
-(ii) estimation of the stochastic gradient noise covariance.
-Although the algorithm is provably correct as t → 0, in
-practice one uses a small, finite stepsize for greater efficiency. In such cases, bias is introduced. This biasvariance tradeoff was recently studied in (Vollmer et al.,
-2016). Higher order numerical schemes (Chen et al., 2015;
-Leimkuhler & Shang, 2016) and a moving window estimab can further reduce this bias (Shang et al., 2015).
-tion of B
-
-3. Stochastic Gradient MCMC for HMMs
-In order to apply SG-MCMC methods to HMMs we must
-be able to efficiently estimate the gradient of the potential, U (θ) ∝ − ln p(θ|y). The approach we take consists
-of three steps (see Fig. 1). First, we marginalize out the
-discrete state sequence and use the marginal likelihood of
-the data. Next, we derive an expression for the gradient of
-the marginal likelihood that factorizes over disjoint subsequences. Finally, we compute an unbiased noisy estimate
-of the gradient by randomly sampling subsequences and
-show that using this estimate results in an SG-MCMC algorithm that admits the desired stationary distribution under
-the same conditions as in the i.i.d. case (see Sec. 2.2).
-One could have imagined an alternative approach—as in
-SVI-HMM—of first sampling subsequences; we could
-then compute an approximation of the marginal likelihood
-on this subsequence and treat its gradient as our stochastic
-gradient. However, without the marginal likelihood information in the first place, it is not obvious how subsequences
-correlate with each other and consequently how to control
-the error resulting from subsampling.
-
-e (θ) in place of ∇U (θ) in Eq. (4) results
-Simply using ∇U
-
-in an additional noise term (D(θ) + Q(θ) N (0, V(θ))T .
-b of the variance of this
-Assuming we have an estimate B
-b  0 (i.e., posiadditional noise satisfying 2D(θ) − B
-tive semidefinite), then we can attempt to account for the
-3.1. Gradient of Marginal Likelihood Representation
-stochastic gradient noise by simulating
-h
-i
-
-e (θ(t) ) + Γ(θ(t) ) Recall that the posterior under an HMM is given by
-θ(t+1) ←θ(t) − t D(θ(t) ) + Q(θ(t) ) ∇U
-Eq. (3) and that the potential function U (θ) ∝ − ln p(θ|y).
-b (t) )).
-As will prove useful in our SG-MCMC algorithm, we
-+ N (0, t (2D(θ(t) ) − t B
-(7)
-
-Stochastic Gradient MCMC Methods for Hidden Markov Models
-
-rewrite the posterior in terms of a subsequence yτ,L =
-(yτ −L , . . . , yτ , . . . , yτ +L ) with half-width L centered at
-time τ ∈ {L + 1, . . . , T − L − 1}. The overall subsequence
-length is 2L + 1. Defining
-P (yτ,L ) = P (yτ +L )A · · · P (yτ −L )A,
+(r)
 
 (8)
 
-g (θ)i =
-∇U
+(r)
+
+(r)
+
+(r)
 
 (9)
 
-∂P (yτ,L )
-T
-π τ −L−1
-X qτ +L+1 ∂θ
-1
-∂ ln p(θ)
-i
-.
-−
-−
-T
-e
-∂θi
-q
+(r)
+
+e p(r) k22 (10)
+(ρ+2γ1 )2 +λ21 +2(ρ+2γ1 )λ1 τ = ky1 +ρw
+Similarly, from Eq.(9), we get
+
+The corresponding sub-problem is
+(r)
+
+(r)
+
+According to the complementary slackness condition, we
+(r)
+(r)
+know v1 · v2 = τ . For the vectors on both sides of
+Eq.(8), taking the square of their `2 norm, we get
+
+e p(r) − v1 k22 + ρ2 kw
+e q(r) − v2 k22 )
++ ρ2 kw
+
+Solve v1 , v2
+
+We assume λ1 > 0 and λ2 = 0, then
+
+e q(r)
+(ρ + 2γ2 )v2 + λ1 v1 = y2 + ρw
+
+e p(r) + y2 · w
+e q(r)
+(y1 · w
+(r)
+
+(r)
+
+e p(r)
+(ρ + 2γ1 )v1 + λ1 v2 = y1 + ρw
+
+For sparse coding, we solve this sub-problem using coore j by fixing
+dinate descent. At each iteration, we update w
+the other variables. Please refer to the supplements for details. For neural network, this sub-problem can be solved
+using projected gradient descent which iteratively performs
+ej
+the following three steps: (1) compute the gradient of w
+using backpropagation; (2) perform a gradient descent upe j ; (3) project each vector onto the unit sphere:
+date of w
+ej ← w
+e j /kw
+e j k2 .
+w
+
+s.t.
+
+(r)
+
+e q(r) k2
+ky2 + ρw
+
+Case 2
+
+r=1
+
+min
+
+e q(r)
+y2 + ρw
+
+e j k2 = 1
+∀j, kw
+(r)
+(r)
+(r)
+(r)
+∀r, kv1 k2 = 1, kv2 k2 = 1, |v1 · v2 | ≤ τ
+
+f +
+min L(W)
+
+(r)
+
+(r)
+
+e p(r) k2
+ky1 + ρw
+
+(r)
+
+, v2 =
+
+Then we check whether the constraint |v1 · v2 | ≤ τ is
+(r)
+(r)
+satisfied. If so, then v1 and v2 are the optimal solution.
+
+f The sub-problem defined over W
+f is
+Solve W
+
+s.t.
+
+e p(r)
+y 1 + ρw
+
+e q(r) − v2 ) + ρ2 kw
+e p(r) − v1 k22
++y2 · (w
+(r) 2
+ρ
+e q(r) − v2 k2 )
++ 2 kw
+
+f V, Y.
+which can be solved by alternating between W,
+
+f
+W
+
+(r)
+
+(r)
+
+(r)
+
+R
 P
-(y
-)π
-τ,L
-τ −L−1
-p(S)
-τ +L+1
 
-we can rewrite Eq. (3) as
-p(θ|y) ∝ qT
-τ +L+1 P (yτ,L )π τ −L−1 · p(θ).
+(r)
 
-in the minibatch. The τ s are drawn randomly from {L +
-1, . . . , T −L−1}; details of the full sampling scheme for Se
-is provided in the Supplement. We then use the following
-estimator of the full gradient:
+kv1 k2 = 1, kv2 k2 = 1,
+(r)
+(r)
+(r)
+(r)
+v1 · v2 ≤ τ, −v1 · v2 ≤ τ
 
-Here, qτ +L+1,i = p(yτ +L+1:T |xτ +L = i) is the likelihood of the observations after yτ,L given the value of the
-latent state at τ , and π τ −L−1,i = p(xτ −L = i|y1:τ −L−1 ) is
-the predictive distribution of the latent state at τ given the
-observations before yτ,L . Note, we do not actually need to
-instantiate the latent state variables xτ −L and xτ +L+1 as
-qτ +L+1 and π τ −L−1 can be computed (in theory) via the
-forward-backward algorithm (Rabiner, 1989; Scott, 2002).
-Let S = {yτ,L } be a set of non-overlapping subsequences
-that cover y. The gradient of Eq. (9) can be written as
-∂ ln p(y|θ) ∂ ln p(θ)
-−
-(10)
-∂θi
-∂θi
-∂P (yτ,L )
-T
-π τ −L−1
-X qτ +L+1 ∂θ
-∂ ln p(θ)
-i
-−
-=−
-,
-T
-∂θi
-qτ +L+1 P (yτ,L )π τ −L−1
-y
-∈S
+(r)
 
-∇U (θ)i = −
-
-τ,L
-
-where the equality follows from the product rule (see the
-Supplement for complete derivation). Importantly, note
-that the gradient involves a sum over terms corresponding
-to all non-overlapping subsequences of length 2L + 1.
-We could imagine using ∇U (θ) from Eq. (10) in the update
-rule of Eq. (4) to generate sample values of θ. However,
-Eq. (10) is extremely computationally intensive for two reasons. First, calculating qτ +L+1 and π τ −L−1 involves the
-whole sequence of length T . Second, one must compute
-qτ +L+1 , P (yτ,L ), and π τ −L−1 for each yτ,L ∈ S in the
-sum; this involves T /L terms, thus requiring O(T 2 ) computation time to compute the gradient.
-3.2. Stochastic Gradient Calculation
-In place of ∇U (θ) in Eq. (10), we can define a stochastic
-g (θ):
-gradient based on a single subsequence, ∇U
-∂P (yτ,L )
-π τ −L−1
-∂ ln p(θ)
-∂θi
-g (θ)i = −
-∇U
-−
-.
-T
-∂θi
-qτ +L+1 P (yτ,L )π τ −L−1
-(11)
-qT
-τ +L+1
-
-To control the variance of this estimator, we sample a
-collection of subsequences—referred to as a minibatch—
-e denotes the number of subchains
-Se = {yτ,L } where |S|
-
+e q(r) k22 (11)
+(ρ+2γ2 )2 +λ21 +2(ρ+2γ2 )λ1 τ = ky2 +ρw
+Taking the inner product of the two vectors on the left hand
+sides of Eq.(8,9), and that on the right hand sides, we get
+(2ρ + 2γ1 + 2γ2 )λ1 + ((ρ + 2γ1 )(ρ + 2γ2 ) + λ21 )τ
+(r)
+(r)
+e p(r) )> (y2 + ρw
+e q(r) )
+= (y1 + ρw
 (12)
+Solving the system of equations consisting of Eq.(10-12),
+we obtain the optimal values of γ1 , γ2 and λ1 . Plugging
+(r)
+them into Eq.(8) and Eq.(9), we obtain a solution of v1
+(r)
+and v2 . Then we check whether this solution satisfies
+(r)
+(r)
+−v1 · v2 ≤ τ . If so, this is an optimal solution.
+In Case 3, we discuss λ1 = 0, λ2 > 0. In Case 4, we
+discuss λ1 > 0, λ2 > 0. The corresponding problems can
+be solved in a similar way as Case 2. Please refer to the
+supplements for details.
 
-e
-yτ,L ∈S
+Learning Latent Space Models with Angular Constraints
+(r)
 
-If we sample S̃ from the set of all possible length-L
-−1
-e
-e
-subsequences
-h
-i with probability p(S) = |S|LT , then
-g (θ) = ∇U (θ) (Gopalan et al., 2012).
-E ∇U
-Unfortunately, even this stochastic estimate is prohibitively
-expensive to compute since the q and π terms require
-touching nearly all of the observations. We instead consider approximating these quantities.
-Approximating messages via buffering Inspired by
-recent work on stochastic variational inference for
-HMMs (Foti et al., 2014), we introduce a buffer of length
-B on either end of each subsequence (yLB , yτ,L , yRB )
-where yLB = (yτ −L−B , . . . , yτ −L−1 ) and yRB =
-(yτ +L+1 , . . . , yτ +L+B ). See Fig. 1. For an irreducible
-and aperiodic Markov chain, a sufficiently long buffer will
-render the observations within yτ,L and those outside the
-buffers approximately independent. This lets us approximate the boundary terms in Eq. (11) as
-π τ −L−1 ≈ π̃ τ −L−1 = P (yτ −L−1 )A · · · P (yτ −L−B )A π 0
-{z
-}
-|
-P (yLB )
+(r)
 
-qT
-τ +L+1
+Solve y1 , y2
 
-≈
+We simply perform the following:
 
-q̃T
-τ +L+1
+(r)
 
-T
+(r)
 
-= 1 P (yτ +L+B )A · · · P (yτ +L+1 ) .
-|
-{z
-}
-P (yRB )
+(r)
 
 (13)
-Notice that we plug in π 0 and 1T as the initial conditions
-for the buffers in Eq. (13). Though this introduces errors
-into the computations of P (yLB ) and P (yRB ), these errors
-will be nearly forgotten for observations in the subchain of
-interest yτ,L due to the mixing of the underlying Markov
-chain. We rewrite the terms in Eq. (10) as
-∂P (yτ,L )
-P (yLB )π 0
-∂θ
-.
-1T P (yRB )P (yτ,L )P (yLB )π 0
 
-1T P (yRB )
+(r)
+
+(r)
+
+(r)
 
 (14)
 
-2
+e p(r) − v1 )
+y1 = y1 + ρ(w
+e q(r) − v2 )
+y2 = y2 + ρ(w
+
+empirical risk minimizer. We aim to analyze the generalization error L(fˆ) of the empirical risk minimizer fˆ. L(fˆ)
+can be decomposed into L(fˆ) = L(fˆ) − L(f ∗ ) + L(f ∗ ),
+where L(fˆ) − L(f ∗ ) is the estimation error and L(f ∗ ) is
+the approximation error.
+
+Compared with a vanilla backpropagation algorithm, the
+major extra cost in this ADMM algorithm comes from solv(r)
+(r)
+ing the R = m(m − 1) pairs of vectors {v1 , v2 }R
+r=1 .
+Solving each pair incurs O(m) cost. The R pairs bring in
+a total cost of O(m3 ). Such a cubic cost is also incurred in
+other decorrelation methods such as (Le et al., 2010; Bao
+et al., 2013). In practice, m is typically less than 1000. This
+O(m3 ) cost does not substantially bottleneck computation,
+as we will validate in experiments.
+
+For simplicity, we start with a “simple” fully connected network with one hidden layer of m units, used for univariate
+regression (one output unit) with squared loss. Analysis
+for more complicated fully connected NNs with multiple
+hidden layers can be achieved in a straightforward way by
+cascading our analysis for this “simple” fully connected
+NN. Let x ∈ Rd be the input vector and y be the response
+value. For simplicity, we assume max{kxk2 , |y|} ≤ 1. Let
+wj ∈ Rd be the weights connecting the j-th hidden unit
+with input units, with kwj k2 ≤ C.
+
+4. Analysis
+
+Let α be a vector where αj is the weight connecting hidden unit j to the output unit, with kαk2 ≤ B. We assume the activation function h(t) applied on the hidden
+units is Lipschitz continuous with constant L. Commonly
+used activation functions such as rectified linear h(t) =
+max(0, t), tanh h(t) = (et − e−t )/(et + e−t ), and sigmoid h(t) = 1/(1 + e−t ) are all Lipschitz continuous with
+L = 1, 1, 0.25, respectively. Consider the hypothesis set
+
+In this section, we discuss how the parameter τ which controls the level of diversity affects the generalization performance of sparse coding and neural network.
+4.1. Sparse Coding
+Following (Vainsencher et al., 2011), we assume the data
+example x ∈ Rd and basis vector w ∈ Rd are both of unit
+length, and the linear coefficient vector a ∈ Rm is at most
+k sparse, i.e., kak0 ≤ k. The estimation error of dictionary
+W is defined as
+Xm
+L(W) = Ex∼p∗ [minkak0 ≤k kx −
+aj wj k2 ]. (15)
+j=1
+
+Pn
+Pm
 e
-We note that Eq. (12) is computed in time O(|S|LK
-) use
-ing buffers. When |S|L  T this results in significant
-computational speedups over batch inference algorithms.
+Let L(W)
+= n1 i=1 minkak0 ≤k kxi − j=1 aj wj k2 be
+the empirical reconstruction error on n samples. We have
+the following theorem.
+Theorem 1 Assume τ < k1 , with probability at least 1 − δ:
+s
+√
+r
+r
+nk
+dm ln 41−kτ
+ln 1/δ
+4
+e
++
++
+. (16)
+L(W) ≤ L(W)+
+2n
+2n
+n
 
-A critical question that needs to be answered is how long
-should the buffers be? Though previous theory exists to
-quantify the buffer length, the resulting lengths are often longer than the entire sequence (LeGland & Mevel,
+F = {x 7→
 
-Stochastic Gradient MCMC Methods for Hidden Markov Models
-
-B
-
-2𝐿 + 1
-
-𝐱
-
-𝐵
-
-B
-
-2𝐿 + 1
-
-𝐵
-
-yLB
-
-yτ
-
-yRB
-
-Marginalize 𝐱
-
-𝐲
-
-y1:T
-
-Minimum Gap: 𝜈
-
-Figure 1. Diagram of subsequences, buffers, and subsequence sampling from full observation sequence. Left: The SVI method of Foti
-et al. (2014) approximates stochastic gradients using subchains of length 2L + 1 using the forward-backward algorithm performed on
-both the subchains and the associated buffer chains of length B. Right: Our propsoed SG-MCMC method uses a similar subsampling
-approach, however, i) the latent chain is never instantiated and ii) a minimum gap between consecutive subchains, yτ,L , is used to ensure
-nearly uncorrelated subsequences. The thick black lines through the observables y represent all pairwise correlations between observations due to marginalization of x. Correlation decays with distance enabling the segmentation of the of the chain into subsequences.
-
-1997). A heuristic solution was suggested (Foti et al.,
-2014), but theoretical justification was lacking. We propose estimating the buffer length using the Lyapunov exponent of the random dynamical system specified by A and
-P (yτ,L ). The Lyapunov exponent L measures the evolution of the distance between vectors after applying the
-operator (P (yτ,L )A)[·] (Arnold, 1998). By generalizing
-the Perron–Frobenius theorem, all of the eigenvalues of the
-operator (P (yτ,L )A)[·] are less than 0, which implies that
-L ≤ 0 (Seneta, 2006). The greater the absolute value of L,
-the faster the errors at the boundaries of the buffers decay,
-and the shorter the buffers need to be.
-of
- Given an estimate
-
-L, we set the buffer length as B = L−1 ln (δ/δ0 ) where
-δ ≤ δ0 are error tolerances. The method of calculating L
-is described in the Supplement. Forthcoming work in the
-applied probability literature formalizes the validity of this
-approach (Ye et al.).
-
-g (θ) by sequentially sampling the yτ,L s such
-ciency of ∇U
-that they are at least 2(L + B) + ν time indices apart (see
-the Supplement for details). We estimate the mixing time
-ν = (1 − λ̂2 )−1 where λ̂2 is the second largest eigenvalue
-of the current transition parameter iterate, A(t) .
-
-Approximately independent subsequences We estig (θ) with minibatches composed of subsequences.
-mate ∇U
-When the subsequences in a minibatch overlap or are very
-g (θ)
-close to one another, the statistical efficiency of ∇U
-is diminished, requiring more subsequences to obtain accurate estimates. If we assume that the Markov chain of
-the latent state sequence is in equilibrium — a realistic assumption if T is huge — then we can leverage the memory
-decay of the Markov chain to encourage independent subsequences for use in the gradient estimator.
-
-3.3. Incorporating Geometric Information
-
-The mixing time of a Markov chain, denoted ν, is the number of steps needed until the chain is “close” to its stationary distribution (Seneta, 2006). This implies that for
-|t−τ | > ν, the corresponding xt and xτ are approximately
-independent. Consequently, if we choose the buffer length
-B > 0 s.t. L+B ≥ ν, then t < τ −L−B or t > τ +L+B
-implies that yt is approximately independent of yLB , yτ,L ,
-and yRB . Therefore, we can increase the statistical effi-
-
-When sampling subsequences adhering to the mixing-timedependent gap, each term in Eq. (12) is rendered approximately independent. Following standard practice for SGMCMC algoriths, we appeal to the central limit theorem
-obtaining the following expression for the asymptotic disg (θ) as:
-tribution of ∇U
-g (θ) ≈ ∇U (θ) + N (0, Vi (θ)),
-∇U
-
-(15)
-
-where Vi (θ) is the stochastic gradient noise variance. This
-will prove crucial for our analysis in Sec. 3.4.
-
-Eq. (4) serves as a general purpose algorithm that theoretically attains the correct stationary distribution for any D
-and Q matrices when the step size t approaches zero. But
-in practice, we need to take into account numerical stability during numerical integrals. For example, when we
-are sampling from the probability simplex, previous work
-has shown that taking the curvature of the parameter space
-into account is important (Welling & Teh, 2011; Ma et al.,
-2015). Since our transition parameters live on the simplex, we likewise incorporate the geometry of the parameter space by constructing a stochastic-gradient Riemannian
-MCMC (SG-RMCMC) algorithm.
-SG-RLD for transition parameters In order to sample
-the transition matrix A we note that the columns of A are
-constrained to lie on the probability simplex. To address
-these constraints, we use the expanded mean parametriza-
-
-Stochastic Gradient MCMC Methods for Hidden Markov Models
-
-|Âi,j |
-tion: A = P
-, similar to what Patterson & Teh
-i |Âi,j |
-g (θ) in
-(2013) used for topic modeling. Evaluating ∇U
-Eq. (10) for θ = Âi,j , using Eq. (8) yields:
-
-We plug these values into the SG-MCMC update of Eq. (7)
-using D = Σ to account for the geometry of the parameter
-space and Q = 0. This leads to the update equations:
-(t+1)
-
-g
-∇U
-Âi,j (Âi,j )
+m
 X
-1
-=−
-e
-p(S)
 
-(16)
-τX
-+L
+αj h(wj> x) | kαk2 ≤ B, kwj k2 ≤ C,
 
-yτ,L ∈Se t=τ −L
+j=1
 
-(e
-qτ +L+1 )i Pi,i (yt ) (e
-π τ −L−1 )j
-eT
-q
-π τ −L
-τ +L P (yt )Âe
+∀i 6= j, |wi · wj | ≤ τ kwi k2 kwj k2 }.
+The estimation error given in Theorem 2 below indicates
+how well the algorithm is able to learn from the samples.
+Theorem 2 Let the activation function h be L-Lipschitz
+continuous and the loss `(ŷ, y) = 21 (ŷ − y)2 . Then, with
+probability at least 1 − δ:
+p
+√
+2
+2 ln(4/δ) + 4γB(2CL + |h(0)|) m
+γ
+∗
+√
+L(fˆ)−L(f ) ≤
+n
+(17)
+p
+√
+where γ = 1 + BCL (m − 1)τ + 1 + mB|h(0)|.
 
-where φ denotes all other model parameters. We note that
-this pre-conditioned gradient takes advantage of the local
-geometry of the parameter space by pre-multiplying by a
-metric tensor that arises from Eq. (7).
-SG-RLD for emission parameters Similarly to the transition parameters, we sample the emission parameters
-g (θ) in Eq. (10)
-{φk : k = 1, . . . , K}, by evaluating ∇U
-for θ = φk Using Eq. (8). This results in the gradient:
-τX
-+L
+4.2. Neural Network
+
+Note that γ, hence the above bound on estimation error, decreases as τ becomes smaller. The bound goes to zero as n
+(sample size) goes to infinite. The inverse square root dependence on n matches existing results (Bartlett & Mendelson, 2003). We note that it is straightforward to extend our
+bound to any bounded Lipschitz continuous loss `.
+
+The generalization error of a hypothesis f represented with a neural network is defined as L(f ) =
+E(x,y)∼p∗ [`(f (x), y)], where p∗ is the distribution of inputoutput pair (x, y) and `(·,
+P·)n is the loss function. The training error is L̂(f ) = n1 i=1 `(f (x(i) ), y (i) ), where n is
+the number of training samples. Let f ∗ ∈ argminf ∈F L(f )
+be the true risk minimizer and fˆ ∈ argminf ∈F L̂(f ) be the
+
+The approximation error indicates how capable the hypothesis set F is to approximate a target function g = E[y|x],
+where the errorR is measured by minf ∈F kf − gkL2 and
+kf − gk2L2 = (f (x) − g(x))2 P (dx). Following (Barron, 1993), we assume the target function g satisfies certain
+smoothness condition that is expressed
+in the first moment
+R
+of its Fourier representation:
+kωk2 |g̃(ω)|dω ≤ B/2
+
+Note that the right hand side is an increasing function w.r.t
+τ . As expected, a smaller τ (implying more diversity)
+would induce a lower estimation error bound.
+
+Learning Latent Space Models with Angular Constraints
+
+where g̃(ω) is the Fourier representation of g(x). For such
+function the following theorem states its approximation error. (In order to derive explicit constants we restrict h to be
+the sigmoid function, but other Lipschitz continuous activation function can be similarly handled.)
+π
+
+SC
+DCM-SC
+CS-SC
+DPP-SC
+IC-SC
+MA-SC
+AC-SC
+
+−θ
+
+Theorem 3 Let C > 1, m ≤ 2(b 2 θ c + 1), where
+θ = arccos(τ ), and h(t) = 1/(1 + e−t ). Then, there is
+a function f ∈ F such that
+kf − gkL2 ≤ B( √1m + 1+2Cln C )+
+√
++ 2 mBC sin( min(3mθ,π)
+).
+2
 
 (18)
 
-yτ,L ∈Se t=τ −L
-
-(e
-qτ +L+1 )k Pk,k (yt ) (e
-π τ −L−1 )k ∂ ln Pk,k (yt )
-·
-.
-∂φk
-eT
-q
-P
-(y
-)Ae
+This theorem implies that whether to use the angular constraint (AC) or not has a significant influence on the approximate error bound: without using AC (τ = 1), the
+bound is a decreasing function of m (the number of hidden units); using AC (τ < 1), the bound increases with
+m. This striking phrase-change indicates the impact of AC.
+Given a fixed m, the bound decreases with τ , implying that
+a stronger regularization (smaller τ ) incurs larger approximation error. When τ = 1, the second term in the bound
+vanishes and the bound is reduced to the one in (Barron,
+1993), which is a decreasing function of m (and C, the upper bound on the weights). When τ < 1, the second term
 π
-t
-τ −L−1
-τ +L+1
-Again, π̃ τ −L−1 and q̃τ +L+1 are computed on the left and
-right buffers, respectively, according to Eq. (13). Similarly
-to the transition parameters, we account for the geometry of
-the parameter space by specifying an appropriate D and Q
-in Eq. (7) which in general depends on the form of p(yt |φ).
-For exponential family emission distributions we recommend taking D to be the inverse of the Fisher information
-matrix (Amari, 1998).
-As a concrete example, we consider a Gaussian emission
-distribution. Define, zt = (µk − yt ), then we have:
-∇µk ln Pk,k (yt ) = Σ−1
-k zt
-
+−θ
+increases with m up to the upper bound 2(b 2 θ c+1). This
+is because a larger number of hidden units bear a larger
+difficulty in satisfying the pairwise ACs, which causes the
+function space F to shrink rapidly; accordingly, the approximation power of F decreases quickly.
+The analysis in the two theorems shows that τ incurs a
+tradeoff between the estimation error and the approximation error: decreasing τ reduces the estimation error and
+enlarges the approximation error. Since the generalization
+error is the sum of the estimation error and the approximation error, τ has an optimal value to yield the minimal
+generalization error.
+
+5. Experiments
+In this section, we present experimental results. Due to
+space limit, we put some results into supplements.
+5.1. Sparse Coding
+Following (Yang et al., 2009), we applied sparse coding
+for image feature learning. We used three datasets in the
+experiments: Scenes-15 (Lazebnik et al., 2006), Caltech256 (Griffin et al., 2007) and UIUC-Sport (Li & Fei-Fei,
+2007). For each dataset, five random train/test splits are
+performed and the results are averaged over the five runs.
+We extract pixel-level dense SIFT (Lowe, 2004) features
+where the step size and patch size are 8 and 16 respectively. On top of the SIFT features, we use sparse coding methods to learn a dictionary and represent each SIFT
+
+Scene
+83.6 ± 0.2
+85.4 ± 0.5
+84.8 ± 0.6
+84.6 ± 0.3
+85.5 ± 0.1
+86.1 ± 0.5
+86.5 ± 0.7
+
+Caltech
+42.3 ± 0.4
+44.7 ± 0.8
+45.4 ± 0.5
+43.5 ± 0.3
+43.9 ± 0.7
+45.6 ± 0.4
+46.1 ± 0.3
+
+Sports
+87.4 ± 0.5
+89.6 ± 0.1
+88.3 ± 0.3
+88.1 ± 0.2
+90.2 ± 0.7
+89.7 ± 0.4
+90.9 ± 0.3
+
+Table 1. Classification accuracy (%) on three datasets.
+
+feature into a sparse code. To obtain image-level features,
+we apply max-pooling (Yang et al., 2009) and spatial pyramid matching (Lazebnik et al., 2006; Yang et al., 2009)
+over the pixel-level sparse codes. Then a linear SVM is
+applied to classify the images. We compare with other
+diversity-promoting regularizers including determinant of
+covariance matrix (DCM) (Malkin & Bilmes, 2008), cosine similarity (CS) (Yu et al., 2011), determinantal point
+process (DPP) (Kulesza & Taskar, 2012; Zou & Adams,
+2012b), InCoherence (IC) (Bao et al., 2013) and mutual
+angles (MA) (Xie et al., 2015). We use 5-fold cross validation to tune τ in {0.3, 0.4, · · · , 1} and the number of
+basis vectors in {50, 100, 200, · · · , 500}. The parameter ρ
+in ADMM is set to 1.
+Table 1 shows the classification accuracy on three datasets,
+from which we can see that compared with unregularized
+SC, AC-SC greatly improves performance. For example,
+on the Sports dataset, AC improves the accuracy from
+87.4% to 90.9%. This suggests that AC is effective in
+reducing overfitting and improving generalization performance. Compared with other diversity-promoting regularizers, AC achieves better performance, demonstrating its
+better efficacy in promoting diversity.
+5.2. Neural Networks
+We evaluate AC on three types of neural networks: fullyconnected NN (FNN) for phone recognition (Hinton et al.,
+2012), CNN for image classification (Krizhevsky et al.,
+2012), and RNN for question answering (Seo et al., 2017).
+In the main paper, we report results on four datasets:
+TIMIT1 , CIFAR-102 , CNN (Hermann et al., 2015), Daily
+Mail (Hermann et al., 2015). Please refer to the supplements for results on other datasets.
+FNN for Phone Recognition The TIMIT dataset contains a total of 6300 sentences (5.4 hours), divided into
+a training set (462 speakers), a validation set (50 speakers) and a core test set (24 speakers). We used the Kaldi
+(Povey et al., 2011) toolkit to train the monophone system
+which was utilized to do forced alignment and to get labels for speech frames. The toolkit was also utilized to
+preprocess the data into log-filter banks. Among methods based on FNN, Karel’s recipe in Kaldi achieves state
 1
-Σk − zt ztT Σ−1
-∇Σk ln Pk,k (yt ) = Σ−1
-k .
-2 k
+2
 
-(21)
+https://catalog.ldc.upenn.edu/LDC93S1
+https://www.cs.toronto.edu/ kriz/cifar.html
 
-.
+Learning Latent Space Models with Angular Constraints
 
-By leveraging the flexible SG-MCMC update rule of
-Eq. (7), we remove the dependency on Âi,j from the denominator of Eq. (16) by selecting D = Â and Q = 0.
-This yields the following update:
-i
-h
-(t)
-(t+1)
-(t)
-(t) g
-(
-Â
-,
-φ)
-+
-I
-Âi,j ←Âi,j − t Âi,j ∇U
-i,j
-Âi,j
-
-
-
-(t)
-b (t)
-+ N 0, t 2Âi,j − t B
-(17)
-i,j
+Network
+Segmental NN (Abdel-Hamid et al., 2013)
+MCRBM (Dahl et al., 2010)
+DSR (Tang et al., 2015)
+Rectifier NN (Tóth, 2013)
+DBN (Srivastava et al., 2014)
+Shallow CNN (Ba & Caruana, 2014)
+Structured DNN (Yang et al., 2016)
+Posterior Modeling (Prabhavalkar et al., 2013)
+Kaldi
+CS-Kaldi
+IC-Kaldi
+MA-Kaldi
+DC-Kaldi
+AC-Kaldi
+CTC (Graves et al., 2013)
+RNN Transducer (Graves et al., 2013)
+Attention RNN (Chorowski et al., 2015)
+CTC+SCRF (Lu et al., 2017)
+Segmental RNN (Lu et al., 2016)
+RNNDrop (Moon et al., 2015)
+CNN (Tóth, 2014)
 
-X
-1
-e
-p(S)
+Error
+21.9
+20.5
+19.9
+19.8
+19.7
+19.5
+18.8
+18.5
+18.53
+18.48
+18.46
+18.51
+18.50
+18.41
+18.4
+17.7
+17.6
+17.4
+17.3
+16.9
+16.7
 
-h
-i
-(t)
-(t) ^
-(t)
-←µk − t Σk ∇
-µk U (A, φk )
-(t)
-b t )).
-+ N (0, t (2Σk − t B
+Network
+Maxout (Goodfellow et al., 2013)
+NiN (Lin et al., 2013)
+DSN (Lee et al., 2015)
+Highway Network (Srivastava et al., 2015)
+All-CNN (Springenberg et al., 2014)
+ResNet (He et al., 2016)
+ELU-Network (Clevert et al., 2015)
+LSUV (Mishkin & Matas, 2015)
+Fract. Max-Pooling (Graham, 2014)
+WideResNet (Huang et al., 2016)
+CS-WideResNet
+IC-WideResNet
+MA-WideResNet
+DC-WideResNet
+OP-WideResNet
+AC-WideResNet
+ResNeXt (Xie et al., 2016b)
+PyramidNet (Huang et al., 2016)
+DenseNet (Huang et al., 2016)
+PyramidSepDrop (Yamada et al., 2016)
 
-Here, π̃ τ −L−1 and q̃τ +L+1 are computed on the left and
-right buffers, respectively, according to Eq. (13). The terms
-inside the sum in Eq. (16) are analogous to the pairwise
-marginals of the latent state in traditional HMM inference
-algorithms. A detailed derivation of this gradient can be
-found in the Supplement.
+Error
+9.38
+8.81
+7.97
+7.60
+7.25
+6.61
+6.55
+5.84
+4.50
+3.89
+3.81
+3.85
+3.68
+3.77
+3.69
+3.63
+3.58
+3.48
+3.46
+3.31
 
-g (φk ) = −
-∇U
+Table 3. Classification error (%) on CIFAR-10 test set
+Table 2. Phone error rate (%) on the TIMIT test set.
 
-µk
+of the art performance. We apply AC to the FNN in this
+recipe. The inputs of the FNN are the FMLLR (Gales,
+1998) features of the neighboring 21 frames, which are
+mean centered and normalized to have unit variance. The
+number of hidden layers is 4. Each layer has 1024 hidden units. Stochastic gradient descent (SGD) is used to
+train the network. The learning rate is set to 0.008. We
+compare with four diversity-promoting regularizers: CS,
+IC, MA and DeCorrelation (DC) (Cogswell et al., 2015).
+The regularization parameter in these methods are tuned in
+{10−6 , 10−5 , · · · , 105 }. The β parameter in IC is set to 1.
+Table 2 shows state of the art phone error rate (PER) on the
+TIMIT core test set. Methods in the first panel are mostly
+based on FNN, which perform less well than Kaldi. Methods in the third panel are all based on RNNs which in general perform better than FNN since they are able to capture
+the temporal structure in speech data. In the second panel,
+we compare AC with other diversity-promoting regularizers. Without regularization, the error is 18.53%. With AC,
+the error is reduced to 18.41%, which is very close to a
+strong RNN-based baseline Connectionist Temporal Classification (CTC) (Graves et al., 2013). Besides, AC outperforms other regularizers.
+CNN for Image Classification The CIFAR-10 dataset
+contains 32x32 color images from 10 categories, with
+50,000 images for training and 10,000 for testing. We used
+5000 training images as the validation set to tune hyperparameters. The data is augmented by first zero-padding the
+images with 4 pixels on each side, then randomly cropping
 
-(19)
-(20)
+the padded images to reproduce 32x32 images. We apply
+AC to wide residual network (WideResNet) (Zagoruyko
+& Komodakis, 2016) where the depth is set to 28 and
+the width is set to 10. SGD is used for training, with
+epoch number 200, initial learning rate 0.1, minibatch size
+128, Nesterov momentum 0.9, dropout probability 0.3 and
+weight decay 0.0005. The learning rate is dropped by 0.2
+at 60, 120 and 160 epochs. The performance is the median of 5 runs. We compare with CS, IC, MA, DC and
+an Orthogonality-Promoting (OP) regularizer (Rodrı́guez
+et al., 2016).
+Table 3 shows state of the art classification error on the test
+set. Compared with the unregularized WideResNet which
+achieves an error of 3.89%, applying AC reduces the error
+to 3.63%. AC achieves lower error than other regularizers.
+LSTM for Question Answering We apply AC to long
+short-term memory (LSTM) (Hochreiter & Schmidhuber,
+1997) network, which is a type of RNN. Given the input xt
+at timestamp t, LSTM produces a hidden state ht based on
+the following transition equations:
+it = σ(W(i) xt + U(i) ht−1 + b(i) )
+ft = σ(W(f ) xt + U(f ) ht−1 + b(f ) )
+ot = σ(W(o) xt + U(o) ht−1 + b(o) )
+ct = it  tanh(W(c) xt + U(c) ht−1 + b(c) ) + ft  ct−1
+ht = ot  tanh(ct )
+where Ws are Us are gate-specific weight matrices. On
+the row vectors of each weight matrix, the AC is applied.
+The LSTM is used for a question answering (QA) task on
+two datasets: CNN and DailyMail (Hermann et al., 2015),
 
-(t+1)
+Hermann et al. (2015)
+Hill et al. (2015)
+Kadlec et al. (2016)
+Kobayashi et al. (2016)
+Sordoni et al. (2016)
+Trischler et al. (2016)
+Chen et al. (2016)
+Cui et al. (2016)
+Shen et al. (2016)
+BIDAF
+CS-BIDAF
+IC-BIDAF
+MA-BIDAF
+DC-BIDAF
+AC-BIDAF
+Dhingra et al. (2016)
+Dhingra et al. (2017)
 
-Σk
+CNN
+Dev
+Test
+61.6
+63.0
+63.4
+6.8
+68.6
+69.5
+71.3
+72.9
+72.6
+73.3
+73.4
+74.0
+73.8
+73.6
+73.1
+74.4
+72.9
+74.7
+76.31 76.94
+76.43 77.10
+76.41 77.21
+76.49 77.09
+76.35 77.15
+76.62 77.23
+77.9
+77.9
+79.2
+78.6
 
-h
-i
-(t)
-(t) ^
-(t)
-(t)
-(t)
-←Σk − t Σk ∇
-Σk U (A, φk )Σk + Σk
-(t)
+DailyMail
+Dev
+Test
+70.5
+69.0
+75.0
+73.9
+77.6
+76.6
+77.6
+76.6
+80.33 79.63
+80.37 79.71
+80.49 79.83
+80.42 79.74
+80.38 79.67
+80.65 79.88
+81.5
+80.9
+–
+–
 
-(t)
+Table 4. Accuracy (%) on the two QA datasets
 
-b (t) )).
-+ N (0, t (2Σk ⊗ Σk − t B
+each containing a training, development and test set with
+300k/4k/3k and 879k/65k/53k examples respectively. Each
+example consists of a passage, a question and an answer.
+The question is a cloze-style task where an entity is replaced by a placeholder and the goal is to infer this missing entity (answer) from all the possible entities appearing in the passage. The LSTM architecture and experimental settings follow the Bidirectional Attention Flow
+(BIDAF) (Seo et al., 2017) model, which consists of the
+following layers: character embedding, word embedding,
+contextual embedding, attention flow, modeling and output. LSTM is applied in the contextual embedding and
+modeling layer. Character embedding is based on onedimensional convolutional neural network, where the number of filters is set to 100 and the width of receptive field
+is set to 5. In LSTM, the size of hidden state is set to 100.
+Optimization is based on AdaDelta (Zeiler, 2012), where
+the minibatch size and initial learning rate are set to 48 and
+0.5. The model is trained for 8 epochs. Dropout (Srivastava et al., 2014) with probability 0.2 is applied. We
+compare with four diversity promoting regularizers: CS,
+IC, MA and DC.
+Table 4 shows state of the art accuracy on the two datasets.
+As can be seen, after applying AC to BIDAF, the accuracy is improved from 76.94% to 77.23% on the CNN test
+set and from 79.63% to 79.88% on the DailyMail test set.
+Among the diversity-promoting regularizers, AC achieves
+the highest accuracy.
+5.3. Sensitivity to Parameter τ
+In the theoretical analysis presented in Section 4, we have
+shown that the parameter τ which controls the level of near-
 
-(22)
+Phone error rate
 
-It is possible when using Eq. (22) to obtain a Σ(t+1) that is
-not positive definite. In this case we reject the update and
-set Σ(t+1) = Σ(t) .
-3.4. Analysis of SG-MCMC for HMMs
-Our proposed SG-MCMC scheme for HMMs introduces
-error in three ways. The first two carry over from the standard i.i.d. setting: (i) discretizing the continuous stochastic
-dynamics and (ii) estimating the stochastic gradient noise
-covariance, as discussed in Sec. 2.2.
-The third is via our approximations π̃ τ −L−1 and q̃τ +L+1 .
-This error is already incorporated in Eq. (15), and vanishes
-with t in Eq. (7). Thus, applying the results from Ma
-et al. (2015; 2016), we can show that the proposed SGMCMC for HMMs asymptotically has the right stationary
-distribution under the same conditions as in the i.i.d. case.
-However, in practice we use a fixed t , and as we show in
-Sec. 4.1, performing sufficient buffering via our Lyapunov
-exponent approach is critical.
-In summary, our SG-MCMC algorithm enables MCMCbased inference in HMMs for massive sequences of data.
-In particular, we only require computations on collections
-of small subsequences and attain the desired stationary distribution by mitigating the errors incurred by these approximations. Finally, we have shown how to incorporate geometric information about the parameter space in order to
-increase the numerical robustness of the algorithm.
+Learning Latent Space Models with Angular Constraints
+18.8
+18.75
+18.7
+18.65
+18.6
+18.55
+18.5
+18.45
+18.4
+0.55 0.6 0.65 0.7 0.75 0.8 0.85 0.9 0.95 1
 
-4. Experiments
-We evaluate the performance of our proposed SG-RLD
-algorithm for HMMs on both synthetic and real data.
-First, we demonstrate the effectiveness of incorporating the
-buffers on two synthetic data sets that exhibit very different dynamics. Next we apply our SG-RLD for HMMs to
-a non-conjugate model of synthetic data. Finally, we apply SG-RLD to a large ion channel recording data set and
-compare to batch MCMC.
+𝜏
 
-Stochastic Gradient MCMC Methods for Hidden Markov Models
+Figure 1. Phone error rate on TIMIT, under varying τ
 
-Diagonally Dominant
+No regularization
+CS
+IC
+MA
+DC
+OP
+AC
 
-Algorithm 2 SG-MCMC for HMM
-
-Reversed Cycles
-
-(0)
-
-The first data set, diagonally dominant (DD) consists of
-a Markov chain that heavily self-transitions and has identifiable emissions. The second dataset—reversed cycles
-(RC)—strongly transitions between two cycles over three
-states, each in opposite directions. Further details on these
-e are in the Supplement.
-datasets and how we set L and |S|
-The 10-step-ahead predictive log probability is depicted in
-Fig. 2 for the DD and RC datasets. See the Supplement for
-similar results comparing errors in transition matrix estimation. In both cases, we see that both SG-RLD HMM methods greatly outperform the i.i.d. algorithm. The reason i.i.d.
-SG-RLD performs so badly on the DD data stems from all
-states being equally probable so that ignoring the dynamics forces the model to have little apriori confidence in the
-next observations. For the RC dataset, the i.i.d. algorithm
-fails to capture the structured transitions between states,
-again reducing predictive performance. Importantly, our
-adaptive buffer scheme attains both better predictive performance and converges to the true transition matrix in less
-time. In fact, there is a bias in the learned transition matrix
-for the non-buffered algorithm due to inaccurate subchain
-approximation of q, π. This experiment demonstrates that
-accounting for dynamics yields massive gains in predictive
-
-log predictive prob
-
-−10
-
-−20
-
-Buffer
-No Buffer
-I.I.D.
-
-−40
-−60
-0
-
-−20
-−30
-−40
-0
-
-50
-100
-150
-runtime (sec)
-
-100
-200
-runtime (sec)
-
-Figure 2. Synthetic experiments for DD (left) and RC (right) data.
-Top: Sample datasets; Arrows indicate Markov transitions. Bottom: 10-step-ahead log predictive likelihood versus learning time
-for DD (left) and RC (right) dynamics. Comparisons are made for
-SG-RLD algorithms with adaptive buffer, no buffer, and treating
-the data as i.i.d..
+TIMIT
+1.1
+1.2
+1.2
+1.3
 1.5
-
-Non−Conjugate Model
-Conjugate Model
-
-80
-|| A − Atrue ||F
-
-We first design two synthetic experiments in order to illustrate the effectiveness of our adaptive buffer scheme.
-We compare SG-RLD with buffering, without buffering,
-and treating the data as i.i.d. as a baseline. We can view
-the no-buffer algorithm as one that treats the subsequences
-as short, independent realizations, similarly to (Johnson &
-Willsky, 2014). Following Foti et al. (2014), we create two
-synthetic datasets both with T = 20 million observations
-and K = 8 latent states (see Fig. 2 (top)).
-
-0
-
-60
-t
-
-4.1. Evaluating Buffer Effectiveness
-
-0
-
-y
-
-initialize A(0) and φk
-for n = 0, 1, 2 · · · , Niter do
-Periodically estimate the buffer length B and the minimum subchain gap ν according to Sec. 3.
-e
-Sample subchains S̃ of length L from p(S).
-for s = 1 · · · Nsteps do
-Update Â(s) according to Eq. (16) and (17)
-end for
-PNsteps (s)
-1
-Â .
-Calculate Â = Nsteps
-.P s=1
-Set Ai,j ← |Âi,j |
-i |Âi,j |
-for s = 1 · · · Nsteps do
-update φ(s) according to Eqs. (19)– (22)
-end for
-PNsteps (s)
-1
-.
-Set φ = Nsteps
-s=1 φ
-end for
-
-40
-20
-0
-0
-
-200
-
-400
-
-t
-
-1
-
-0.5
-
-0
-0
-
-200
-
-400
-
-600
-
-Iterations
-
-K
-
-Non-Conjugate Emission
-
-Conjugate Emission
-
-1
-
-−2.2679 × 104
-
-−1.3172 × 105
-
-𝟒
-
-−1.3081 × 105
-
-2
-
-−𝟏. 𝟗𝟓𝟐𝟖 × 𝟏𝟎
-
-3
-
-−2.2005 × 104
-
-−8.8227 × 104
-
-4
-
-−2.0376 × 104
-
-−𝟕. 𝟓𝟓𝟏𝟎 × 𝟏𝟎𝟒
-
-Figure 3. Synthetic experiment with log-normal emission. We
-use the non-conjugate emission model on the synthetic data (Top
-Left) with two hidden states and log-normal emissions and compare it against the conjugate model. We show the difference
-in convergence speed (Top Right) and log held out probability
-ln p(ytest |ytrain ) on 2, 000 test data (Bottom).
-
-performance and that using our adaptive buffer scheme provides further gains on top of that.
-4.2. Non-conjugate Emission Distributions
-We next demonstrate the benefit of our SG-RMCMC algorithm in being able to handle non-conjugate emissions,
-an essential feature to perform flexible Bayesian analyses.
-We simulate 2 × 105 observations from a 2-state HMM
-with log-normal emissions. Details of the parameter settings used to generate the data are in the Supplement. We
-
-2
-
-2
-
-1
-
-1
-
-1
-
-0
-
-0
-
-0
-
-yt
-
-−1
-
-0
-
-2000
-t
-
-4000
-
-−1
-
-0
-
-1000 2000 3000 4000 5000
-t
-
-−1
-
-0
-
-2
-
-2
-
-2
-
-1
-
-1
-
-1
-
-0
-
-0
-
-0
-
-−1
-
-0
-
-2000
-t
-
-4000
-
-−1
-
-0
-
-1000 2000 3000 4000 5000
-t
-
-−1
-
-1000 2000 3000 4000 5000
-t
-
-log held out prob
-
-2
-
-4
-
-−2
-
-x 10
-
-−4
-
-SG−RLD
-batch−RLD
-
-−6
-−8
-
-|| A − Acvg ||F
-
-yt
-
-Stochastic Gradient MCMC Methods for Hidden Markov Models
-
-2
-
-10
-
-1000 2000 3000 4000 5000
-t
-
-4
-
-5
-
-10
-
-0
-
-10
-
-SG−RLD
-batch−RLD
-
-−2
-
-10
-0
-
-3
-
-10
-10
-runtime (sec)
-
-0
-
-10
-
-1
-
-10
-
-2
-
-3
-
-4
-
-10
-10
-10
-runtime (sec)
-
-5
-
-10
-
-Figure 4. Inference of ion channel data Top: SG-RLD segmentation at runtimes: 44.05, 138.51, and 466.82 (sec). Bottom: Batch-RLD
-segmentation at runtimes: 716.19, 2124.43, and 7245.14 (sec). Right: Held-out-probability of 5000 unobserved data points (top) and
-error decay of transition matrix estimates (bottom) for SG-RLD and batch-RLD methods in loglog scales. Acvg denotes the estimated
-transition parameters A after convergence. SG-RLD obtains plausible segmenations and accurate estimates of the transition matrix in a
-fraction of the time as a batch algorithm.
-
-evaluate the ability of two different HMM models in terms
-of parameter estimation and model selection accuracy.
-
-ther log-transform and normalize the observations to use
-Gaussian emission.
-
-The first HMM we consider uses log-normal emissions
-with non-conjugate normal priors. The second model
-uses Gaussian emissions with a conjugate normal-inverseWishart prior. In Fig. 3 we show that the non-conjugate
-model obtains accurate estimates of the transition matrix in substantially fewer iterations than the conjugate
-model. Next, we demonstrate that efficiently handling
-non-conjugate models leads to improved model selection.
-Specificallly, we use SG-RLD to fit both the conjugate and
-non-conjugate HMMs described above with K = 1, 2, 3, 4
-states and compute the marginal likelihood of the observations under each model. In the table of Fig. 3 we see that
-the non-conjugate model selects the right number of states
-(2), whereas the conjugate model selects a model with more
-states (4). The ability to use non-conjugate HMMs for truly
-massive data sets has been infeasible until this point and
-this experiment demonstrates its utility.
-
-We use a non-informative flat prior to analyze the ion channel data. In Fig. 4 we see that before the batch-RLD algorithm finishes a single iteration, the SG-RLD algorithm has
-already converged and generated a reasonable segmentation. With the converged estimation of the transition parameters A as reference, we calculated the speed of convergence of SG-RLD and batch-RLD algorithms and found
-that the SG-RLD is approximately 1, 000 times faster.
-
-4.3. Ion Channel Recordings
-We investigate the behavior of the SG-RLD sampler on
-ion channel recording data. In particular, we consider a
-1MHz recording from Rosenstein et al. (2013) of a single alamethicin channel. This data was previously investigated in Palla et al. (2014) and Tripuraneni et al. (2015)
-using a complicated Bayesian nonparametric HMM. In that
-work, the authors downsample the data by a factor of 100
-and only used 10, 000 and 2, 000 observations respectively
-due to the challenge of scaling computations to the full sequence. We subsample the time series by a factor of 50,
-resulting in 209, 634 observations, to reduce the strong autocorrelations present in the observations that are not captured well by a vanilla HMM. However, our algorithm
-would have no difficulty handling the full dataset. We fur-
-
-5. Discussion
-We have developed an SG-MCMC algorithm to perform inference in HMMs for massive observation sequences. The
-algorithm can be used with non-conjugate emission distributions and is thus applicable to modeling a variety of data.
-Also, the algorithm asymptotically samples from the true
-posterior as opposed to variational approaches.
-Developing the algorithm relied on three ingredients. First,
-we derived an efficient approach to estimate the gradient of
-the marginal likelihood of the HMM from only small subchains. Second, we developed a principled approach using
-buffers to mitigate the errors introduced when breaking the
-dependencies at the boundaries of the subchains. Unlike
-previous heuristic buffering schemes, our approach is theoretically justified using random dynamical systems. Last,
-we utilize sampling scheme based on the mixing time of the
-HMM to ensure subchains are approximately independent.
-In future work we will extend these ideas to other models of
-dependent data, such as Markov random fields. Also, the
-ideas presented here are not limited to MCMC and could
-be used to develop more principled variational inference
-algorithms for dependent data.
-
-Stochastic Gradient MCMC Methods for Hidden Markov Models
+–
+1.3
+
+CIFAR-10
+6.3
+6.8
+6.7
+7.0
+7.6
+6.8
+7.1
+
+CNN
+69.4
+74.8
+76.1
+78.6
+82.9
+–
+79.7
+
+Table 5. Average runtime (hours)
+
+orthogonality (or diversity) incurs a tradeoff between estimation error and approximation error. In this section, we
+provide an empirical verification, using FNN on TIMIT as
+a study case. Figure 1 shows how the phone error rates vary
+on the TIMIT core test set. As can be seen, the lowest test
+error is achieved under a moderate τ (= 0.75). Either a
+smaller or a larger τ degrades the performance. This empirical observation is aligned with the theoretical analysis
+that the best generalization performance is achieved under
+a properly chosen τ . When τ is close to 0, the hidden units
+are close to orthogonality, which yields much poorer performance. This confirms that the strict-orthogonality constraint proposed by (Le et al., 2010) is too restrictive and is
+less favorable than a “soft” regularization approach.
+5.4. Computational Time
+We compare the computational time of neural networks under different regularizers. Table 5 shows the total runtime
+time of FNNs on TIMIT and CNNs on CIFAR-10 with a
+single GTX TITAN X GPU, and the runtime of LSTM networks on the CNN dataset with 2 TITAN X GPUs. Compared with no regularization, AC incurs a 18.2% extra time
+on TIMIT, 12.7% on CIFAR-10 and 14.8% on CNN. The
+runtime of AC is comparable to that under other diversitypromoting regularizers.
+
+6. Conclusions
+In this paper, we propose Angled-Constrained Latent Space
+Models (AC-LSMs) that aim at promoting diversity among
+components in LSMs for the sake of alleviating overfitting. Compared with previous diversity-promoting methods, AC has two benefits. First, it is theoretically analyzable: the generalization error analysis shows that larger diversity leads to smaller estimation error and larger approximation error. Second, it is empirically effective, as validated in various experiments.
+
+Learning Latent Space Models with Angular Constraints
 
 Acknowledgements
-This work was supported by ONR Grant N00014-15-12380, NSF CAREER Award IIS-1350133, and by TerraSwarm, one of six centers of STARnet, a Semiconductor Research Corporation program sponsored by MARCO
-and DARPA. NF was supported by a Washington Research
-Foundation Innovation Postdoctoral Fellowship in Neuroengineering and Data Science.
+We would like to thank the anonymous reviewers for
+the suggestions and comments that help to improve
+this work a lot, and thank Yajie Miao for helping
+with some of the experiments. P.X and E.X are supported by National Institutes of Health P30DA035778,
+R01GM114311, National Science Foundation IIS1617583,
+DARPA FA872105C0003 and Pennsylvania Department of
+Health BD4BH4100070287.
 
 References
-Amari, S. Natural gradient works efficiently in learning.
-Neural Computation, 10(2):251–276, 1998.
-
-Hoffman, M. D., Blei, D. M., Wang, C., and Paisley, J.
-Stochastic variational inference. Journal of Maching
-Learning Research, 14(1):1303–1347, May 2013.
-Hughes, M. C., Stephenson, W., and Sudderth, E. B. Scalable adaptation of state complexity for nonparametric
-hidden Markov models. In Advances in Neural Information Processing Systems, 2015.
-Johnson, M. J. and Willsky, A. S. Stochastic variational inference for Bayesian time series models. In International
-Conference on Machine Learning, 2014.
-
-Arnold, L. Random Dynamical Systems. Springer, 1998.
-
-LeGland, F. and Mevel, L. Exponential forgetting and geometric ergodicity in hidden Markov models. In IEEE
-Conference on Decision and Control, 1997.
-
-Beale, M. J. Variational Algorithms for Approximate
-Bayesian Inference. Ph.D. thesis, University College
-London, 2003.
-
-Leimkuhler, Benedict and Shang, Xiaocheng. Adaptive
-thermostats for noisy gradient systems. SIAM Journal
-on Scientific Computing, 38(2):A712–A736, 2016.
-
-Bishop, C. M. Pattern Recognition and Machine Learning.
-Springer, 2006.
-Broderick, T., Boyd, N., Wibisono, A., Wilson, A. C., and
-Jordan, M. I. Streaming variational Bayes. In Advances
-in Neural Information Processing Systems, 2013.
-Bryant, M. and Sudderth, E. B. Truly nonparametric online
-variational inference for hierarchical Dirichlet processes.
+Abdel-Hamid, Ossama, Deng, Li, Yu, Dong, and Jiang,
+Hui. Deep segmental neural networks for speech recognition. INTERSPEECH, 2013.
+Affandi, Raja Hafiz, Fox, Emily, and Taskar, Ben. Approximate inference in continuous determinantal processes.
 In Advances in Neural Information Processing Systems,
+pp. 1430–1438, 2013.
+Ba, Jimmy and Caruana, Rich. Do deep nets really need to
+be deep? In Advances in neural information processing
+systems, pp. 2654–2662, 2014.
+Bao, Yebo, Jiang, Hui, Dai, Lirong, and Liu, Cong. Incoherent training of deep neural networks to de-correlate
+bottleneck features for speech recognition. In Acoustics,
+Speech and Signal Processing (ICASSP), 2013 IEEE International Conference on, pp. 6980–6984. IEEE, 2013.
+Barron, Andrew R. Universal approximation bounds for
+superpositions of a sigmoidal function. Information Theory, IEEE Transactions on, 1993.
+Bartlett, Peter L and Mendelson, Shahar. Rademacher and
+gaussian complexities: Risk bounds and structural results. Journal of Machine Learning Research, 3:463–
+482, 2003.
+Blei, David M, Ng, Andrew Y, and Jordan, Michael I. Latent dirichlet allocation. the Journal of machine Learning research, 2003.
+Boyd, S., Parikh, N., Chu, E., Peleato, B., and Eckstein,
+J. Distributed optimization and statistical learning via
+alternating direction method of multipliers. Foundations
+R in Machine Learning, 2011.
+and Trends
+Chen, Danqi, Bolton, Jason, and Manning, Christopher D.
+A thorough examination of the cnn/daily mail reading
+comprehension task. arXiv preprint arXiv:1606.02858,
+2016.
+Chen, Yunpeng, Jin, Xiaojie, Feng, Jiashi, and Yan,
+Shuicheng. Training group orthogonal neural networks with privileged information. arXiv preprint
+arXiv:1701.06772, 2017.
+
+Chorowski, Jan K, Bahdanau, Dzmitry, Serdyuk, Dmitriy,
+Cho, Kyunghyun, and Bengio, Yoshua. Attention-based
+models for speech recognition. In Advances in Neural
+Information Processing Systems, pp. 577–585, 2015.
+Clevert, Djork-Arné, Unterthiner, Thomas, and Hochreiter, Sepp. Fast and accurate deep network learning by exponential linear units (elus). arXiv preprint
+arXiv:1511.07289, 2015.
+Cogswell, M., Ahmed, F., Girshick, R., Zitnick, L., and Batra, D. Reducing overfitting in deep networks by decorrelating representations. ICLR, 2015.
+Cui, Yiming, Chen, Zhipeng, Wei, Si, Wang, Shijin, Liu,
+Ting, and Hu, Guoping. Attention-over-attention neural networks for reading comprehension. arXiv preprint
+arXiv:1607.04423, 2016.
+Dahl, George, Mohamed, Abdel-rahman, Hinton, Geoffrey E, et al. Phone recognition with the meancovariance restricted boltzmann machine. In Advances
+in neural information processing systems, pp. 469–477,
+2010.
+Dhingra, Bhuwan, Liu, Hanxiao, Cohen, William W, and
+Salakhutdinov, Ruslan. Gated-attention readers for text
+comprehension. arXiv preprint arXiv:1606.01549, 2016.
+Dhingra, Bhuwan, Yang, Zhilin, Cohen, William W, and
+Salakhutdinov, Ruslan. Linguistic knowledge as memory for recurrent neural networks. arXiv preprint
+arXiv:1703.02620, 2017.
+Gales, Mark JF. Maximum likelihood linear transformations for hmm-based speech recognition. Computer
+speech & language, 12(2):75–98, 1998.
+Goodfellow, Ian J, Warde-Farley, David, Mirza, Mehdi,
+Courville, Aaron, and Bengio, Yoshua. Maxout networks. ICML, 2013.
+Graham, Benjamin. Fractional max-pooling.
+preprint arXiv:1412.6071, 2014.
+
+arXiv
+
+Graves, Alex, Mohamed, Abdel-rahman, and Hinton, Geoffrey. Speech recognition with deep recurrent neural networks. In Acoustics, speech and signal processing (icassp), 2013 ieee international conference on, pp.
+6645–6649. IEEE, 2013.
+Griffin, Gregory, Holub, Alex, and Perona, Pietro. Caltech256 object category dataset. 2007.
+He, Kaiming, Zhang, Xiangyu, Ren, Shaoqing, and Sun,
+Jian. Deep residual learning for image recognition. In
+Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition, pp. 770–778, 2016.
+
+Learning Latent Space Models with Angular Constraints
+
+Henaff, Mikael, Szlam, Arthur, and LeCun, Yann. Orthogonal rnns and long-memory tasks. arXiv preprint
+arXiv:1602.06662, 2016.
+Hermann, Karl Moritz, Kocisky, Tomas, Grefenstette, Edward, Espeholt, Lasse, Kay, Will, Suleyman, Mustafa,
+and Blunsom, Phil. Teaching machines to read and comprehend. In Advances in Neural Information Processing
+Systems, pp. 1693–1701, 2015.
+Hill, Felix, Bordes, Antoine, Chopra, Sumit, and Weston,
+Jason. The goldilocks principle: Reading children’s
+books with explicit memory representations. ICLR,
+2015.
+Hinton, Geoffrey, Deng, Li, Yu, Dong, Dahl, George E,
+Mohamed, Abdel-rahman, Jaitly, Navdeep, Senior, Andrew, Vanhoucke, Vincent, Nguyen, Patrick, Sainath,
+Tara N, et al. Deep neural networks for acoustic modeling in speech recognition: The shared views of four
+research groups. Signal Processing Magazine, IEEE,
 2012.
-Chen, C., Ding, N., and Carin, L. On the convergence of
-stochastic gradient mcmc algorithms with high-order integrators. In Advances in Neural Information Processing
-Systems 28, pp. 2278–2286. 2015.
-Chen, T., Fox, E. B., and Guestrin, C. Stochastic gradient
-Hamiltonian Monte Carlo. In Proceeding of 31st International Conference on Machine Learning (ICML’14),
-2014.
+Hochreiter, Sepp and Schmidhuber, Jürgen. Long shortterm memory. Neural computation, 9(8):1735–1780,
+1997.
+Huang, Gao, Liu, Zhuang, Weinberger, Kilian Q, and
+van der Maaten, Laurens. Densely connected convolutional networks. arXiv preprint arXiv:1608.06993, 2016.
+Kadlec, Rudolf, Schmid, Martin, Bajgar, Ondrej, and
+Kleindienst, Jan. Text understanding with the attention
+sum reader network. ACL, 2016.
+Kobayashi, Sosuke, Tian, Ran, Okazaki, Naoaki, and
+Inui, Kentaro. Dynamic entity representation with maxpooling improves machine reading. In Proceedings of
+NAACL-HLT, pp. 850–855, 2016.
+Krizhevsky, Alex, Sutskever, Ilya, and Hinton, Geoffrey E.
+Imagenet classification with deep convolutional neural
+networks. In Advances in neural information processing
+systems, 2012.
+Kulesza, Alex and Taskar, Ben. Determinantal point processes for machine learning. Foundations and Trends in
+Machine Learning, 2012.
+Lazebnik, Svetlana, Schmid, Cordelia, and Ponce, Jean.
+Beyond bags of features: Spatial pyramid matching for
+recognizing scene categories. In CVPR, 2006.
+Le, Quoc V, Ngiam, Jiquan, Chen, Zhenghao, Chia, Daniel,
+Koh, Pang Wei, and Ng, Andrew Y. Tiled convolutional neural networks. In Proceedings of the 23rd International Conference on Neural Information Processing
+Systems, pp. 1279–1287. Curran Associates Inc., 2010.
 
-Ma, Y.-A, Chen, T., and Fox, E. B. A complete recipe for
-stochastic gradient MCMC. In Advances in Neural Information Processing Systems 28, pp. 2899–2907. 2015.
-Ma, Y.-A., Fox, E. B., Chen, T., and Wu, L. A unifying
-framework for devising efficient and irreversible MCMC
-samplers. arXiv:1608.05973, 2016.
-Palla, K., Knowles, D. A., and Ghahramani, Z. A reversible
-infinite HMM using normalised random measures. In
-International Conference on Machine Learning, 2014.
-Patterson, S. and Teh, Y. W. Stochastic gradient Riemannian Langevin dynamics on the probability simplex. In
-Advances in Neural Information Processing Systems 26
-(NIPS’13). 2013.
-Rabiner, L. R. A tutorial on hidden Markov models and
-selected applications in speech recognition. In Proceedings of the IEEE, volume 77, pp. 257–286, 1989.
+Lee, Chen-Yu, Xie, Saining, Gallagher, Patrick, Zhang,
+Zhengyou, and Tu, Zhuowen. Deeply-supervised nets.
+In Artificial Intelligence and Statistics, pp. 562–570,
+2015.
+Li, Li-Jia and Fei-Fei, Li. What, where and who? classifying events by scene recognition. In ICCV, 2007.
+Lin, Min, Chen, Qiang, and Yan, Shuicheng. Network in
+network. arXiv preprint arXiv:1312.4400, 2013.
+Lowe, David G. Distinctive image features from scaleinvariant keypoints. IJCV, 2004.
+Lu, Liang, Kong, Lingpeng, Dyer, Chris, Smith, Noah A,
+and Renals, Steve. Segmental recurrent neural networks for end-to-end speech recognition. arXiv preprint
+arXiv:1603.00223, 2016.
+Lu, Liang, Kong, Lingpeng, Dyer, Chris, and Smith,
+Noah A.
+Multi-task learning with ctc and segmental crf for speech recognition. arXiv preprint
+arXiv:1702.06378, 2017.
+Malkin, Jonathan and Bilmes, Jeff. Ratio semi-definite
+classifiers. In Acoustics, Speech and Signal Processing,
+2008. ICASSP 2008. IEEE International Conference on,
+pp. 4113–4116. IEEE, 2008.
+Mao, Fengling, Xiong, Wei, Du, Bo, and Zhang, Lefei.
+Stochastic decorrelation constraint regularized autoencoder for visual recognition. In International Conference on Multimedia Modeling, pp. 368–380. Springer,
+2017.
+Mishkin, Dmytro and Matas, Jiri. All you need is a good
+init. arXiv preprint arXiv:1511.06422, 2015.
+Moon, Taesup, Choi, Heeyoul, Lee, Hoshik, and Song,
+Inchul. Rnndrop: A novel dropout for rnns in asr. In Automatic Speech Recognition and Understanding (ASRU),
+2015 IEEE Workshop on, pp. 65–70. IEEE, 2015.
+Olshausen, Bruno A and Field, David J. Sparse coding with
+an overcomplete basis set: A strategy employed by v1?
+Vision research, 37(23):3311–3325, 1997.
+Povey, Daniel, Ghoshal, Arnab, Boulianne, Gilles, Burget, Lukas, Glembek, Ondrej, Goel, Nagendra, Hannemann, Mirko, Motlicek, Petr, Qian, Yanmin, Schwarz,
+Petr, et al. The kaldi speech recognition toolkit. In IEEE
+2011 workshop on automatic speech recognition and understanding, number EPFL-CONF-192584. IEEE Signal
+Processing Society, 2011.
+Prabhavalkar, Rohit, Sainath, Tara N, Nahamoo, David,
+Ramabhadran, Bhuvana, and Kanevsky, Dimitri. An
+evaluation of posterior modeling techniques for phonetic
 
-Ding, N., Fang, Y., Babbush, R., Chen, C., Skeel, R. D.,
-and Neven, H. Bayesian sampling using stochastic gradient thermostats. In Advances in Neural Information
-Processing Systems 27 (NIPS’14). 2014.
+Learning Latent Space Models with Angular Constraints
 
-Robbins, H. and Monro, S. A stochastic approximation
-method. The Annals of Mathematical Statistics, 22(3):
-400–407, 09 1951.
+recognition. In Acoustics, Speech and Signal Processing
+(ICASSP), 2013 IEEE International Conference on, pp.
+7165–7169. IEEE, 2013.
+Ramirez, Ignacio, Sprechmann, Pablo, and Sapiro,
+Guillermo. Classification and clustering via dictionary
+learning with structured incoherence and shared features. In Computer Vision and Pattern Recognition
+(CVPR), 2010 IEEE Conference on, pp. 3501–3508.
+IEEE, 2010.
+Recht, Benjamin, Fazel, Maryam, and Parrilo, Pablo A.
+Guaranteed minimum-rank solutions of linear matrix
+equations via nuclear norm minimization. SIAM review,
+52(3):471–501, 2010.
+Rodrı́guez, Pau, Gonzàlez, Jordi, Cucurull, Guillem, Gonfaus, Josep M, and Roca, Xavier. Regularizing cnns
+with locally constrained decorrelations. arXiv preprint
+arXiv:1611.01967, 2016.
+Seo, Minjoon, Kembhavi, Aniruddha, Farhadi, Ali, and
+Hajishirzi, Hannaneh. Bidirectional attention flow for
+machine comprehension. ICLR, 2017.
+Shen, Yelong, Huang, Po-Sen, Gao, Jianfeng, and Chen,
+Weizhu. Reasonet: Learning to stop reading in machine
+comprehension. arXiv preprint arXiv:1609.05284, 2016.
+Sordoni, Alessandro, Bachman, Philip, Trischler, Adam,
+and Bengio, Yoshua.
+Iterative alternating neural attention for machine reading.
+arXiv preprint
+arXiv:1606.02245, 2016.
+Springenberg, Jost Tobias, Dosovitskiy, Alexey, Brox,
+Thomas, and Riedmiller, Martin. Striving for simplicity: The all convolutional net. arXiv preprint
+arXiv:1412.6806, 2014.
+Srivastava, Nitish, Hinton, Geoffrey E, Krizhevsky, Alex,
+Sutskever, Ilya, and Salakhutdinov, Ruslan. Dropout:
+a simple way to prevent neural networks from overfitting. Journal of Machine Learning Research, 15(1):
+1929–1958, 2014.
+Srivastava, Rupesh Kumar, Greff, Klaus, and Schmidhuber, Jürgen. Highway networks. arXiv preprint
+arXiv:1505.00387, 2015.
+Tang, Hao, Wang, Weiran, Gimpel, Kevin, and Livescu,
+Karen. Discriminative segmental cascades for featurerich phone recognition. In Automatic Speech Recognition and Understanding (ASRU), 2015 IEEE Workshop
+on, pp. 561–568. IEEE, 2015.
+Tibshirani, Robert. Regression shrinkage and selection via
+the lasso. Journal of the Royal Statistical Society. Series
+B (Methodological), pp. 267–288, 1996.
 
-Foti, N. J., Xu, J., Laird, D., and Fox, E. B. Stochastic
-variational inference for hidden Markov models. In Advances in Neural Information Processing Systems, 2014.
+Tóth, László. Phone recognition with deep sparse rectifier
+neural networks. In Acoustics, Speech and Signal Processing (ICASSP), 2013 IEEE International Conference
+on, pp. 6985–6989. IEEE, 2013.
+Tóth, László. Combining time-and frequency-domain convolution in convolutional neural network-based phone
+recognition. In Acoustics, Speech and Signal Processing (ICASSP), 2014 IEEE International Conference on,
+pp. 190–194. IEEE, 2014.
+Trischler, Adam, Ye, Zheng, Yuan, Xingdi, and Suleman, Kaheer. Natural language comprehension with the
+epireader. arXiv preprint arXiv:1606.02270, 2016.
+Vainsencher, Daniel, Mannor, Shie, and Bruckstein, Alfred M. The sample complexity of dictionary learning.
+Journal of Machine Learning Research, 12(Nov):3259–
+3281, 2011.
+Xie, Bo, Liang, Yingyu, and Song, Le. Diversity leads to
+generalization in neural networks. AISTATS, 2017.
+Xie, Pengtao. Learning compact and effective distance
+metrics with diversity regularization. In ECML, 2015.
+Xie, Pengtao, Deng, Yuntian, and Xing, Eric P. Diversifying restricted boltzmann machine for document modeling. In ACM SIGKDD Conference on Knowledge Discovery and Data Mining, 2015.
+Xie, Pengtao, Zhu, Jun, and Xing, Eric. Diversitypromoting bayesian learning of latent variable models.
+In Proceedings of The 33rd International Conference on
+Machine Learning, pp. 59–68, 2016a.
+Xie, Saining, Girshick, Ross, Dollár, Piotr, Tu, Zhuowen,
+and He, Kaiming.
+Aggregated residual transformations for deep neural networks. arXiv preprint
+arXiv:1611.05431, 2016b.
+Xiong, Wei, Du, Bo, Zhang, Lefei, Hu, Ruimin, and Tao,
+Dacheng. Regularizing deep convolutional neural networks with a structured decorrelation constraint. In Data
+Mining (ICDM), 2016 IEEE 16th International Conference on, pp. 519–528. IEEE, 2016.
+Yamada, Yoshihiro, Iwamura, Masakazu, and Kise,
+Koichi. Deep pyramidal residual networks with separated stochastic depth. arXiv preprint arXiv:1612.01230,
+2016.
+Yang, J, Ragni, Anton, Gales, Mark JF, and Knill, Kate M.
+Log-linear system combination using structured support
+vector machines. In Proceedings of the Annual Conference of the International Speech Communication Association, INTERSPEECH, volume 8, pp. 1898–1902, 2016.
 
-Rosenstein, J. K., Ramakrishnan, S., Roseman, J., and L,
-Shepard K. Single ion channel recordings with CMOSanchored lipid membranes. Nano Letters, 13(6):2682–
-2686, 2013.
+Learning Latent Space Models with Angular Constraints
 
-Fox, E.B. Bayesian Nonparametric Learning of Complex
-Dynamical Phenomena. Ph.D. thesis, MIT, Cambridge,
-MA, 2009.
-Gopalan, P. K., Gerrish, S., Freedman, M., Blei, D. M., and
-Mimno, D. M. Scalable inference of overlapping communities. In Advances in Neural Information Processing
-Systems, pp. 2249–2257. 2012.
-
-Scott, S. L. Bayesian methods for hidden Markov models:
-Recursive computing in the 21st century. Journal of the
-American Statistical Association, 97(457):337–351, 03
-2002.
-Seneta, E. Non-negative matrices and Markov chains.
-Springer Science & Business Media, 2006.
-
-Stochastic Gradient MCMC Methods for Hidden Markov Models
-
-Shang, X., Zhu, Z., Leimkuhler, B., and Storkey, A.
-Covariance-controlled adaptive Langevin thermostat for
-large-scale Bayesian sampling. In Advances in Neural
-Information Processing Systems 28 (NIPS’15). 2015.
-Tripuraneni, N., Gu, S., Ge, H., and Ghahramani, Z. Particle Gibbs for infinite hidden Markov Models. In Advances in Neural Information Processing Systems, pp.
-2386–2394, 2015.
-Vollmer, S. J., Zygalakis, K. C., and Teh, Y. W. Exploration
-of the (non-)asymptotic bias and variance of stochastic
-gradient Langevin dynamics. Journal of Machine Learning Research, 17(159):1–48, 2016.
-Welling, M. and Teh, Y. W. Bayesian learning via stochastic gradient Langevin dynamics. In Proceedings of
-the 28th International Conference on Machine Learning
-(ICML’11), pp. 681–688, June 2011.
-Ye, F. X.-F., Ma, Y.-A., and Qian, H. A numerical algorithm for calculating the rate of exponential forgetting in
-HMM. manuscript in preparation.
+Yang, Jianchao, Yu, Kai, Gong, Yihong, and Huang,
+Thomas. Linear spatial pyramid matching using sparse
+coding for image classification. In CVPR, 2009.
+Yu, Yang, Li, Yu-Feng, and Zhou, Zhi-Hua. Diversity regularized machine. In IJCAI, 2011.
+Yuan, Jinhui, Gao, Fei, Ho, Qirong, Dai, Wei, Wei, Jinliang, Zheng, Xun, Xing, Eric Po, Liu, Tie-Yan, and Ma,
+Wei-Ying. Lightlda: Big topic models on modest computer clusters. In Proceedings of the 24th International
+Conference on World Wide Web, pp. 1351–1361. ACM,
+2015.
+Zagoruyko, Sergey and Komodakis, Nikos. Wide residual
+networks. arXiv preprint arXiv:1605.07146, 2016.
+Zeiler, Matthew D. Adadelta: an adaptive learning rate
+method. arXiv preprint arXiv:1212.5701, 2012.
+Zou, James Y. and Adams, Ryan P. Priors for diversity in
+generative latent variable models. In NIPS, 2012a.
+Zou, James Y and Adams, Ryan P. Priors for diversity in
+generative latent variable models. In Advances in Neural
+Information Processing Systems, pp. 2996–3004, 2012b.
 
 

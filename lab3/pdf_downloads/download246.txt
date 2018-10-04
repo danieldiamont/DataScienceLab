@@ -1,1298 +1,989 @@
-Deep IV: A Flexible Approach for Counterfactual Prediction
+Adversarial Variational Bayes:
+Unifying Variational Autoencoders and Generative Adversarial Networks
 
-Jason Hartford 1 Greg Lewis 2 Kevin Leyton-Brown 1 Matt Taddy 2
+Lars Mescheder 1
+
+Sebastian Nowozin 2
+
+Andreas Geiger 1 3
 
 Abstract
-Counterfactual prediction requires understanding
-causal relationships between so-called treatment
-and outcome variables. This paper provides a
-recipe for augmenting deep learning methods to
-accurately characterize such relationships in the
-presence of instrument variables (IVs)—sources
-of treatment randomization that are conditionally
-independent from the outcomes. Our IV specification resolves into two prediction tasks that can
-be solved with deep neural nets: a first-stage network for treatment prediction and a second-stage
-network whose loss function involves integration
-over the conditional treatment distribution. This
-Deep IV framework1 allows us to take advantage
-of off-the-shelf supervised learning techniques
-to estimate causal effects by adapting the loss
-function. Experiments show that it outperforms
-existing machine learning approaches.
+Variational Autoencoders (VAEs) are expressive
+latent variable models that can be used to learn
+complex probability distributions from training
+data. However, the quality of the resulting model
+crucially relies on the expressiveness of the inference model. We introduce Adversarial Variational Bayes (AVB), a technique for training
+Variational Autoencoders with arbitrarily expressive inference models. We achieve this by introducing an auxiliary discriminative network
+that allows to rephrase the maximum-likelihoodproblem as a two-player game, hence establishing a principled connection between VAEs and
+Generative Adversarial Networks (GANs). We
+show that in the nonparametric limit our method
+yields an exact maximum-likelihood assignment
+for the parameters of the generative model, as
+well as the exact posterior distribution over the
+latent variables given an observation. Contrary
+to competing approaches which combine VAEs
+with GANs, our approach has a clear theoretical
+justification, retains most advantages of standard
+Variational Autoencoders and is easy to implement.
 
 1. Introduction
-Supervised machine learning (ML) provides many effective methods for tasks in which a model is learned based
-on samples from some data generating process (DGP) and
-then makes predictions about new samples from the same
-distribution. However, decision makers would often like to
-predict the effects of interventions into the DGP through policy changes. Such changes impact the relationship between
-inputs and outcomes, making straightforward prediction approaches inappropriate. In order to accurately answer such
-counterfactual questions it is necessary to model the structural (or causal) relationship between policy (or “treatment”)
-and outcome variables.
-For example, consider an airline that wants to use historical
-1 University
+Generative models in machine learning are models that can
+be trained on an unlabeled dataset and are capable of generating new data points after training is completed. As generating new content requires a good understanding of the
+training data at hand, such models are often regarded as a
+key ingredient to unsupervised learning.
+In recent years, generative models have become more and
+1
+Autonomous Vision Group, MPI Tübingen 2 Microsoft
+Research Cambridge 3 Computer Vision and Geometry
+Group, ETH Zürich. Correspondence to: Lars Mescheder
+<lars.mescheder@tuebingen.mpg.de>.
 
-of British Columbia, Canada 2 Microsoft Research,
-New England, USA. Correspondence to: Jason Hartford <jasonhar@cs.ubc.ca>, Matt Taddy <taddy@microsoft.com>.
-Proceedings of the 34th International Conference on Machine
-Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017 by
-the author(s).
-1 Implementation with all simulation experiments is available
-at https://github.com/jhartford/DeepIV
+Proceedings of the 34 th International Conference on Machine
+Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
+by the author(s).
 
-data to optimize the prices it charges its customers: in this
-case, price is the treatment variable and the customer’s decision about whether to buy a ticket is the outcome. There are
-two ways that a naive analysis could lead to incorrect counterfactual predictions. First, imagine that price varies in the
-training data because the airline gradually increases prices
-as a plane fills. Around holidays, more people want to fly
-and hence planes become fuller leading to higher prices. So,
-in our training set we observe examples with high prices and
-high sales. A direct ML approach might incorrectly predict
-that if the airline were to increase prices at other times in the
-year they would also observe increased sales, whereas the
-true relationship between price and sales is surely negative.
-Typically we can observe holidays, and include them in the
-model, so that we can correct for their effects. This case
-where an observable feature (holidays) is correlated with
-both the outcome and treatment variable is called “selection
-on observables”.
-But say there is also sometimes high demand because of
-conferences, which the airline is not able to observe. This
-presents a more challenging problem: even if price distortions due to holidays were taken into account, a naive
-analysis could conclude that higher prices drive higher demand, whereas in fact high price is only correlated with
-high demand via the latent conference variable. This is the
-more challenging case of “selection on unobservables”.
-The gold standard for establishing causal relationships is
-to conduct “AB” experiments, with subjects randomly assigned to different values of the treatment variable. In the
-airline example, this would mean assigning passengers random prices that do not depend on the number of seats sold.
-Enough data collected in this way would make it straightforward to identify the true relationship between price and
-demand even if the latent variable were never observed.
-However, such a strategy would be exceedingly expensive
-(the airline would sometimes turn away interested passengers for nearly-empty flights and offer steep discounts for
-nearly-full flights). Depending on the timescale over which
-such randomization were conducted, it could also hurt the
-airline’s long-term interests (because it could be perceived
-as unfair) and could fail if passengers were able to hide their
-identities (e.g., by logging in from a different computer if
-they didn’t like the price).
+f
 
-Deep IV: A Flexible Approach for Counterfactual Prediction
+Figure 1. We propose a method which enables neural samplers
+with intractable density for Variational Bayes and as inference
+models for learning latent variable models. This toy example demonstrates our method’s ability to accurately approximate
+complex posterior distributions like the one shown on the right.
 
-The alternative is to work with observational data, but doing
-so requires explicit assumptions about the causal structure of
-the DGP (Bottou et al., 2013). Most recent approaches to using machine learning methods such as trees (Wager & Athey,
-2015; Athey & Imbens, 2016) and deep networks (Johansson et al., 2016; Shalit et al., 2016) for causal inference in
-observational data leverage an “unconfoundedness” assumption that the treatment is conditionally independent of any
-latent variables given the observed features. This amounts
-to assuming away selection on unobservables, which may
-or may not be reasonable depending on the setting.
+more powerful. While many model classes such as PixelRNNs (van den Oord et al., 2016b), PixelCNNs (van den
+Oord et al., 2016a), real NVP (Dinh et al., 2016) and Plug
+& Play generative networks (Nguyen et al., 2016) have
+been introduced and studied, the two most prominent ones
+are Variational Autoencoders (VAEs) (Kingma & Welling,
+2013; Rezende et al., 2014) and Generative Adversarial
+Networks (GANs) (Goodfellow et al., 2014).
+Both VAEs and GANs come with their own advantages
+and disadvantages: while GANs generally yield visually
+sharper results when applied to learning a representation
+of natural images, VAEs are attractive because they naturally yield both a generative model and an inference model.
+Moreover, it was reported, that VAEs often lead to better
+log-likelihoods (Wu et al., 2016). The recently introduced
+BiGANs (Donahue et al., 2016; Dumoulin et al., 2016) add
+an inference model to GANs. However, it was observed
+that the reconstruction results often only vaguely resemble
+the input and often do so only semantically and not in terms
+of pixel values.
+The failure of VAEs to generate sharp images is often attributed to the fact that the inference models used during
+training are usually not expressive enough to capture the
+true posterior distribution. Indeed, recent work shows that
+using more expressive model classes can lead to substantially better results (Kingma et al., 2016), both visually
+and in terms of log-likelihood bounds. Recent work (Chen
+et al., 2016) also suggests that highly expressive inference
+models are essential in presence of a strong decoder to allow the model to make use of the latent space at all.
 
-geted with deep networks and that, when solved, allow us
-to make counterfactual claims and perform causal inference.
-Specifically, we first model the conditional distribution of
-the treatment variable given the instruments and covariates
-and then target a loss function involving integration over the
-conditional treatment distribution from the first stage. Both
-stages use deep neural nets trained via stochastic gradient
-descent (Robbins & Monro, 1951; Bottou, 2010). We also
-present an out-of-sample causal validation procedure for
-selecting hyper-parameters of the models on a validation set.
-We refer to this setup as the Deep IV framework.
+Adversarial Variational Bayes
 
-We can do without this assumption and get around both
-types of selection if we can identify one or more instrumental variables (IVs) that only affect treatment assignment
-and not the outcome variable. In our airline example, the
-cost of fuel could be such an instrument: its variation is
-independent of demand for airline tickets and it affects sales
-only via ticket prices. Changes in the cost of fuel thus create
-movement in ticket prices that is independent of our latent
-variable, and this movement is as good as randomization for
-the purposes of causal inference. See Figure 1 for an graphical illustration of this example and of the general class of
-causal graphs that we consider.
-
-Section 2 describes our general IV specification and its decomposition into two learning tasks. Section 3 outlines
-neural network estimation for these tasks with particular
-attention paid to the SGD routine used in model training
-and our causal validation procedure. Section 4 presents experimental results that illustrate the benefits of our methods.
-
-The IV framework has a long history, especially in economics (e.g., Wright, 1928; Reiersøl., 1945). It provides
-methods for learning the regression function that relates the
-treatment and response variables under the “interventional
-distribution” for DGPs that conform to the graphical model
-shown in Figure 1 (Pearl, 2009). Most IV applications make
-use of a two-stage least squares procedure (2SLS; e.g., Angrist & Pischke, 2008) that applies a model of linear and
-homogeneous treatment effects (e.g., all airline customers
-must have the same price sensitivity). Nonparametric IV
-methods from the econometrics literature relax these assumptions (e.g., Newey & Powell, 2003; Darolles et al.,
-2011). However, these methods typically work by modeling
-the outcome as an unknown linear combination of a prespecified set of basis functions of the treatment and other
-covariates (e.g. Hermite polynomials, wavelets, or splines)
-and then modeling the conditional expectation of each of
-these basis functions in terms of the instruments (i.e., the
-number of parameters is quadratic in the number of basis
-functions). This requires a strong prior understanding of
-the DGP by the researcher; also, the complexity of both
-specification and estimation explodes when there are more
-than a handful of inputs.
-Advances in deep learning have demonstrated the power of
-learning latent representations of complex features spaces
-(for recent surveys, see eg. LeCun et al., 2015; Schmidhuber, 2015). This paper’s goal is to use these powerful
-learning algorithms for IV analysis. We do this by breaking
-IV analysis into two supervised stages that can each be tar-
-
-2. Counterfactual prediction
-We aim to predict the value of some outcome variable y (e.g.,
-sales in our airline example) under an intervention in a policy
-or treatment variable p (e.g., price). There exists a set of
-observable covariate features x (e.g., holidays) that we know
-affect both p and y. There also exist unobservable latent
-variables e that may affect x, p and y (e.g., conferences).
-Counterfactual prediction aims to recover E[y| do(p), x] in
-the context of the graphical model given by Figure 1, where
-the do(·) operator indicates that we have intervened to set
-the value of the policy variable p (as per Pearl, 2009). We
-assume the y is structurally determined by p, x and e as
-y = g (p, x) + e.
-
-(1)
-
-That is, g (·) is some unknown and potentially non-linear
-continuous function of both x and p, and we assume that the
-latent variables (or “error”) e enter additively with unconditional mean E e = 0. We allow for errors that are potentially
-correlated with the inputs: E[e|x, p] , 0 and, in particular,
-E[pe|x] , 0.
-Define the counterfactual prediction function
-
-h (p, x) ≡ g (p, x) + E[e|x],
-
-(2)
-
-which is the conditional expectation of y given the observables p and x, holding the distribution of e constant as p is
-changed. Note that we condition only on x and not p in the
-term E[e|x]; this term is typically nonzero, but it will remain
-constant under arbitrary changes to our policy variable p.2
-Thus h (p, x) is the structural equation that we estimate. It is
-2 It may be easier to think about a setting where e ⊥
-⊥ x, so that
-the latent error is simply defined as being due to factors orthogonal
-to the observable controls. In that case, h (p, x) = g (p, x). All of
-our results apply in either setup.
-
-Deep IV: A Flexible Approach for Counterfactual Prediction
-
-holidays
-
-sales
+In this paper, we present Adversarial Variational Bayes
+(AVB) 1 , a technique for training Variational Autoencoders
+with arbitrarily flexible inference models parameterized by
+neural networks. We can show that in the nonparametric
+limit we obtain a maximum-likelihood assignment for the
+generative model together with the correct posterior distribution.
+While there were some attempts at combining VAEs and
+GANs (Makhzani et al., 2015; Larsen et al., 2015), most
+of these attempts are not motivated from a maximumlikelihood point of view and therefore usually do not lead
+to maximum-likelihood assignments. For example, in Adversarial Autoencoders (AAEs) (Makhzani et al., 2015) the
+Kullback-Leibler regularization term that appears in the
+training objective for VAEs is replaced with an adversarial
+loss that encourages the aggregated posterior to be close to
+the prior over the latent variables. Even though AAEs do
+not maximize a lower bound to the maximum-likelihood
+objective, we show in Section 6.2 that AAEs can be interpreted as an approximation to our approach, thereby establishing a connection of AAEs to maximum-likelihood
+learning.
+Outside the context of generative models, AVB yields a
+new method for performing Variational Bayes (VB) with
+neural samplers. This is illustrated in Figure 1, where we
+used AVB to train a neural network to sample from a nontrival unnormalized probability density. This allows to accurately approximate the posterior distribution of a probabilistic model, e.g. for Bayesian parameter estimation.
+The only other variational methods we are aware of that
+can deal with such expressive inference models are based
+on Stein Discrepancy (Ranganath et al., 2016; Liu & Feng,
+2016). However, those methods usually do not directly target the reverse Kullback-Leibler-Divergence and can therefore not be used to approximate the variational lower bound
+for learning a latent variable model. Our contributions are
+as follows:
+• We enable the usage of arbitrarily complex inference
+models for Variational Autoencoders using adversarial
+training.
+• We give theoretical insights into our method, showing that in the nonparametric limit our method recovers the true posterior distribution as well as a true
+maximum-likelihood assignment for the parameters
+of the generative model.
 
 x
+1
 
-e
+x
+1
 
-p
+f
 
-y
+f
++/∗
+Encoder
 
-conference
-fuel costs
+Encoder
 
 z
 
-price
+g
 
-Figure 1. (Left) Our air-travel demand example, with arrows representing causal effects. Price is the policy variable, sales is the outcome,
-and holidays are observable covariates. There is a big ‘conference’, unobserved to the policy-maker, that drives demand and (due to
-the airline’s pricing algorithms) price. The instrument is the cost of fuel, which influences sales only via price. (Right) The general
-structure of the DGP under our IV specification; x represents observable features, p is our treatment variable of interest, z represents the
-instruments, and latent effects e influence the outcome y additively.
+z
 
-useful because to evaluate policy options (e.g. changing the
-ticket price from p0 to p1 ) we can look at the difference in
-outcomes h (p1 , x) − h (p0 , x) = g (p1 , x) − g (p0 , x).
+g
 
-Taking the expectation of both sides of Equation (1) conditional on [x, z] and applying these assumptions establishes
-the relationship (cf. Newey & Powell, 2003):
+2
 
-In standard supervised learning settings, the prediction
-model is trained to fit E[y|p, x]. This will typically be biased
-against our structural objective because
++/∗
 
-E[y|x, z] = E[ g (p, x)|x, z] + E[e|x]
-Z
-= h (p, x)dF(p|x, z),
+2
 
-E[y|p, x] = g (p, x) + E[e|p, x] , h (p, x)
++/∗
 
-(5)
+x
 
-(3)
+x
 
-since our treatment is not independent of the latent errors
-by assumption and hence E[e|p, x] , E[e|x]. This object is
-inappropriate for policy analysis as it will lead to biased
-counterfactuals:
-E[y|p1 , x] − E[y|p0 , x]
-
-
-= g (p1 , x) − g (p0 , x) + E[e|p1 , x] − E[e|p0 , x] . (4)
-In our airline example, high prices during conferences imply
-that E[e|p1 , x] − E[e|p0 , x] will be positive, resulting in the
-incorrect prediction that higher prices are associated with
-higher sales if this bias is sufficiently large.
-Fortunately, the presence of instruments allows us to estimate an unbiased hˆ (p, x) that captures the structural relationship between p and y. These are sets of variables z that
-satisfy the following three conditions.
-Relevance F(p|x, z), the distribution of p given x and z, is
-not constant in z.
-Exclusion z does not enter Eq. (1)—i.e., z ⊥
-⊥ y | (x, p, e).
-Unconfounded Instrument z is conditionally independent
-of the error—i.e., z ⊥
-⊥ e | x.3
-3 Under the additive error assumption made in Eq. (1), unconfoundedness of the instrument is not necessary: we could replace
-this assumption with the weaker mean independence assumption
-E[e|x, z] = 0 without changing anything that follows. We use the
-stronger assumption to facilitate extensions, e.g. to estimating
-counterfactual quantiles. Our assumption is similar to the ‘unconfoundedness’ assumption in the Neyman–Rubin potential outcomes framework (Rosenbaum & Rubin, 1983) (i.e. p ⊥
-⊥ e | x). But
-our assumption is weaker—in particular, we allow for p 6⊥
-⊥ e|x—
-and so the matching and propensity-score re-weighting approaches
-often used in that literature will not work here.
+Decoder
 
-where, again, dF(p|x, z) is the conditional treatment distribution. The relationship in Equation (5) defines an inverse
-problem for h in terms of two directly observable functions:
-E[y|x, z] and F(p|x, z). IV analysis typically splits this into
-two stages: first estimating F̂(p|xt , zt ) ≈ F(p|xt , zt ), and then
-estimating hˆ after replacing F with F̂.
-Most existing approaches to IV analysis assume linear models for the treatment density function F̂ and the counterfactual prediction function hˆ to solve Equation (5) in closed
-form. For example, the two-stage least-squares (2SLS) procedure (e.g., Angrist et al., 1996) posits y = γp + xβy + e
-and p = τz + xβ p + v, with the assumptions that E[e|x, z] = 0,
-E[v|x, z] = 0, and E[ev] , 0 (which implies E[ep] , 0). This
-procedure is straightforward: fit a linear model for p given
-x and z and use the predicted values p̂ in a second linear
-model of y. This is a statistically efficient way to estimate
-the effect of the policy variable (i.e. γ) as long as two strong
-assumptions hold: linearity (i.e., both first- and second-stage
-regressions are correctly specified) and homegeneity (i.e.,
-the policy affects all individuals in the same way).4
-Flexible nonparametric extensions of 2SLS either replace
-the linear regressions with a linear projection onto a series
-of known basis functions (Newey & Powell, 2003; Blundell
-et al., 2007; Chen & Pouzo, 2012) or use kernel-based methods as in Hall & Horowitz (2005) and Darolles et al. (2011).
-This system of series estimators is an effective strategy for
-introducing flexibility and heterogeneity with low dimensional inputs, but the approach faces the same limitations as
-kernel methods in general: their performance depends on
-the choice of kernel function; and they often become comestimated γ̂ remains interpretable as a ‘local average
-treatment effect’ (LATE) under less stringent assumptions (see
-Angrist et al., 1996, for an overview).
-4 The
+Decoder
 
-Deep IV: A Flexible Approach for Counterfactual Prediction
+(a) Standard VAE
 
-putationally intractable in high-dimensional feature spaces
-[x, z] or with large numbers of training examples.
+(b) Our model
 
-3. Estimating and validating DeepIV
-We now describe how to use deep networks to perform flexible, scalable IV analysis in a framework we call DeepIV.
-We make two contributions that are each necessary components of the approach. First, we propose a loss function and
-optimization procedure that allows us to optimize deep networks for counterfactual prediction. Second, we describe a
-general procedure for out-of-sample validation of two-stage
-instrument variable methods. This allows us to perform
-causally valid hyper-parameter optimization, which in general is necessary for achieving good predictive performance
-using deep networks.
-Our approach is conceptually simple given the counterfactual prediction framework described in Section 2. Rather
-than constraining ourselves to analytic solutions to the integral in Equation (5), we instead directly optimize our
-estimate of the structural equation, hˆ . Specifically, to minimize `2 loss given n data points and given a function space
-H (which may not include the true h ), we solve
-!2
-Z
-n
-X
-min
-yt − hˆ (p, xt )dF(p|xt , zt ) .
-(6)
-hˆ ∈H t=1
+Figure 2. Schematic comparison of a standard VAE and a VAE
+with black-box inference model, where 1 and 2 denote samples
+from some noise distribution. While more complicated inference
+models for Variational Autoencoders are possible, they are usually
+not as flexible as our black-box approach.
 
-Since the treatment distribution is unknown, we estimate
-F̂(p|x, z) in a separate first stage.
-So the DeepIV procedure has two stages: a first stage density estimation procedure to estimate F̂(p|x, z) and a second
-that optimizes the loss function described in Equation (6).
-In both stages hyper-parameters can be chosen to minimize
-the respective loss functions on a held out validation set, and
-improvements in performance against this metric will correlate with improvements on the true structural loss which
-cannot be evaluated directly. We briefly discuss these two
-stages before describing our methods for optimizing the loss
-given in Equation (6) and our causal validation procedure.
-First stage: Treatment network In the first stage we
-learn F(p|x, z) using an appropriately chosen distribution
-parameterized by a deep neural network (DNN), say F̂ =
-Fφ (p|x, z) where φ is the set of network parameters. Since
-we will be integrating over Fφ in the second stage, we must
-fully specify this distribution.
-In the case of discrete p, we model Fφ (p|x, z) as a categorical
-Cat (p | π(x, z; φ)) with p(p = pk ) = πk (x, z; φ) for each treatment category pk and where πk (x, z; φ) is given by a DNN
-with softmax output. For continuous treatment, we model F
-as a mixture of Gaussian distributions where component
-
-
-weights πk (x, z; θ) and parameters µk (x, z; φ), σk (x, z; φ)
-form the final layer of a neural network parametrized by
+• We empirically demonstrate that our model is able
+to learn rich posterior distributions and show that the
+model is able to generate compelling samples for complex data sets.
 
-φ. This model is known as a mixture density network, as
-detailed in §5.6 of Bishop (2006). With enough mixture
-components it can approximate arbitrary smooth densities.
-To obtain mixed continuous–discrete distributions we replace some mixture components with point masses. In each
-case, fitting Fφ is a standard supervised learning problem.
-
-Second stage: Outcome network In the second stage,
-our counterfactual prediction function h is approximated
-by a DNN with real-valued output, say hθ . We optimize
-network parameters θ to minimize the integral loss function
-in Equation (6) over training data D of size T = |D| from the
-joint DGP D,
-
-L(D; θ) = |D|−1
-
-X
-
-Z
-yt −
-
-!2
-
-hθ (p, xt )d F̂φ (p|xt , zt ) . (7)
-
-t
-
-Note that this loss involves the estimated treatment distribution function, F̂φ , from our first stage.5
-3.1. Optimization for DeepIV networks
-We use stochastic gradient descent (SGD; see algorithms
-in, e.g., Duchi et al., 2011; Kingma & Ba, 2014) to train
-the network weights. For Fφ , standard off-the-shelf methods apply, but second stage optimization (for hθ ) needs to
-account for the integral in Equation (7). SGD convergence
-only requires that each sampled gradient ∇θ Lt is unbiased
-for the population gradient, ∇θ L(D; θ). Lower variance for
-∇θ Lt will tend to yield faster convergence (Zinkevich, 2003)
-while the computational efficiency of SGD on large datasets
-requires limiting the number of operations going into each
-gradient calculation (Bousquet & Bottou, 2008).
-We can approximate the integral with respect to a probability measure with the average
-associated
-R of draws from the
-P
-probability distribution: h (p)dF(p) ≈ B−1 b h (pb ) for
-iid
-
-{pb }1B ∼ F. Hence we can get an unbiased estimate of Equation (7) by replacing the integral with a sum over samples
-from our fitted treatment distribution function, F̂φ :
-
-X 
-y − 1
-L(D; θ) ≈ |D|−1
- t B
-t
-
-X
-ṗ∼F̂φ (p|xt ,zt )
-
-2
-
-
-hθ ( ṗ, xt ) := L̂(D; θ).
-
-
-(8)
-This equation can be used to estimate ∇θ L with an important
-caveat: if we want to maintain unbiased gradient estimates,
-independent samples must be used for each instance of the
-integral in the gradient calculation. To see this, note that the
-5 We can replace Eq. (7) with other functions, e.g., a softmax
-for categorical outcomes, but use `2 loss for most of our exposition.
-
-Deep IV: A Flexible Approach for Counterfactual Prediction
-
-gradient of Equation (8) has expectation
-
-h
-i
-ED ∇θ Lt = −2ED EFφ (p|xt ,zt ) yt − hθ (pk , xt )
-
-
-(9)
-· EFφ (p|xt ,zt ) hθ0 (pk , xt )
-h
-
-i
-, −2ED EFφ (p|xt ,zt ) yt − hθ (pk , xt ) hθ0 (pk , xt ) ,
-where
-the
-inequality
-holdsi
-so
-long
-as
-h
-covFφ (p|xt ,zt ) yt − hθ (pk , xt ) hθ0 (pk , xt ) , 0.
-We thus
-need a gradient estimate based on unbiased MC estimates
-for each EFφ (p|xt ,zt ) term in Equation (9). We obtain such an
-iid
-
-estimate by taking two samples { ṗb }1B , { p̈b }1B ∼ Fφ (p|xt , zt )
-and calculating the gradient as
-
-
-X
-X
-
-
-B
-−1
-b
-∇θ Lt ≡ −2 yt − B
-hθ ( ṗb , xt ) B−1 hθ0 ( p̈b , xt ). (10)
-b
-
-b
-
-Independence of the two samples ensures that Eb
-∇θB Lt =
-ED ∇θ Lt = ∇θ L(D; θ), as desired. The variance of our estimate depends on B, the number of samples that we draw.
-Each of these samples is relatively expensive to compute
-because they require a forward pass through the network
-ĥθ ( ṗ, xt ). If this varies significantly with ṗ we might need a
-large number of samples to get a low-variance estimate of
-the gradient, which is computationally intensive.
-An alternative is to optimize an upper bound on Equation (8).
-By using Jensen’s inequality and the fact that the squared
-error function is convex we get that
-X
-X
-
-2
-L̂(D; θ) ≤ |D|−1
-yt − hθ ( ṗ, xt ) .
-(11)
-t ṗ∼F̂φ (p|xt ,zt )
-
-Taking the RHS of Equation (11) as the objective and calculating the gradient leads to a version of Equation (10) in
-which a single draw can be used instead of two independent
-draws. This objective is easy to implement in practice as
-it just involves drawing samples during training. This is
-well-supported in deep network implementations because it
-is analogous to the data augmentation procedures that are
-commonly used to encourage invariance in deep networks.
-The analogy is more than just aesthetic—by optimizing this
-loss, we are essentially encouraging the network to be invariant to variations in the treatment that cannot be explained by
-our features and instrument. This encourages the network
-to ignore the effects of unobserved confounding variables.
-However, we do not have theoretical guarantees that optimizing this upper bound on L(D; θ) leads to good counterfactual
-performance. While it may converge more quickly because
-it exhibits lower variance, it will have worse asymptotic performance as it only approximates the desired loss function.
-We evaluated this tradeoff experimentally by comparing
-optimizing the upper bound to the more computationally
-
-expensive unbiased procedure. In our simulations, we found
-that upper bound loss tended to give better performance
-under practical computational limitations.
-Discrete treatment and outcome spaces The discussion
-thus far has focused on continuous treatment and outcome
-spaces because they are more challenging mathematically.
-When the treatment space is discrete and low dimensional,
-Fφ is modeled as a categorical response so the gradient of
-Equation (7) can be expressed exactly as
-
-
-X
-
-
-k
-
-∇θ Lt = −2 yt −
-πk (xt , zt ; φ)hθ (p , xt )
-k
-X
-·
-πk (xt , zt ; φ)hθ0 (pk , xt ). (12)
-k
-
-Thus when the outcome space is discrete, we also have less
-to worry about with respect to bias in gradient updates. For
-discrete outcomes, we use the softmax loss and can use
-single-sample MC gradient estimates without introducing
-bias or large amounts of variance because the gradient with
-respect to the softmax loss does not involve a product of
-random variables.
-3.2. Causal validation
-There is a widespread belief that “[s]tandard methods for
-hyperparameter selection, such as cross-validation, are not
-applicable when there are no samples of the counterfactual
-outcome” (Shalit et al., 2016). This would be a significant problem in our setting because out-of-sample (OOS)
-validation procedures are crucial for tuning deep network
-hyper-parameters and optimization rules. Fortunately, both
-steps in our Deep IV procedure can be validated by simply
-evaluating the respective losses on held out data. Consider
-a held-out dataset Dh-o . Our first stage, fitting Fφ , is a
-standard density estimation problem and can be tuned to
-minimize the OOS deviance criterion
-X
-min
-− log fφ (pl |xl , zl ),
-(13)
+2. Background
+As our model is an extension of Variational Autoencoders
+(VAEs) (Kingma & Welling, 2013; Rezende et al., 2014),
+we start with a brief review of VAEs.
+VAEs are specified by a parametric generative model pθ (x |
+z) of the visible variables given the latent variables, a prior
+p(z) over the latent variables and an approximate inference
+model qφ (z | x) over the latent variables given the visible
+variables. It can be shown that
+log pθ (x) ≥ −KL(qφ (z | x), p(z))
++ Eqφ (z|x) log pθ (x | z). (2.1)
+The right hand side of (2.1) is called the variational lower
+bound or evidence lower bound (ELBO). If there is φ such
+that qφ (z | x) = pθ (z | x), we would have
+log pθ (x) = max −KL(qφ (z | x), p(z))
 φ
 
-dl ∈Dh-o
++ Eqφ (z|x) log pθ (x | z). (2.2)
 
-where fφ is either the probability mass function or density
-function associated with Fφ , as appropriate. Second stage
-validation proceeds conditional upon a fitted Fφ , and we
-seek to minimize the held-out loss criterion
-!2
-Z
-X
-min
-yl − hθ (p, xl )dFφ (p|xl , zl ) .
-(14)
+1
+
+Concurrently to our work, several researchers have described similar ideas. Some ideas of this paper were described
+independently by Huszár in a blog post on http://www.
+inference.vc and in Huszár (2017). The idea to use adversarial training to improve the encoder network was also suggested by
+Goodfellow in an exploratory talk he gave at NIPS 2016 and by Li
+& Liu (2016). A similar idea was also mentioned by Karaletsos
+(2016) in the context of message passing in graphical models.
+
+However, in general this is not true, so that we only have
+an inequality in (2.2).
+When performing maximum-likelihood training, our goal
+is to optimize the marginal log-likelihood
+EpD (x) log pθ (x),
+
+(2.3)
+
+Adversarial Variational Bayes
+
+where pD is the data distribution. Unfortunately, computing log pθ (x) requires marginalizing out z in pθ (x, z)
+which is usually intractable. Variational Bayes uses inequality (2.1) to rephrase the intractable problem of optimizing (2.3) into
+h
+max max EpD (x) −KL(qφ (z | x), p(z))
 θ
 
-dl ∈Dh-o
+φ
 
-The integral here can either be exact or MC approximate via
-sampling from Fφ .
-Each stage is evaluated in turn, with second stage validation
-using the best-possible network as selected in the first stage.
+i
++ Eqφ (z|x) log pθ (x | z) . (2.4)
+Due to inequality (2.1), we still optimize a lower bound to
+the true maximum-likelihood objective (2.3).
+Naturally, the quality of this lower bound depends on the
+expressiveness of the inference model qφ (z | x). Usually,
+qφ (z | x) is taken to be a Gaussian distribution with diagonal covariance matrix whose mean and variance vectors are
+parameterized by neural networks with x as input (Kingma
+& Welling, 2013; Rezende et al., 2014). While this model
+is very flexible in its dependence on x, its dependence on
+z is very restrictive, potentially limiting the quality of the
+resulting generative model. Indeed, it was observed that
+applying standard Variational Autoencoders to natural images often results in blurry images (Larsen et al., 2015).
 
-Deep IV: A Flexible Approach for Counterfactual Prediction
+3. Method
+In this work we show how we can instead use a black-box
+inference model qφ (z | x) and use adversarial training to
+obtain an approximate maximum likelihood assignment θ∗
+to θ and a close approximation qφ∗ (z | x) to the true posterior pθ∗ (z | x). This is visualized in Figure 2: on the left
+hand side the structure of a typical VAE is shown. The right
+hand side shows our flexible black-box inference model. In
+contrast to a VAE with Gaussian inference model, we include the noise 1 as additional input to the inference model
+instead of adding it at the very end, thereby allowing the inference network to learn complex probability distributions.
+3.1. Derivation
+To derive our method, we rewrite the optimization problem
+in (2.4) as
+max max EpD (x) Eqφ (z|x) log p(z)
+θ
 
-This procedure guards against the ‘weak instruments’ bias
-(Bound et al., 1995) that can occur when the instruments
-are only weakly correlated with the policy variable. To
-see why, consider the worst case where the instruments are
-independent of the policy variable, i.e., F(p|z) = F(p). Without validation, a sufficiently powerful model will perfectly
-overfit by approximating the conditional distribution F(p|zi )
-with a point mass at pi . As a result, the causal loss function
-will approximate the standard prediction loss, leading to
-spurious conclusions. By contrast, the expected first-stage
-loss minimizer on the validation set is the model that best
-approximates the unconditional distribution F(p), and given
-that, the second stage minimizer best approximates g(p) = ȳ
-which predicts no relationship when there is no evidence in
-favor of it. That said, it should be noted that these criteria
-provide relative performance guidance: improving on each
-criterion will improve performance on counterfactual prediction problems, but without giving any information about
-how far hθ (p, x) is from true h (p, x).
-Our causal validation procedure is sequential: stage two’s
-validation depends on the model chosen in the first stage.
-This greedy procedure is computationally efficient and
-causally valid, but potentially suboptimal because the firststage loss is not of independent interest. Peysakhovich &
-Eckles (2017) concurrently developed a casual validation
-framework that considers both stages jointly in domains with
-categorical instruments and no observable features. These
-assumptions are too restrictive for the problems we consider,
-but it would be interesting to investigate whether there exists
-a joint optimization approach that offers practical benefits
-under more permissive assumptions.
+φ
 
-4. Experiments
-We evaluated our approach on both simulated and real
-data. We used simulations to assess DeepIV’s ability to
-recover an underlying counterfactual function both in a lowdimensional domain with informative features and in a highdimensional domain with features consisting of pixels of a
-handwritten image. We compared our approach to 2SLS and
-to a standard feed-forward network, evaluated the effectiveness of hyper-parameter optimization, and contrasted our
-biased and unbiased loss functions with various numbers
-of samples underlying the SGD step. We also considered
-a real-world dataset where ground truth was not available,
-showing that we could replicate the findings of a previous
-study in a dramatically more automatic fashion.
-4.1. Simulations
-Our simulation models a richer version of the airline example described in Section 1. We assume that there are 7
-customer types s ∈ {1, ..., 7} that each exhibit different levels of price sensitivity. We model the holiday effect on
+
+− log qφ (z | x) + log pθ (x | z) . (3.1)
+When we have an explicit representation of qφ (z | x) such
+as a Gaussian parameterized by a neural network, (3.1) can
+be optimized using the reparameterization trick (Kingma &
+Welling, 2013; Rezende & Mohamed, 2015) and stochastic
+gradient descent. Unfortunately, this is not the case when
+we define qφ (z | x) by a black-box procedure as illustrated
+in Figure 2b.
 
-sales by letting the customer’s price sensitivity vary continuously throughout the year according to
-h a complex
-i non-linear
-function, ψt = 2 (t − 5)4 /600 + exp −4(t − 5)2 + t/10 − 2 .
-The time of year t is an observed variable, generated as
-t ∼ unif(0, 10). Prices are a function of ψt and of the fuel
-price z, with the motivation that they are chosen strategically
-by the airline in order to move with average price sensitivity.
-In our example, the high demand that results from conferences breaks the conditional independence between our
-treatment variable p and the latent effects e, thereby violating the “unconfoundedness” assumption. We model this
-abstractly by generating our latent errors e with a parameter
-ρ that allows us to smoothly vary the correlation between p
-and e. Sales y are then generated as
-y = 100 + (10 + p)sψt − 2p + e,
+The idea of our approach is to circumvent this problem by
+implicitly representing the term
+log p(z) − log qφ (z | x)
 
-p = 25 + (z + 3)ψt + v
+(3.2)
 
-z, v ∼ N(0, 1) and e ∼ N(ρv, 1 − ρ2 ).
-Our target counterfactual function is h (t, s, p) = (10 +
-p)sψt − 2p. To evaluate the model, we consider the counterfactual question, “What would sales have been if prices
-had been changed to p0 ?” Thus the price in our test set is set
-deterministically over a fixed grid of price values that spans
-the range of training set prices. The observed features [t, s]
-are sampled as in the original data generating process and
-we compare estimated hˆ against the ground truth h .
-Low dimensional domain We evaluated structural mean
-square error (MSE) while varying both the number of training examples and ρ, the correlation between e and p. In
-addition to Deep IV, we considered a regular feed-forward
-network (FFNet) with the same architecture as our outcome
-network, a non-parametric IV polynomial kernel regression (NonPar, Darolles et al., 2011) using Hayfield et al.
-(2008)’s R implementation, and standard two-stage least
-squares (2SLS). Full details of model architectures and hyperparameter choices for all the models are given in the
-Appendix.
-The results are summarized in Figure 2. The performance of
-NonPar, of 2SLS, and of our Deep IV model was mostly unaffected by changes in ρ, reflecting the fact that these models
-are designed to be resilient to unobserved confounders. For
-1000 data points, NonPar’s mean performance was better
-than 2SLS but failed to match DeepIV. Because of NonPar’s excessive computational requirements we were not
-able to fit it to the larger datasets. 2SLS is constrained by
-its homogeneity and linearity assumptions, and so did not
-improve with increasing amounts of data. Adding regularized polynomial basis functions to 2SLS (2SLS(poly))
-gives some empirical improvements in performance over
-2SLS on larger datasets but the procedure is not causally
-valid because it violates 2SLS’s linearity assumptions. Both
-forms of 2SLS performed far better than FFNet which did a
+as the optimal value of an additional real-valued discriminative network T (x, z) that we introduce to the problem.
+More specifically, consider the following objective for the
+discriminator T (x, z) for a given qφ (x | z):
+max EpD (x) Eqφ (z|x) log σ(T (x, z))
+T
 
-Deep IV: A Flexible Approach for Counterfactual Prediction
++ EpD (x) Ep(z) log (1 − σ(T (x, z))) . (3.3)
+Here, σ(t) := (1 + e−t )−1 denotes the sigmoid-function.
+Intuitively, T (x, z) tries to distinguish pairs (x, z) that were
+sampled independently using the distribution pD (x)p(z)
+from those that were sampled using the current inference
+model, i.e., using pD (x)qφ (z | x).
+To simplify the theoretical analysis, we assume that the
+model T (x, z) is flexible enough to represent any function of the two variables x and z. This assumption is often
+referred to as the nonparametric limit (Goodfellow et al.,
+2014) and is justified by the fact that deep neural networks
+are universal function approximators (Hornik et al., 1989).
+As it turns out, the optimal discriminator T ∗ (x, z) according to the objective in (3.3) is given by the negative of (3.2).
+Proposition 1. For pθ (x | z) and qφ (z | x) fixed, the optimal discriminator T ∗ according to the objective in (3.3) is
+given by
+T ∗ (x, z) = log qφ (z | x) − log p(z).
 
-●
-●
+(3.4)
 
-●
+Proof. The proof is analogous to the proof of Proposition
+1 in Goodfellow et al. (2014). See the Supplementary Material for details.
+Together with (3.1), Proposition 1 allows us to write the
+optimization objective in (2.4) as
+
+max EpD (x) Eqφ (z|x) − T ∗ (x, z) + log pθ (x | z) , (3.5)
+θ,φ
 
-2.00
+where T ∗ (x, z) is defined as the function that maximizes
+(3.3).
+To optimize (3.5), we need to calculate the gradients of
+(3.5) with respect to θ and φ. While taking the gradient
+with respect to θ is straightforward, taking the gradient with
+respect to φ is complicated by the fact that we have defined
+T ∗ (x, z) indirectly as the solution of an auxiliary optimization problem which itself depends on φ. However, the following Proposition shows that taking the gradient with respect to the explicit occurrence of φ in T ∗ (x, z) is not necessary:
 
-10.00
+Adversarial Variational Bayes
 
-ρ = 0.1
+Algorithm 1 Adversarial Variational Bayes (AVB)
+1: i ← 0
+2: while not converged do
+3:
+Sample {x(1) , . . . , x(m) } from data distrib. pD (x)
+4:
+Sample {z (1) , . . . , z (m) } from prior p(z)
+5:
+Sample {(1) , . . . , (m) } from N (0, 1)
+6:
+Compute θ-gradient (eq. 3.7):
 
-10.00
-2.00
+gθ ←
 
-●
-
-●
-
-5
-
-10
-
-20
+Pm
 
 1
+m
 
-5
+k=1
 
-10
+∇θ log pθ x(k) | zφ x(k) , (k)
 
-0.10
+
 
-●
-●
+algorithm converges, any fix point of this algorithm yields
+a stationary point of the objective in (2.4).
+Note that optimizing (3.5) with respect to φ while keeping θ and T fixed makes the encoder network collapse to
+a deterministic function. This is also a common problem
+for regular GANs (Radford et al., 2015). It is therefore
+crucial to keep the discriminative T network close to optimality while optimizing (3.5). A variant of Algorithm 1
+therefore performs several SGD-updates for the adversary
+for one SGD-update of the generative model. However,
+throughout our experiments we use the simple 1-step version of AVB unless stated otherwise.
 
-●
-
-20
-
+Compute φ-gradient (eq. 3.7):
+
+
+Pm
 1
-
-5
-
-10
-
-20
-
-●
-●
-●
-
-●
-●
-●
-
-●
-
-FFNet
-2SLS
-2SLS(poly)
-NonPar
-DeepIV
-
-0.02
-
-●
-
-●
-
-●
-●
-
-0.10
-
-●
-
-0.02
-
-●
-
-0.02
-
-0.02
-
-0.02
-
-●
-
+(k)
+gφ ← m
+, zφ (x(k) , (k) )
+k=1 ∇φ −Tψ x
+
++ log pθ x(k) | zφ (x(k) , (k) )
+8:
+Compute ψ-gradient (eq. 3.3) :
+h
+ 3.3. Theoretical results
+Pm
 1
-
-●
-
-●
-
-0.10
-
-0.10
-
-●
-
-0.50
-
-●
-●
-
-●
-
-0.10
-
-●
-
-●
-
-0.50
-
-0.50
-
-●
-●
-
-●
-
-0.50
-
-●
-
-●
-
-0.50
-
-ρ = 0.25
-
-2.00
-
-2.00
-
-2.00
-
-10.00
-
-ρ = 0.5
-
-10.00
-
-ρ = 0.75
-
-10.00
-
-Out−of−Sample MSE (log scale)
-
-ρ = 0.9
-
-1
-
-5
-
-10
-
-20
-
-1
-
-5
-
-10
-
-20
-
-Training Sample in 1000s
-
-●
-
-●
-●
-
-●
-
-0.8
-
-●
-
-●
-●
-
-0.6
-
-●
-●
-●
-
-●
-●
-●●
-
-●
-●●
-
-●
-
-●
-●
-
-●
-
-●
-● ●● ●
-● ●
-●
-●
-●●●● ●
-●●
-●
-●
-●
-●
-● ● ●●
-●●
-●● ● ●●● ●
-●
-●
-●
-●
-●
-
-2.6
-
-2.8
-
-●
-
-3.0
-
-●
-
-3.2
-
-3.4
-
-Validation loss (MSE)
-
-●
-
-●
-●
-●
-
-0.05
-
-0.4
-
-●
-● ●
-
-5.00
-
-1.0
-
-●
-
-●
-
-0.2
-
-Counterfactual loss (MSE)
-
-●
-
-2.00
-
-●
-
-0.50
-
-●
-
-●
-
-1e−04
-5e−04
-0.001
-0.005
-0.01
-0.05
-0.1
-
-●
-●
-●
-●
-
-●
-●
-
-classes, but may instead observe a large number of features
-that correlate with such types. To simulate this, we replaced
-the customer type label s ∈ {0, 1, ..., 7} with the pixels of the
-corresponding handwritten digit from the MNIST dataset
-(LeCun & Cortes, 2010). The task remained the same, but
-the model was no longer explicitly told that there were 7
-customer types and instead had to infer the relationship
-between the image data and the outcome.
-
-●
-
-0.20
-
-●
-
-Out−of−Sample Counterfactual MSE
-
-1.2
-
-●
-
-20.00
-
-Figure 2. Out-of-sample predictive performance for different levels of endogeneity (ρ). Note that the test samples were generated with
-independent errors conditional upon a fixed grid of price values, breaking the endogeneity that existed in the training sample; this is why
-the feed-forward network did so poorly. Each model was fitted on 40 random samples from the DGP for each sample size and ρ-level.
-
-Controlled Experiment
-DeepIV
-2SLS
-Naive deep net
-
-1
-
-5
-
-10
-
-20
-
-Training Samples in 1000s
-
-Figure 3. For the high-dimensional feature space problem we used
-a four-layer convolutional network to build an embedding of the
-image features which was concatenated with the observed time
-features and the instrument (first stage) and the treatment samples
-(second stage) and fed the resulting vector through another hidden
-layer before the output layer. (Left) Grid search over L2 and
-dropout parameters for the embedding used in the convolution
-network. (Right) Performance on an image experiment.
-
-good job of estimating h (t, s, p) + E[e|p] but a terrible job of
-recovering the true counterfactual. As ρ dropped, decreasing E[e|p], FFNet’s performance improved but even with
-low levels of correlation between p and e it remained far
-worse than simple 2SLS. This occurred because we evaluated the models with respect to a fixed grid of treatment
-values which induced a covariate shift at test time. In contrast, Deep IV was the best performing model throughout
-and its performance improved as the amount of data grew.
-High dimensional feature space In real applications, we
-do not typically get to observe variables like customer type
-that cleanly delineate our training examples into explicit
-
-In this far more challenging domain, performance is sensitive to the choice of hyper-parameters, necessitating optimization on a validation set. Figure 3 shows an evaluation of
-the appropriateness of our loss function for hyper-parameter
-tuning, comparing our validation-set loss after grid search
-over Dropout and L2-regularization parameters to test set
-loss. We found a clear linear relationship between the losses;
-the best performing validation set model was among the best
-five performing models under the true causal loss.
-We can get an upper bound on the performance of a particular model architecture by comparing its performance to
-the same architecture trained on data from a simulated randomized experiment on the same data-generating process.
-We simulated this by generating the outcome y with independent noise e and by generating p uniformly at random
-over its support. Thus the controlled model had to solve
-a standard supervised learning problem where errors were
-generated independently and there was no test-time covariate shift. As before, the naive deep network also shared
-the same architecture in addition to taking the instrument
-as input. This experiment showed that DeepIV was able to
-make up most of the loss in counterfactual prediction performance that the naive network suffered by not accounting for
-the causal prediction problem. However, there was still a
-gap in performance: with 20 000 data points the controlled
-experiment achieved an average mean squared error of 0.20
-while DeepIV managed 0.32.
-
-80
-70
-60
-50
-200
-
-Table 1. Comparing loss functions on the high-dimensional image
-task. Bold indicates best performing models. Although the upper
-bound loss offered better mean performance, the two results are
-not statistically significantly different.
-
-Performance of the unbiased loss relative to the upper
-bound loss We tested how our two approaches to optimization affected performance on the image task with
-20 000 training examples. The results are summarized in
-Table 1. The upper bound loss loss gave significantly better
-performance than all but the unbiased loss version based
-on 16 samples, without requiring multiple passes through
-the network to evaluate the gradient. Thus, the bias introduced by the upper bound did not meaningfully degrade
-counterfactual performance in our experiments.
-4.2. Application: Search-advertisement position effects
-Our experiments so far have considered synthetic data. We
-now evaluate the utility of our approach on real data for
-which we do not have access to ground truth. This means
-that we cannot evaluate models in terms of their predictions;
-instead, we show that we can replicate the results of a previously published study in a dramatically more automated
-fashion. Specifically, we examine how advertiser’s position
-on the Bing search page (their “slot”) affects the probability
-of a user click, allowing for different treatment effects for
-different advertiser-query pairs. For example, we aim to detect differences in the importance of ad position when Coke
-bids on the word “Coke” (an “on-brand query”) versus when
-Pepsi bids on “Coke” (an “off-brand query”) versus when
-Coke bids on “www.coke.com” (an “on-nav query”, occurring when a user types a url in the search box by mistake)
-versus when Pepsi bids on “www.coke.com” (an “off-nav
-query”). This question was studied extensively by Goldman & Rao (2014) using a nonparametric IV estimation
-approach that involved a detailed construction of optimal
-instruments, as well as a separate hand-coded classification
-of advertiser–query pairs into the four categories above.
-Our goal is to replicate these results in an automated fashion.
-Advertiser position is correlated with latent user intent (e.g.
-when a user searches for “Coke”, it is likely both that they
-will click and that “Coke” will be the top advertiser), so we
-need instruments to infer causation. The instruments proposed by Goldman & Rao (2014) are a series of indicators
-for experiments run by Bing in which advertiser–query pairs
-
-off_nav
-
-40
-
-0.085
-0.107
-0.158
-0.100
-0.098
-
-70
-
-0.32
-0.48
-0.50
-0.44
-0.39
-
-on_nav
-
-60
-
-1
+∇
+log σ(Tψ (x(k) , zφ (x(k) , (k) )))
+gψ ← m
+ψ
+k=1
+i
+In Sections 3.1 we derived AVB as a way of performing
++ log 1 − σ(Tψ (x(k) , z (k) )
+stochastic gradient descent on the variational lower bound
+in (2.4). In this section, we analyze the properties of Algo9:
+Perform SGD-updates for θ, φ and ψ:
+rithm 1 from a game theoretical point of view.
+θ ← θ + hi gθ , φ ← φ + hi gφ , ψ ← ψ + hi gψ
+As the next proposition shows, global Nash-equilibria of
+10:
+i←i+1
+Algorithm 1 yield global optima of the objective in (2.4):
+11: end while
+Proposition 3. Assume that T can represent any function
+of two variables. If (θ∗ , φ∗ , T ∗ ) defines a Nash-equilibrium
+Proposition 2. We have
+of the two-player game defined by (3.3) and (3.7), then
+7:
+
+Eqφ (z|x) (∇φ T ∗ (x, z)) = 0.
+
+(3.6)
+
+Proof. The proof can be found in the Supplementary Material.
+Using the reparameterization trick (Kingma & Welling,
+2013; Rezende et al., 2014), (3.5) can be rewritten in the
+form
+
+T ∗ (x, z) = log qφ∗ (z | x) − log p(z)
+
+(3.8)
+
+and (θ∗ , φ∗ ) is a global optimum of the variational lower
+bound in (2.4).
+Proof. The proof can be found in the Supplementary Material.
+
+(3.7)
+
+Our parameterization of qφ (z | x) as a neural network allows qφ (z | x) to represent almost any probability density
+on the latent space. This motivates
+
+for a suitable function zφ (x, ). Together with Proposition
+1, (3.7) allows us to take unbiased estimates of the gradients
+of (3.5) with respect to φ and θ.
+
+Corollary 4. Assume that T can represent any function of
+two variables and qφ (z | x) can represent any probability
+density on the latent space. If (θ∗ , φ∗ , T ∗ ) defines a Nashequilibrium for the game defined by (3.3) and (3.7), then
+
+max EpD (x) E − T ∗ (x, zφ (x, ))
+θ,φ
+
++ log pθ (x | zφ (x, ))
+
+
+
+3.2. Algorithm
+In theory, Propositions 1 and 2 allow us to apply Stochastic
+Gradient Descent (SGD) directly to the objective in (2.4).
+However, this requires keeping T ∗ (x, z) optimal which is
+computationally challenging. We therefore regard the optimization problems in (3.3) and (3.7) as a two-player game.
+Propositions 1 and 2 show that any Nash-equilibrium of
+this game yields a stationary point of the objective in (2.4).
+In practice, we try to find a Nash-equilibrium by applying
+SGD with step sizes hi jointly to (3.3) and (3.7), see Algorithm 1. Here, we parameterize the neural network T with
+a vector ψ. Even though we have no guarantees that this
+
+1. θ∗ is a maximum-likelihood assignment
+2. qφ∗ (z | x) is equal to the true posterior pθ∗ (z | x)
+3. T ∗ is the pointwise mutual information between x and
+z, i.e.
+pθ∗ (x, z)
+T ∗ (x, z) = log
+.
+(3.9)
+pθ∗ (x)p(z)
+Proof. This is a straightforward consequence of Proposition 3, as in this case (θ∗ , φ∗ ) optimizes the variational
+lower bound in (2.4) if and only if 1 and 2 hold. Inserting the result from 2 into (3.8) yields 3.
+
+Adversarial Variational Bayes
+
+4. Adaptive Contrast
+While in the nonparametric limit our method yields the correct results, in practice T (x, z) may fail to become sufficiently close to the optimal function T ∗ (x, z). The reason for this problem is that AVB calculates a contrast between the two densities pD (x)qφ (z | x) to pD (x)p(z)
+which are usually very different. However, it is known that
+logistic regression works best for likelihood-ratio estimation when comparing two very similar densities (Friedman
+et al., 2001).
+To improve the quality of the estimate, we therefore propose to introduce an auxiliary conditional probability distribution rα (z | x) with known density that approximates
+qφ (z | x). For example, rα (z | x) could be a Gaussian distribution with diagonal covariance matrix whose mean and
+variance matches the mean and variance of qφ (z | x).
+Using this auxiliary distribution, we can rewrite the variational lower bound in (2.4) as
+h
+EpD (x) −KL (qφ (z | x), rα (z | x))
+i
++ Eqφ (z|x) (− log rα (z | x) + log pφ (x, z)) . (4.1)
+As we know the density of rα (z | x), the second term in
+(4.1) is amenable to stochastic gradient descent with respect to θ and φ. However, we can estimate the first term
+using AVB as described in Section 3. If rα (z | x) approximates qφ (z | x) well, KL (qφ (z | x), rα (z | x)) is usually much smaller than KL (qφ (z | x), p(z)), which makes
+it easier for the adversary to learn the correct probability
+ratio.
+We call this technique Adaptive Contrast (AC), as we are
+now contrasting the current inference model qφ (z | x) to
+an adaptive distribution rα (z | x) instead of the prior p(z).
+Using Adaptive Contrast, the generative model pθ (x | z)
+and the inference model qφ (z | x) are trained to maximize
+EpD (x) Eqφ (z|x) − T ∗ (x, z)
+
+− log rα (z | x) + log pθ (x, z) , (4.2)
+where T ∗ (x, z) is the optimal discriminator distinguishing
+samples from rα (z | x) and qφ (z | x).
+Consider now the case that rα (z | x) is given by a Gaussian
+distribution with diagonal covariance matrix whose mean
+µ(x) and variance vector σ(x) match the mean and variance of qφ (z | x). As the Kullback-Leibler divergence is
+invariant under reparameterization, the first term in (4.1)
+can be rewritten as
+EpD (x) KL (q̃φ (z̃ | x), r0 (z̃))
+
+(4.3)
+
+where q̃φ (z̃ | x) denotes the distribution of the normalized
+vector z̃ := z−µ(x)
+σ(x) and r0 (z̃) is a Gaussian distribution
+
+Figure 3. Comparison of KL to ground truth posterior obtained by
+Hamiltonian Monte Carlo (HMC).
+
+with mean 0 and variance 1. This way, the adversary only
+has to account for the deviation of qφ (z | x) from a Gaussian distribution, not its location and scale. Please see the
+Supplementary Material for pseudo code of the resulting
+algorithm.
+In practice, we estimate µ(x) and σ(x) using a MonteCarlo estimate. In the Supplementary Material we describe
+a network architecture for qφ (z | x) that makes the computation of this estimate particularly efficient.
+
+5. Experiments
+We tested our method both as a black-box method for variational inference and for learning generative models. The
+former application corresponds to the case where we fix the
+generative model and a data point x and want to learn the
+posterior qφ (z | x).
+An additional experiment on the celebA dataset (Liu et al.,
+2015) can be found in the Supplementary Material.
+5.1. Variational Inference
+When the generative model and a data point x is fixed, AVB
+gives a new technique for Variational Bayes with arbitrarily
+complex approximating distributions. We applied this to
+the “Eight School” example from Gelman et al. (2014). In
+this example, the coaching effects yi , i = 1, . . . , 8 for eight
+schools are modeled as
+yi ∼ N (µ + θ · ηi , σi ),
+where µ, τ and the ηi are the model parameters to be inferred. We place a N (0, 1) prior on the parameters of the
+model. We compare AVB against two variational methods
+with Gaussian inference model (Kucukelbir et al., 2015)
+as implemented in STAN (Stan Development Team, 2016).
+We used a simple two layer model for the posterior and a
+powerful 5-layer network with RESNET-blocks (He et al.,
+2015) for the discriminator. For every posterior update step
+we performed two steps for the adversary. The groundtruth data was obtained by running Hamiltonian Monte-
+
+Adversarial Variational Bayes
+
+(µ, τ )
+
+(τ, η1 )
+
+AVB
+
+VB
+(fullrank)
+
+Figure 5. Training examples in the synthetic dataset.
+
+(a) VAE
+
+(b) AVB
+
+Figure 6. Distribution of latent code for VAE and AVB trained on
+synthetic dataset.
+
+HMC
+
+Figure 4. Comparison of AVB to VB on the “Eight Schools” example by inspecting two marginal distributions of the approximation to the 10-dimensional posterior. We see that AVB accurately
+captures the multi-modality of the posterior distribution. In contrast, VB only focuses on a single mode. The ground truth is
+shown in the last row and has been obtained using HMC.
+
+Carlo (HMC) for 500000 steps using STAN. Note that
+AVB and the baseline variational methods allow to draw
+an arbitrary number of samples after training is completed
+whereas HMC only yields a fixed number of samples.
+We evaluate all methods by estimating the KullbackLeibler-Divergence to the ground-truth data using the ITEpackage (Szabo, 2013) applied to 10000 samples from the
+ground-truth data and the respective approximation. The
+resulting Kullback-Leibler divergence over the number of
+iterations for the different methods is plotted in Figure 3.
+We see that our method clearly outperforms the methods
+with Gaussian inference model. For a qualitative visualization, we also applied Kernel-density-estimation to the 2dimensional marginals of the (µ, τ )- and (τ, η1 )-variables
+as illustrated in Figure 4. In contrast to variational Bayes
+with Gaussian inference model, our approach clearly captures the multi-modality of the posterior distribution. We
+also observed that Adaptive Contrast makes learning more
+robust and improves the quality of the resulting model.
+5.2. Generative Models
+Synthetic Example To illustrate the application of our
+method to learning a generative model, we trained the neural networks on a simple synthetic dataset containing only
+the 4 data points from the space of 2 × 2 binary images
+shown in Figure 5 and a 2-dimensional latent space. Both
+the encoder and decoder are parameterized by 2-layer fully
+connected neural networks with 512 hidden units each. The
+
+log-likelihood
+reconstruction error
+ELBO
+KL(qφ (z), p(z))
+
+VAE
+-1.568
+88.5 ·10−3
+-1.697
+≈ 0.165
+
+AVB
+-1.403
+5.77 ·10−3
+≈ -1.421
+≈ 0.026
+
+Table 1. Comparison of VAE and AVB on synthetic dataset.
+The optimal log-likelihood score on this dataset is − log(4) ≈
+−1.386.
+
+encoder network takes as input a data point x and a vector of Gaussian random noise  and produces a latent code
+z. The decoder network takes as input a latent code z and
+produces the parameters for four independent Bernoullidistributions, one for each pixel of the output image. The
+adversary is parameterized by two neural networks with
+two 512-dimensional hidden layers each, acting on x and z
+respectively, whose 512-dimensional outputs are combined
+using an inner product.
+We compare our method to a Variational Autoencoder with
+a diagonal Gaussian posterior distribution. The encoder
+and decoder networks are parameterized as above, but the
+encoder does not take the noise  as input and produces a
+mean and variance vector instead of a single sample.
+We visualize the resulting division of the latent space in
+Figure 6, where each color corresponds to one state in the
+x-space. Whereas the Variational Autoencoder divides the
+space into a mixture of 4 Gaussians, the Adversarial Variational Autoencoder learns a complex posterior distribution.
+Quantitatively this can be verified by computing the KLdivergence between
+R the prior p(z) and the aggregated posterior qφ (z) := qφ (z | x)pD (x)dx, which we estimate
+using the ITE-package (Szabo, 2013), see Table 1. Note
+that the variations for different colors in Figure 6 are solely
+due to the noise  used in the inference model.
+The ability of AVB to learn more complex posterior models leads to improved performance as Table 1 shows. In
+particular, AVB leads to a higher likelihood score that is
+close to the optimal value of − log(4) compared to a standard VAE that struggles with the fact that it cannot divide
+
+Adversarial Variational Bayes
+
+1000 intermediate distributions and 5 parallel chains on
+2048 test examples. The results are reported in Table 2.
+Using AIS, we see that AVB without AC overestimates the
+true ELBO which degrades its performance. Even though
+the results suggest that AVB with AC can also overestimate
+the true ELBO in higher dimensions, we note that the loglikelihood estimate computed by AIS is also only a lower
+bound to the true log-likelihood (Wu et al., 2016).
+(a) Training data
+
+(b) Random samples
+
+Figure 7. Independent samples for a model trained on MNIST
+AVB (8-dim)
+AVB + AC (8-dim)
+AVB + AC (32-dim)
+VAE (8-dim)
+VAE (32-dim)
+VAE + NF (T=80)
+VAE + HVI (T=16)
+convVAE + HVI (T=16)
+VAE + VGP (2hl)
+DRAW + VGP
+VAE + IAF
+Auxiliary VAE (L=2)
+
+log p(x) ≥
+(≈ −83.6 ± 0.4)
+≈ −96.3 ± 0.4
+≈ −79.5 ± 0.3
+−98.1 ± 0.5
+−87.2 ± 0.3
+−85.1
+−88.3
+−84.1
+−81.3
+−79.9
+−80.8
+−83.0
+
+log p(x) ≈
+−91.2 ± 0.6
+−89.6 ± 0.6
+−80.2 ± 0.4
+−90.9 ± 0.6
+−81.9 ± 0.4
+−
+−85.51
+−81.94
+−
+−
+−79.10
+−
+
+(Rezende & Mohamed, 2015)
+(Salimans et al., 2015)
+(Salimans et al., 2015)
+(Tran et al., 2015)
+(Tran et al., 2015)
+(Kingma et al., 2016)
+(Maaløe et al., 2016)
+
+Table 2. Log-likelihoods on binarized MNIST for AVB and other
+methods improving on VAEs. We see that our method achieves
+state of the art log-likelihoods on binarized MNIST. The approximate log-likelihoods in the lower half of the table were not obtained with AIS but with importance sampling.
+
+the latent space appropriately. Moreover, we see that the
+reconstruction error given by the mean cross-entropy between an input x and its reconstruction using the encoder
+and decoder networks is much lower when using AVB instead of a VAE with diagonal Gaussian inference model.
+We also observe that the estimated variational lower bound
+is close to the true log-likelihood, indicating that the adversary has learned the correct function.
+MNIST In addition, we trained deep convolutional networks based on the DC-GAN-architecture (Radford et al.,
+2015) on the binarized MNIST-dataset (LeCun et al.,
+1998). For the decoder network, we use a 5-layer deep convolutional neural network. For the encoder network, we use
+a network architecture that allows for the efficient computation of the moments of qφ (z | x). The idea is to define the
+encoder as a linear combination of learned basis noise vectors, each parameterized by a small fully-connected neural
+network, whose coefficients are parameterized by a neural
+network acting on x, please see the Supplementary Material for details. For the adversary, we replace the fully
+connected neural network acting on z and x with a fully
+connected 4-layer neural networks with 1024 units in each
+hidden layer. In addition, we added the result of neural networks acting on x and z alone to the end result.
+To validate our method, we ran Annealed Importance Sampling (AIS) (Neal, 2001), the gold standard for evaluating
+decoder based generative models (Wu et al., 2016) with
+
+Using AVB with AC, we see that we improve both on a
+standard VAE and AVB without AC. When comparing to
+other state of the art methods, we see that our method
+achieves state of the art results on binarized MNIST2 . For
+an additional experimental evaluation of AVB and three
+baselines for a fixed decoder architecture see the Supplementary Material. Some random samples for MNIST are
+shown in Figure 7. We see that our model produces random samples that are perceptually close to the training set.
+
+6. Related Work
+6.1. Connection to Variational Autoencoders
+AVB strives to optimize the same objective as a standard
+VAE (Kingma & Welling, 2013; Rezende et al., 2014), but
+approximates the Kullback-Leibler divergence using an adversary instead of relying on a closed-form formula.
+Substantial work has focused on making the class of approximate inference models more expressive. Normalizing
+flows (Rezende & Mohamed, 2015; Kingma et al., 2016)
+make the posterior more complex by composing a simple
+Gaussian posterior with an invertible smooth mapping for
+which the determinant of the Jacobian is tractable. Auxiliary Variable VAEs (Maaløe et al., 2016) add auxiliary
+variables to the posterior to make it more flexible. However, no other approach that we are aware of allows to use
+black-box inference models to optimize the ELBO.
+6.2. Connection to Adversarial Autoencoders
+Makhzani et al. (Makhzani et al., 2015) introduced the concept of Adversarial Autoencoders. The idea is to replace
+the term
+KL(qφ (z | x), p(z))
+(6.1)
+in (2.4) with an adversarial loss that tries to enforce that
+upon convergence
+Z
+qφ (z | x)pD (x)dx ≈ p(z).
+(6.2)
+While related to our approach, the approach by Makhzani
+et al. modifies the variational objective while our approach
 2
-4
-8
-16
+Note that the methods in the lower half of Table 2 were
+trained with different decoder architectures and therefore only
+provide limited information regarding the quality of the inference
+model.
 
-off_brand
+Adversarial Variational Bayes
 
-50
+retains the objective.
+The approach by Makhzani et al. can be regarded as an
+approximation to our approach, where T (x, z) is restricted
+to the class of functions that do not depend on x. Indeed,
+an ideal discriminator that only depends on z maximizes
+Z Z
+pD (x)q(z | x) log σ(T (z))dxdz
+Z Z
++
+pD (x)p(z) log (1 − σ(T (z)))dxdz (6.3)
+which is the case if and only if
+Z
+T (z) = log q(z | x)pD (x)dx − log p(z).
 
-Upper bound
-Unbiased
-Unbiased
-Unbiased
-Unbiased
+= sup Eq(z|x) T (x, z) − Ep(z) f ∗ (T (x, z)), (6.8)
+T
+∗
 
-on_brand
+with f (ξ) = exp(ξ − 1) the convex conjugate of f (t) =
+t log t.
+All in all, this yields
+θ
 
-40
+=
 
-Stdev
-relative click rate
+(6.4)
 
-Mean
+but qφ (z | x) need not be close to the true posterior pθ (z |
+x). Intuitively, while mapping pD (x) through qφ (z | x)
+results in the correct marginal distribution, the contribution
+of each x to this distribution can be very inaccurate.
+In contrast to Adversarial Autoencoders, our goal is to improve the ELBO by performing better probabilistic inference. This allows our method to be used in a more general
+setting where we are only interested in the inference network itself (Section 5.1) and enables further improvements
+such as Adaptive Contrast (Section 4) which are not possible in the context of Adversarial Autoencoders.
+6.3. Connection to f-GANs
+Nowozin et al. (Nowozin et al., 2016) proposed to generalize Generative Adversarial Networks (Goodfellow et al.,
+2014) to f-divergences (Ali & Silvey, 1966) based on results by Nguyen et al. (Nguyen et al., 2010). In this paragraph we show that f-divergences allow to represent AVB
+as a zero-sum two-player game.
 
-30
+(6.9)
 
-# Samples
+max min EpD (x) Ep(z) f ∗ (T (x, z))
+θ,q
 
-20
+T
 
-Loss Function
++EpD (x) Eq(z|x) (log pθ (x | z) − T (x, z)).
+By replacing the objective (3.3) for the discriminator with
+h
+i
+min EpD (x) Ep(z) eT (x,z)−1 − Eq(z|x) T (x, z) , (6.10)
+T
 
-90
+we can reformulate the maximum-likelihood-problem as a
+mini-max zero-sum game. In fact, the derivations from
+Section 3 remain valid for any f -divergence that we use
+to train the discriminator. This is similar to the approach
+taken by Poole et al. (Poole et al., 2016) to improve the
+GAN-objective. In practice, we observed that the objective
+(6.10) results in unstable training. We therefore used the
+standard GAN-objective (3.3), which corresponds to the
+Jensen-Shannon-divergence.
+6.4. Connection to BiGANs
+BiGANs (Donahue et al., 2016; Dumoulin et al., 2016)
+are a recent extension to Generative Adversarial Networks
+with the goal to add an inference network to the generative
+model. Similarly to our approach, the authors introduce
+an adversary that acts on pairs (x, z) of data points and latent codes. However, whereas in BiGANs the adversary
+is used to optimize the generative and inference networks
+separately, our approach optimizes the generative and inference model jointly. As a result, our approach obtains good
+reconstructions of the input data, whereas for BiGANs we
+obtain these reconstructions only indirectly.
 
-Deep IV: A Flexible Approach for Counterfactual Prediction
+7. Conclusion
+(6.6)
 
-400
+for some convex functional f : R → R∞ with f (1) = 0.
+Nguyen et al. (2010) show that by using the convex conjugate f ∗ of f , (Hiriart-Urruty & Lemaréchal, 2013), we
+obtain
+Df (pkq) = sup Eq(x) [T (x)] − Ep(x) [f ∗ (T (x))] , (6.7)
+T
 
-600
+KL(q(z | x), p(z)) = Df (p(z), q(z | x))
 
-800
+max EpD (x) log pθ (x)
 
-1000
+Clearly, this simplification is a crude approximation to our
+formulation from Section 3, but Makhzani et al. (2015)
+show that this method can still lead to good sampling results. In theory, restricting T (x, z) in this way ensures that
+upon convergence we approximately have
+Z
+qφ (z | x)pD (x)dx = p(z),
+(6.5)
 
-200
+The family of f-divergences is given by
+
+
+q(x)
+.
+Df (pkq) = Ep f
+p(x)
 
-400
+where T is a real-valued function. In particular, this is true
+for the reverse Kullback-Leibler divergence with f (t) =
+t log t. We therefore obtain
 
-600
+We presented a new training procedure for Variational Autoencoders based on adversarial training. This allows us to
+make the inference model much more flexible, effectively
+allowing it to represent almost any family of conditional
+distributions over the latent variables.
+We believe that further progress can be made by investigating the class of neural network architectures used for the
+adversary and the encoder and decoder networks as well as
+finding better contrasting distributions.
 
-800
-
-1000
-
-website US rank
-
-Figure 4. The inter-quartile range in advertiser-query specific estimates of the relative drop in click rate from moving from position
-2
-1 to position 2 (i.e. y-axis denotes cr1cr−cr
-%), as the popularity of
-1
-the advertiser varies along the x-axis (as measured by visit rank on
-Alexa.com), for on-brand versus off-brand queries (left panel) and
-on-nav versus off-nav queries (right panel) for a single combination
-of advertiser and search-query text.
-
-were randomly assigned to different algorithms that in turn
-scored advertisers differently in search auctions, resulting
-in random variation in position. Our estimation algorithm
-takes the experiment ID directly as an instrument.
-As features, we gave the deep nets the query url and user
-query as text. The url was parsed into tokens on dashes
-and dots and these tokens were then parsed on punctuation
-and whitespace. Given the outcome variable (an indicator for user click), the features, and the instruments, we
-applied our methodology directly to the data without any
-of the additional feature engineering and construction of
-optimal instruments performed by Goldman & Rao (2014).
-This approach was tractable despite the fact that the dataset
-contained over 20 million observations. Figure 4 shows
-the results. We were able to replicate the original study’s
-broad findings, namely that (i) that for “on-brand” queries,
-position was worth more to small websites; and (ii) that the
-value of position for on-nav queries was much smaller than
-for off-nav queries. A naive non-causal regression found an
-unrealistic average treatment effect (ATE; across sampled
-advertisers and queries) drop in click rate of 70% from 1st
-to 2nd position; in contrast, the causal estimate of the ATE
-was a more modest 12% drop.
-
-5. Discussion
-We have presented DeepIV, an approach that leverages instrument variables to train deep networks that directly minimize the counterfactual prediction error and validate the
-resulting models on held-out data. DeepIV significantly
-reduced counterfactual error measured in simulation experiments and was able to replicate previous IV experiments without extensive feature engineering. In future work,
-we plan to discuss interference techniques for the DeepIV
-framework and explore how this approach generalizes to
-other causal graphs given appropriate assumptions.
-
-Deep IV: A Flexible Approach for Counterfactual Prediction
+Adversarial Variational Bayes
 
 Acknowledgements
-We would like to thank Susan Athey, Xiaohong Chen and
-Demian Pouzo for their helpful discussions and the anonymous reviewers for their useful comments on the paper. We
-would also like to thank Holger Hoos for the use of the Ada
-cluster, without which the experiments would not have been
-possible.
+This work was supported by Microsoft Research through
+its PhD Scholarship Programme.
 
 References
-Angrist, J. D., Imbens, G.W., and Rubin, D. B. Identification
-of causal effects using instrumental variables. Journal of
-the American Statistical Association, 91(434):444–455,
-1996.
-Angrist, Joshua D and Pischke, Jörn-Steffen. Mostly harmless econometrics: An empiricist’s companion. Princeton
-university press, 2008.
-Athey, Susan and Imbens, Guido. Recursive partitioning for
-heterogeneous causal effects. Proceedings of the National
-Academy of Sciences, 113:7353–7360, 2016.
-Bishop, Christopher M. Pattern Recognition and Machine
-Learning. Springer, 2006.
-Blundell, Richard, Chen, Xiaohong, and Kristensen, Dennis. Semi-nonparametric iv estimation of shape-invariant
-engel curves. Econometrica, 75:1630–1669, 2007.
-Bottou, L. Large-scale machine learning with stochastic
-gradient descent. In Proceedings of COMPSTAT’2010,
-pp. 177–186. Springer, 2010.
-Bottou, Léon, Peters, Jonas, Quiñonero-Candela, Joaquin,
-Charles, Denis X, Chickering, D Max, Portugaly, Elon,
-Ray, Dipankar, Simard, Patrice, and Snelson, Ed. Counterfactual reasoning and learning systems: The example
-of computational advertising. The Journal of Machine
-Learning Research, 14(1):3207–3260, 2013.
-Bound, John, Jaeger, David A, and Baker, Regina M. Problems with instrumental variables estimation when the
-correlation between the instruments and the endogenous
-explanatory variable is weak. Journal of the American
-Statistical Association, 90:443–450, 1995.
+Ali, Syed Mumtaz and Silvey, Samuel D. A general class
+of coefficients of divergence of one distribution from another. Journal of the Royal Statistical Society. Series B
+(Methodological), pp. 131–142, 1966.
+Chen, Xi, Kingma, Diederik P, Salimans, Tim, Duan, Yan,
+Dhariwal, Prafulla, Schulman, John, Sutskever, Ilya, and
+Abbeel, Pieter. Variational lossy autoencoder. arXiv
+preprint arXiv:1611.02731, 2016.
+Dinh, Laurent, Krueger, David, and Bengio, Yoshua. Nice:
+Non-linear independent components estimation. arXiv
+preprint arXiv:1410.8516, 2014.
+Dinh, Laurent, Sohl-Dickstein, Jascha, and Bengio, Samy.
+Density estimation using real nvp. arXiv preprint
+arXiv:1605.08803, 2016.
 
-Duchi, John, Hazan, Elad, and Singer, Yoram. Adaptive
-subgradient methods for online learning and stochastic
-optimization. Journal of Machine Learning Research, 12:
-2121–2159, 2011.
-Goldman, Mathew and Rao, Justin M. Experiments as
-instruments: heterogeneous position effects in sponsored
-search auctions. 2014.
-Hall, Peter and Horowitz, Joel L. Nonparametric methods
-for inference in the presence of instrumental variables.
-Ann. Statist., 33(6):2904–2929, 12 2005.
-Hayfield, Tristen, Racine, Jeffrey S, et al. Nonparametric
-econometrics: The np package. Journal of statistical
-software, 27(5):1–32, 2008.
-Johansson, F. D., Shalit, U., and Sontag, D. Learning representations for counterfactual inference. In Proceedings of
-the 33nd International Conference on Machine Learning,
-(ICML), pp. 3020–3029, 2016.
-Kingma, Diederik and Ba, Jimmy. ADAM: A method for
-stochastic optimization. International Conference on
-Learning Representations (ICLR), 2014.
-LeCun, Y., Bengio, Y., and Hinton, G. Deep learning. Nature, 2015.
-LeCun, Yann and Cortes, Corinna. MNIST handwritten
-digit database. 2010. URL http://yann.lecun.com/
-exdb/mnist/.
-Newey, W. K. and Powell, J. L. Instrumental variable estimation of nonparametric models. Econometrica, 71(5):
-1565–1578, 2003.
-Pearl, J. Causality. Cambridge University Press, 2009.
-Peysakhovich, A. and Eckles, D. Learning causal effects
-from many randomized experiments using regularized
-instrumental variables. ArXiv e-prints, January 2017.
-Reiersøl., O. Confluence analysis by means of instrumental
-sets of variables. Arkiv för Matematik, Astronomi och
-Fysik, 32a(4):1–119, 1945.
+Hornik, Kurt, Stinchcombe, Maxwell, and White, Halbert.
+Multilayer feedforward networks are universal approximators. Neural networks, 2(5):359–366, 1989.
+Huszár, Ferenc. Variational inference using implicit distributions. arXiv preprint arXiv:1702.08235, 2017.
+Karaletsos, Theofanis. Adversarial message passing for
+graphical models. arXiv preprint arXiv:1612.05048,
+2016.
+Kingma, Diederik P and Welling, Max. Auto-encoding
+variational bayes. arXiv preprint arXiv:1312.6114,
+2013.
+Kingma, Diederik P, Salimans, Tim, and Welling, Max. Improving variational inference with inverse autoregressive
+flow. arXiv preprint arXiv:1606.04934, 2016.
+Kucukelbir, Alp, Ranganath, Rajesh, Gelman, Andrew, and
+Blei, David. Automatic variational inference in stan. In
+Advances in neural information processing systems, pp.
+568–576, 2015.
 
-Bousquet, Olivier and Bottou, Léon. The tradeoffs of large
-scale learning. In Advances in neural information processing systems (NIPS), pp. 161–168, 2008.
+Donahue, Jeff, Krähenbühl, Philipp, and Darrell,
+Trevor. Adversarial feature learning. arXiv preprint
+arXiv:1605.09782, 2016.
 
-Robbins, H. and Monro, S. A stochastic approximation
-method. The Annals of Mathematical Statistics, pp. 400–
-407, 1951.
+Larsen, Anders Boesen Lindbo, Sønderby, Søren Kaae,
+and Winther, Ole.
+Autoencoding beyond pixels
+using a learned similarity metric.
+arXiv preprint
+arXiv:1512.09300, 2015.
 
-Chen, X. and Pouzo, D. Estimation of nonparametric conditional moment models with possibly nonsmooth generalized residuals. Econometrica, 80:277–321, 2012.
+Dumoulin, Vincent, Belghazi, Ishmael, Poole, Ben, Lamb,
+Alex, Arjovsky, Martin, Mastropietro, Olivier, and
+Courville, Aaron. Adversarially learned inference. arXiv
+preprint arXiv:1606.00704, 2016.
 
-Rosenbaum, P. R. and Rubin, D. B. Assessing sensitivity to
-an unobserved binary covariate in an observational study
-with binary outcome. Journal of the Royal Statistical
-Society. Series B (Methodological), 45(2):212–218, 1983.
+LeCun, Yann, Bottou, Léon, Bengio, Yoshua, and Haffner,
+Patrick. Gradient-based learning applied to document
+recognition. Proceedings of the IEEE, 86(11):2278–
+2324, 1998.
 
-Darolles, Serge, Fan, Yanqin, Florens, Jean-Pierre, and
-Renault, Eric. Nonparametric instrumental regression.
-Econometrica, 79:1541–1565, 2011.
+Friedman, Jerome, Hastie, Trevor, and Tibshirani, Robert.
+The elements of statistical learning, volume 1. Springer
+series in statistics Springer, Berlin, 2001.
+Gelman, Andrew, Carlin, John B, Stern, Hal S, and Rubin,
+Donald B. Bayesian data analysis, volume 2. Chapman
+& Hall/CRC Boca Raton, FL, USA, 2014.
+Goodfellow, Ian, Pouget-Abadie, Jean, Mirza, Mehdi, Xu,
+Bing, Warde-Farley, David, Ozair, Sherjil, Courville,
+Aaron, and Bengio, Yoshua. Generative adversarial nets.
+In Advances in Neural Information Processing Systems,
+pp. 2672–2680, 2014.
+He, Kaiming, Zhang, Xiangyu, Ren, Shaoqing, and Sun,
+Jian. Deep residual learning for image recognition. arXiv
+preprint arXiv:1512.03385, 2015.
+Hiriart-Urruty, Jean-Baptiste and Lemaréchal, Claude.
+Convex analysis and minimization algorithms I: fundamentals, volume 305. Springer science & business media, 2013.
 
-Schmidhuber, J. Deep learning in neural networks: An
-overview. Neural Networks, 2015.
+Li, Yingzhen and Liu, Qiang. Wild variational approximations. In NIPS workshop on advances in approximate
+Bayesian inference, 2016.
+Liu, Qiang and Feng, Yihao. Two methods for wild variational inference. arXiv preprint arXiv:1612.00081,
+2016.
+Liu, Ziwei, Luo, Ping, Wang, Xiaogang, and Tang, Xiaoou.
+Deep learning face attributes in the wild. In Proceedings
+of International Conference on Computer Vision (ICCV),
+2015.
+Maaløe, Lars, Sønderby, Casper Kaae, Sønderby,
+Søren Kaae, and Winther, Ole. Auxiliary deep generative models. arXiv preprint arXiv:1602.05473, 2016.
+Makhzani, Alireza, Shlens, Jonathon, Jaitly, Navdeep, and
+Goodfellow, Ian. Adversarial autoencoders. arXiv
+preprint arXiv:1511.05644, 2015.
+Neal, Radford M. Annealed importance sampling. Statistics and Computing, 11(2):125–139, 2001.
 
-Deep IV: A Flexible Approach for Counterfactual Prediction
+Adversarial Variational Bayes
 
-Shalit, U., Johansson, F., and Sontag, D. Estimating individual treatment effect: generalization bounds and algorithms. ArXiv e-prints, June 2016.
-Wager, Stefan and Athey, Susan. Inference of heterogeneous treatment effects using random forests.
-arXiv:1510.04342, 2015.
-Wright, P. G. The Tariff on Animal and Vegetable Oils.
-Macmillan, 1928.
-Zinkevich, Martin. Online convex programming and generalized infinitesimal gradient ascent. In Proceedings of the
-Twentieth International Conference on Machine Learning
-(ICML), 2003.
+Nguyen, Anh, Yosinski, Jason, Bengio, Yoshua, Dosovitskiy, Alexey, and Clune, Jeff. Plug & play generative
+networks: Conditional iterative generation of images in
+latent space. arXiv preprint arXiv:1612.00005, 2016.
+Nguyen, XuanLong, Wainwright, Martin J, and Jordan,
+Michael I. Estimating divergence functionals and the
+likelihood ratio by convex risk minimization. IEEE
+Transactions on Information Theory, 56(11):5847–5861,
+2010.
+Nowozin, Sebastian, Cseke, Botond, and Tomioka, Ryota. f-gan: Training generative neural samplers using variational divergence minimization. arXiv preprint
+arXiv:1606.00709, 2016.
+Poole, Ben, Alemi, Alexander A, Sohl-Dickstein, Jascha,
+and Angelova, Anelia. Improved generator objectives
+for gans. arXiv preprint arXiv:1612.02780, 2016.
+Radford, Alec, Metz, Luke, and Chintala, Soumith. Unsupervised representation learning with deep convolutional generative adversarial networks. arXiv preprint
+arXiv:1511.06434, 2015.
+Ranganath, Rajesh, Tran, Dustin, Altosaar, Jaan, and Blei,
+David. Operator variational inference. In Advances in
+Neural Information Processing Systems, pp. 496–504,
+2016.
+Rezende, Danilo Jimenez and Mohamed, Shakir. Variational inference with normalizing flows. arXiv preprint
+arXiv:1505.05770, 2015.
+Rezende, Danilo Jimenez, Mohamed, Shakir, and Wierstra, Daan. Stochastic backpropagation and approximate inference in deep generative models. arXiv preprint
+arXiv:1401.4082, 2014.
+Salimans, Tim, Kingma, Diederik P, Welling, Max, et al.
+Markov chain monte carlo and variational inference:
+Bridging the gap. In ICML, volume 37, pp. 1218–1226,
+2015.
+Stan Development Team. Stan modeling language users
+guide and reference manual, Version 2.14.0, 2016. URL
+http://mc-stan.org.
+Szabo, Zoltán. Information theoretical estimators (ite) toolbox. 2013.
+Tran, Dustin, Ranganath, Rajesh, and Blei, David M.
+The variational gaussian process.
+arXiv preprint
+arXiv:1511.06499, 2015.
+van den Oord, Aaron, Kalchbrenner, Nal, Espeholt, Lasse,
+Vinyals, Oriol, Graves, Alex, et al. Conditional image generation with pixelcnn decoders. In Advances In
+
+Neural Information Processing Systems, pp. 4790–4798,
+2016a.
+van den Oord, Aaron van den, Kalchbrenner, Nal, and
+Kavukcuoglu, Koray. Pixel recurrent neural networks.
+arXiv preprint arXiv:1601.06759, 2016b.
+Wu, Yuhuai, Burda, Yuri, Salakhutdinov, Ruslan, and
+Grosse, Roger.
+On the quantitative analysis of
+decoder-based generative models.
+arXiv preprint
+arXiv:1611.04273, 2016.
 
 

@@ -1,1102 +1,1179 @@
-Scalable Generative Models for Multi-label Learning with Missing Labels
+Asynchronous Distributed Variational Gaussian Process for Regression
 
-Vikas Jain 1 * Nirbhay Modhe 1 * Piyush Rai 1
+Hao Peng 1 Shandian Zhe 1 Xiao Zhang 1 Yuan Qi 2
 
 Abstract
-We present a scalable, generative framework for
-multi-label learning with missing labels. Our
-framework consists of a latent factor model for
-the binary label matrix, which is coupled with
-an exposure model to account for label missingness (i.e., whether a zero in the label matrix is
-indeed a zero or denotes a missing observation).
-The underlying latent factor model also assumes
-that the low-dimensional embeddings of each label vector are directly conditioned on the respective feature vector of that example. Our generative framework admits a simple inference procedure, such that the parameter estimation reduces to a sequence of simple weighted leastsquare regression problems, each of which can be
-solved easily, efficiently, and in parallel. Moreover, inference can also be performed in an online fashion using mini-batches of training examples, which makes our framework scalable for
-large data sets, even when using moderate computational resources. We report both quantitative and qualitative results for our framework on
-several benchmark data sets, comparing it with a
-number of state-of-the-art methods.
+Gaussian processes (GPs) are powerful nonparametric function estimators. However, their
+applications are largely limited by the expensive
+computational cost of the inference procedures.
+Existing stochastic or distributed synchronous
+variational inferences, although have alleviated
+this issue by scaling up GPs to millions of samples, are still far from satisfactory for real-world
+large applications, where the data sizes are often orders of magnitudes larger, say, billions. To
+solve this problem, we propose ADVGP, the first
+Asynchronous Distributed Variational Gaussian
+Process inference for regression, on the recent
+large-scale machine learning platform, PARAM ETER S ERVER. ADVGP uses a novel, flexible
+variational framework based on a weight space
+augmentation, and implements the highly efficient, asynchronous proximal gradient optimization. While maintaining comparable or better predictive performance, ADVGP greatly improves upon the efficiency of the existing variational methods. With ADVGP, we effortlessly
+scale up GP regression to a real-world application with billions of samples and demonstrate
+an excellent, superior prediction accuracy to the
+popular linear models.
 
 1. Introduction
-Multi-label learning (Gibaja & Ventura, 2015; 2014) is the
-problem of assigning to an object a subset of labels from a
-potentially very large label vocabulary (Prabhu & Varma,
-2014; Jain et al., 2016; Babbar & Schölkopf, 2017). In
-contrast to binary or multi-class classification, in multilabel learning, each example is associated with a binary
-label vector (potentially very large), denoting the presence/absence (relevance/irrelevance) of each label. Multilabel learning has applications in several domains such as
-computer vision (Wang et al., 2016), computational adver*
+Gaussian processes (GPs) (Rasmussen & Williams, 2006)
+are powerful non-parametric Bayesian models for function estimation. Without imposing any explicit parametric
+form, GPs merely induce a smoothness assumption via the
+definition of covariance function, and hence can flexibly infer various, complicated functions from data. In addition,
+GPs are robust to noise, resist overfitting and produce uncertainty estimations. However, a crucial bottleneck of GP
+1
 
-Equal contribution 1 Department of Computer Science and
-Enginerring, IIT Kanpur, Kanpur 208016, UP, India. Correspondence to: Vikas Jain <vikasj@iitk.ac.in>, Nirbhay Modhe
-<nirbhaym@iitk.ac.in>, Piyush Rai <piyush@cse.iitk.ac.in>
+Purdue University, West Lafayette, IN, USA 2 Ant Financial Service Group.
+Correspondence to: Hao Peng
+<pengh@alumni.purdue.edu>.
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-tising and recommender systems (Prabhu & Varma, 2014;
-Jain et al., 2016), etc.
-Several state-of-the-art methods for multi-label learning are
-based on certain structural assumptions on the binary label matrix. Some of the key structural assumptions that
-have been used in prior work include low-rank assumption (Yu et al., 2014), locally low-rank assumption (Bhatia et al., 2015), and low-rank plus sparse assumption (Xu
-et al., 2016), and clusters/topics of labels assumption (Cissé
-et al., 2016; Rai et al., 2015). Models based on these assumptions are broadly dubbed as embedding based methods for multi-label learning and offer two key advantages:
-(1) The relatedness/correlation among labels can be easily
-modeled/captured, and (2) the label vector for each example can be represented as a low-dimensional embedding,
-which faciliates developing computationally scalable models for multi-label learning. A more detailed discussion of
-prior work is provided in the Related Work section.
-Despite the considerable recent interest and progress on
-the problem of multi-label learning (Yu et al., 2014; Bhatia
-et al., 2015; Wang et al., 2016; Cissé et al., 2016), a number
-of important issues still remain. One of such issues, especially for the embdding based methods, is the ambiguity
-regarding the zeros vs unobserved (missing) entries in the
-binary label vector of each example. Since, in practice, the
-true value (0/1) for only a small subset of all the labels can
-be obtained, the zeros in the label vector do not necessarily
-represent negative labels. A typical heuristic employed by
-multi-label learning algorithms is to simply treat all such
-the zeros in the label vector as are true negatives (Yu et al.,
-2014). Another heuristic is to assign different weights to
-the zeros and ones in the binary label matrix (Yu et al.,
-2017), which is inspired by matrix factorization based collaborative filtering models that learn from implicit (binary)
-feedback data (Hu et al., 2008). However, a more principled strategy to address this issue is highly desirable.
-Another important desideratum is scalability, especially in
-the case of extreme multi-label learning problems (Prabhu
-& Varma, 2014; Jain et al., 2016; Babbar & Schölkopf,
-2017), which are characterized by a massive number of labels, features, and examples. Although a number of recent
-multi-label learning models have been proposed that can
-scale to large-scale problems, these models usually require
+models is their expensive computational cost: exact GP inference requires O(n3 ) time complexity and O(n2 ) space
+complexity (n is the number of training samples), which
+limits GPs to very small applications, say, a few hundreds
+of samples.
+To mitigate this limitation, many approximate inference algorithms have been developed (Williams & Seeger, 2001;
+Seeger et al., 2003; Quiñonero-Candela & Rasmussen,
+2005; Snelson & Ghahramani, 2005; Deisenroth & Ng,
+2015). Most methods use sparse approximations. Basically, we first introduce a small set of inducing points; and
+then we develop an approximation that transfers the expensive computations from the entire large training data, such
+as the covariance and inverse covariance matrix calculations, to the small set of the inducing points. To this end,
+a typical strategy is to impose some simplified modeling
+assumption. For example, FITC (Snelson & Ghahramani,
+2005) makes a fully conditionally independent assumption.
+Recently, Titsias (2009) proposed a more principled, variational sparse approximation framework, where the inducing points are also treated as variational parameters. The
+variational framework is less prone to overfitting and often
+yields a better inference quality (Titsias, 2009; Bauer et al.,
+2016). Based on the variational approximation, Hensman
+et al. (2013) developed a stochastic variational inference
+(SVI) algorithm, and Gal et al. (2014) used a tight variational lower bound to develop a distributed inference algorithm with the M AP R EDUCE framework.
+While SVI and the distributed variational inference have
+successfully scaled up GP models to millions of samples
+(O(106 )), they are still insufficient for real-world largescale applications, in which the data sizes are often orders
+of magnitude larger, say, over billions of samples (O(109 )).
+Specifically, SVI (Hensman et al., 2013) sequentially processes data samples and requires too much time to complete
+even one epoch of training. The distributed variational algorithm in (Gal et al., 2014) uses the M AP R EDUCE framework and requires massive synchronizations during training, where a large amount of time is squandered when the
+M APPERS or R EDUCERS are waiting for each other, or the
+failed nodes are restarted.
+To tackle this problem, we propose Asynchronous
+Distributed Variational Gaussian Process inference (AD-
 
-Scalable Generative Models for Multi-label Learning with Missing Labels
+Asynchronous Distributed Variational Gaussian Process for Regression
 
-large computational resources to truly scale to massive data
-sets (Babbar & Schölkopf, 2017; Bhatia et al., 2015; Jain
-et al., 2016). Moreover, most of the scalable multi-label
-learning algorithms only operate in batch setting and are
-usually not designed to work (Prabhu & Varma, 2014; Bhatia et al., 2015; Jain et al., 2016) in online settings with
-continuous stream of training examples.
-In this paper, we present a scalable, generative framework
-for multi-label learning, that not only bring to bear the
-modeling flexibility of probabilistic, generative models for
-the multi-label learning problem (Kapoor et al., 2012; Rai
-et al., 2015), but is also designed to handle the abovementioned challenges in a principled way. Our framework
-is based on a latent factor model for the binary label matrix,
-and has the following distinguishing aspects: (1) It naturally handles the issue of missing vs negative labels via a
-principled generative model with a exposure model (Liang
-et al., 2016) for the label matrix; (2) It is accompanied by
-a simple and scalable inference procedure (both via Gibbs
-sampling and via fast point estimation); and (3) Inference
-can also be easily performed in an online fashion, enabling
-us to apply it on large-scale problems, even when using
-moderate computational resources.
+VGP), which enables GP regression on applications with
+(at least) billions of samples. To the best of our knowledge,
+this is the first variational inference that scales up GPs to
+this level. The contributions of our work are summarized
+as follows: first, we propose a novel, general variational
+GP framework using a weight space augmentation (Section
+3). The framework allows flexible constructions of feature mappings to incorporate various low-rank structures
+and to fulfill different variational model evidence lower
+bounds (ELBOs). Furthermore, due to the simple standard normal prior of the random weights, the framework
+enables highly efficient, asynchronous proximal gradientbased optimization, with convergence guarantees as well
+as fast, element-wise and parallelizable variational posterior updates. Second, based on the new framework, we
+develop a highly efficient, asynchronous variational inference algorithm in the recent distributed machine learning
+platform, PARAMETER S ERVER (Li et al., 2014a) (Section
+4). The asynchronous algorithm eliminates an enormous
+amount of waiting time caused by the synchronous coordination, and fully exploits the computational power and network bandwidth; as a result, our new inference, ADVGP,
+greatly improves on both the scalability and efficiency of
+the prior variational algorithms, while still maintaining a
+similar or better inference quality. Finally, in a real-world
+application with billions of samples, we effortlessly train
+a GP regression model with ADVGP and achieve an excellent prediction accuracy, with 15% improvement over
+the popular linear regression implemented in Vowpal Wabbit (Agarwal et al., 2014), the state-of-the-art large-scale
+machine learning software widely used in industry.
 
-2. The Model
-In the multi-label learning problem, we assume that we are
-given N training examples {(x1 , y 1 ), . . . , (xN , y N )} with
-xn ∈ RD and y n ∈ {0, 1}L , n = 1, . . . , N . We will denote X = {x1 , . . . , xN } ∈ RN ×D to be the feature matrix
-and Y = {y 1 , . . . , y N } ∈ {0, 1}N ×L to be the label matrix. Given training data {X, Y}, the goal in multi-label
-learning is to learn a model that can predict the label vector
-y ∗ ∈ {0, 1}L for a new test input x∗ ∈ RD .
-Note that an entry yn` = 0 in the label matrix Y may not
-necessarily mean a negative label but could simply mean
-that this label is missing (and its true value could be 0 or 1).
-As we shall show, our generative model can infer the missingness of a label yn` = 0 by associating another binary
-latent variable ξn` (called exposure variable). These exposure variables will be incorporated in a latent factor model
-(Sec. 2.1) for the label matrix Y and are jointly learned
-along with the rest of the model parameters.
-2.1. An Exposure-based Latent Factor Model for the
-Binary Label Matrix
-We model the binary label matrix Y using a latent factor model. Specifically, we assume that each training example n = 1, . . . , N is associated with a latent factor
-un ∈ RK and each label ` = 1, . . . , L is associated
-with a latent factor v ` ∈ RK . We further condition un
-on the feature vector xn ∈ RD of example n by as-
+2. Gaussian Processes Review
+In this paper, we focus on Gaussian process (GP) regression. Suppose we aim to infer an underlying function
+f : Rd → R from an observed dataset D = {X, y}, where
+> >
+X = [x>
+1 , . . . , xn ] is the input matrix and y is the output
+vector. Each row of X, namely xi (1 ≤ i ≤ n), is a ddimensional input vector. Correspondingly, each element
+of y, namely yi , is an observed function value corrupted by
+some random noise. Note that the function f can be highly
+nonlinear. To estimate f from D, we place a GP prior over
+f . Specifically, we treat the collection of all the function
+values as one realization of the Gaussian process. Therefore, the finite projection of f over the inputs X, i.e., f =
+[f (x1 ), . . . , f (xn )] follows
+ a multivariate Gaussian distribution: f ∼ N f |f̄ , Knn , where f̄ = [f¯(x1 ), . . . , f¯(xn )]
+are the mean function values and Knn is the n × n covariance matrix. Each element of Knn is a covariance function k(·, ·) of two input vectors, i.e., [Knn ]i,j = k(xi , xj ).
+We can choose any symmetric positive semidefinite kernel as the covariance function, e.g., the ARD kernel:
+
+k(xi , xj ) = a20 exp − 12 (xi − xj )> diag(η)(xi − xj ) ,
 
-suming that the prior distribution of un is conditioned on
-xn , as p(un |xn ) = N (un |Wxn , λ−1
-u IK ). Here, W =
-[w1 , . . . , wK ]> ∈ RK×D which denotes the matrix of regression weights that map the feature vector xn to the mean
-of the Gaussian prior on un . We further assume a zeromean Gaussian prior p(v ` ) = N (v ` |0, λ−1
-v IK ) on label
-latent factors v ` , ` = 1, . . . , L. Note that, although we do
-not consider it here, our model can also be easily extended
-to incorporate label features (if available) by conditioning
-Gaussian prior on v ` on those label features, in the same
-manner we condition the prior on un on input features.
-
-Figure 1. Our generative model in plate notation. Note: Hyperparameters not shown for brevity.
-
-The complete generative story for each label yn` of the binary label matrix Y is given by
-un |xn
-v`
-ξn`
-yn`
-
-∼
-
-N (un |Wxn , λ−1
-u IK )
-
+where η = [1/a21 , ..., 1/a2d ]. For simplicity, we usually use
+the zero mean function, namely f¯(·) = 0.
+Given f , we use an isotropic Gaussian model to sample the
+observed noisy output y: p(y|f ) = N (y|f , β −1 I). The
+joint probability of GP regression is
+
+p(y, f |X) = N f |0, Knn N (y|f , β −1 I).
 (1)
-
-∼
-
-N (v ` |0, λ−1
-v IK )
-
+Further, we can obtain the marginal distribution of y,
+namely the model evidence, by marginalizing out f :
+
+p(y|X) = N y|0, Knn + β −1 I .
 (2)
+The inference of GP regression aims to estimate the appropriate kernel parameters and noise variance from the training data D = {X, y}, such as {a0 , η} in ARD kernel and
+β −1 . To this end, we can maximize the model evidence in
+(2) with respect to those parameters. However, to maximize
+(2), we need to calculate the inverse and the determinant of
+the n × n matrix Knn + β −1 I to evaluate the multivariate
+Gaussian term. This will take O(n3 ) time complexity and
+O(n2 ) space complexity and hence is infeasible for a large
+number of samples, i.e., large n.
+For prediction, given a test input x∗ , since the test output f ∗
+and training output f can be treated as another GP projection on X and x∗ , the joint distribution of f ∗ and f is also a
+multivariate Gaussian distribution. Then by marginalizing
+out f , we can obtain the posterior distribution of f ∗ :
+p(f ∗ |x∗ , X, y) = N (f ∗ |α, v),
 
-∼ Bernoulli(µn` )
 (3)
-(
-
->
-Bernoulli yn` |σ(un v ` ) , if ξn` = 1
-∼
+
+where
+−1 −1
+α = k>
+I) y,
+n∗ (Knn + β
+
 (4)
-δ0 , if ξn` = 0
 
-where σ(z) = 1/(1 + exp(−z)) denotes the logistic function. Note that we have associated a binary exposure latent variable ξn` with each label yn` such that ξn` = 0
-implies that yn` is 0 because it is missing (not exposed),
-and ξn` = 1 implies that yn` is exposed (and could be 0
-or 1 depending on the outcome of the Bernoulli draw). In
-Eq. 4, δ0 denotes a point-mass at zero, which means that, if
-ξn` = 0, then yn` is zero with probability 1. Otherwise, we
-draw the observed label yn` from a Bernoulli distribution
-as yn` ∼ Bernoulli(yn` |σ(u>
-n v ` )). Note that, effectively,
-each yn` is being modeled using a mixture of two distributions - a Bernoulli with probability given by the sigmoid
-σ(u>
-n v ` )) and a point-mass at 0.
-
-yn` ∼ ξn` Bern yn` |σ(u>
-n v ` ) + (1 − ξn` )I[yn` = 0] (5)
-Note that the latent variable ξn` decides which of the two
-distributions from this mixture generates yn` . Figure 1
-shows our model in the plate notation. Also note that if
-yn` = 1 then ξn` = 1 with probability 1 and therefore ξn`
-only needs to be inferred for entries for which yn` = 0.
+−1 −1
+v = k(x∗ , x∗ ) − k>
+I) kn∗ ,
+n∗ (Knn + β
 
-Scalable Generative Models for Multi-label Learning with Missing Labels
+(5)
 
-The generative model specified in Eq (1)-(4) has two additional parameters: W = [w1 , . . . , wK ]> ∈ RK×D which
-denotes the matrix of regression weights that map each
-input feature vector xn to the corresponding latent factor
-un ∈ RK , and a probability parameter µn` ∈ (0, 1) which
-denotes the probability of the label yn` being exposed (but
-note that yn` can be 0 or 1, depending on the outcome of
-Bernoulli(yn` |σ(u>
-n v ` ))). We refer to µn` as the exposure
-probability of label ` for example n.
+and kn∗ = [k(x∗ , x1 ), . . . , k(x∗ , xn )]> . Note that the calculation also requires the inverse of Knn + β −1 I and hence
+takes O(n3 ) time complexity and O(n2 ) space complexity.
 
-from Eq. 4 as a Gaussian when conditioned on ωn` ∼
->
-PG(1, u>
-n v ` ). In particular, ψn` = un v ` , conditioned on
-
-ωn` , becomes a Gaussian 
-1
-2
-p(ψn` |ωn` ) ∝ exp κn` ψn` − ωn` ψn`
+3. Variational Framework Using Weight
+Space Augmentation
+Although GPs allow flexible function inference, they have
+a severe computational bottleneck. The training and prediction both require O(n3 ) time complexity and O(n2 ) space
+complexity (see (2), (4) and (5)), making GPs unrealistic
+for real-world, large-scale applications, where the number
+of samples (i.e., n) are often billions or even larger. To
+address this problem, we propose ADVGP that performs
+highly efficient, asynchronous distributed variational inference and enables the training of GP regression on extremely large data. ADVGP is based on a novel variational
+GP framework using a weight space augmentation, which
+is discussed below.
+
+Asynchronous Distributed Variational Gaussian Process for Regression
+
+First, we construct an equivalent augmented model by introducing an m × 1 auxiliary random weight vector w
+(m  n). We assume w is sampled from the standard
+normal prior distribution: p(w) = N (w|0, I). Given w,
+we sample an n × 1 latent function values f from
+p(f |w) = N (f |Φw, Knn − ΦΦ> ),
+
 (6)
-2
-where κn` = yn` − 0.5. This likelihood with the Gaussian
-priors on the latent factors un and v ` results in Gaussian
-posteriors on un and v ` . When doing EM, this also leads to
-subproblems that are like least square regression problems.
 
-We assume each regression weight vector wk to have a
-Gaussian prior, i.e., wk ∼ N (wk |0, λ−1
-w ID ). Note that
-the spherical covariance of this prior can also be replaced
-by a more flexible diagonal covariance, which will give the
-model ability to perform feature selection.
-
-3.1. Gibbs Sampling
-
-For the exposure probability µn` , we consider two types of
-priors. In the first case, we simply assume µn` = µ` , ∀n,
-which means that the probability that a label ` is observed
-is the same for all the examples (i.e., the label exposure for
-the label ` is global, not example specific). In this case,
-we assume a Beta prior on µ` , i.e., µ` ∼ Beta(α1 , α2 ).
-In the second case, we assume access to some contexual
-information (often available in applications such as recommender systems) that we may have for each example-label
-pair (n, `), in form of some given covariates φn` ∈ RM .
-Given these covariates, we model the label exposure probability as µn` = σ(β > φn` ), where β ∈ RM is a vector of
-regression coefficients. We assume a Gaussian prior on β,
-i.e., β ∼ N (β|0, λ−1
-β IM )
-
-3. Inference
-Although the generative model specified in Eq. 1-4 is not
-readily conjugate because the logistic-Bernoulli likelihood
-is not conjugate to the Gaussian prior on the latent factors, we can leverage data-augmentation techniques (Polson et al., 2013) to make the model locally conjugate. This
-enables us to develop a simple Gibbs sampling algorithm
-for doing inference in our model. The conjugacy also allows us to design an online expectation maximization (EM)
-algorithm (Cappé & Moulines, 2009), which enables us to
-apply our model on large-scale problems.
-We handle the non-conjugate logistic-Bernoulli likelihood
-using the Pólya-gamma augmentation technique (Polson
-et al., 2013), which is based on the following identity
-(exp(ψ)a
-= 2−b exp (κψ)
-(1 + exp(ψ))b
-
-∞
-
-Z
-
-
-exp −ωψ 2 /2 p(ω)dω
-0
-
-where κ = a − b/2 and p(ω) = PG(b, 0) denotes
-the Pólya-gamma distribution (Polson et al., 2013). This
-identity allows us to write any likelihood of the form
-(exp(ψ)a
-(e.g., Bernoulli, binomial, negative-binomial)
-(1+exp(ψ))b
-as a Gaussian distribution, when conditioned on a PG random variable ω|ψ ∼ PG(b, ψ). Specifically, using PG augmentation, we can write the logistic-Bernoulli likelihood
-
-Using the PG augmentation, we can derive the posterior
-distributions of all the latent variables in our model, and
-perform Gibbs sampling for doing inference in our model.
-Due to conjugacy, the inference updates are straightforward
-to derive as are summarized below.
-Sampling ξn` : Note that if yn` = 1 then ξn` = 1 with
-probability one, and therefore need not be inferred. For
-yn` = 0, we sample ξn` from the posterior
-p(ξn` = 1|.) ∝ µn` σ(−u>
-n v` )
-
-(7)
-
-p(ξn` = 0|.) ∝ (1 − µn` ) × 1
-
+where Φ is an n × m matrix: Φ = [φ(x1 ), . . . , φ(xn )]> .
+Here φ(·) represents a feature mapping that maps the original d-dimensional input into an m-dimensional feature
+space. Note that we need to choose an appropriate φ(·)
+to ensure the covariance matrix in (6) is symmetric positive semidefinite. Flexible constructions of φ(·) enable us
+to fulfill different variational model evidence lower bounds
+(ELBO) for large-scale inference, which we will discuss
+more in Section 5.
+Given f , we sample the observed output y from the
+isotropic Gaussian model p(y|f ) = N (y|f , β −1 I). The
+joint distribution of our augmented model is then given by
+p(y, f , w|X)
+=N (w|0, I)N (f |Φw, Knn − ΦΦ> )N (y|f , β −1 I). (7)
+This model is equivalent to the original GP regression—
+when we marginalize out w, we recover the joint distribution in (1); we can further marginalize out f to recover the
+model evidence in (2). Note that our model is distinct from
+the traditional weight space view of GP regression (Rasmussen & Williams, 2006): the feature mapping φ(·) is not
+equivalent to the underlying (nonlinear) feature mapping
+induced by the covariance function (see more discussions
+in Section 5). Instead, φ(·) is defined for computational
+purpose only—that is, to construct a tractable variational
+evidence lower bound (ELBO), shown as follows.
+Now, we derive the tractable ELBO based on the weight
+space augmented model in (7). The derivation is similar
+to (Titsias, 2009; Hensman et al., 2013). Specifically, we
+first consider the conditional
+distribution p(y|w). Because
+R
+log p(y|w) = log p(y|f )p(f |w)df = loghp(y|f )ip(f |w) ,
+where h·ip(θ) denotes the expectation under the distribution p(θ), we can use Jensen’s inequality to obtain a lower
+bound:
+log p(y|w) = loghp(y|f )ip(f |w) ≥ hlog p(y|f )ip(f |w)
+n
+X
+β
 (8)
-
-Sampling µn` : For the case when µn` = µ` , ∀n, with
-Beta(α1 , α2 ) prior on each µ` , the posterior will be
-N
-N
-X
-X
-p(µn` |.) = Beta(α1 +
-ξn` , α2 + N −
-ξn` ) (9)
-n=1
-
-n=1
-
-Note that, if we parameterize each µn` as µn` = σ(β > φn` )
-where φn` is the interaction feature vector for the examplelabel pair, and the regresssion weight β is assumed to have
-a Gaussian prior, the model is not conjugate. However,
-using the PG augmentation allows us to easily derive a
-closed-form Gaussian posterior for β.
-Sampling un : Given the PG variables Ωn,: = {ωn` }L
-`=1
-and the other latent variables, the posterior of un will be
-un ∼ N (un |µun , Σun ) where the covariance is given by
-PL
-Σun = ( `=1 ξn` ωn` v ` v >
-+ λu IK )−1 and the mean is
-PL`
-given by µun = Σun ( `=1 ξn` κn` v ` + λu Wxn ). Note
-that if a label ` is inferred as not exposed for example n,
-i.e., ξn` = 0, it does not contribute to the update of un .
-Sampling v ` : Given Ω:,` = {ωn` }N
-n=1 and the other latent
-variables, the posterior v ` will be v ` ∼ N (v ` |µv` , Σv` )
-PN
-−1
-where covariance Σv` = ( n=1 ξn` ωn` un u>
-n + λ v IK )
-PN
-and the mean µv` = Σv` ( n=1 ξn` κn` un ). Note that
-if an example n is inferred as not exposed to label `, i.e.,
-ξn` = 0, it does not contribute to the update of v ` .
-Sampling W: Each row {wk }K
-k=1 of the regression
-weights matrix W = [w1 , . . . , wK ]> ∈ RK×D will have
-a Gaussian posterior given by wk ∼ N (wk |µwk , Σwk )
-where covariance Σwk = (X> X + λw ID )−1 , the mean
-µwk = Σwk (X> U), and U = [u1 , . . . , uN ] ∈ RK×N .
-
-Scalable Generative Models for Multi-label Learning with Missing Labels
-
-3.2. Scalable Inference via EM and Online EM
-Although the Gibbs sampler (Sec. 3.1) is easy to derive and
-implement in practice, sampling tends to be slow in practice and convergence may be slow. We therefore present
-an online expectation maximization algorithm (Cappé &
-Moulines, 2009) for doing efficient inference in our model.
-We first show the batch EM updates for our model parameters and then describe the online EM algorithm which can
-process the training data in small mini-batches of examples,
-and results in faster convergence in practice.
-
-associated with a weight pn` = E[ξn` |ψn` ]. Intuitively, in
-the first term, the contribution of each label yn` to the loglikelihood gets modulated based on its expected exposure.
-Maximizing Q(U, V, W, µ) w.r.t. each of the model parameters U, V, W, µ, fixing the rest, yields closed-form
-updates for each of these. The updates are as follows:
-• Estimating each of the latent factors {un }N
-n=1 is a
-weighted ridge-regression problem with solution
-!
-L
-X
-un = Σun
-pn` κn` v ` + λu Wxn
-(13)
-`=1
-
-3.2.1. T HE EM A LGORITHM
-The EM algorithm for our model alternates between computing the expectations of the local latent variables, namely
-the Pólya-gamma variables {ωn` } and the binary exposure
-latent variables {ξn` } in the E step, and then using these expectations to estimate the other model parameters un , v ` ,
-W, and exposure probabilities {µn` } in the M step.
-The E Step: The E step involves computing the expectations of the latent variables {ωn` } and {ξn` }, given the current values of the other model parameters un , v ` , W, and
-µn` estimated in the previous M step. The E step update
-equations are given below:
-• Expectations of Pólya-gamma variables {ωn` }, ∀n, `
-are known to be available in closed form (Scott & Sun,
-2013), and are given by
-
-
-ψn`
-1
-(10)
-tanh
-ηn` = E[ωn` |ψn` ] =
-2ψn`
+=
+log N (yi |φ> (xi )w, β −1 ) − k̃ii ,
 2
-where ψn` = u>
-n v ` is computed using the estimates
-of un and v m from the previous M step.
-• Expectations of each of the binary exposure variables
-ξn` , ∀n, `, are given by
-pn` = E[ξn` |ψn` ] =
+i=1
+where k̃ii is the ith diagonal element of Knn − ΦΦ> .
+Next, we introduce a variational posterior q(w) to construct
 
-µn` σ(−ψn` )
-µn` σ(−ψn` ) + (1 − µn` )
+the variational lower bound of the log model evidence,
+
+
+p(y|w)p(w)
+log p(y) = log
+q(w)
+q(w)
+≥ hlog p(y|w)iq(w) − KL(q(w)kp(w)).
+
+(9)
+
+where KL(·k·) is the Kullback–Leibler divergence. Replacing log p(y|w) in (9) by the right side of (8), we obtain
+the following lower bound,
+log p(y) ≥ L = −KL (q(w)kp(w))
+n
+X
+
+
+
+β
++
+log N (yi |φ> (xi )w, β −1 ) q(w) − k̃ii .
+2
+i=1
+
+(10)
+
+Note that this is a variational lower bound: the equality is
+obtained when ΦΦT = Knn and q(w) = p(w|y). To
+achieve equality, we need to set m = n and have φ(·)
+map the d-dimensional input into an n-dimensional feature
+space. In order to reduce the computational cost, however,
+we can restrict m to be very small and choose any family
+of mappings φ(·) that satisfy Knn − ΦΦ>  0. The flexible choices of φ(·) allows us to explore different approximations in a unified variational framework. For example,
+in our practice, we introduce an m × d inducing matrix
+Z = [z1 , . . . , zm ]> and define
+φ(x) = L> km (x),
 
 (11)
 
-The M Step: Given the expectations of the latent variables computed in the E step, the M step maximizes the
-following expected complete data log-likelihood plus logprior terms, which we denote as Q(U, V, W, µ), where
-L
-U = {un }N
-n=1 , V = {v ` }`=1 , W, and µ = {µn` }, ∀n, `
-Q(U, V, W, µ) = −
+where km (x) = [k(x, z1 ), . . . , k(x, zm )]> and L is
+the lower triangular Cholesky factorization of the inverse
+kernel matrix over Z, i.e., [Kmm ]i,j = k(zi , zj ) and
+>
+>
+=
+K−1
+mm = LL . It can be easily verified that ΦΦ
+>
+−1
+Knm Kmm Knm , where Knm is the cross kernel matrix
+between X and Z, i.e., [Knm ]ij = k(xi , zj ). Therefore
+Knn − ΦΦ is always positive semidefinite, because it can
+be viewed
+as a Schur
+h
+i complement of Knn in the block maK>
+mm
+nm . We discuss other choices of φ(·) in
+trix K
+Knm
+Knn
+Section 5.
 
-+
+4. Delayed Proximal Gradient Optimization
+for ADVGP
+A major advantage of our variational GP framework is the
+capacity of using the asynchronous, delayed proximal gradient optimization supported by PARAMETER S ERVER (Li
+et al., 2014b), with convergence guarantees and scalability to huge data. PARAMETER S ERVER is a well-known,
+general platform for asynchronous machine learning algorithms for extremely large applications. It has a bipartite architecture where the computing nodes are partitioned into
+two classes: server nodes store the model parameters and
+worker nodes the data. PARAMETER S ERVER assumes the
+learning procedure minimizes a non-convex loss function
 
-X
+Asynchronous Distributed Variational Gaussian Process for Regression
 
-2
-1X
-(κn` − ηn` u>
-n v` )
-pn`
-2 n,`
-ηn`
-
-log Bernoulli(pn` |µn` ) − λu
-
-L
-X
-`=1
-
-2
-
-||un − Wxn ||
-
-n=1
-
-n,`
-
-− λv
-
-N
-X
-
-2
-
-2
-
-||v ` || − λw ||W|| +
-
-X
-
-log Beta(µn` |α1 , α2 )
+with the following composite form:
+Xr
+L(θ) =
+Gk (θ) + h(θ)
+k=1
 
 (12)
 
-n,`
+where θ are the model parameters. Here Gk (θ) is a (possibly non-convex) function associated with the data in worker
+k and therefore can be calculated by worker k independently; h(θ) is a convex function with respect to θ.
+To efficiently minimize the loss function in (12), PARAM ETER S ERVER uses a delayed proximal gradient updating
+method to perform asynchronous optimization. To illustrate it, let us first review the standard proximal gradient descent. Specifically, for each iteration
+t, we first take a gradiP
+ent descent step according to k Gk (θ) and then perform
+a proximal operation to project θ toward
+P the minimum
+of h(·), i.e., θ (t+1) = Proxγt [θ (t) − γt k ∇Gk (θ (t) )],
+where γt is the step size. The proximal operation is defined
+as
+1
+kθ ∗ − θk22 .
+Proxγt [θ] = argmin h(θ ∗ ) +
+∗
+2γ
+t
+θ
 
-Note that the first term in the objective function given in
-Eq. 12 is due to the logistic likelihood transformed into a
-Gaussian (using PG augmentation). This term is akin to
-a weighted least squares objective where each label being
+(13)
 
-PL
-−1
-where Σun = ( `=1 pn` ηn` v ` v >
-. Note
-` + λ u IK )
-N
-that the updates for {un }n=1 are all independent of
-each other and are easily parallelizable.
-• Estimating each of the label latent factors {v ` }L
-`=1 is
-a weighted ridge-regression problem with solution
-!
-N
-X
-pn` κn` un
-v ` = Σv`
+The standard proximal gradient descent guarantees to find
+a local minimum solution. However, the computation is
+inefficient, even in parallel: in each iteration, the server
+nodes wait until the worker nodes finish calculating each
+∇Gk (θ (t) ); then the workers wait for the servers to finish
+the proximal operation. This synchronization wastes much
+time and computational resources. To address this issue,
+PARAMETER S ERVER uses a delayed proximal gradient updating approach to implement asynchronous computation.
+Specifically, we set a delay limit τ ≥ 0. At any iteration t, the servers do not enforce all the workers to finish iteration t; instead, as long as each worker has finished an iteration no earlier than t − τ , the servers will
+proceed to perform
+updates, i.e., θ (t+1) =
+P the proximal
+(t)
+(tk )
+Proxγt [θ −γt k ∇Gk (θ )] (t−τ ≤ tk ≤ t), and notify all the workers with the new parameters θ (t+1) . Once
+received the updated parameters, the workers compute and
+push the local gradient to the servers immediately. Obviously, this delay mechanism can effectively reduce the wait
+between the server and worker nodes. By setting different τ , we can adjust the degree of the asynchronous computation: when τ = 0, we have no asynchronization and
+return to the standard, synchronous proximal gradient descent; when τ = ∞, we are totally asynchronous and there
+is no wait at all.
+A highlight is that given the composite form of the nonconvex loss function in (12), the above asynchronous delayed proximal gradient descent guarantees to converge according to Theorem 1.
+Theorem 1. (Li et al., 2013) Assume the gradient of the
+function Gk is Lipschitz continuous, that is, there is a constant Ck such that k∇Gk (θ) − ∇Gk (θ 0 )k ≤ Ck ||θ − θ 0 ||
+
+Pr
+for any θ, θ 0 , and k = 1, ..., r. Define C =
+k=1 Ck .
+Also, assume we allow a maximum delay for the updates by
+τ and a significantly-modified filter on pulling the parameters with threshold O(t−1 ). For any  > 0, the delayed
+proximal gradient descent converges to a stationary point
+if the learning rate γt satisfies γt ≤ ((1 + τ )C + )−1 .
+Now, let us return to our variational GP framework. A
+major benefit of our framework is that the negative variational evidence lower bound (ELBO) for GP regression has
+the same composite form as (12). Thereby we can apply
+the asynchronous proximal gradient descent for GP inference on PARAMETER S ERVER. Specifically, we explicitly
+assume q(w) = N (w|µ, Σ) and obtain the negative variational ELBO (see (10))
+Xn
+−L =
+gi + h
 (14)
-n=1
-P
-−1
-N
->
-where Σv` =
-.
-n=1 pn` ηn` un un + λv IK
-Again, note that the updates for {v n }L
-`=1 are all independent of each other and are easily parallelizable.
-• Estimating the regression weight matrix W is equivalent to solving a vector-valued linear regression problem un ≈ Wxn , ∀n, with the following updates
-W> = (X> X + λw ID )−1 (X> U)
+i=1
+
+where
+gi = − log N (yi |φ> (xi )µ, β −1 ) +
++
+h=
+
+β >
+φ (xi )Σφ(xi )
+2
+
+β
+k̃ii ,
+2
+
+
+1
+− ln |Σ| − m + tr(Σ) + µ> µ .
+2
 
 (15)
 
-Note that solving Eq. (15) exactly requires inverting a
-D × D matrix which will be expensive for large D.
-However, the EM algorithm does not require solving
-for W exactly in each M step. We therefore solve
-for W efficient using gradient based methods, such
-as conjugate-gradient (CG) method (Bertsekas, 1999),
-which allows us to also leverage the sparsity in the
-feature matrix X. Typically, a small number of CG
-iterations are sufficient in practice.
-• Given pn` from the E step, the updates for µn` for the
-case when µn` = µ` , ∀n, is simply the MAP solution
-PN
-α1 + n=1 pn` − 1
+Instead of directly updating Σ, we consider U, the upper
+triangular Cholesky factor of Σ, i.e., Σ = U> U. This not
+only simplifies the proximal operation but also ensures the
+positive definiteness of Σ during computation. The partial
+derivatives of gi with respect to µ and U are
+
+∂gi
+= β −yi φ(xi ) + φ(xi )φ> (xi )µ ,
+∂µ
+∂gi
+= βtriu[Uφ(xi )φ> (xi )],
+∂U
+
 (16)
-µ` =
-α1 + α2 + N − 2
-For the other case when each µn` in modeled as µn` =
-σ(β > φn` ) with a Gaussian prior on β, estimating β
-reduces to solving a regression problem with the training data being {φn` , pn` }, ∀n, `, where φn` is the
-given feature vector for the input-label pair n, ` and
-pn` is estimated in the E step. Ignoring the prior term
-(equivalent to `2 regularizer on β), we can estimate β
-iteratively using gradient-descent updates
-τ X
-β=β−
-(σ(β > φn` ) − pn` )φn`
 (17)
-NL
-n,`
 
-where τ denotes the learning rate.
+where triu[·] denotes the operator that keeps the upper triangular part of a matrix but leaves any other element zero.It
+can be verified that the partial derivatives of gi with respect
+to µ and U are Lipschitz continuous and h is also convex
+with respect to µ and U. According to Theorem 1, minimizing −L (i.e., maximizing L) with respect to the variational parameters, µ and U, using the asynchronous proximal gradient method can guarantee convergence. For other
+parameters, such as kernel parameters and inducing points,
+h is simply a constant. As a result, the delayed proximal
+updates for these parameters reduce to the delayed gradient
+descent optimization such as in (Agarwal & Duchi, 2011).
+We now present the details of ADVGP implementation on
+PARAMETER S ERVER. We first partition the data for r
+workers and allocate the model parameters (such as the kernel parameters, the parameters of q(w) and the inducing
+points Z) to server nodes. At any iteration t, the server
+nodes aggregate all the local gradients and perform the
 
-Scalable Generative Models for Multi-label Learning with Missing Labels
+Asynchronous Distributed Variational Gaussian Process for Regression
 
-3.2.2. O NLINE EM
+proximal operation in (13), as long as each worker k has
+computed and pushed the local gradient on its own data
+subset Dk for some prior iteration tk (t − τ ≤ tk ≤ t),
+P
+(t )
+(t )
+∇Gk k = i∈Dk ∇gi k . Note that the proximal operation is only performed for the parameters of q(w), namely
+µ and U; since h is constant for the other model parameters, such as the kernel parameters and the inducing points,
+their gradient descent updates remain unchanged. Minimizing (13) by setting the derivatives to zero, we obtain the
+proximal updates for each element in µ and U:
 
-4. Related Work
-
-The EM algorithm described in Section 3.2.1 is more efficient than the Gibbs sampler described in Section 3.1. It is
-also highly parallelizable since the updates for {u}N
-n=1 and
-{v ` }L
-can
-be
-easily
-parallelized,
-and
-solve
-for
-W effi`=1
-ciently using CG updates. However, it is a batch procedure
-and requires going over the entire training data in every iteration. For large-scale multi-label learning problems, which
-are characterized by large N , D, and L, the batch setting
-may not be feasible in practice, especially when having access to moderate computational resources and storage.
-
-A prominent line of work on multi-label learning has been
-based on models that learn a low-dimensional embedding
-of the label vectors (Chen & Lin, 2012; Yu et al., 2014; Rai
-et al., 2015; Bhatia et al., 2015). Note that this amounts to
-assuming that the label matrix is low-rank.
-
-We therefore present an efficient online version of the EM
-algorithm for our model which allows it to scale up to
-massive-sized data sets even on machines with moderate
-hardware. As we show in our experiments, this enables us
-to apply our model to be run efficiently on massive data
-sets (e.g., one of the data sets we experiment with has more
-than 600k examples with about 50k features per example)
-even on a standard laptop with very moderate hardware.
-The online EM algorithm works by maintaining sufficient
-statistics of all the model parameters and updates these
-sufficient statistics with every mini-batch of data. For
-each mini-batch of training examples, the E step computes
-the relevant expectations associated with these observations and then uses the expectations to update the sufficient
-statistics of the parameters to be estimated in the M step.
-For example, noting that the sufficient statistics for updat−1
-ing
-b are given by A =
-PNthe label latent>factors v ` = A P
-N
-n=1 pn` ηn` un un +λv IK and b =
-n=1 pn` κn` un , we
-can update A and b using a small mini-batch containing Nb
-b
-examples as {(xn , y n )}N
-n=1 as follows
-A(t+1) = (1 − γt )A(t) + γt A(new)
 (t+1)
 
-(t)
+µi
+
+0(t+1)
+
+= µi
+
+(t+1)
+Uij
+
+=
+
+(t+1)
+
+=
+
+Uii
+
+/(1 + γt ),
 
 (18)
 
-(new)
+0(t+1)
+Uij
+/(1
 
-= (1 − γt )b + γt b
++ γt ),
+q
+0(t+1)
+0(t+1) 2
+Uii
++ (Uii
+) + 4(1 + γt )γt
+2(1 + γt )
+
 (19)
+, (20)
+
+where
+0(t+1)
+µi
+
+0(t+1)
+
+Uij
+
+=
+
+(t)
+µi
+
+(t)
+
+− γt
+
+= Uij − γt
+
+Xr
+k=1
+
+Xr
+k=1
+
+(t )
+
+∂Gk k
+
+(tk )
+
+,
+
+∂µi
+
+(t )
+
+∂Gk k
+
+(t )
+
+∂Uij k
+
+.
+
+The proximal operation comprises of element-wise, closedform computations, therefore making the updates of the
+variational posterior q(w) highly parallelizable and efficient. The gradient calculation for the other parameters,
+including the kernel parameters and inducing points, although quite complicated, is pretty standard and we give
+the details in the supplementary material (Appendix A). Finally, ADVGP is summarized in Algorithm 1.
+Algorithm 1 Delayed Proximal Gradient for ADVGP
+Worker k at iteration tk
+1: Block until servers have new parameters ready.
+2: Pull the parameters from servers and update the current
+version (or iteration) tk .
+(t )
+3: Compute the gradient ∇Gk k on data Dk .
+(tk )
+4: Push the gradient ∇Gk to servers.
+Servers at iteration t
+1: if Each worker k completes iteration tk ≥ t − τ then
 P
-Nb
-where A(new) = ( n=1
-pn` ηn` un u>
-n + λv IK ), and
-PNb
-(new)
-b
-= n=1 pn` κn` un are computing using only the
-current mini-batch. The sufficient statistics of the other
-model parameters can also be updated in the same manner. Here γt is a decaying learning rate (or a forgetting
-factor), which also acts as a trade-off between the contribution from the old sufficient statistics computed thus far
-and the sufficient statistics contribution from the new minibatch of data. We set γt = (a0 + t)− with a0 = 1 and  to
-be close to 0.5 (Cappé & Moulines, 2009).
-3.2.3. P REDICTION
-b
+(t )
+2:
+Aggregate gradients to obtain ∇G(t) = ∇Gk k .
+3:
+Update µ and U using (18), (19) and (20).
+4:
+Update the other parameters using gradient descent.
+5:
+Notify all blocked workers of the new parameters
+and the version (i.e., t + 1).
+6:
+Proceed to iteration t + 1.
+7: end if
 
-Given a new test input x∗ , we first predict its latent factor
-u∗ ∈ RK as Wx∗ and then predict each entry of its label
-vector y ∗ as E[y∗` |u∗ , v ` ] = σ(u>
-∗ v ` ). If we are only
-interested in the top few labels, fast search methods such as
-maximum inner product search (Fraccaro et al., 2016) can
-be used to reduce the computational cost at test time.
+5. Discussion and Related Work
+Exact GP inference requires computing the full covariance matrix (and its inverse), and therefore is infeasible
+for large data. To reduce the computational cost, many
+sparse GP inference methods use a low-rank structure to
+approximate the full covariance. For example, Williams
+& Seeger (2001); Peng & Qi (2015) used the Nyström approximation; Bishop & Tipping (2000) used relevance vectors, constructed from covariance functions evaluated on a
+small subset of the training data. A popular family of sparse
+GPs introduced a small set of inducing inputs and targets,
+viewed as statistical summary of the data, and define an approximate model by imposing some conditional independence between latent functions given the inducing targets;
+the inference of the inexact model is thereby much easier.
+Quiñonero-Candela & Rasmussen (2005) provided a unified view of those methods, such as SoR (Smola & Bartlett,
+2001), DTC (Seeger et al., 2003), PITC (Schwaighofer &
+Tresp, 2003) and FITC (Snelson & Ghahramani, 2005).
+Despite the success of those methods, their inference procedures often exhibit undesirable behaviors, such as underestimation of the noise and clumped inducing inputs (Bauer
+et al., 2016). To obtain a more favorable approximation,
+Titsias (2009) proposed a variational sparse GP framework,
+where the approximate posteriors and the inducing inputs
+are both treated as variational parameters and estimated by
+maximizing a variational lower bound of the true model
+evidence. The variational framework is less prone to overfitting and often yields a better inference quality (Titsias,
+2009; Bauer et al., 2016). Based on Titsias (2009)’s work,
+Hensman et al. (2013) developed a stochastic variational inference for GP (SVIGP) by parameterizing the variational
+distributions explicitly. Gal et al. (2014) reparameterized
+the bound of Titsias (2009) and developed a distributed optimization algorithm with M AP R EDUCE framework. Further, Dai et al. (2014) developed a GPU acceleration using
+the similar formulation, and Matthews et al. (2017) developed GPflow library, a TensorFlow implementation that exploit GPU hardwares.
+To further enable GPs on real-world, extremely large applications, we proposed a new variational GP framework using a weight space augmentation. The proposed augmented
+model, introducing an extra random weight vector w with
+standard normal prior, is distinct from the traditional GP
+weight space view (Rasmussen & Williams, 2006) and the
+recentering tricks used in GP MCMC inferences (Murray &
+Adams, 2010; Filippone et al., 2013; Hensman et al., 2015).
+In the conventional GP weight space view, the weight vector is used to combine the nonlinear feature mapping induced by the covariance function and therefore can be infinite dimensional; in the recentering tricks, the weight vector is used to reparameterize the latent function values, to
 
-Since many real-world data sets have a large number of
-rare labels, sometimes the low-rank assumption may not
-be appropriate. To address this issue, (Bhatia et al., 2015)
-proposed a method which assumes the label matrix to be
-locally low-rank. One way to impose this assumption is to
-learn embeddings that only try to preserve distances in a
-small neighborhood of each example. Another approach to
-handle the rare labels is to assume that the label matrix is a
-sum of a low-rank and a sparse matrix (Xu et al., 2016).
-Note that our latent factor model is equivalent to imposing
-a low-rank assumption on the label matrix, and is therefore similar in spirit to the label-embedding approaches.
-However, unlike the existing label-embedding based approaches, our generative framework has a principled mechanism to handle/infer the unobserved labels. Moreover,
-none of the existing label-embedding methods can work
-in online fashion, and scaling up these methods to largescale problems requires large computational resources. In
-addition, our model readily allows incorporating the label
-features (if available) by a simple modification to the prior
-on the label latent factors.
-Apart from the label-embedding based multi-label learning methods, tree-based methods for multi-label learning (Agrawal et al., 2013; Prabhu & Varma, 2014; Jain
-et al., 2016) are also popular due to being fast at test time,
-especially when the number of labels is large. However,
-these models usually have high training costs and cannot
-be trained easily in an online fashion, unlike our model.
-On the other hand, for faster predictions at test time, our
-framework model can easily be adapting by replacing the
-Gaussian prior on the label latent factors v ` by a von MisesFisher prior (Fraccaro et al., 2016), which naturally facilitates using maximum inner-product search techniques,
-without the requirement of any post-processing.
-Among other models to address the missing labels problem in multi-label learning, recently, (Kanehira & Harada,
-2016) proposed a ranking based framework for learning
-from positive and unlabeled data in the context of multilabel learning. Although this is similar in spirit to our
-model in terms of not treating the unobserved labels as zeros, the approach in (Kanehira & Harada, 2016) is fundamentally different than ours. Moreover, their setting is not
-amenable to online learning, nor does it leverage the lowrank structure of label matrices with a huge number of labels. Other approaches that try to handle missing labels in-
+Asynchronous Distributed Variational Gaussian Process for Regression
 
-Scalable Generative Models for Multi-label Learning with Missing Labels
+dispose of the dependencies on the hyper-parameters, and
+to improve the mixing rate. In our framework, however, the
+weight vector w has a fixed, much smaller dimension than
+the number of samples (m  n), and is used to introduce
+an extra feature mapping φ(·) — φ(·) plays the key role
+to construct a tractable variational model evidence lower
+bound (ELBO) for large scale GP inference.
+The advantages of our framework are mainly twofold.
+First, by using the feature mapping φ(·), we are flexible
+to incorporate various low rank structures, and meanwhile
+still cast them into a principled variational inference framework. For example, in addition to (11), we can define
+−1/2
 
-clude (Bucak et al., 2011) which uses group LASSO adaptation of a multi-label ranking objective, and (Kong et al.,
-2014), which learns a model using a positive and unlabeled
-(PU) stochastic gradient descent procedure. However, it
-works in batch setting, uses stacking to leverage label correlations, and does not scale to large number of labels.
-One-class matrix factorization (OCMF) is also an approach (Yu et al., 2017) to solve the missing labels problem by assigning different (but fixed) weights to the ones
-and zeros. In contrast to this method, our generative framework can learn the weight for each label by modeling these
-weights as latent variables. In another recent work, (Liang
-et al., 2016) proposed an exposure model for recommender
-system problems posed as matrix factorization of implicit
-feedback data. Their approach of modeling the exposure
-similar in spirit to our framework.
-Some of the early works on generative models for multilabel learning problems include models specifically designed for image annotation problems (Barnard et al., 2003;
-Feng et al., 2004). Other recent attempts on doing multilabel learning in more general problem settings include
-models such as Bayesian compressive sensing (Kapoor
-et al., 2012) and multi-label learning using Bayesian nonnegative matrix factorization (Rai et al., 2015). However,
-these models do not have a mechanism to distinguish between unobserved and negative labels, have complicated
-inference, and do not scale to large-scale problems.
-Our generative framework is also amenable for various interesting extensions. For example, it can be be extended
-to a mixture of latent factor models, which can handle the
-situation when the label matrix is not low-rank but a mixture of several low-rank matrices. Note that such an extension would be a fully generative counter-part of the model
-in (Bhatia et al., 2015) which learns a locally low-rank
-model but has to rely on an ad-hoc clustering step beforehand, which is known to be unstable in practice (Bhatia
-et al., 2015). Another nice aspect of our framework is that
-is naturally allows active learning (Kapoor et al., 2012; Vasisht et al., 2014) where we can selectively ask for most
-informative labels for an unannotated example. Moreover,
-our framework is flexible and inference in our model can
-be performed in a fully Bayesian manner (e.g., MCMC or
-variational inference) as well as fast point estimation methods such as (online) EM, that we used in this work.
-To summarize, our generative framework offers a flexible way to model the label generation mechanism for
-real-world multi-label data sets, which most of the existing models currently lack. We can model label missingness/observability rigorously under our framework and infer the model parameters easily using a simple inference
-procedure. Moreover, the simplicity of the inference procedure makes it easy to design scalable inference algorithms,
+φ(x) = diag(λ)
 
-such as online EM for our model, which enables updating
-the model whenever fresh training data is available. This is
-in contrast to some of the other state-of-the-art multi-label
-learning methods, which although scalable (Bhatia et al.,
-2015; Prabhu & Varma, 2014; Jain et al., 2016), are not
-suitable to be applied in such online settings.
+Q> km (x),
 
-5. Experiments
-We evaluate our framework on a number of benchmark
-data sets and compare it with several state-of-the-art methods. Our baselines include both label-embedding methods
-as well as tree-based methods. The statistics of data sets
-we use in our experiments are summarized in Table 1.
-Dataset
-Bibtex
-Mediamill
-Eurlex-4K
-Movielens
-RCV
-Wikipedia
+(21)
 
-N
-4880
-30993
-15539
+where Q are λ are eigenvectors and eigenvalues of Kmm .
+Then φ(·) is actually a scaled Nyström approximation for
+eigenfunctions of the kernel used in GP regression. This
+actually fulfills a variational version of the EigenGP approximation (Peng & Qi, 2015). Further, we can extend
+(21) by combining q Nyström approximations. Suppose
+we have q groups of inducing inputs {Z1 , . . . , Zq }, where
+each Zl consists of ml inducing inputs. Then the feature
+mapping can be defined by
+φ(x) =
+
+q
+X
+
+q −1/2 diag(λl )
+
+−1/2
+
+Q>
+l kml (x),
+
+(22)
+
+l=1
+
+where λl and Ql are the eigenvalues and eigenvectors of
+the covariance matrix for Zl . This leads to a variational
+sparse GP based on the ensemble Nyström approximation (Kumar et al., 2009). It can be trivially verified that
+both (21) and (22) satisfied Knn − ΦΦ>  0 in (6).
+In addition, we can also relate ADVGP to GP models with
+pre-defined feature mappings, for instance, Relevance Vector Machines (RVMs) (Bishop & Tipping, 2000), by setting
+φ(x) = diag(α1/2 )km (x), where α is an m × 1 vector.
+Note that to ensure Knn −ΦΦ>  0, we have to add some
+constraint over the range of each αi in α.
+The second major advantage of ADVGP is that our variational ELBO is consistent with the composite non-convex
+loss form favored by PARAMETER S ERVER, therefore we
+can utilize the highly efficient, distributed asynchronous
+proximal gradient descent in PARAMETER S ERVER to scale
+up GPs to extremely large applications (see Section 6.3).
+Furthermore, the simple element-wise and closed-form
+proximal operation enables exceedingly efficient and parallelizable variational posterior update on the server side.
+
+6. Experiments
+6.1. Predictive Performance
+First, we evaluated the inference quality of ADVGP in
+terms of predictive performance. To this end, we used the
+
+US Flight data1 (Hensman et al., 2013), which recorded the
+arrival and departure time of the USA commercial flights
+between January and April in 2008. We performed two
+groups of tests: in the first group, we randomly chose 700K
+samples for training; in the second group, we randomly selected 2M training samples. Both groups used 100K samples for testing. We ensured that the training and testing
+data are non-overlapping.
+We compared ADVGP with two existing scalable variational inference algorithms: SVIGP (Hensman et al., 2013)
+and DistGP (Gal et al., 2014). SVIGP employs an online
+training, and DistGP performs a distributed synchronous
+variational inference. We ran all the methods on a computer node with 16 CPU cores and 64 GB memory. While
+SVIGP uses a single CPU core, DistGP and ADVGP use
+all the CPU cores to perform parallel inference. We used
+ARD kernel for all the methods, with the same initialization of the kernel parameters. For SVIGP, we set the minibatch size to 5000, consistent with (Hensman et al., 2013).
+For DistGP, we tested two optimization frameworks: local gradient descent (DistGP-GD) and L-BFGS (DistGPLBFGS). For ADVGP, we initialized µ = 0, U = I, and
+used ADADELTA (Zeiler, 2012) to adjust the step size for
+the gradient descent before the proximal operation. To
+choose an appropriate delay τ , we sampled another set of
+training and test data, based on which we tuned τ from
+{0, 8, 16, 24, 32, 40}. These tunning datasets do not overlap the test data in the evaluation. Note that when τ = 0,
+the computation is totally synchronous; larger τ results in
+more asynchronous computation. We chose τ = 32 as it
+produced the best performance on the tunning datasets.
+Table 1 and Table 2 report the root mean square errors (RMSEs) of all the methods using different numbers of inducing
+points, i.e., m ∈ {50, 100, 200}. As we can see, ADVGP
+exhibits better or comparable prediction accuracy in all the
+cases. Therefore, while using asynchronous computation,
+ADVGP maintains the same robustness and quality for inference. Furthermore, we examined the prediction accuracy of each method along with the training time, under
+the settings m ∈ {100, 200}. Figure 1 shows that during
+the same time span, ADVGP achieves the highest performance boost (i.e., RMSE is reduced faster than the competing methods), which demonstrates the efficiency of ADVGP. It is interesting to see that in a short period of time
+since the beginning, SVIGP reduces RMSE as fast as ADVGP; however, after that, RMSE of SVIGP is constantly
+larger than ADVGP, exhibiting an inferior performance. In
+addition, DistGP-LBFGS converges earlier than both ADVGP and SVIGP. However, RMSE of DistGP-LBFGS is
+larger than both ADVGP and SVIGP at convergence. This
+implies that the L-BFGS optimization converged to a sub1
+
+http://stat-computing.org/dataexpo/2009/
+
+Asynchronous Distributed Variational Gaussian Process for Regression
+
+33.5
+
+32.5
+0
+
+34.5
+RMSE
+
+RMSE
+
+34.5
+
+38.5
+ADVGP
+DistGP−GD
+DistGP−LBFGS
+SVIGP
+
+2000
+3000
+Time (s)
+
 4000
-623847
-14146
 
-Ntest
-2515
-12914
-3809
-2040
-155962
-6616
+(A) n = 700K, m = 100
 
-D
-1836
-120
+32.5
+0
+
+37.5
+
+2500
+
 5000
-29
-47236
-101938
+7500
+Time (s)
 
-L
-159
+10000
+
+(B) n = 700K, m = 200
+
+ADVGP
+DistGP−GD
+DistGP−LBFGS
+SVIGP
+
+37.5
+
+36.5
+
+33.5
+
+1000
+
+38.5
+ADVGP
+DistGP−GD
+DistGP−LBFGS
+SVIGP
+
+RMSE
+
+35.5
+ADVGP
+DistGP−GD
+DistGP−LBFGS
+SVIGP
+
+RMSE
+
+35.5
+
+36.5
+
+35.5
+0
+
+0.5
+
+1
+Time (s)
+
+1.5
+
+2
+
+35.5
+0
+
+1.5
+
+4
+
+x 10
+
+(C) n = 2M, m = 100
+
+3
+Time (s)
+
+4.5
+
+6
+4
+
+x 10
+
+(D) n = 2M, m = 200
+
+Figure 1. Root mean square errors (RMSEs) for US flight data as a function of training time.
+
+optimal solution.
+
+35
+τ =5
+τ =10
+τ =20
+τ =40
+τ =80
+τ =160
+
+Table 1. Root mean square errors (RMSEs) for 700K/100K US
+Flight data.
+
+Method
+Prox GP
+GD Dist GP
+LBFG Dist GP
+SVIGP
+
+m = 50
+32.9080
+32.9411
+33.0707
+33.1054
+
+m = 100
+32.7543
+32.8069
+33.2263
+32.9499
+
+m = 200
+32.6143
+32.6521
+32.8729
+32.7802
+
+Table 2. RMSEs for 2M/100K US Flight data.
+
+Method
+Prox GP
+GD Dist GP
+LBFG Dist GP
+SVIGP
+
+m = 50
+36.1156
+36.0142
+35.9809
+36.2019
+
+m = 100
+35.8347
+35.9487
+36.1676
+35.9517
+
+m = 200
+35.7017
+35.7971
+36.0749
+35.8599
+
+We also studied how the delay limit τ affects the performance of ADVGP. Practically, when many machines are
+used, some worker may always be slower than the others due to environmental factors, e.g., unbalanced workloads. To simulate this scenario, we intentionally introduced a latency by assigning each worker a random sleep
+time of 0, 10 or 20 seconds at initialization; hence a
+worker would pause for its given sleep time before each
+iteration. In our experiment, the average per-iteration
+running time was only 0.176 seconds; so the fastest
+worker could be hundreds of iterations ahead of the slowest one in the asynchronous setting. We examined τ =
+0, 5, 10, 20, 40, 80, 160 and plotted RMSEs as a function of
+time in Figure 2. Since RMSE of the synchronous case
+(τ = 0) is much larger than the others, we do not show it
+in the figure. When τ is larger, ADVGP’s performance is
+more fluctuating. Increasing τ , we first improved the prediction accuracy due to more efficient CPU usage; however,
+later we observed a decline caused by the excessive asynchronization that impaired the optimization. Therefore, to
+use ADVGP for workers at various paces, we need to carefully choose the appropriate delay limit τ .
+
+RMSE
+
+34.5
+34
+33.5
+33
+32.5
+0
+
+2000
+
+4000
+6000
+Time (s)
+
+8000
+
+10000
+
+Figure 2. Root mean square errors (RMSEs) as a function of time
+for different delay limits τ
+
+6.2. Scalability
+Next, we examined the scalability of our asynchronous
+inference method, ADVGP. To this end, we used the
+700K/100K dataset and compared with the synchronous
+inference algorithm DistGP (Gal et al., 2014). For a fair
+comparison, we used the local gradient descent version of
+DistGP, i.e., DistGP-GD. We conducted two experiments
+on 4 c4.8xlarge instances of Amazon EC2 cloud, where
+we set the number of inducing points m = 100. In the
+first experiment, we fixed the size of the training data, and
+increased the number of CPU cores from 4 to 128. We
+examined the per-iteration running time of both ADVGP
+and DistGP-GD. Figure 3(A) shows that while both decreasing with more CPU cores, the per-iteration running
+time of ADVGP is much less than that of DistGP-GD. This
+demonstrates the advantage of ADVGP in computational
+efficiency. In addition, the per-iteration running time of
+ADVGP decays much more quickly than that of DistGPGD as the number of cores approaches 128. This implies
+that even the communication cost becomes dominant, the
+asynchronous mechanism of ADVGP still effectively reduces the latency and maintains a high usage of the computational power. In the second experiment, we simultaneously increased the number of cores and the size of training data. We started from 87.5K samples and 16 cores
+
+Asynchronous Distributed Variational Gaussian Process for Regression
+
+and gradually increased them to 700K samples and 128
+cores. As shown in Figure 3(B), the average per-iteration
+time of DistGP-GD grows linearly; in contrast, the average per-iteration time of ADVGP stays almost constant.
+We speculate that without synchronous coordination, ADVGP can fully utilize the network bandwidth so that the
+increased amount of messages, along with the growth of
+the data size, affect little the network communication efficiency. This demonstrates the advantage of asynchronous
+inference from another perspective.
+
+100
+
+10-1
+
+10
+Number of cores
+
+100
+
+Number of cores
+64
+96
+
+128
+
+ADVGP
+DistGP-GD
+
+1.5
+1
+
+700
+
+600
+
+0.5
+0
+
+1
+
+32
+
+600
+0
+
+2
+
+4
+Dataset size
+
+(A)
+
+6
+
+8
+5
+
+×10
+
+(B)
+
+Figure 3. Scalability tests on 700K US flight data. (A) Periteration time as a function of available cores in log-scale. (B)
+Per-iteration time when scaling the computational resources proportionally to dataset size.
+
+ADVGP
+Mean
+Vowpal Wabbit
+
+500
+
+500
+RMSE
+
 101
-3993
-3952
-2456
-30938
 
-Table 1. Dataset used for the experiments with their properties.
-D: number of features, L: number of labels, N : number of training examples, Ntest : number of test examples
+0
 
-We report both quantitative results (in terms of label prediction accuracies) as well as some qualitative results, namely
-looking at the relationship of empirical label frequencies
-and label exposure. Note that the label frequency for a
-given label denotes how many examples had this label as
-1, while label exposure µ` ∈ (0, 1) in general refers to
-how popular the label ` is.
-In our experiments, we compare with the following stateof-the-art baselines.
-• LEML: This is a low-rank embedding based multilabel learning model (Yu et al., 2014). LEML assumes the label matrix Y to be modeled as Y ≈ UV
-where U = XW. LEML considers various types of
-loss functions such as squared loss, logistic loss, hinge
-loss, etc. Interestingly, note that LEML with logistic
-loss can be seen as a special non-probabilistic case of
-our model when also considering λu → ∞, and the
-label exposure model turned off.
-• BCS: Bayesian Compressive Sensing (BCS) is a generative model (Kapoor et al., 2012) for the label vector. It assumes a compressive sensing model for the
-label vectors and is essentially a low-rank model.
-• FastXML: This is a fast tree-based multi-label learning model which uses an ensemble of trees (Prabhu &
-Varma, 2014).
-• PfasterXML: This is an extension of FastXML and
-uses propensity-weighted scores to improve performance on rare labels (Jain et al., 2016).
+RMSE
 
-Scalable Generative Models for Multi-label Learning with Missing Labels
+ADVGP
+DistGP-GD
 
-• PD-Sparse: This model takes a different approach
-as compared to label-embedding methods and uses a
-margin-maximizing loss for the multi-label learning
-problem (Yen et al., 2016).
-For the baselines, the reported results are either obtained
-using publicly available implementations (with the recommended hyperparameter settings), or the publicly known
-best results. We refer to our model as GenEML (for Generative Exposure-based model for Multi-label Learning)
-Hyperparameter Settings: For our model, we set the hyperparameters λu and λv to 0.001, which works well on
-all the data sets we experimented with. We select the other
-two hyperparameters λw and K (number of latent factors)
-using cross-validation. On small-/medium-scale data, both
-EM and online EM perform comparably and we only report
-the results using online EM. On large data sets, we only use
-online EM. On the small and medium-scale data, we however also show a separate experiment comparing EM and
-online EM for our model in terms of convergence speed
-versus accuracy. For the conjugate gradient (CG) method
-used by the M step of our inference algorithm, we run 5 iterations, which was found to be sufficient. For online EM,
-for each data set, we use mini-batch sizes of 1024 and 4096
-and report the one which gives better results.
-5.1. Quantitative Results
-5.1.1. B ENEFIT OF E XPOSURE M ODEL
-In our first experiment, we assess the benefit of using the
-exposure model. For this, we apply our model with and
-without exposure on a synthetic data set. For this experiment, we generate a synthetic data set with N =500,
-D=100, and L=20 and use varying degrees of exposure
-probabilities µ` ∈ {0.01, 0.05, 0.1, 0.3, 0.5, 0.9} for the
-different labels ` = 1, . . . , 20. We also create a test set
-with 500 test examples.
-The results are shown in Table 2. As the results show,
-our model with exposure turned on outperforms the model
-when the exposure is turned off. This clearly demonstrate
-the benefit of the exposure model when a significant fraction of labels are missing (i.e., not exposed). Our model
-also outperforms LEML which does not have a mechanism
-to model label exposure.
-GenEML
-P@1
-P@2
-P@3
+Time per iteration (s)
 
-87.8
-75.2
-65.2
+Time per iteration (s)
 
-GenEML w/o
-Exposure
-79.2
-68.9
-59.0
+2
 
-LEML
-78.8
-69.1
-58.9
+processes. The delay limit τ was selected as 20. We used
+Vowpal Wabbit to train a linear regression model, with default settings. We also took the average traveling time over
+the training data to obtain a simple mean prediction. In Figure 4(A), we report RMSEs of the linear regression and the
+mean prediction, as well as the GP regression along with
+running time. As we can see, ADVGP greatly outperforms
+the competing methods. Only after 6 minutes, ADVGP
+has improved RMSEs of the linear regression and the mean
+prediction by 9% and 41%, respectively; the improvements
+continued for about 30 minutes. Finally, ADVGP reduced
+the RMSEs of the linear regression and the mean prediction
+by 22% and 49%, respectively. The RMSEs are {ADVGP:
+333.4, linear regression: 424.8, mean-prediction: 657.7}.
 
-Table 2. Precision@k values on synthetic data obtained by our
-model with and without using the label exposure
+ADVGP
+Mean
+Vowpal Wabbit
 
-5.1.2. P REDICTION ACCURACIES
-In our next set of experiments, in Table 3 we compare
-our model (with exposure on) with the other baselines,
-in terms of Precision@1, Precision@3, and Precision@5
-scores. As Table 3 shows, our model outperforms the other
-baselines in most of the cases, except for the RCV and
-Wikipedia data, on which our model is outperformed by
-LEML and/or PfasterXML. Note, however, that these stateof-the-art baselines use batch inference methods whereas
-we only ran our model in the online setting on a moderate 4
-core processor with 8GB RAM. Moreover, our results may
-further improve with a more careful hyperparameter tuning
-(including selection of minibatch size). The point of the
-large-scale data experiment was to mainly show that the our
-model can be feasibly run on such large-scale data sets, on
-standard machines with moderate computational resources.
-Most of the other existing models for multi-label learning
-are infeasible to run under such restrictive settings.
-5.1.3. BATCH EM VS O NLINE EM
-The online version of our EM algorithm is scalable and
-faster than its batch counterpart. Fig 2 shows that online
-EM converges faster and to a precision score which is very
-similar to the batch EM on Bibtex and Mediamill datasets.
-Furthermore, online inference is also more effecient,
-storage-wise, due the need of maintaining just the sufficient
-statistics as in Eq 19 for the updates of each latent factor
-un and v ` . For very large datasets, the size of the the sufficient statistics (a D × D covariance matrix) for updating
-the regression weight matrix W might not be feasible to
-store and update. Therefore, we use cheap, first-order gradient based updates for finding an approximate solution to
-the update equation of W in each iteration of the EM algorithm (note that we need not solve for W exactly; the EM
-algorithm just requires a few steps of updates for W in the
-M step). This further reduces the memory requirement of
-our model, while also speeding up inference due to faster
-computation of gradients as compared to CG updates.
+400
+400
+300
+0
 
-Figure 2. Convergence time comparison of the batch and online
-EM algorithm for inference in our model
+2000
+4000
+Time (s)
 
-5.2. Qualitative Results
-Finally, we do some qualitative analyses of our model’s behavior. We investigate whether the global frequency of
-a label necessarily correlates to its exposure probability.
+6000
 
-Scalable Generative Models for Multi-label Learning with Missing Labels
-Dataset
-Bibtex
-Mediamill
-Eurlex-4K
-Movielens
-RCV-2K
-Wiki10-31K
+(A) 100M training samples
 
-P@1
-P@3
-P@5
-P@1
-P@3
-P@5
-P@1
-P@3
-P@5
-P@1
-P@3
-P@5
-P@1
-P@3
-P@5
-P@1
-P@3
-P@5
+300
+0
 
-BCS
-60.24
-34.87
-24.48
--
+2000
+4000
+Time (s)
 
-WSABIE
-54.78
-32.29
-23.98
-81.29
-64.74
-49.83
-68.55
-55.11
-45.12
--
+6000
 
-FastXML
-63.42
-39.23
-28.86
-84.22
-67.33
-53.04
-71.36
-59.90
-50.39
-83.03
-67.47
-57.76
+(B) 1B training samples
 
-PfasterXML
-63.46
-39.22
-29.14
-83.98
-67.37
-53.02
-75.45
-62.70
-52.51
-83.57
-68.61
-59.10
+Figure 4. RMSE as a function of training time on NYC Taxi Data.
 
-PD-Sparse
-61.29
-35.82
-25.74
-81.86
-62.52
-45.11
-76.43
-60.37
-49.72
--
+6.3. NYC Taxi Traveling Time Prediction
+Finally, we applied ADVGP for an extremely large problem: the prediction of the taxi traveling time in New York
+city. We used the New York city yellow taxi trip dataset
+2
+, which consist of 1.21 billions of trip records from January 2009 to December 2015. We excluded the trips that
+are outside the NYC area or more than 5 hours. The average traveling time is 764 seconds and the standard derivation is 576 seconds. To predict the traveling time, we used
+the following 9 features: time of the day, day of the week,
+day of the month, month, pick-up latitude, pick-up longitude, drop-off latitude, drop-off longitude, and travel distance. We used Amazon EC2 cloud, and ran ADVGP on
+multiple Amazon c4.8xlarge instances, each with 36 vCPUs and 60 GB memory. We compared with the linear
+regression model implemented in Vowpal Wabbit (Agarwal
+et al., 2014). Vowpal Wabbit is a state-of-the-art large scale
+machine learning software package and has been used in
+many industrial-scale applications, such as click-throughrate prediction (Chapelle et al., 2014).
+We first randomly selected 100M training samples and
+500K test samples. We set m = 50 and initialized the
+inducing points as the the K-means cluster centers from a
+subset of 2M training samples. We trained a GP regression
+model with ADVGP, using 5 Amazon instances with 200
+2
+http://www.nyc.gov/html/tlc/html/about/
+trip_record_data.shtml
 
-LEML
-62.54
-38.41
-28.21
-84.01
-67.20
-52.80
-63.40
-50.35
-41.28
-54.22
-50.44
-48.63
-89.09
-70.96
-50.73
-73.47
-62.43
-54.35
+To further verify the advantage of GP regression in extremely large applications, we used 1B training and 1M
+testing samples. We used 50 inducing points, initialized
+by the K-means cluster centers from a 1M training subset.
+We ran ADVGP using 28 Amazon instances with 1000 processes and chose τ = 100. As shown in Figure 4(B), the
+RMSE of GP regression outperforms the linear models by a
+large margin. After 12 minutes, ADVGP has improved the
+RMSEs of the linear regression and the mean prediction by
+8% and 40%, respectively; the improvement kept growing
+for about 1.5 hours. At the convergence, ADVGP outperforms the linear regression and the mean prediction by 15%
+and 44%, respectively. The RMSEs are {ADVGP: 309.7,
+linear regression: 362.8, mean-prediction: 556.3}. In addition, the average per-iteration time of ADVGP is only 0.21
+seconds. These results confirm the power of the nonlinear
+regression in extremely large real-world scenarios, comparing with linear models, while the latter are much easier to
+be scaled up and hence more popular.
 
-GenEML
-64.09
-40.14
-29.47
-87.15
-69.98
-55.21
-77.75
-63.98
-53.24
-55.78
-50.62
-48.86
-87.21
-69.22
-49.53
-76.38
-44.49
-32.06
+7. Conclusion
+We have presented ADVGP, an asynchronous, distributed
+variational inference algorithm for GP regression, which
+enables real-world extremely large applications. ADVGP
+is based on a novel variational GP framework, which allows
+flexible construction of low rank approximations and can
+relate to many sparse GP models.
 
-Table 3. Performance Comparison using Prec@k of the model with other baselines. The - denotes that either these results were not
-available or the method was infeasible to run on that data set. On the large-scale data sets (RCV and Wiki), our model was run using
-online EM based inference.
-
-While it may be the case for some data sets where high label frequency implies a high inferred label exposure probability (e.g., see Fig. 3 for Bibtex and Mediamill data), it
-need not be the case with other data sets. For example,
-for Movielens data, each user-movie (example-label) pair
-has an some context information (user and movie features)
-available for it. As we show in Fig 4, the inferred exposure probability (which depends on the context features) of
-the same movie (label) indeed turns out to be different for
-different users (examples).
-Fig. 4 shows the plot of inferred exposure probabilities µnl
-for two users (one female, one male) plotted against the
-label frequencies (movie popularities).
-
-Figure 3. Inferred label exposure probabilities for Bibtex and Mediamill data sets
-
-As Fig. 4 shows, our model infers that, a popular movie
-(shown in red dot in Fig 4) has a high exposure probability for the left user (Female, 25, Healthcare/Doctor) while
-it has a low exposure probability for the right user (Male,
-35, artist). This example illustrates that a high label frequency does not necessarily imply a high exposure probability, which can be context (user in this case) dependent.
-
-6. Conclusion
-We presented a flexible and scalable generative framework
-for multi-label learning. Our framework is based on a latent
-
-Figure 4. Inferred user-specific label exposure probabilties for
-two users on Movielens data set: Female, 25, Healthcare/Doctor
-(left) and Male, 35, artist (right), with label frequency for each
-label. The red circle shows the most frequent movie (Hairspray(1988) Comedy, Drama) and its exposure probability for
-both the users.
-
-factor model for the label matrix and does not assume that
-the zeros in the label matrix are necessarily negative labels.
-We use a set of label exposure latent variables to model this,
-and infer these exposure probabilities from data. Incorporating these latent variables leads to improve multi-label
-classification accuracies, and also enables doing interesting
-qualitative analyses. Our model admits a simple inference
-procedure which can be implemeted using Gibbs sampling
-or EM. We further develop a highly scalable online EM
-algorithm for performing inference in our model, which allows our model to be applied on large-scale data sets, even
-on standard machines with moderate hardware. The generative framework makes it easy to extend our model in many
-interesting ways. For example, it can be extended to a mixture of latent factor models, which will allow handling the
-cases where a single low-rank model does not adequately
-capture the structure of the label matrix.
-Acknowledgements: PR acknowledges support from Extreme
-Classification research grant from Microsoft Research India,
-DST-SERB Early Career Research Award, Dr. Deep Singh and
-Daljeet Kaur Fellowship, and Research-I Foundation, IIT Kanpur.
-
-Scalable Generative Models for Multi-label Learning with Missing Labels
+Asynchronous Distributed Variational Gaussian Process for Regression
 
 References
-Agrawal, Rahul, Gupta, Archit, Prabhu, Yashoteja, and Varma,
-Manik. Multi-label learning with millions of labels: Recommending advertiser bid phrases for web pages. In WWW, 2013.
+Agarwal, Alekh and Duchi, John C. Distributed delayed
+stochastic optimization. In Advances in Neural Information Processing Systems 24, pp. 873–881. Curran Associates, Inc., 2011.
+Agarwal, Alekh, Chapelle, Oliveier, Dudı́k, Miroslav, and
+Langford, John. A reliable effective terascale linear
+learning system. Journal of Machine Learning Research,
+15:1111–1133, 2014.
+Bauer, Matthias, van der Wilk, Mark, and Rasmussen,
+Carl Edward. Understanding probabilistic sparse Gaussian process approximations. In Advances in Neural Information Processing Systems 29, pp. 1525–1533, 2016.
+Bishop, Christopher M. and Tipping, Michael E. Variational relevance vector machines. In Proceedings of the
+16th Conference in Uncertainty in Artificial Intelligence
+(UAI), 2000.
+Chapelle, Olivier, Manavoglu, Eren, and Rosales, Romer.
+Simple and scalable response prediction for display advertising. ACM Transactions on Intelligent Systems and
+Technology (TIST), 5(4):61:1–61:34, December 2014.
+ISSN 2157-6904.
+Dai, Zhenwen, Damianou, Andreas, Hensman, James, and
+Lawrence, Neil D. Gaussian process models with parallelization and GPU acceleration. In NIPS Workshop on
+Software Engineering for Machine Learning, 2014.
+Deisenroth, Marc and Ng, Jun W. Distributed Gaussian
+processes. In Proceedings of the 32nd International
+Conference on Machine Learning, pp. 1481–1490, 2015.
+Filippone, Maurizio, Zhong, Mingjun, and Girolami, Mark.
+A comparative evaluation of stochastic-based inference
+methods for gaussian process models. Machine Learning, 93(1):93–114, 2013.
+Gal, Yarin, van der Wilk, Mark, and Rasmussen, Carl. Distributed variational inference in sparse Gaussian process
+regression and latent variable models. In Advances in
+Neural Information Processing Systems 27, pp. 3257–
+3265, 2014.
+Hensman, James, Fusi, Nicolo, and Lawrence, Neil D.
+Gaussian processes for big data. In Proceedings of
+the Conference on Uncertainty in Artificial Intelligence
+(UAI), 2013.
+Hensman, James, Matthews, Alexander G, Filippone, Maurizio, and Ghahramani, Zoubin. Mcmc for variationally
+sparse gaussian processes. In Advances in Neural Information Processing Systems, pp. 1648–1656, 2015.
 
-Liang, Dawen, Charlin, Laurent, McInerney, James, and Blei,
-David M. Modeling user exposure in recommendation. In
-WWW, 2016.
+Kumar, Sanjiv, Mohri, Mehryar, and Talwalkar, Ameet.
+Ensemble Nyström method. In Bengio, Y., Schuurmans,
+D., Lafferty, J. D., Williams, C. K. I., and Culotta, A.
+(eds.), Advances in Neural Information Processing Systems 22, pp. 1060–1068. Curran Associates, Inc., 2009.
+Li, Mu, Andersen, David G, and Smola, Alexander J. Distributed delayed proximal gradient methods. In NIPS
+Workshop on Optimization for Machine Learning, 2013.
+Li, Mu, Andersen, David G, Park, Jun Woo, Smola,
+Alexander J, Ahmed, Amr, Josifovski, Vanja, Long,
+James, Shekita, Eugene J, and Su, Bor-Yiing. Scaling distributed machine learning with the parameter
+server. In 11th USENIX Symposium on Operating Systems Design and Implementation (OSDI 14), pp. 583–
+598, 2014a.
+Li, Mu, Andersen, David G, Smola, Alexander, and Yu,
+Kai. Communication efficient distributed machine learning with the parameter server. In Neural Information
+Processing Systems 27, 2014b.
+Matthews, Alexander G de G, van der Wilk, Mark, Nickson, Tom, Fujii, Keisuke, Boukouvalas, Alexis, LeónVillagrá, Pablo, Ghahramani, Zoubin, and Hensman,
+James. GPflow: A Gaussian process library using TensorFlow. Journal of Machine Learning Research, 18
+(40):1–6, 2017.
+Murray, Iain and Adams, Ryan P. Slice sampling covariance hyperparameters of latent gaussian models. In Advances in Neural Information Processing Systems 24, pp.
+1732–1740, 2010.
+Peng, Hao and Qi, Yuan. EigenGP: Sparse Gaussian process models with adaptive eigenfunctions. In Proceedings of the 24th International Joint Conference on Artificial Intelligence, pp. 3763–3769, 2015.
+Quiñonero-Candela, Joaquin and Rasmussen, Carl Edward. A unifying view of sparse approximate Gaussian
+process regression. The Journal of Machine Learning
+Research, 6:1939–1959, 2005.
+Rasmussen, Carl E. and Williams, Christopher K. I. Gaussian Processes for Machine Learning. The MIT Press,
+2006.
+Schwaighofer, Anton and Tresp, Volker. Transductive and
+inductive methods for approximate Gaussian process regression. In Advances in Neural Information Processing
+Systems 15, pp. 953–960. MIT Press, 2003.
+Seeger, Matthias, Williams, Christopher, and Lawrence,
+Neil. Fast forward selection to speed up sparse Gaussian
+process regression. In Proceedings of the Ninth International Workshop on Artificial Intelligence and Statistics,
+2003.
 
-Babbar, R. and Schölkopf, B. DiSMEC- distributed sparse machines for extreme multi-label classification. In WSDM, 2017.
+Asynchronous Distributed Variational Gaussian Process for Regression
 
-Polson, Nicholas G, Scott, James G, and Windle, Jesse. Bayesian
-inference for logistic models using pólya–gamma latent variables. Journal of the American Statistical Association, 108
-(504):1339–1349, 2013.
-
-Barnard, Kobus, Duygulu, Pinar, Forsyth, David, Freitas,
-Nando de, Blei, David M, and Jordan, Michael I. Matching
-words and pictures. JMLR, 2003.
-
-Prabhu, Yashoteja and Varma, Manik. FastXML: a fast, accurate
-and stable tree-classifier for extreme multi-label learning. In
-KDD, 2014.
-
-Bertsekas, Dimitri P. Nonlinear programming. Athena scientific
-Belmont, 1999.
-
-Rai, Piyush, Hu, Changwei, Henao, Ricardo, and Carin,
-Lawrence. Large-scale bayesian multi-label learning via topicbased label embeddings. In NIPS, 2015.
-
-Bhatia, Kush, Jain, Himanshu, Kar, Purushottam, Varma, Manik,
-and Jain, Prateek. Sparse local embeddings for extreme multilabel classification. In NIPS, 2015.
-Bucak, Serhat Selcuk, Jin, Rong, and Jain, Anil K. Multi-label
-learning with incomplete class assignments. In CVPR, 2011.
-Cappé, Olivier and Moulines, Eric.
-On-line expectation–
-maximization algorithm for latent data models. Journal of the
-Royal Statistical Society: Series B (Statistical Methodology),
-2009.
-
-Scott, James G and Sun, Liang. Expectation-maximization for
-logistic regression. arXiv preprint arXiv:1306.0040, 2013.
-Vasisht, Deepak, Damianou, Andreas, Varma, Manik, and
-Kapoor, Ashish. Active learning for sparse bayesian multilabel
-classification. In KDD, 2014.
-Wang, Jiang, Yang, Yi, Mao, Junhua, Huang, Zhiheng, Huang,
-Chang, and Xu, Wei. CNN-RNN: A unified framework for
-multi-label image classification. In CVPR, 2016.
-
-Chen, Yao-Nan and Lin, Hsuan-Tien. Feature-aware label space
-dimension reduction for multi-label classification. In NIPS,
-2012.
-
-Xu, Chang, Tao, Dacheng, and Xu, Chao. Robust extreme multilabel learning. In KDD, 2016.
-
-Cissé, Moustapha, Al-Shedivat, COM Maruan, and Bengio,
-Samy. Adios: Architectures deep in output space. In ICML,
-2016.
-
-Yen, Ian EH, Huang, Xiangru, Zhong, Kai, Ravikumar, Pradeep,
-and Dhillon, Inderjit S. PD-sparse: A primal and dual sparse
-approach to extreme multiclass and multilabel classification. In
-ICML, 2016.
-
-Feng, SL, Manmatha, Raghavan, and Lavrenko, Victor. Multiple
-bernoulli relevance models for image and video annotation. In
-CVPR, 2004.
-Fraccaro, Marco, Paquet, Ulrich, and Winther, Ole. Indexable
-probabilistic matrix factorization for maximum inner product
-search. In AAAI, 2016.
-Gibaja, Eva and Ventura, Sebastián. Multilabel learning: A review of the state of the art and ongoing research. Wiley Interdisciplinary Reviews: Data Mining and Knowledge Discovery,
-2014.
-Gibaja, Eva and Ventura, Sebastián. A tutorial on multilabel
-learning. ACM Comput. Surv., 2015.
-Hu, Yifan, Koren, Yehuda, and Volinsky, Chris. Collaborative
-filtering for implicit feedback datasets. In ICDM, 2008.
-Jain, Himanshu, Prabhu, Yashoteja, and Varma, Manik. Extreme
-multi-label loss functions for recommendation, tagging, ranking & other missing label applications. In KDD, 2016.
-Kanehira, Atsushi and Harada, Tatsuya. Multi-label ranking from
-positive and unlabeled data. In CVPR, 2016.
-Kapoor, Ashish, Viswanathan, Raajay, and Jain, Prateek. Multilabel classification using bayesian compressed sensing. In
-NIPS, 2012.
-Kong, Xiangnan, Wu, Zhaoming, Li, Li-Jia, Zhang, Ruofei, Yu,
-Philip S, Wu, Hang, and Fan, Wei. Large-scale multi-label
-learning with incomplete label assignments. In SDM, 2014.
-
-Yu, Hsiang-Fu, Jain, Prateek, Kar, Purushottam, and Dhillon, Inderjit S. Large-scale multi-label learning with missing labels.
-In ICML, 2014.
-Yu, Hsiang-Fu, Huang, Hsin-Yuan, Dhillon, Inderjit S, and Lin,
-Chih-Jen. A unified algorithm for one-class structured matrix
-factorization with side information. In AAAI, 2017.
+Smola, Alexander J. and Bartlett, Peter L. Sparse greedy
+Gaussian process regression. In Advances in Neural Information Processing Systems 13. MIT Press, 2001.
+Snelson, Edward and Ghahramani, Zoubin. Sparse Gaussian processes using pseudo-inputs. In Advances in
+Neural Information Processing Systems, pp. 1257–1264,
+2005.
+Titsias, Michalis K. Variational learning of inducing variables in sparse Gaussian processes. In Proceedings of
+the Twelfth International Conference on Artificial Intelligence and Statistics, pp. 567–574, 2009.
+Williams, Christopher and Seeger, Matthias. Using the
+Nyström method to speed up kernel machines. In Advances in Neural Information Processing Systems 13, pp.
+682–688, 2001.
+Zeiler, Matthew D. ADADELTA: an adaptive learning rate
+method. arXiv:1212.5701, 2012.
 
 

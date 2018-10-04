@@ -1,849 +1,1281 @@
-Data-Efficient Policy Evaluation Through Behavior Policy Search
+ChoiceRank: Identifying Preferences from Node Traffic in Networks
 
-Josiah P. Hanna 1 Philip S. Thomas 2 3 Peter Stone 1 Scott Niekum 1
+Lucas Maystre 1 Matthias Grossglauser 1
 
 Abstract
-We consider the task of evaluating a policy for
-a Markov decision process (MDP). The standard
-unbiased technique for evaluating a policy is to
-deploy the policy and observe its performance.
-We show that the data collected from deploying
-a different policy, commonly called the behavior
-policy, can be used to produce unbiased estimates
-with lower mean squared error than this standard
-technique. We derive an analytic expression for
-the optimal behavior policy—the behavior policy that minimizes the mean squared error of the
-resulting estimates. Because this expression depends on terms that are unknown in practice, we
-propose a novel policy evaluation sub-problem,
-behavior policy search: searching for a behavior policy that reduces mean squared error. We
-present a behavior policy search algorithm and
-empirically demonstrate its effectiveness in lowering the mean squared error of policy performance estimates.
+Understanding how users navigate in a network
+is of high interest in many applications. We consider a setting where only aggregate node-level
+traffic is observed and tackle the task of learning edge transition probabilities. We cast it as
+a preference learning problem, and we study a
+model where choices follow Luce’s axiom. In
+this case, the O(n) marginal counts of node visits
+are a sufficient statistic for the O(n2 ) transition
+probabilities. We show how to make the inference
+problem well-posed regardless of the network’s
+structure, and we present ChoiceRank, an iterative
+algorithm that scales to networks that contains billions of nodes and edges. We apply the model to
+two clickstream datasets and show that it successfully recovers the transition probabilities using
+only the network structure and marginal (nodelevel) traffic data. Finally, we also consider an
+application to mobility networks and apply the
+model to one year of rides on New York City’s
+bicycle-sharing system.
 
-1. Introduction
-Many sequential decision problems, including diabetes
-treatment (Bastani, 2014), digital marketing (Theocharous
-et al., 2015), and robot control (Lillicrap et al., 2015), are
-modeled as Markov decision processes (MDPs) and solved
-using reinforcement learning (RL) algorithms. One important problem when applying RL to real problems is policy
-evaluation. The goal in policy evaluation is to estimate the
-expected return (sum of rewards) produced by a policy. We
-refer to this policy as the evaluation policy, πe . The standard policy evaluation approach is to repeatedly deploy πe
-and average the resulting returns. While this naı̈ve Monte
-Carlo estimator is unbiased, it may have high variance.
 1
-The University of Texas at Austin, Austin, Texas, USA
-The University of Massachusetts, Amherst, Massachusetts, USA
-3
-Carnegie Mellon University, Pittsburgh, Pennsylvania, USA.
-Correspondence to: Josiah P. Hanna <jphanna@cs.utexas.edu>.
 
-Methods that evaluate πe while selecting actions according
-to πe are termed on-policy. Previous work has addressed
-variance reduction for on-policy returns (Zinkevich et al.,
-2006; White & Bowling, 2009; Veness et al., 2011). An
-alternative approach is to estimate the performance of πe
-while following a different, behavior policy, πb . Methods
-that evaluate πe with data generated from πb are termed offpolicy. Importance sampling (IS) is one standard approach
-for using off-policy data in RL. IS reweights returns observed while executing πb such that they are unbiased estimates of the performance of πe .
-Presently, IS is usually used when off-policy data is already
-available or when executing πe is impractical. If πb is not
-chosen carefully, IS often has high variance (Thomas et al.,
-2015). For this reason, an implicit assumption in the RL
-community has generally been that on-policy evaluation is
-more accurate when it is feasible. However, IS can also be
-used for variance reduction when done with an appropriately selected distribution of returns (Hammersley & Handscomb, 1964). While IS-based variance reduction has been
-explored in RL, this prior work has required knowledge of
-the environment’s transition probabilities and remains onpolicy (Desai & Glynn, 2001; Frank et al., 2008; Ciosek
-& Whiteson, 2017). In contrast to this earlier work, we
-show how careful selection of the behavior policy can lead
-to lower variance policy evaluation than using the evaluation policy and do not require knowledge of the environment’s transition probabilities.
-In this paper, we formalize the selection of πb as the behavior policy search problem. We introduce a method for this
-problem that adapts the policy parameters of πb with gradient descent on the variance of importance-sampling. Empirically we demonstrate behavior policy search with our
-method lowers the mean squared error of estimates compared to on-policy estimates. To the best of our knowledge,
-this work is the first to propose adapting the behavior policy to obtain better policy evaluation in RL. Furthermore
-we present the first method to address this problem.
+Introduction
 
-2
+Consider the problem of estimating click probabilities for
+links between pages of a website, given a hyperlink graph
+and aggregate statistics on the number of times each page
+has been visited. Naively, one might expect that the probability of clicking on a particular link should be roughly
+proportional to the traffic of the link’s target. However, this
+neglects important structural effects: a page’s traffic is influenced by a) the number of incoming links, b) the traffic at
+the pages that link to it, and c) the traffic absorbed by competing links. In order to successfully infer click probabilities,
+it is therefore necessary to disentangle the preference for
+a page (i.e., the intrinsic propensity of a user to click on a
+link pointing to it) from the page’s visibility (the exposure
+1
 
+School of Computer and Communication Sciences, EPFL,
+Lausanne, Switzerland. Correspondence to: Lucas Maystre <lucas.maystre@epfl.ch>.
 Proceedings of the 34 th International Conference on Machine
-Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
-by the author(s).
+Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017 by
+the author(s).
 
-2. Preliminaries
-This section details the policy evaluation problem setting,
-the Monte Carlo and Advantage Sum on-policy methods,
-and importance-sampling for off-policy evaluation.
+it gets from pages linking to it). Building upon recent work
+by Kumar et al. (2015), we present a statistical framework
+that tackles a general formulation of the problem: given a
+network (representing possible transitions between nodes)
+and the marginal traffic at each node, recover the transition
+probabilities. This problem is relevant to a number of scenarios (in social, information or transportation networks)
+where transition data is not available due to, e.g., privacy
+concerns or monitoring costs.
+We begin by postulating the following model of traffic. Users
+navigate from node to node along the edges of the network
+by making a choice between adjacent nodes at each step,
+reminiscent of the random-surfer model introduced by Brin
+& Page (1998). Choices are assumed to be independent and
+generated according to Luce’s model (Luce, 1959): each
+node in the network is chararacterized by a latent strength
+parameter, and (stochastic) choice outcomes tend to favor
+nodes with greater strengths. In this model, estimating the
+transition probabilities amounts to estimating the strength
+parameters. Unlike the setting in which choice models are
+traditionally studied (Train, 2009; Maystre & Grossglauser,
+2015; Vojnovic & Yun, 2016), we do not observe distinct
+choices among well-identified sets of alternatives. Instead,
+we only have access to aggregate, marginal statistics about
+the traffic at each node in the network. In this setting, we
+make the following contributions.
+1. We observe that marginal per-node traffic is a sufficient
+statistic for the strength parameters. That is, the parameters can be inferred from marginal traffic data without
+any loss of information.
+2. We show that if the parameters are endowed with a
+prior distribution, the inference problem becomes wellposed regardless of the network structure. This is a
+crucial step in making the framework applicable to
+real-world datasets.
+3. We show that model inference can scale to very
+large datasets. We present an iterative EM-type inference algorithm that enables a remarkably efficient
+implementation—each iteration requires the computational equivalent of two iterations of PageRank.
+We evaluate two aspects of our framework using real-world
+networks. We begin by demonstrating that local preferences
 
-Data-Efficient Policy Evaluation Through Behavior Policy Search
+Identifying Preferences from Node Traffic in Networks
 
-2.1. Background
+can indeed be inferred from global traffic: we investigate
+the accuracy of the transition probabilities recovered by our
+model on three datasets for which we have ground-truth
+transition data. First, we consider two hyperlink graphs,
+representing the English Wikipedia (over two million nodes)
+and a Hungarian news portal (approximately 40 000 nodes),
+respectively. We model clickstream data as a sequence of
+independent choices over the links available at each page.
+Given only the structure of the graph and the marginal traffic
+at every node, we estimate the number of transitions between
+nodes, and we find that our estimate matches ground-truth
+edge-level transitions accurately in both instances. Second,
+we consider the network of New York City’s bicycle-sharing
+service. For a given ride, given a pick-up station, we model
+the drop-off station as a choice out of a set of locations.
+Our model yields promising results, suggesting that our
+method can be useful beyond clickstream data. Next, we
+test the scalability of the inference algorithm. We show that
+the algorithm is able to process a snapshot of the WWW
+hyperlink graph containing over a hundred billion edges
+using a single machine.
+Organization of the paper. In Section 2, we formalize the
+network choice model. In Section 3, we briefly review related literature. In Section 4, we present salient statistical
+properties of the model and its maximum-likelihood estimator, and we propose a prior distribution that makes the
+inference problem well-posed. In Section 5, we describe
+an inference algorithm that enables an efficient implementation. We evaluate the model and the inference algorithm
+in Section 6, before concluding in Section 7. In the supplementary material, we provide a more in-depth discussion of
+our model and algorithm, and we present proofs for all the
+theorems stated in the main text.
 
-2.3. Advantage Sum Estimates
-
-We use notational standard MDPNv1 (Thomas, 2015), and
-for simplicity, we assume that S, A, and R are finite.1 Let
-H := (S0 , A0 , R0 , S1 , . . . , SL , AL , RL ) be a trajectory
-PL
-and g(H) := t=0 γ t Rt be the discounted return of trajectory H. Let ρ(π) := E[g(H)|H ∼ π] be the expected
-discounted return when the stochastic policy π is used from
-S0 sampled from the initial state distribution. In this work,
-we consider parameterized policies, πθ , where the distribution over actions is determined by the vector θ. We assume
-that the transitions and reward function are unknown and
-that L is finite.
-
-Like the Monte-Carlo estimator, the advantage sum (ASE)
-estimator selects θ i = θ e for all i. However, it introduces a control variate to reduce the variance without introducing bias. This control variate requires an approximate
-model of the MDP to be provided. Let the reward function of this model be given as r̂(s, a). Let q̂ πe (st , at ) =
-PL
-0
-E[ t0 =t γ t r̂(st0 , at0 )] and v̂ πe (st ) = E[q̂ πe (st , at )|at ∼
-πe ], i.e., the action-value function and state-value function
-of πe in this approximate model. Then, the advantage sum
-estimator is given by:
-
-We are given an evaluation policy, πe , for which we would
-like to estimate ρ(πe ). We assume there exists a policy
-parameter vector θ e such that πe = πθe and that this vector is known. We consider an incremental setting where,
-at iteration i, we sample a single trajectory Hi with a policy πθi and add {Hi , θ i } to a set D. We use Di to denote
-the set at iteration i. Methods that always (i.e., ∀i) choose
-θ i = θ e are on-policy; otherwise, the method is off-policy.
-A policy evaluation method, PE, uses all trajectories in Di
-to estimate ρ(πe ). Our goal is to design a policy evaluation algorithm that produces estimates of ρ(πe ) that have
-low mean squared error (MSE). Formally, the goal of policy evaluation with PE is to minimize (PE(Di ) − ρ(πe ))2 .
-While other measures of policy evaluation accuracy could
-be considered, we follow earlier work in using MSE (e.g.,
-(Thomas & Brunskill, 2016; Precup et al., 2000)).
-
-AS(Di ) :=
-
-We focus on unbiased estimators of ρ(πe ). While biased estimators (e.g., bootstrapping methods (Sutton &
-Barto, 1998), approximate models (Kearns & Singh, 2002),
-etc.) can sometimes produce lower MSE estimates they are
-problematic for high risk applications requiring confidence
-intervals. For unbiased estimators, minimizing variance is
-equivalent to minimizing MSE.
-
-2.4. Importance Sampling
-
-i
-
-L
-
-1 XX t
-γ (Rt − q̂ πe (St , At ) + v̂ πe (St )).
-i + 1 j=0 t=0
-
-Intuitively, ASE is replacing part of the randomness of the
-Monte Carlo return with the known expected return under
-the approximate model. Provided q πe (St , At ) − v̂ πe (St ) is
-sufficiently correlated with Rt , the variance of ASE is less
-than that of MC.
-Notice that, like the MC estimator, the ASE estimator is
-on-policy, in that the behavior policy is always the policy
-that we wish to evaluate. Intuitively it may seems like this
-choice should be optimal. However, we will show that it is
-not—selecting behavior policies that are different from the
-evaluation policy can result in estimates of ρ(πe ) that have
-lower variance.
-
-Importance Sampling is a method for reweighting returns
-from a behavior policy, θ, such that they are unbiased returns from the evaluation policy. In RL, the re-weighted IS
-return of a trajectory, H, sampled from πθ is:
-IS(H, θ) := g(H)
-
-2.2. Monte-Carlo Estimates
-Perhaps the most commonly used policy evaluation method
-is the on-policy Monte-Carlo (MC) estimator. The estimate
-of ρ(πe ) at iteration i is the average return:
-
-L
-Y
-πe (St |At )
-.
-π
-(St |At )
-t=0 θ
-
-The IS off-policy estimator is then a Monte Carlo estimate
-of E [IS(H, θ)|H ∼ πθ ]:
-i
-
-i
-
-L
-
-i
-
-IS(Di ) :=
-
-1 X
-1 XX t
-γ Rt =
-g(Hj ).
-MC(Di ) :=
-i + 1 j=0 t=0
-i + 1 j=0
-This estimator is unbiased and strongly consistent given
-mild assumptions.2 However, this method can have high
-variance.
-1
-The methods, and theoretical results discussed in this paper
-are applicable to both finite and infinite S, A and R as well as
-partially-observable Markov decision processes.
 2
-Being a strongly consistent estimator of ρ(πe ) means that
 
-1 X
-IS(Hj , θ j ).
-i + 1 j=0
+Network Choice Model
 
-In RL, importance sampling allows off-policy data to be
-used as if it were on-policy. In this case the variance of
-the IS estimate is often much worse than the variance of
-on-policy MC estimates because the behavior policy is not
-Pr
+Let G = (V, E) be a directed graph on n nodes (corresponding to items) and m edges. We denote the out-neighborhood
+of node i by Ni+ and its in-neighborhood by Ni− . We consider the following choice process on G. A user starts at a
+node i and is faced with alternatives Ni+ . The user chooses
+item j and moves to the corresponding node. At node j, the
+user is faced with alternatives Nj+ and chooses k, and so on.
+At any time, the user can stop. Figure 1 gives an example of
+a graph and the alternatives available at a step of the process.
+To define the transition probabilities, we posit Luce’s wellknown choice axiom that states that the odds of choosing
+item j over item j ′ do not depend on the rest of the alternatives (Luce, 1959). This axiom leads to a unique probabilistic model of choice. For every node i and every j ∈ Ni+ ,
+the probability that j is selected among alternatives Ni+ can
 
-
+1
 
-lim MC(Di ) = ρ(πe )
+4
 
-i→∞
+2
 
-
+8
 
-= 1.
-
-If ρ(πe ) exists, MC is
-
-strongly consistent by the Khintchine Strong law of large numbers (Sen & Singer, 1993).
-
-Data-Efficient Policy Evaluation Through Behavior Policy Search
-
-chosen to minimize variance, but is a policy that is dictated
-by circumstance.
-
-3. Behavior Policy Search
-Importance sampling was originally intended as a variance
-reduction technique for Monte Carlo evaluation (Hammersley & Handscomb, 1964). When an evaluation policy rarely
-samples trajectories with high magnitude returns a Monte
-Carlo evaluation will have high variance. If a behavior policy can increase the probability of observing such trajectories then the off-policy IS estimate will have lower variance
-than an on-policy Monte Carlo estimate. In this section we
-first describe the theoretical potential for variance reduction
-with an appropriately selected behavior policy. In general
-this policy will be unknown. Thus, we propose a policy
-evaluation subproblem — the behavior policy search problem — solutions to which will adapt the behavior policy to
-provide lower mean squared error policy performance estimates. To the best of our knowledge, we are the first to
-propose behavior policy adaptation for policy evaluation.
-3.1. The Optimal Behavior Policy
-An appropriately selected behavior policy can lower variance to zero. While this fact is generally known for
-importance-sampling, we show here that this policy exists
-for any MDP and evaluation policy under two restrictive
-assumptions: all returns are positive and the domain is deterministic. In the following section we describe how an
-initial policy can be adapted towards the optimal behavior
-policy even when these conditions fail to hold.
-QL
-Let wπ (H) := t=0 π(At |St ). Consider a behavior policy
-πb? such that for any trajectory, H:
-ρ(πe ) = IS(H, πb? ) = g(H)
-
-wπe (H)
-.
-wπb? (H)
-
-Rearranging the terms of this expressions yields:
-wπb? (H) = g(H)
-
-wπe (H)
-.
-ρ(πe )
-
-Thus, if we can select πb? such that the probability of obg(H)
-serving any H ∼ πb? is ρ(π
-times the likelihood of obe)
-serving H ∼ πe then the IS estimate has zero MSE with
-only a single sampled trajectory. Regardless of g(H), the
-importance-sampled return will equal ρ(πe ).
-Furthermore, the policy πb? exists within the space of all
-feasible stochastic policies. Consider that a stochastic policy can be viewed as a mixture policy over time-dependent
-(i.e., action selection depends on the current time-step) deterministic policies. For example, in an MDP with one
-state, two actions and a horizon of L there are 2L possible time-dependent deterministic policies, each of which
-
-defines a unique sequence of actions. We can express any
-evaluation policy as a mixture of these deterministic policies. The optimal behavior policy πb? can be expressed similarly and thus the optimal behavior policy exists.
-Unfortunately, the optimal behavior policy depends on the
-unknown value ρ(πe ) as well as the unknown reward function R (via g(H)). Thus, while there exists an optimal behavior policy for IS – which is not πe – in practice we cannot analytically determine πb? . Additionally, πb? may not be
-representable by any θ in our policy class.
-3.2. The Behavior Policy Search Problem
-Since the optimal behavior policy cannot be analytically
-determined, we instead propose the behavior policy search
-(BPS) problem for finding πb that lowers the MSE of estimates of ρ(πe ). A BPS problem is defined by the inputs:
-1. An evaluation policy πe with policy parameters θ e .
-2. An off-policy policy evaluation algorithm,
-OPE(H, θ), that takes a trajectory, H ∼ πθ , or,
-alternatively, a set of trajectories, and returns an
-estimate of ρ(πe ).
-A BPS solution is a policy, πθb such that off-policy estimates with OPE have lower MSE than on-policy estimates.
-Methods for this problem are BPS algorithms.
-Recall we have formalized policy evaluation within an incremental setting where one trajectory for policy evaluation
-is generated each iteration. At the ith iteration, a BPS algorithm selects a behavior policy that will be used to generate
-a trajectory, Hi . The policy evaluation algorithm, OPE,
-then estimates ρ(πe ) using trajectories in Di . Naturally,
-the selection of the behavior policy depends on how OPE
-estimates ρ(πe ).
-In a BPS problem, the ith iteration proceeds as follows.
-i−1
-First, given all of the past behavior policies, {θ i }i=0
-, and
-i−1
-the resulting trajectories, {Hi }i=0 , the BPS algorithm must
-select θ i . The policy πθi is then run for one episode to
-create the trajectory Hi . Then the BPS algorithm uses
-OPE to estimate ρ(πe ) given the available data, Di :=
-{(θ i , Hi )}ii=0 . In this paper, we consider the one-step
-problem of selecting θ i and estimating ρ(πe ) at iteration
-i in a way that minimizes MSE. That is, we do not consider
-how our selection of θ i will impact our future ability to select an appropriate θ j for j > i and thus to produce more
-accurate estimates in the future.
-One natural question is: if we are given a limit on the
-number of trajectories that can be sampled, is it better to
-“spend” some of our limited trajectories on BPS instead
-of using on-policy estimates? Since each OP E(Hi , θ i )
-is an unbiased estimator of ρ(πe ), we can use all sampled
-trajectories to compute OPE(Di ). Provided for all itera-
-
-Data-Efficient Policy Evaluation Through Behavior Policy Search
-
-tions, Var[OPE(H, θ i )] ≤ V ar[M C] then, in expectation,
-a BPS algorithm will always achieve lower MSE than MC,
-showing that it is, in fact, worthwhile to do so. This claim
-is supported by our empirical study.
-
-4. Behavior Policy Gradient Theorem
-We now introduce our primary contributions: an analytic
-expression for the gradient of the mean squared error of
-the IS estimator and a stochastic gradient descent algorithm
-that adapts θ to minimize the MSE between the IS estimate
-and ρ(πe ). Our algorithm — Behavior Policy Gradient
-(BPG) — begins with on-policy estimates and adapts the
-behavior policy with gradient descent on the MSE with respect to θ. The gradient of the MSE with respect to the
-policy parameters is given by the following theorem:
-Theorem 1.
-"
-
-L
-X
-∂
-∂
-MSE[IS(H, θ)] = E − IS(H, θ)2
-log πθ (At |St )
-∂θ
-∂θ
-t=0
-
-#
-
-where the expectation is taken over H ∼ πθ .
-Proof. Proofs for all theoretical results are included in
-Appendix A of an extended version available at http:
-//arxiv.org/abs/1706.03469.
-BPG uses stochastic gradient descent in place of exact gradient descent: replacing the intractable expectation in Theorem 1 with an unbiased estimate of the true gradient. In
-our experiments, we sample a batch, Bi , of k trajectories
-with πθi to lower the variance of the gradient estimate at
-iteration i. In the BPS setting, sampling a batch of trajectories is equivalent to holding θ fixed for k iterations and
-then updating θ with the k most recent trajectories used to
-compute the gradient estimate.
-Full details of BPG are given in Algorithm 1. At iteration i, BPG samples a batch, Bi , of k trajectories and adds
-{(θ i , Hi )ki=0 } to a data set D (Lines 4-5). Then BPG updates θ with an empirical estimate of Theorem 1 (Line 6).
-After n iterations, the BPG estimate of ρ(πe ) is IS(Dn ) as
-defined in Section 2.4.
-Given that the step-size, αi , is consistent with standard gradient descent convergence conditions, BPG will converge
-to a behavior policy that locally minimizes the variance
-(Bertsekas & Tsitsiklis, 2000). At best, BPG converges to
-the globally optimal behavior policy within the parameterization of πe . Since the parameterization of πe determines
-the class of representable distributions it is possible that
-the theoretically optimal behavior policy is unrepresentable
-under this parameterization. Nevertheless, a suboptimal behavior policy still yields better estimates of ρ(πe ), provided
-it decreases variance compared to on-policy returns.
-
-Algorithm 1 Behavior Policy Gradient
-Input: Evaluation policy parameters, θ e , batch size k, a
-step-size for each iteration, αi , and number of iterations n.
-Output: Final behavior policy parameters θ n and the IS
-estimate of ρ(πe ) using all sampled trajectories.
-1: θ 0 ← θ e
-2: D0 = {}
-3: for all i ∈ 0...n do
-4:
-Bi = Sample k trajectories H ∼ πθi
-5:
-Di+1 = Di ∪ Bi
-L
-X
-X
-∂
-6:
-θ i+1 = θ i + αki
-IS(H, θ)2
-log πθi (At |St )
-∂θ
-t=0
-H∈B
-7: end for
-8: Return θ n , IS(Dn )
-
-4.1. Control Variate Extension
-In cases where an approximate model is available, we can
-further lower variance adapting the behavior policy of the
-doubly robust estimator (Jiang & Li, 2016; Thomas &
-Brunskill, 2016). Based on a similar intuition as the Advantage Sum estimator (Section 2.3), the Doubly Robust (DR)
-estimator uses the value functions of an approximate model
-as a control variate to lower the variance of importancesampling.3 We show here that we can adapt the behavior
-policy to lower the mean squared error of DR estimates.
-We denote this new method DR-BPG for Doubly Robust
-Behavior Policy Gradient.
-Qt
-Let wπ,t (H) = i=0 π(At |St ) and recall that v̂ πe and q̂ πe
-are the state and action value functions of πe in the approximate model. The DR estimator is:
-L
-X
-wπe ,t
-(Rt −q̂ πe (St , At )+v̂ πe (St+1 )).
-DR(H, θ) := v̂(S0 )+
-w
-πθ ,t
-t=0
-
-We can reduce the mean squared error of DR with gradient
-descent using unbiased estimates of the following corollary
-to Theorem 1:
-Corollary 1.
-L
-X
-∂
-∂
-MSE [DR(H, θ)] = E[(DR(H, θ)2
-log πθ (At |St )
-∂θ
-∂θ
-t=0
-L
-t
-X
-wπ ,t X ∂
-− 2 DR(H, θ)(
-γ t δt e
-log πθ (Ai |Si ))]
-wθ,t i=0 ∂θ
-t=0
-
-where δt = Rt − q̂(St , At ) + v̂(St+1 ) and the expectation
-is taken over H ∼ πθ .
-∂
-M SE is analogous to the gradient of
-The first term of ∂θ
-the importance-sampling estimate with IS(H, θ) replaced
 3
-DR lowers the variance of per-decision importance-sampling
-which importance samples the per time-step reward.
+5
 
-Data-Efficient Policy Evaluation Through Behavior Policy Search
+6
 
-by DR(H, θ). The second term accounts for the covariance
-of the DR terms.
-AS and DR both assume access to a model, however, they
-make no assumption about where the model comes from
-except that it must be independent of the trajectories used to
-compute the final estimate. In practice, AS and DR perform
-best when all trajectories are used to estimate the model and
-then used to estimate ρ(πe ) (Thomas & Brunskill, 2016).
-However, for DR-BPG, changes to the model change the
-surface of the MSE objective we seek to minimize and thus
-DR-BPG will only converge once the model stops changing. In our experiments, we consider both a changing and
-a fixed model.
-4.2. Connection to REINFORCE
-BPG is closely related to existing work in policy gradient RL (c.f., (Sutton et al., 2000)) and we draw connections between one such method and BPG to illustrate how
-BPG changes the distribution of trajectories. REINFORCE
-(Williams, 1992) attempts to maximize ρ(πθ ) through gradient ascent on ρ(πθ ) using the following unbiased gradient
-of ρ(πθ ):
-
-#
-"
-L
+7
+
+Figure 1. An illustration of one step of the process. The user is at
+node 6 and can reach nodes N6+ = {1, 2, 5, 7}.
+
+be written as
+pij = P
+
+λj
+k∈Ni+
+
+λk
+
+(1)
+
+
+⊤
+for some parameter vector λ = λ1 · · · λn ∈ Rn>0 .
+Intuitively, the parameter λi can be interpreted as the
+strength (or utility) of item i. Note that pij depends only on
+the out-neighborhood of node i. As such, the choice process satisfies the Markov property, and we can think of the
+sequence of choices as a trajectory in a Markov chain. In
+the context of this model, we can formulate the inference
+problem as follows. Given a directed graph G = (V, E) and
+data on the aggregate traffic at each node, find a parameter
+vector λ that fits the data.
+
+3
+
+Related Work
+
+A variant of the network choice model was recently introduced by Kumar et al. (2015), in an article that lays much
+of the groundwork for the present paper. Their generative
+model of traffic and the parametrization of transition probabilities based on Luce’s axiom form the basis of our work.
+Kumar et al. define the steady-state inversion problem as
+follows: Given a graph G and a target stationary distribution,
+find transition probabilities that lead to the desired stationary
+distribution. This problem formulation assumes that G satisfies restrictive structural properties (strong-connectedness,
+aperiodicity) and is valid only asymptotically, when the
+sequences of choices made by users are very long. Our
+formulation is, in contrast, more general. In particular, we
+eliminate any assumptions about the structure of G and cope
+with finite data in a principled way—in fact, our derivations
+are valid for choice sequences of any length. One of our
+contributions is to explain the steady-state inversion problem in terms of (asymptotic) maximum-likelihood inference
+in the network choice model. Furthermore, the statistical
+viewpoint that we develop also leads to a) a robust regularization scheme, and b) a simple and efficient EM-type
+
+Identifying Preferences from Node Traffic in Networks
+
+inference algorithm. These important extensions make the
+model easier to apply to real-world data.
+Luce’s choice axiom. The general problem of estimating
+parameters of models based on Luce’s axiom has received
+considerable attention. Several decades before Luce’s seminal book (Luce, 1959), Zermelo (1928) proposed a model
+and an algorithm that estimates the strengths of chess players
+based on pairwise comparison outcomes (his model would
+later be rediscovered by Bradley & Terry (1952)). More
+recently, Hunter (2004) explained Zermelo’s algorithm from
+the perspective of the minorization-maximization (MM)
+method. This method is easily generalized to other models that are based on Luce’s axiom, and it yields simple,
+provably convergent algorithms for maximum-likelihood
+(ML) or maximum-a-posteriori point estimates. Caron &
+Doucet (2012) observe that these MM algorithms can be
+further recast as expectation-maximization (EM) algorithms
+by introducing suitable latent variables. They use this observation to derive Gibbs samplers for a wide family of models.
+We take advantage of this long line of work in Section 5
+when developing an inference algorithm for the network
+choice model. In recent years, several authors have also analyzed the sample complexity of the ML estimate in Luce’s
+choice model (Hajek et al., 2014; Vojnovic & Yun, 2016)
+and investigated alternative spectral inference methods (Negahban et al., 2012; Azari Soufiani et al., 2013; Maystre
+& Grossglauser, 2015). Some of these results could be applied to our setting, but in general they require observing
+choices among well-identified sets of alternatives. Finally,
+we note that models based on Luce’s axiom have been successfully applied to problems ranging from ranking players
+based on game outcomes (Zermelo, 1928; Elo, 1978) to
+understanding consumer behavior based on discrete choices
+(McFadden, 1973), and to discriminating among multiple
+classes based on the output of pairwise classifiers (Hastie &
+Tibshirani, 1998).
+Network analysis. Understanding the preferences of users
+in networks is of significant interest in many domains. For
+brevity, we focus on literature related to hyperlink graphs.
+A method that has undoubtedly had a tremendous impact
+in this context is PageRank (Brin & Page, 1998). PageRank
+computes a set of scores that are proportional to the amount
+of time a surfer, who clicks on links randomly and uniformly,
+spends at each node. These scores are based only on the
+structure of the graph. The network choice model presented
+in this paper appears similar at first, but tackles a different
+problem. In addition to the structure of the graph, it uses
+the traffic at each page, and computes a set of scores that reflect the (non-uniform) probability of clicking on each link.
+Nevertheless, there are striking similarities in the implementation of the respective inference algorithms (see Section 6).
+The HOTness method proposed by Tomlin (2003) is somewhat related, but tries to tackle a harder problem. It attempts
+
+to estimate jointly the traffic and the probability of clicking
+on each link, by using a maximum-entropy approach. At the
+other end of the spectrum, BrowseRank (Liu et al., 2008)
+uses detailed data collected in users’ browsers to improve
+on PageRank. Our method uses only marginal traffic data
+that can be obtained without tracking users.
+
+4
+
+Statistical Properties
+
+In this section, we describe some important statistical properties of the network choice model. We begin by observing
+that O(n) values summarizing the traffic at each node is a
+sufficient statistic for the O(n2 ) entries of the Markov-chain
+transition matrix. We then connect our statistical model to
+the steady-state inversion problem defined by Kumar et al.
+(2015). Guided by this connection, we study the maximumlikelihood (ML) estimate of model parameters, but find that
+the estimate is likely to be ill-defined in many scenarios of
+practical interest. Lastly, we study how to overcome this
+issue by introducing a prior distribution on the parameters
+λ; the prior guarantees that the inference problem is wellposed.
+For simplicity of exposition, we present our results for
+Luce’s standard choice model defined in (1). Our developments extend to the model variant proposed by Kumar
+et al. (2015), where choice probabilities can be modulated
+by edge weights. In the supplementary material, we describe
+this variant and give the necessary adjustments to our developments.
+4.1
+
+Aggregate Traffic Is a Sufficient Statistic
+
+Let cij denote the number of transitions that occurred along
+edge (i, j) ∈ E. Starting from the transition probability
+defined in (1), we can write the log-likelihood of λ given
+data D = {cij | (i, j) ∈ E} as
+
+
+X
+X
+ℓ(λ; D) =
+cij log λj − log
+λk
+k∈Ni+
+
+(i,j)∈E
+
+=
+
+n
+X
+
+X
+
+cij log λj −
+
+j=1 i∈N −
+
+=
+
+n 
+X
+i=1
+
+log λi −
+
+X
+
+cij log
+
+i=1 j∈N +
+i
+
+j
+
+c−
+i
+
+n
+X
+
+c+
+i
+
+log
+
+X
+
+k∈Ni+
+
+X
+
+λk
+
+k∈Ni+
+
+
+
+λk ,
+
+(2)
+
+P
+P
++
+where c−
+i =
+j∈Ni− cji and ci =
+j∈Ni+ cij is the aggregate number of transitions arriving in and originating
+from i, respectively. This formulation of the log-likelihood
+exhibits a key feature of the model: the set of 2n counts
++
+2
+{(c−
+i , ci ) | i ∈ V } is a sufficient statistic of the O(n )
+counts {cij | (i, j) ∈ E} for the parameters λ. (In the supplementary material, we show that it is in fact minimally
+sufficient.) In other words, it is enough to observe marginal
+
+Identifying Preferences from Node Traffic in Networks
+
+information about the number of arrivals and departures
+at each node—we collectively call this data the traffic at
+a node—and no additional information can be gained by
+observing the full choice process. This makes the model particularly attractive, because it means that it is unnecessary to
+track users across nodes. In several applications of practical
+interest, tracking users is undesirable, difficult, or outright
+impossible, due to a) privacy reasons, b) monitoring costs,
+or c) lack of data in existing datasets.
+
+Let λ⋆ be a maximizer of the average log-likelihood. When
+T → ∞, the optimality condition ∇ℓ̂(λ⋆ ) = 0 implies
+
+Note that if we make the additional assumption that the
++
+flow in the network is conserved, then c−
+i = ci . If users’
+typical trajectories consist of many hops, it is reasonable to
++
+approximate c−
+i or ci using that assumption, should one of
+the two quantities be missing.
+
+Comparing (4) to (3), it is clear that λ⋆ is a solution of
+the steady-state inversion problem. As such, the network
+choice model presented in this paper can be viewed as a
+principled extension of the steady-state inversion problem
+to the finite-data case.
+
+4.2
+
+4.3
+
+Connection to the Steady-State Inversion
+Problem
+
+In recent work, Kumar et al. (2015) define the problem
+of steady-state inversion as follows: Given a stronglyconnected directed graph G = (V, E) and a target distribution over the nodes π, find a Markov chain on G with
+stationary distribution π. As there are m = O(n2 ) degrees
+of freedom (the transition probabilities) for n constraints
+(the stationary distribution), the problem is in most cases
+underdetermined. Following Luce’s ideas, the transition
+probabilities are constrained to be proportional to a latent
+score of the destination node as per (1), thus reducing the
+number of parameters from m to n. Denote by P (s) the
+Markov-chain transition matrix parametrized with scores s.
+The score vector s is a solution for the steady-state inversion
+problem if and only if π = πP (s), or equivalently
+πi =
+
+X
+
+si
+
+j∈Ni−
+
+P
+
+k∈Nj+
+
+sk
+
+πj
+
+∀i.
+
+(3)
+
+In order to formalize the connection between Kumar et al.’s
+work and ours, we now express the steady-state inversion
+problem as that of asymptotic maximum-likelihood estimation in the network choice model. Suppose that we observe
++
+node-level traffic data D = {(c−
+i , ci ) | i ∈ V } about
+a trajectory of length T starting at an arbitrary node. We
+want to obtain an estimate of the parameters λ⋆ by maximizing the average log-likelihood ℓ̂(λ) = T1 ℓ(λ; D). From
+standard convergence results for Markov chains (Kemeny
+& Snell, 1976), it follows that as G is strongly connected,
++
+limT →∞ c−
+i /T = limT →∞ ci /T = πi . Therefore,
+ℓ̂(λ) =
+
+n  −
+X
+c
+
+
+X
+c+
+i
+λk
+log λi −
+log
+T
+T
++
+i
+
+i=1
+
+T →∞
+
+−−−−→
+
+n
+X
+i=1
+
+k∈Ni
+
+
+
+πi log λi − log
+
+X
+
+k∈Ni+
+
+
+λk .
+
 
 X
-∂
-∂
+π
+∂ ℓ̂(λ) 
+πi
+P j ⋆ =0
+= ⋆−
 
-ρ(πθ ) = E g(H)
-log πθ (At |St )H ∼ πθ .
-
-∂θ
-∂θ
-t=0
+∂λi λ=λ⋆
+λi
+k∈N + λk
+−
+j∈Ni
 
-Intuitively, REINFORCE increases the probability of all
-actions taken during H as a function of g(H). This update increases the probability of actions that lead to high
-return trajectories. BPG can be interpreted as REINFORCE where the return of a trajectory is the square of
-its importance-sampled return. Thus BPG increases the
-probability of all actions taken along H as a function of
-IS(H, θ)2 . The magnitude of IS(H, θ)2 depends on two
-qualities of H:
-1. g(H)2 is large (i.e., a high magnitude event).
-2. H is rare relative to its probability under the evaluaQL
-t |St )
-tion policy (i.e., t=0 ππθe (A
-(At |St ) is large).
-These two qualities demonstrate a balance in how BPG
-changes trajectory probabilities. Increasing the probability of a trajectory under πθ will decrease IS(H, θ)2 and so
-BPG increases the probability of a trajectory when g(H)2
-is large enough to offset the decrease in IS(H, θ)2 caused
-by decreasing the importance weight.
+⇐⇒ πi =
 
-5. Empirical Study
-This section presents an empirical study of variance reduction through behavior policy search. We design our experiments to answer the following questions:
-• Can behavior policy search with BPG reduce policy
-evaluation MSE compared to on-policy estimates in
+X
 
-both tabular and continuous domains?
-• Does adapting the behavior policy of the Doubly Robust estimator with DR-BPG lower the MSE of the
-Advantage Sum estimator?
-• Does the rarety of actions that cause high magnitude
-rewards affect the performance gap between BPG and
-Monte Carlo estimates?
-5.1. Experimental Set-up
-We address our first experimental question by evaluating
-BPG in three domains. We briefly describe each domain
-here; full details are available in appendix C.
-The first domain is a 4x4 Gridworld. We obtain two evaluation policies by applying REINFORCE to this task, starting from a policy that selects actions uniformly at random.
-We then select one evaluation policy, π1 , from the early
-stages of learning – an improved policy but still far from
-converged – and one after learning has converged, π2 . We
-run all experiments once with πe := π1 and a second time
-with πe := π2 .
-Our second and third tasks are the continuous control Cartpole Swing Up and Acrobot tasks implemented within RLLAB (Duan et al., 2016). The evaluation policy in each domain is a neural network that maps the state to the mean of a
-Gaussian distribution. Policies are partially optimized with
-trust-region policy optimization (Schulman et al., 2015) applied to a randomly initialized policy.
-5.2. Main Results
-Gridworld Experiments Figure 1 compares BPG to
-Monte Carlo for both Gridworld policies, π1 and π2 . Our
-main point of comparison is the mean squared error (MSE)
-of both estimates at iteration i over 100 trials. For π1 , BPG
-significantly reduces the MSE of on-policy estimates (Figure 1a). For π2 , BPG also reduces MSE, however, it is only
-a marginal improvement.
-At the end of each trial we used the final behavior policy to collect 100 more trajectories and estimate ρ(πe ). In
-comparison to a Monte Carlo estimate with 100 trajectories
-from π1 , MSE is 85.48 % lower with this improved behavior policy. For π2 , the MSE is 31.02 % lower. This result
-demonstrates that BPG can find behavior policies that substantially lower MSE.
-To understand the disparity in performance between these
-two instances of policy evaluation, we plot the distribution
-of g(H) under πe (Figures 1c and 1d). These plots show
-the variance of π1 to be much higher; it sometimes samples
-returns with twice the magnitude of any sampled by π2 . To
-quantify this difference,
- we also measure the variance of2
-
-IS(H, θ i ) as E IS(H)2 H ∼ πθi − E [IS(H)|H ∼ πθi ]
-where the expectations are estimated with 10,000 trajecto-
+j∈Ni−
 
-Data-Efficient Policy Evaluation Through Behavior Policy Search
+j
 
-(a) Mean Squared Error
+λ⋆i
 
-(b) Mean Squared Error
+P
 
-(a) Cart-pole Swing Up MSE
+k∈Nj+
 
-(b) Acrobot MSE
+λ⋆k
 
-Figure 2: Mean squared error reduction on the Cart-pole
-Swing Up and Acrobot domains. We adapt the behavior
-policy for 200 iterations and average results over 100 trials.
-Error bars are for 95% confidence intervals.
+πj
 
-(c) Histogram of π1 Returns (d) Histogram of π2 Returns
+∀i.
 
-(e) Variance Reduction
+(4)
 
-step size parameter α. If α is set too high we risk making too large of an update to θ — potentially stepping to
-a worse behavior policy. If we are too conservative then it
-will take many iterations for a noticeable improvement over
-Monte Carlo estimation. Figure 1f shows variance reduction for a number of different α values in the GridWorld
-domain. We found BPG in this domain was robust to a
-variety of step size values. We do not claim this result is
-representative for all problem domains; stepsize selection
-in the behavior policy search problem is an important area
+Maximum-Likelihood Estimate
+
+The log-likelihood (2) is not concave in λ, but it can be
+made concave using the simple reparametrization λi = eθi .
+Therefore, any local minimum of the likelihood is a global
+minimum. Unfortunately, it turns out that the conditions
+guaranteeing that the ML estimate is well-defined (i.e., that
+it exists and is unique) are restrictive and impractical. We
+illustrate this by providing a necessary condition, and for
+brevity we defer the comprehensive analysis of the ML
+estimate to the supplementary material. We begin with a
+definition that uses the notion of hypergraph, a generalized
+graph where edges may be any non-empty subset of nodes.
+Definition (Comparison hypergraph). Given a directed
+graph G = (V, E), the comparison hypergraph is the hypergraph H = (V, A), with A = {Ni+ | i ∈ V }.
+Intuitively, H is the hypergraph induced by the sets of alternatives available at each node. Figure 2 provides an example of a graph and of its associated comparison hypergraph.
+Equipped with this definition, we can state the following
+theorem that is a reformulation of a well-known result for
+Luce’s choice model (Hunter, 2004).
+Theorem 1. If the comparison hypergraph is not connected,
+then for any data D there are λ and µ such that λ 6= cµ
+for any c ∈ R>0 and ℓ(λ; D) = ℓ(µ; D).
+In short, the proof shows that rescaling all the parameters
+in one of the connected components does not change the
+value of the likelihood function. The network of Figure 1
+illustrates an instance where the condition fails: although the
+graph G is strongly connected, its associated comparison
+hypergraph H (depicted in Figure 2) is disconnected, and
+no matter what the data D is, the ML estimate will never be
+uniquely defined. In fact, in the supplementary material, we
+demonstrate that Theorem 1 is just the tip of the iceberg. We
+provide an example where the ML estimate does not exist
+even though the comparison hypergraph is connected, and
+we explain that verifying a necessary and sufficient condi-
+
+Identifying Preferences from Node Traffic in Networks
+
+1
+
+of the observed data nor the prediction of future transitions.
+As a consequence, we may assume that β = 1 without loss
+of generality.
+
+4
+
+2
+
+8
+
+5
+
+Inference Algorithm
+
+3
+5
+
+6
+
+7
+
+Figure 2. The comparison hypergraph associated to the network
+of Fig. 1. The hyperedge associated to N6+ is highlighted in red.
+Note that the component {3, 4} is disconnected from the rest of
+the hypergraph.
+
+The maximizer of the log-posterior does not have a closedform solution. In the spirit of the algorithms of Hunter
+(2004) for variants of Luce’s choice model, we develop
+a minorization-maximization (MM) algorithm. Simply put,
+the algorithm iteratively refines an estimate of the maximizer
+by solving a sequence of surrogates of the log-posterior. Using the inequality log x ≤ log x̃ + x/x̃ − 1 (with equality if
+and only if x = x̃), we can lower-bound the log-posterior (5)
+by
+f
+
+tion for the existence of the ML estimate is computationally
+more expensive than solving the inference problem itself.
+4.4
+
+(t)
+
+(λ) =
+
+log p(λ | D) =
+
+n 
+X
+
+(c−
+i + α − 1) log λi
+
+i=1
+
+−
+
+c+
+i
+
+
+
+Well-Posed Inference
+
+Following the ideas of Caron & Doucet (2012), we introduce
+an independent Gamma prior on each parameter, i.e., i.i.d.
+λ1 , . . . , λn ∼ Gamma(α, β). Adding the log-prior to the
+log-likelihood, we can write the log-posterior as
+
+n 
+X
+
+log
+
+X
+
+(t)
+λk
+
+k∈Ni+
+
+P
+
++P
+
+k∈Ni+ λk
+(t)
+k∈Ni+ λk
+
+
+
+− 1 − βλi + κ,
+
+with equality if and only if λ = λ(t) . Starting with an
+arbitrary λ(0) ∈ Rn>0 , we repeatedly solve the optimization
+problem
+λ(t+1) = arg max f (t) (λ).
+λ
+
+(c−
+i
+
++ α − 1) log λi
+
+i=1
+
+− c+
+i log
+
+X
+
+k∈Ni+
+
+
+
+(5)
+
+λk − βλi + κ,
+
+Unlike the maximization of the log-posterior, the surrogate
+optimization problem has a closed-form solution, obtained
+by setting ∇f (t) to 0:
+(t+1)
+
+λi
+
+=P
+
+c−
+i +α−1
+(t)
+
+(t)
+
+, γj = P
+
+c+
+j
+(t)
+
+.
+
+(6)
+
+where κ is a constant that is independent of λ. The Gamma
+prior translates into a form of regularization that makes the
+inference problem well-posed, as shown by the following
+theorem.
+
+The iterates provably converge to the maximizer of (5), as
+shown by the following theorem.
+
+Theorem 2. If i.i.d. λ1 , . . . , λn ∼ Gamma(α, β) with α >
+1, then the log-posterior (5) always has a unique maximizer
+λ⋆ ∈ Rn>0 .
+
+Theorem 3. Let λ⋆ be the unique maximum a-posteriori
+estimate. Then for any initial λ(0) ∈ Rn>0 the sequence of
+iterates defined by (6) converges to λ⋆ .
+
+The condition α > 1 ensures that the prior has a nonzero
+mode. In short, the proof of Theorem 2 shows that as a result
+of the Gamma prior, the log-posterior can be reparametrized
+into a strictly concave function with bounded super-level
+sets (if α > 1). This guarantees that the log-posterior will
+always have exactly one maximizer. Unlike the results that
+we derive for the ML estimate, Theorem 2 does not impose
+any condition on the graph G for the estimate to be welldefined.
+
+Theorem 3 follows from a standard result on the convergence of MM algorithms and uses the fact that the logposterior increases after each iteration. Furthermore, it is
+known that MM algorithms exhibit geometric convergence
+in a neighborhood of the maximizer (Lange et al., 2000). A
+thorough investigation of the convergence properties is left
 for future work.
 
-(f) Learning Rate Sensitivity
+Remark. Note that varying the rate β in the Gamma prior
+simply rescales the parameters λ. Furthermore, it is clear
+from (1) that such a rescaling affects neither the likelihood
 
-Figure 1: Gridworld experiments when πe is a partially optimized policy, π1 , (1a) and a converged policy, π2 , (1b).
-The first and second rows give results for π1 on the left
-and π2 on the right. Results are averaged over 100 trials
-of 1000 iterations with error bars given for 95 % confidence intervals. In both instances, BPG lowers MSE more
-than on-policy Monte Carlo returns (statistically significant, p < 0.05). The second row shows the distribution of
-returns under the two different πe . Figure 1e shows a substantial decrease in variance when evaluating π1 with BPG
-and a lesser decrease when evaluating π2 with BPG. Figure 1f shows the effect of varying the step-size parameter
-for representative α (BPG diverged for high settings of α).
-We ran BPG for 250 iterations per value of α and averaged
-over 5 trials. Axes in 1a, 1b, and 1e are log-scaled.
+j∈Ni−
 
-ries. This evaluation is repeated 5 times per iteration and
-the reported variance is the mean over these evaluations.
-The decrease in variance for each policy is shown in Figure 1e. The high initial variance means there is much more
-room for BPG to improve the behavior policy when θ e is
-the partially optimized policy.
-We also test the sensitivity of BPG to the learning rate parameter. A critical issue in the use of BPG is selecting the
+γj + β
 
-Continuous Control Figure 2 shows reduction of MSE
-on the Cartpole Swing-up and Acrobot domains. Again we
-see that BPG reduces MSE faster than Monte Carlo evaluation. In contrast to the discrete Gridworld experiment,
-this experiment demonstrates the applicability of BPG to
-the continuous control setting. While BPG significantly
-outperforms Monte Carlo evaluation in Cart-pole Swingup, the gap is much smaller in Acrobot. This result also
-demonstrates BPG (and behavior policy search) when the
-policy must generalize across different states.
-5.3. Control Variate Extensions
-In this section, we evaluate the combination of modelbased control variates with behavior policy search. Specifically, we compare the AS estimator with Doubly Robust
-BPG (DR-BPG). In these experiments we use a 10x10
-stochastic gridworld. The added stochasticity increases the
-difficulty of building an accurate model from trajectories.
-Since these methods require a model we construct this
-model in one of two ways. The first method uses all trajectories in D to build the model and then uses the same set to
-estimate ρ(πe ) with ASE or DR. The second method uses
-trajectories from the first 10 iterations to build the model
-and then fixes the model for the remaining iterations. For
-DR-BPG, behavior policy search starts at iteration 10 un-
+k∈Nj+
 
-Data-Efficient Policy Evaluation Through Behavior Policy Search
+λk
 
-5.4. Rareness of Event
+The structure of the updates in (6) leads to an extremely
+simple and efficient implementation, given in Algorithm 1:
+we call it ChoiceRank. A graphical representation of an
+iteration from the perspective of a single node is given in
+Figure 3. Each iteration consists of two phases of message
 
-(a) Control Variate MSE
+Identifying Preferences from Node Traffic in Networks
 
-(b) Rare Event Improvement
+Algorithm 1 ChoiceRank
++
+Require: graph G = (V, E), counts {(c−
+i , ci )}
+1: λ ← [1, . . . , 1]
+2: repeat
+3:
+z ← 0n
+⊲ Recompute γ
+4:
+for (i, j) ∈ E do zi ← zi + λj
+5:
+for i ∈ V do γi ← c+
+i /zi
+6:
+z ← 0n
+⊲ Recompute λ
+7:
+for (i, j) ∈ E do zj ← zj + γi
+8:
+for i ∈ V do λi ← (c−
+i + α − 1)/(zi + β)
+9: until λ has converged
 
-Figure 3: 3a: Comparison of DR and ASE on a larger
-stochastic Gridworld. For the fixed model methods, the
-significant drop in MSE at iteration 10 is due to the introduction of the model control variate. For clarity we do
-not show error bars. The difference between the final estimate of DR-BPG and ASE with the fixed model is statistically significant (p < 0.05); the difference between the
-same methods with a constantly improving model is not.
-3b: Varying the probability of a high rewarding terminal
-action in the GridWorld domain. Each point on the horizontal axis is the probability of taking this action. The vertical
-axis gives the relative decrease in variance after adapting θ
-for 500 iterations. Denoting the initial variance as vi and
-the final variance as vf , the relative decrease is computed
-v −v
-as i vi f . Error bars for 95% confidence intervals are given
-but are small.
-der this second condition. We call the first method “update”
-and the second method “fixed.” The update method invalidates the theoretical guarantees of these methods but learns
-a more accurate model. In both instances, we build maximum likelihood tabular models.
-Figure 3 demonstrates that combining BPG with a modelbased control variate (DR-BPG) can lead to further reduction of MSE compared to the control variate alone (ASE).
-Specifically, with the fixed model, DR-BPG outperformed
-all other methods. DR-BPG using the update method for
-building the model performed competitively with ASE although not statistically significantly better. We also evaluate the final learned behavior policy of the fixed model
-variant of DR-BPG. For a batch size of 100 trajectories,
-the DR estimator with this behavior policy improves upon
-the ASE estimator with the same model by 56.9 %.
-For DR-BPG, estimating the model with all data still allowed steady progress towards lower variance. This result
-is interesting since a changing model changes the surface
-of our variance objective and thus gradient descent on the
-variance has no theoretical guarantees of convergence. Empirically, we observe that setting the learning rate for DRBPG was more challenging for either model type. Thus
-while we have shown BPG can be combined with control
-variates, more work is needed to produce a robust method.
+1
 
-Our final experiment aims to understand how the gap between on- and off-policy variance is affected by the probability of rare events. The intuition for why behavior policy search can lower the variance of on-policy estimates is
-that a well selected behavior policy can cause rare and high
-magnitude events to occur. We test this intuition by varying
-the probability of a rare, high magnitude event and observing how this change affects the performance gap between
-on- and off-policy evaluation. For this experiment, we use
-a variant of the deterministic Gridworld where taking the
-UP action in the initial state (the upper left corner) causes
-a transition to the terminal state with a reward of +50. We
-use π1 from our earlier Gridworld experiments but we vary
-the probability of choosing UP when in the initial state. So
-with probability p the agent will receive a large reward and
-end the trajectory. We use a constant learning rate of 10−5
-for all values of p and run BPG for 500 iterations. We plot
-the relative decrease of the variance as a function of p over
-100 trials for each value of p. We use relative variance to
-normalize across problem instances. Note that under this
-measure, even when p is close to 1, the relative variance
-is not equal to zero because as p approaches 1 the initial
-variance also goes to zero.
-This experiment illustrates that as the initial variance increases, the amount of improvement BPG can achieve increases. As p becomes closer to 1, the initial variance becomes closer to zero and BPG barely improves over the
-variance of Monte Carlo (in terms of absolute variance
-there is no improvement). When the πe rarely takes the
-high rewarding UP action (p close to 0), BPG improves policy evaluation by increasing the probability of this action.
-This experiment supports our intuition for why off-policy
-evaluation can outperform on-policy evaluation.
+4
+γ2
 
-6. Related Work
-Behavior policy search and BPG are closely related to
-existing work on adaptive importance-sampling. While
-adaptive importance-sampling has been studied in the estimation literature, we focus here on adaptive importancesampling for MDPs and Markov Reward Processes (i.e., an
-MDP with a fixed policy). Existing work on adaptive IS
-in RL has considered changing the transition probabilities
-to lower the variance of policy evaluation (Desai & Glynn,
-2001; Frank et al., 2008) or lower the variance of policy
-gradient estimates (Ciosek & Whiteson, 2017). Since the
-transition probabilities are typically unknown in RL, adapting the behavior policy is a more general approach to adaptive IS. Ciosek and Whiteson also adapt the distribution of
-trajectories with gradient descent on the variance (Ciosek
-& Whiteson, 2017) with respect to parameters of the transition probabilities. The main focus of this work is increasing
+λ2 γ
+4
 
-Data-Efficient Policy Evaluation Through Behavior Policy Search
+λ1
 
-the probability of simulated rare events so that policy improvement can learn an appropriate response. In contrast,
-we address the problem of policy evaluation and differentiate with respect to the (known) policy parameters.
-The cross-entropy method (CEM) is a general method for
-adaptive importance-sampling. CEM attempts to minimize
-the Kullback-Leibler divergence between the current sampling distribution and the optimal sampling distribution. As
-discussed in Section 3.1, this optimal behavior policy only
-exists under a set of restrictive conditions. In contrast we
-adapt the behavior policy by minimizing variance.
-Other methods exist for lowering the variance of on-policy
-estimates. In addition to the control variate technique used
-by the Advantage Sum estimator (Zinkevich et al., 2006;
-White & Bowling, 2009), Veness et al. consider using common random numbers and antithetic variates to reduce the
-variance of roll-outs in Monte Carlo Tree Search (MCTS)
-(2011). These techniques require a model of the environment (as is typical for MCTS) and do not appear to be applicable to the general RL policy evaluation problem. BPG
-could potentially be applied to find a lower variance rollout policy for MCTS.
-In this work we have focused on unbiased policy evaluation. When the goal is to minimize MSE it is often permissible to use biased methods such as temporal difference
-learning (van Seijen & Sutton, 2014), model-based policy
-evaluation (Kearns & Singh, 2002; Strehl et al., 2009), or
-variants of weighted importance sampling (Precup et al.,
-2000). It may be possible to use similar ideas to BPG to
-reduce bias and variance although this appears to be difficult since the bias contribution to the mean squared error is squared and thus any gradient involving bias requires
-knowledge of the estimator’s bias. We leave behavior policy search with biased off-policy methods to future work.
+2
 
-7. Discussion and Future Work
-Our experiments demonstrate that behavior policy search
-with BPG can lower the variance of policy evaluation. One
-open question is characterizing the settings where adapting
-the behavior policy substantially improves over on-policy
-estimates. Towards answering this question, our Gridworld
-experiment showed that when πe has little variance, BPG
-can only offer marginal improvement. BPG increases the
-probability of observing rare events with a high magnitude.
-If the evaluation policy never sees such events then there
-is little benefit to using BPG. However, in expectation and
-with an appropriately selected step-size, BPG will never
-lower the data-efficiency of policy evaluation.
-It is also necessary that the evaluation policy contributes to
-the variance of the returns. If all variance is due to the environment then it seems unlikely that BPG will offer much
+c+
+2
 
-improvement. For example, Ciosek and Whiteson (2017)
-consider a variant of the Mountain Car task where the dynamics can trigger a rare event — independent of the action
-— in which rewards are multiplied by 1000. No behavior
-policy adaptation can lower the variance due to this event.
-One limitation of gradient-based BPS methods is the necessity of good step-size selection. In theory, BPG can never
-lead to worse policy evaluation compared to on-policy estimates. In practice, a poorly selected step-size may cause a
-step to a worse behavior policy at step i which may increase
-the variance of the gradient estimate at step i + 1. Future
-work could consider methods for adaptive step-sizes, second order methods, or natural behavior policy gradients.
-One interesting direction for future work is incorporating
-behavior policy search into policy improvement. A similar
-idea was explored by Ciosek and Whiteson who explored
-off-environment learning to improve the performance of
-policy gradient methods (2017). The method presented in
-that work is limited to simulated environments with differential dynamics. Adapting the behavior policy is a potentially much more general approach.
+(t)
 
-8. Conclusion
-We have introduced the behavior policy search problem
-in order to improve estimation of ρ(πe ) for an evaluation
-policy πe . We present a solution — Behavior Policy Gradient — for this problem which adapts the behavior policy with stochastic gradient descent on the variance of the
-importance-sampling estimator. Experiments demonstrate
-BPG lowers the mean squared error of estimates of ρ(πe )
-compared to on-policy estimates. We also demonstrate
-BPG can further decrease the MSE of estimates in conjunction with a model-based control variate method.
+γ2 =
+(t+1)
+λ2
 
-9. Acknowledgements
-We thank Daniel Brown and the anonymous reviewers for useful comments on the work and its presentation. This work has
-taken place in the Personal Autonomous Robotics Lab (PeARL)
-and Learning Agents Research Group (LARG) at the Artificial Intelligence Laboratory, The University of Texas at Austin. PeARL
-research is supported in part by NSF (IIS-1638107, IIS-1617639).
-LARG research is supported in part by NSF (CNS-1330072,
-CNS-1305287, IIS-1637736, IIS-1651089), ONR (21C184-01),
-AFOSR (FA9550-14-1-0087), Raytheon, Toyota, AT&T, and
-Lockheed Martin. Josiah Hanna is supported by an NSF Graduate Research Fellowship. Peter Stone serves on the Board of Directors of Cogitai, Inc. The terms of this arrangement have been
-reviewed and approved by the University of Texas at Austin in
-accordance with its policy on objectivity in research.
+(t)
 
-Data-Efficient Policy Evaluation Through Behavior Policy Search
+(t)
+
+λ1 + λ3
+=
+
+c−
+2 +α−1
+(t)
+
+(t)
+
+γ3 + γ4 + β
+
+scenarios, and b) the potential of ChoiceRank to scale to
+very large networks.
+6.1
+
+Accuracy on Real-World Data
+
+We evaluate the network choice model on three datasets that
+are representative of two distinct application domains. Each
+dataset can be represented as a set of transition counts {cij }
+on a directed graph G = (V, E). We aggregate the transi+
+tion counts into marginal traffic data {(c−
+i , ci ) | i ∈ V }
+and fit a network choice model by using ChoiceRank. We
+set α = 2.0 and β = 1.0 (these small values simply guarantee the convergence of the algorithm) and declare convergence when kλ(t) − λ(t−1) k1 /n < 10−8 . Given λ, we
+estimate transition probabilities using pij ∝ λj as given by
+(1). To the best of our knowledge, there is no other published
+method tackling the problem of estimating transition probabilities from marginal traffic data. Therefore, we compare
+our method to three baselines based on simple heuristics.
+
+λ3 γ 3 γ
+2
+λ2
+
+3
+
+Figure 3. One iteration of ChoiceRank from the perspective of
+node 2. Messages flow in both directions along the edges of the
+graph G, first in the reverse direction (in dotted) then in the forward
+direction (in solid).
+
+passing, with γi flowing towards in-neighbors Ni− , then λi
+flowing towards out-neighbors Ni+ . The updates to a node’s
+state are a function of the sum of the messages. As the algorithm does two passes over the edges and two passes over the
+vertices, an iteration takes O(m + n) time. The edges can be
+processed in any order, and the algorithm maintains a state
+over only O(n) values associated with the vertices. Furthermore, the algorithm can be conveniently expressed in the
+well-known vertex-centric programming model (Malewicz
+et al., 2010). This makes it easy to implement ChoiceRank
+inside scalable, optimized graph-processing systems such
+as Apache Spark (Gonzalez et al., 2014).
+EM viewpoint. The update (6) can also be explained from
+an expectation-maximization (EM) viewpoint, by introducing suitable latent variables (Caron & Doucet, 2012). This
+viewpoint enables a Gibbs sampler that can be used for
+Bayesian inference. We present the EM derivation in the
+supplementary material, but leave a study of fully Bayesian
+inference in the network choice model for future work.
+
+Traffic Transitions probabilities are proportional to the trafT
+fic of the target node: qij
+∝ c−
+j .
+PageRank Transition probabilities are proportional to the
+P
+PageRank score of the target node: qij
+∝ PRj .
+U
+Uniform Any transition is equiprobable: qij
+∝ 1.
+
+The four estimates are compared against ground-truth transition probabilities derived from the edge traffic data: p⋆ij ∝
+cij . We emphasize that although per-edge transition counts
+{cij } are needed to evaluate the accuracy of the network
+choice model (and the baselines), these counts are not necessary for learning the model—per-node marginal counts
+are sufficient.
+Given a node i, we measure the accuracy of a distribution
+qi over outgoing transitions using two error metrics, the
+KL-divergence and the (normalized) rank displacement:
+X
+p⋆ij
+,
+p⋆ij log
+DKL (p⋆i , qi ) =
+qij
++
+j∈Ni
+
+DFR (p⋆i , qi ) =
+
+j∈Ni
+
+where σi⋆ (respectively σ̂i ) is the ranking of elements in Ni+
+by decreasing order of p⋆ij (respectively qij ). We report the
+distribution of errors “over choices”, i.e., the error at each
+node i is weighted by the number of outgoing transitions
+c+
+i .
+6.1.1
+
+6
+
+Experimental Evaluation
+
+In this section, we investigate a) the ability of the network
+choice model to accurately recover transitions in real-world
+
+X
+1
+|σi⋆ (j) − σ̂i (j)|,
+|Ni+ |2
++
+
+C LICKSTREAM DATA
+
+Wikipedia The Wikimedia Foundation has a long history
+of publicly sharing aggregate, page-level web traffic data1 .
+1
+
+See: https://stats.wikimedia.org/.
+
+Identifying Preferences from Node Traffic in Networks
+
+Recently, it also released clickstream data from the English
+version of Wikipedia (Wulczyn & Taraborelli, 2016), providing us with essential ground-truth transition-level data. We
+consider a dataset that contains information, extracted from
+the server logs, about the traffic each page of the English
+Wikipedia received during the month of March 2016. Each
+page’s incoming traffic is grouped by HTTP referrer, i.e., by
+the page visited prior to the request. We ignore the traffic
+generated by external Web sites such as search engines and
+keep only the internal traffic (18% of the total traffic in the
+dataset). In summary, we obtain counts of transitions on the
+hyperlink graph of English Wikipedia articles. The graph
+contains n = 2 316 032 nodes and m = 13 181 698 edges,
+and we consider slightly over 1.2 billion transitions over
+the edges. On this dataset, ChoiceRank converges after 795
+iterations.
+Kosarak We also consider a second clickstream dataset
+from a Hungarian online news portal2 . The data consists
+of 7 029 013 transitions on a graph containing n = 41001
+nodes and m = 974 560 edges. ChoiceRank converges after
+625 iterations.
+The four leftmost plots of Figure 4 show the error distributions. ChoiceRank significantly improves on the baselines, both in terms of KL-divergence and rank displacement.
+These results give compelling evidence that transitions do
+not occur proportionally with the target’s page traffic: in
+terms of KL-divergence, ChoiceRank improves on Traffic by a factor 3× and 2×, respectively. PageRank scores,
+while reflecting some notion of importance of a page, are
+not designed to estimate transitions, and understandably the
+corresponding baseline performs poorly. Uniform (perhaps
+the simplest of our baselines) is (by design) unable to distinguish among transitions, resulting in a large displacement
+error. We believe that its comparatively better performance
+in terms of KL-divergence (for Wikipedia) is mostly an artifact of the metric, which encourages “prudent” estimates.
+Finally, in Figure 5 we observe that ChoiceRank seems
+to perform comparatively better as the number of possible
+transition increases.
+6.1.2
+
+NYC B ICYCLE -S HARING DATA
+
+Next, we consider trip data from Citi Bike, New York City’s
+bicycle-sharing system3 . For each ride on the system made
+during the year 2015, we extract the pick-up and drop-off
+stations and the duration of the ride. Because we want to focus on direct trips, we exclude rides that last more than one
+hour. We also exclude source-destinations pairs which have
+less than 1 ride per day on average (a majority of source-
+
+destination pairs appears at least once in the dataset). The
+resulting data consists of 3.4 million rides on a graph containing n = 497 nodes and m = 5209 edges. ChoiceRank
+converges after 7508 iterations. We compute the error distribution in the same way as for the clickstream datasets.
+The two rightmost plots of Figure 4 display the results. The
+observations made on the clickstream datasets carry over to
+this mobility dataset, albeit to a lesser degree. A significant
+difference between clicking a link and taking a bicycle trip
+is that in the latter case, there is a non-uniform “cost” of a
+transition due to the distance between source and target. In
+future work, one might consider incorporating edge weights
+and using the weighted network choice model presented in
+the supplementary material.
+6.2
+
+Scaling ChoiceRank to Billions of Nodes
+
+To demonstrate ChoiceRank’s scalability, we develop a
+simple implementation in the Rust programming language,
+based on the ideas of COST (McSherry et al., 2015). Our
+code is publicly available online4 . The implementation repeatedly streams edges from disk and keeps four floating+
+point values per node in memory: the counts c−
+i and ci , the
+sum of messages zi , and either γi or λi (depending on the
+stage in the iteration). As edges can be processed in any
+order, it can be beneficial to reorder the edges in a way that
+accelerates the computation. For this reason, our implementation preprocesses the list of edges and reorders them in
+Hilbert curve order5 . This results in better cache locality
+and yields a significant speedup.
+We test our implementation on a hyperlink graph extracted
+from the 2012 Common Crawl web corpus6 that contains
+over 3.5 billion nodes and 128 billion edges (Meusel et al.,
+2014). The edge list alone requires about 1 TB of uncompressed storage. There is no publicly available information
+on the traffic at each page, therefore we generate a value
+ci for every node i randomly and uniformly between 100
++
+and 500, and set both c−
+i and ci to ci . As such, this experiment does not attempt to measure the validity of the model
+(unlike the experiments of Section 6.1). Instead, it focuses
+on testing the algorithm’s potential to scale to to very large
+networks.
+Results. We run 20 iterations of ChoiceRank on a dual Intel
+Xeon E5-2680 v3 machine, with 256 GB of RAM and 6
+HDDs configured in RAID 0. We arbitrarily set α = 2.0
+and β = 1.0 (but this choice has no impact on the results).
+Only about 65 GB of memory is used, all to store the nodes’
+4
+
+See: http://lucas.maystre.ch/choicerank.
+A Hilbert space-filling curve visits all the entries of the adjacency matrix of the graph, in a way that preserves locality of both
+source and destination of the edges.
+6
+The data is available at http://webdatacommons.
+org/hyperlinkgraph/.
+5
+
+2
+The data is publicly available at http://fimi.ua.ac.
+be/data/.
+3
+The data is available at https://www.citibikenyc.
+com/system-data.
+
+Identifying Preferences from Node Traffic in Networks
+
+Wikipedia
+
+KL-divergence
+
+2.5
+2.0
+1.5
+1.0
+0.5
+0.0
+
+Displacement
+
+C-Rank
+
+Traffic
+
+Kosarak
+
+4.0
+3.5
+3.0
+2.5
+2.0
+1.5
+1.0
+0.5
+0.0
+
+P-Rank Uniform
+
+0.45
+0.40
+0.35
+0.30
+0.25
+0.20
+0.15
+0.10
+
+C-Rank
+
+Traffic
+
+P-Rank Uniform
+
+0.40
+
+0.45
+
+0.35
+
+0.40
+
+0.30
+
+Citi Bike
+
+0.35
+0.30
+0.25
+0.20
+0.15
+0.10
+0.05
+0.00
+C-Rank
+
+Traffic
+
+P-Rank Uniform
+
+C-Rank
+
+Traffic
+
+P-Rank Uniform
+
+0.35
+
+0.25
+0.30
+
+0.20
+
+0.25
+
+0.15
+
+0.20
+
+0.10
+C-Rank
+
+Traffic
+
+C-Rank
+
+P-Rank Uniform
+
+Traffic
+
+P-Rank Uniform
+
+Figure 4. Error distributions of the network choice model and three baselines for the Wikipedia (WP) and Citi Bike (CB) datasets. The
+boxes show the interquartile range, the whiskers show the 5th and 95th percentiles, the red horizontal bars show the median and the red
+squares show the mean.
+
+ChoiceRank
+Traffic
+
+Average KL-divergence
+
+2.0
+
+2015) we run 20 iterations of PageRank on the same hardware and data. PageRank uses slightly less memory (about
+50 GB, or one less floating-point number per node) and
+takes about half of the time per iteration (a little over 20
+minutes). This is consistent with the fact that ChoiceRank
+requires two passes over the edges per iteration, whereas
+PageRank requires one. The similarities between the two
+algorithms lead us to believe that in general, ChoiceRank
+can benefit from any new system optimizations developed
+for PageRank.
+
+PageRank
+Uniform
+
+1.5
+1.0
+0.5
+0.0
+0
+
+20
+
+40
+
+60
+
+80
+
+100
+
+Node out-degree
+
+Figure 5. Average KL-divergence as a function of the number of
+possible transitions for the Wikipedia dataset. ChoiceRank performs comparatively better in the case where a node’s out-degree
+is large.
+
+state (4 × 4 bytes per node). The algorithm takes a little less
+than 39 minutes per iteration on average. Collectively, these
+results validate the feasibility of model inference for very
+large datasets.
+It is worth noting that despite tackling different problems,
+the ChoiceRank algorithm exhibits interesting similarities
+with a message-passing implementation of PageRank commonly used in scalable graph-parallel systems such as Pregel
+(Malewicz et al., 2010) and Spark (Gonzalez et al., 2014).
+For comparison, using the COST code (McSherry et al.,
+
+7
+
+Conclusion
+
+In this paper, we present a method that tackles the problem
+of finding the transition probabilities along the edges of a
+network, given only the network’s structure and aggregate
+node-level traffic data. This method generalizes and extends
+ideas recently presented by Kumar et al. (2015). We demonstrate that in spite of the strong model assumptions needed
+to learn O(n2 ) probabilities from O(n) observations, the
+method still manages to recover the transition probabilities
+to a good level of accuracy on two clickstream datasets, and
+shows promise for applications beyond clickstream data. To
+sum up, we believe that our method will be useful to pracitioners interested in understanding patterns of navigation in
+networks from aggregate traffic data, commonly available,
+e.g., in public datasets.
+
+Identifying Preferences from Node Traffic in Networks
+
+Acknowledgments
+We thank Holly Cogliati-Bauereis, Ksenia Konyushkova,
+Brunella Spinelli and the anonymous reviewers for careful
+proofreading and helpful comments.
 
 References
-Bastani, Meysam. Model-free intelligent diabetes management using machine learning. PhD thesis, Masters thesis, Department of Computing Science, University of Alberta, 2014.
-Bertsekas, Dimitri P. and Tsitsiklis, John N. Gradient convergence in gradient methods with erros. 10:627–642,
-2000.
-Ciosek, Kamil and Whiteson, Shimon. OFFER: Offenvironment reinforcement learning. In Proceedings
-of the 31st AAAI Conference on Artificial Intelligence
-(AAAI), 2017.
-Desai, Paritosh Y and Glynn, Peter W. Simulation in optimization and optimization in simulation: A Markov
-chain perspective on adaptive Monte Carlo algorithms.
-In Proceedings of the 33rd conference on Winter simulation, pp. 379–384. IEEE Computer Society, 2001.
-Duan, Yan, Chen, Xi, Houthooft, Rein, Schulman, John,
-and Abbeel, Pieter. Benchmarking deep reinforcement
-learning for continuous control. In In Proceedings of
-the 33rd International Conference on Machine Learning,
-2016.
-Frank, Jordan, Mannor, Shie, and Precup, Doina. Reinforcement learning in the presence of rare events. In Proceedings of the 25th International Conference on Machine learning, pp. 336–343. ACM, 2008.
-Hammersley, JM and Handscomb, DC. Monte Carlo methods, methuen & co. Ltd., London, pp. 40, 1964.
-Jiang, Nan and Li, Lihong. Doubly robust off-policy evaluation for reinforcement learning. In Proceedings of
-the 33rd International Conference on Machine Learning
-(ICML), 2016.
-Kearns, Michael and Singh, Satinder. Near-optimal reinforcement learning in polynomial time. Machine Learning, 49(2-3):209–232, 2002.
-Lillicrap, Timothy P., Hunt, Jonathan J., Pritzel, Alexander,
-Heess, Nicolas, Erez, Tom, Tassa, Yuval, Silver, David,
-and Wierstra, Daan. Continuous control with deep reinforcement learning. CoRR, abs/1509.02971, 2015.
-Precup, D., Sutton, R. S., and Singh, S. Eligibility traces
-for off-policy policy evaluation. In Proceedings of the
-17th International Conference on Machine Learning, pp.
-759–766, 2000.
-Schulman, John, Levine, Sergey, Moritz, Philipp, Jordan,
-Michael, and Abbeel, Pieter. Trust region policy optimization. In Proceedings of the 32nd International Conference on Machine Learning ( ICML), 2015.
+Azari Soufiani, H., Chen, W. Z., Parkes, D. C., and Xia, L.
+Generalized Method-of-Moments for Rank Aggregation.
+In NIPS 2013, Lake Tahoe, CA, 2013.
 
-Sen, P.K. and Singer, J.M. Large Sample Methods in Statistics: An Introduction with Applications. Chapman &
-Hall, 1993.
-Strehl, Alexander L, Li, Lihong, and Littman, Michael L.
-Reinforcement learning in finite mdps: PAC analysis.
-Journal of Machine Learning Research, 10:2413–2444,
-2009.
-Sutton, Richard S. and Barto, Andrew G. Reinforcement
-Learning: An Introduction. MIT Press, 1998.
-Sutton, Richard S., McAllester, David, Singh, Satinder, and
-Mansour, Yishay. Policy gradient methods for reinforcement learning with function approximation. In Proceedings of the 13th Conference on Neural Information Processing Systems (NIPS), 2000.
-Theocharous, Georgios, Thomas, Philip S., and
-Ghavamzadeh, Mohammad.
-Personalized ad recommendation systems for life-time value optimization
-with guarantees. In Proceedings of the 27th International Joint Conference on Artificial Intelligence
-(IJCAI), pp. 1806–1812, 2015.
-Thomas, Philip S. A notation for Markov decision processes. ArXiv, arXiv:1512.09075v1, 2015.
-Thomas, Philip S. and Brunskill, Emma. Data-efficient
-off-policy policy evaluation for reinforcement learning.
-In Proceedings of the 33rd International Conference on
-Machine Learning (ICML), 2016.
-Thomas, Philip S., Theocharous, Georgios, and
-Ghavamzadeh, Mohammad. High confidence off-policy
-evaluation. In Proceedings of the AAAI Conference on
-Artificial Intelligence (AAAI), 2015.
-van Seijen, Harm and Sutton, Richard S. True online TD
-(λ). In Proceedings of the 31st International Conference
-on Machine Learning (ICML), volume 14, pp. 692–700,
-2014.
-Veness, J., Lanctot, M., and Bowling, M. Variance reduction in Monte-Carlo tree search. In Proceedings of the
-24th Conference on Neural Information Processing Systems, pp. 1836–1844, 2011.
-White, M. and Bowling, M. Learning a value analysis tool
-for agent evaluation. In Proceedings of the 21st International Joint Conference on Artificial Intelligence (IJCAI), pp. 1976–1981, 2009.
-Williams, Ronald J. Simple statistical gradient-following
-algorithms for connectionist reinforcement learning.
-Machine learning, 8(3-4):229–256, 1992.
+Malewicz, G., Austern, M. H., Bik, A. J. C., Dehnert, J. C.,
+Horn, I., Leiser, N., and Czajkowski, G. Pregel: A System
+for Large-Scale Graph Processing. In SIGMOD’10, pp.
+135–145. ACM, 2010.
+Maystre, L. and Grossglauser, M. Fast and Accurate Inference of Plackett–Luce Models. In NIPS 2015, Montreal,
+Canada, 2015.
+McFadden, D. Conditional logit analysis of qualitative
+choice behavior. In Zarembka, P. (ed.), Frontiers in
+Econometrics, pp. 105–142. Academic Press, 1973.
 
-Data-Efficient Policy Evaluation Through Behavior Policy Search
+Bradley, R. A. and Terry, M. E. Rank Analysis of Incomplete
+Block Designs: I. The Method of Paired Comparisons.
+Biometrika, 39(3/4):324–345, 1952.
 
-Zinkevich, M., Bowling, M., Bard, N., Kan, M., and
-Billings, D. Optimal unbiased estimators for evaluating
-agent performance. In Proceedings of the 21st National
-Conference on Artificial Intelligence (AAAI), pp. 573–
-578, 2006.
+McSherry, F., Isard, M., and Murray, D. G. Scalability! But
+at what COST? In HotOS XV, 2015.
+
+Brin, S. and Page, L. The Anatomy of a Large-Scale Hypertextual Web Search Engine. In WWW’98, Brisbane,
+Australia, 1998.
+
+Meusel, Robert, Vigna, Sebastiano, Lehmberg, Oliver, and
+Bizer, Christian. Graph Structure in the Web—Revisited:
+A Trick of the Heavy Tail. In WWW’14 Companion, pp.
+427–432, 2014.
+
+Caron, F. and Doucet, A. Efficient Bayesian Inference for
+Generalized Bradley–Terry models. Journal of Computational and Graphical Statistics, 21(1):174–196, 2012.
+Elo, A. The Rating Of Chess Players, Past & Present. Arco,
+1978.
+Gonzalez, J. E., Xin, R. S., Dave, A., Crankshaw, D.,
+Franklin, M. J., and Stoica, I. Graphx: Graph Processing
+in a Distributed Dataflow Framework. In OSDI’14, pp.
+599–613, 2014.
+Hajek, B., Oh, S., and Xu, J. Minimax-optimal Inference
+from Partial Rankings. In NIPS 2014, Montreal, QC,
+Canada, 2014.
+Hastie, T. and Tibshirani, R. Classification by pairwise
+coupling. The Annals of Statistics, 26(2):451–471, 1998.
+Hunter, D. R. MM algorithms for generalized Bradley–Terry
+models. The Annals of Statistics, 32(1):384–406, 2004.
+Kemeny, J. G. and Snell, J. L. Finite Markov Chains.
+Springer-Verlag, 1976.
+Kumar, Ravi, Tomkins, Andrew, Vassilvitskii, Sergei, and
+Vee, Erik. Inverting a Steady-State. In WSDM’15, pp.
+359–368. ACM, 2015.
+Lange, K., Hunter, D. R., and Yang, I. Optimization Transfer
+Using Surrogate Objective Functions. Journal of Computational and Graphical Statistics, 9(1):1–20, 2000.
+Liu, Y., Gao, B., Liu, T.-Y., Zhang, Y., Ma, Z., He, S., and
+Li, H. BrowseRank: Letting Web Users Vote For Page
+Importance. In SIGIR’08, pp. 451–458. ACM, 2008.
+Luce, R. D. Individual Choice behavior: A Theoretical
+Analysis. Wiley, 1959.
+
+Negahban, S., Oh, S., and Shah, D. Iterative Ranking from
+Pair-wise Comparisons. In NIPS 2012, Lake Tahoe, CA,
+2012.
+Tomlin, J. A. A New Paradigm for Ranking Pages on the
+World Wide Web. In WWW’03, pp. 350–355. ACM, 2003.
+Train, K. E. Discrete Choice Methods with Simulation.
+Cambridge University Press, second edition, 2009.
+Vojnovic, M. and Yun, S.-Y. Parameter Estimation for Generalized Thurstone Choice Models. In ICML 2016, pp.
+498–506, 2016.
+Wulczyn, E. and Taraborelli, D.
+Wikipedia Clickstream. April 2016. URL https://dx.doi.org/
+10.6084/m9.figshare.1305770.v16.
+Zermelo, E. Die Berechnung der Turnier-Ergebnisse als
+ein Maximumproblem der Wahrscheinlichkeitsrechnung.
+Mathematische Zeitschrift, 29(1):436–460, 1928.
 
 

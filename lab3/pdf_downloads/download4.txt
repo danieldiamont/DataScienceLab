@@ -1,975 +1,971 @@
-Constrained Policy Optimization
-Joshua Achiam 1 David Held 1 Aviv Tamar 1 Pieter Abbeel 1 2
+Local Bayesian Optimization of Motor Skills
+
+Riad Akrour 1 Dmitry Sorokin 1 Jan Peters 1 2 Gerhard Neumann 1 3
 
 Abstract
-For many applications of reinforcement learning it can be more convenient to specify both
-a reward function and constraints, rather than
-trying to design behavior through the reward
-function. For example, systems that physically
-interact with or around humans should satisfy
-safety constraints. Recent advances in policy
-search algorithms (Mnih et al., 2016; Schulman et al., 2015; Lillicrap et al., 2016; Levine
-et al., 2016) have enabled new capabilities in
-high-dimensional control, but do not consider
-the constrained setting. We propose Constrained
-Policy Optimization (CPO), the ﬁrst generalpurpose policy search algorithm for constrained
-reinforcement learning with guarantees for nearconstraint satisfaction at each iteration. Our
-method allows us to train neural network policies for high-dimensional control while making
-guarantees about policy behavior all throughout
-training. Our guarantees are based on a new theoretical result, which is of independent interest:
-we prove a bound relating the expected returns
-of two policies to an average divergence between
-them. We demonstrate the effectiveness of our
-approach on simulated robot locomotion tasks
-where the agent must satisfy constraints motivated by safety.
+Bayesian optimization is renowned for its sample efficiency but its application to higher dimensional tasks is impeded by its focus on global
+optimization. To scale to higher dimensional
+problems, we leverage the sample efficiency of
+Bayesian optimization in a local context. The
+optimization of the acquisition function is restricted to the vicinity of a Gaussian search distribution which is moved towards high value areas of the objective. The proposed informationtheoretic update of the search distribution results
+in a Bayesian interpretation of local stochastic search: the search distribution encodes prior
+knowledge on the optimum’s location and is
+weighted at each iteration by the likelihood of
+this location’s optimality. We demonstrate the
+effectiveness of our algorithm on several benchmark objective functions as well as a continuous
+robotic task in which an informative prior is obtained by imitation learning.
 
 1. Introduction
-Recently, deep reinforcement learning has enabled neural
-network policies to achieve state-of-the-art performance
-on many high-dimensional control tasks, including Atari
-games (using pixels as inputs) (Mnih et al., 2015; 2016),
-robot locomotion and manipulation (Schulman et al., 2015;
-Levine et al., 2016; Lillicrap et al., 2016), and even Go at
-the human grandmaster level (Silver et al., 2016).
+Recent advances in deep reinforcement learning, supported
+by the ability of generating and processing large amounts
+of data, allowed impressive achievements such as playing
+Atari at human level (Mnih et al., 2015) or mastering the
+game of Go (Silver et al., 2016). In robotics however, sample complexity is paramount as sample generation on physical systems cannot be sped up and can cause wear and
+damage to the robot when excessive (Kober et al., 2013).
+Relying on a simulator to carry the learning will inevitably
+result in a reality gap, since mechanical forces such as
+stiction are hard to accurately model. However, a policy
+learned in a simulated environment can still be valuable
+provided the availability of a sample efficient algorithm to
 1
-UC Berkeley 2 OpenAI. Correspondence to: Joshua Achiam
-<jachiam@berkeley.edu>.
+CLAS/IAS, TU Darmstadt, Darmstadt, Germany 2 Max
+Planck Institute for Intelligent Systems, Tübingen, Germany 3 LCAS, University of Lincoln, Lincoln, United Kingdom. Correspondence to: Riad Akrour <riad@robot-learning.de>.
 
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-In reinforcement learning (RL), agents learn to act by trial
-and error, gradually improving their performance at the
-task as learning progresses. Recent work in deep RL assumes that agents are free to explore any behavior during
-learning, so long as it leads to performance improvement.
-In many realistic domains, however, it may be unacceptable
-to give an agent complete freedom. Consider, for example,
-an industrial robot arm learning to assemble a new product
-in a factory. Some behaviors could cause it to damage itself or the plant around it—or worse, take actions that are
-harmful to people working nearby. In domains like this,
-safe exploration for RL agents is important (Moldovan &
-Abbeel, 2012; Amodei et al., 2016). A natural way to incorporate safety is via constraints.
-A standard and well-studied formulation for reinforcement
-learning with constraints is the constrained Markov Decision Process (CMDP) framework (Altman, 1999), where
-agents must satisfy constraints on expectations of auxilliary costs. Although optimal policies for ﬁnite CMDPs
-with known models can be obtained by linear programming, methods for high-dimensional control are lacking.
-Currently, policy search algorithms enjoy state-of-theart performance on high-dimensional control tasks (Mnih
-et al., 2016; Duan et al., 2016). Heuristic algorithms for
-policy search in CMDPs have been proposed (Uchibe &
-Doya, 2007), and approaches based on primal-dual methods can be shown to converge to constraint-satisfying policies (Chow et al., 2015), but there is currently no approach
-for policy search in continuous CMDPs that guarantees every policy during learning will satisfy constraints. In this
-work, we propose the ﬁrst such algorithm, allowing applications to constrained deep RL.
-Driving our approach is a new theoretical result that bounds
-the difference between the rewards or costs of two different policies. This result, which is of independent interest,
-tightens known bounds for policy search using trust regions
-(Kakade & Langford, 2002; Pirotta et al., 2013; Schulman
-et al., 2015), and provides a tighter connection between the
-theory and practice of policy search for deep RL. Here,
-we use this result to derive a policy improvement step that
-guarantees both an increase in reward and satisfaction of
-constraints on other costs. This step forms the basis for our
-algorithm, Constrained Policy Optimization (CPO), which
+carry an additional optimization phase on the physical system.
+Bayesian optimization is best known as a black-box global
+optimizer (Brochu et al., 2010; Shahriari et al., 2016). It
+was shown to be efficient for several function landscapes
+(Jones, 2001), real world scenarios such as the automatic
+tuning of machine learning algorithms (Bergstra et al.,
+2011; Snoek et al., 2012; Feurer et al., 2015) or robotics and
+control (Lizotte et al., 2007; Wilson et al., 2014; Calandra
+et al., 2016) and several of its variants have convergence
+guaranties to a global optimum (Vazquez & Bect, 2010;
+Bull, 2011). Its efficiency stems from two key principles: a
+probabilistic modeling of the objective function and a sampling procedure that fully exploits this model. However,
+as the dimensionality of the task increases, non-stationarity
+effects of the objective or the noise function (see Shahriari et al. (2016), Sec. V.D. for a discussion of these effects) are exacerbated, rendering the modeling of the objective function challenging. An additional difficulty stemming from the increase in dimensionality is the tendency
+of Bayesian optimization to over-explore, which was experimentally observed in e.g. Brochu et al. (2007). Several
+recent approaches trying to scale Bayesian optimization to
+higher dimensions assume additional structure of the objective function. In Snoek et al. (2014), it is assumed that stationarity of the objective function can be recovered through
+the use of a parametric family of mappings. While it is assumed that the objective function has a lower intrinsic dimension in Djolonga et al. (2013); Wang et al. (2016), can
+be decomposable into a sum of lower dimensional functions in Kandasamy et al. (2015) or a combination of both
+hypothesis in Li et al. (2016).
+In this paper, we assume prior knowledge on the location
+of the optimum—given by an initial solution and a confidence on the optimality thereof—and leverage Bayesian
+optimization in a local manner to improve over this solution. We are especially interested in the application of our
+algorithm to the optimization of motor skills since i) evaluating the policy return is expensive on physical systems and
+will likely dominate the computational budget of the optimization process; as such, sample efficient algorithms such
+as Bayesian optimization are desirable ii) robotics applications are typically high dimensional and global optimization might be prohibitively expensive iii) an initial solution
 
-Constrained Policy Optimization
+Local Bayesian Optimization of Motor Skills
 
-computes an approximation to the theoretically-justiﬁed
-update.
-In our experiments, we show that CPO can train neural
-network policies with thousands of parameters on highdimensional simulated robot locomotion tasks to maximize
-rewards while successfully enforcing constraints.
+can often be obtained through the use of imitation learning (Argall et al., 2009) or by a preliminary optimization
+on a surrogate model such as a simulator.
 
-2. Related Work
-Safety has long been a topic of interest in RL research, and
-a comprehensive overview of safety in RL was given by
-(Garcı́a & Fernández, 2015).
-Safe policy search methods have been proposed in prior
-work. Uchibe and Doya (2007) gave a policy gradient algorithm that uses gradient projection to enforce active constraints, but this approach suffers from an inability to prevent a policy from becoming unsafe in the ﬁrst place. Bou
-Ammar et al. (2015) propose a theoretically-motivated policy gradient method for lifelong learning with safety constraints, but their method involves an expensive inner loop
-optimization of a semi-deﬁnite program, making it unsuited
-for the deep RL setting. Their method also assumes that
-safety constraints are linear in policy parameters, which is
-limiting. Chow et al. (2015) propose a primal-dual subgradient method for risk-constrained reinforcement learning which takes policy gradient steps on an objective that
-trades off return with risk, while simultaneously learning
-the trade-off coefﬁcients (dual variables).
-Some approaches speciﬁcally focus on application to the
-deep RL setting. Held et al. (2017) study the problem for
-robotic manipulation, but the assumptions they make restrict the applicability of their methods. Lipton et al. (2017)
-use an ‘intrinsic fear’ heuristic, as opposed to constraints,
-to motivate agents to avoid rare but catastrophic events.
-Shalev-Shwartz et al. (2016) avoid the problem of enforcing constraints on parametrized policies by decomposing
-‘desires’ from trajectory planning; the neural network policy learns desires for behavior, while the trajectory planning algorithm (which is not learned) selects ﬁnal behavior
-and enforces safety constraints.
-In contrast to prior work, our method is the ﬁrst policy
-search algorithm for CMDPs that both 1) guarantees constraint satisfaction throughout training, and 2) works for
-arbitrary policy classes (including neural networks).
+2. Related work
+Our algorithm can be seen as a local stochastic search
+algorithm akin to Covariance Matrix Adaptation (CMAES) (Hansen & Ostermeier, 2001), cross-entropy (Mannor et al., 2003) or MOdel-based Relative Entropy
+(MORE) (Abdolmaleki et al., 2015). Local stochastic
+search algorithms typically maintain a Gaussian search distribution from which samples are generated, the objective
+function is evaluated and the search distribution is updated.
+As in Bayesian optimization, they are of particular use
+when the gradient of the objective function is unknown.
+Their use as a black-box optimization routine is gaining
+popularity in the machine learning community, e.g. in reinforcement learning (Thomas et al., 2015) or even for hyperparameter tuning (Bergstra et al., 2011) and the optimization of the acquisition function (Wang et al., 2016) of global
+Bayesian optimization.
+Our algorithm shares the same general structure as local stochastic search algorithms and additionally learns
+a (probabilistic) model of the objective function. Modeling the objective function was already explored in the
+stochastic search literature. A surrogate function is learned
+in (Loshchilov et al., 2013) using SVM-Rank, and is optimized using CMA-ES for a few iterations, yielding an
+update of the search distribution without requiring additional function evaluations. While in MORE (Abdolmaleki
+et al., 2015), a local quadratic approximation of the objective function yields the new mean and covariance of the
+Gaussian search distribution upon an information-theoretic
+update. Unlike these algorithms, we do not optimize the
+learned (probabilistic) model, but derive from it p(x =
+x? |D), the probability of x being optimal. Our search distribution is then updated such as to minimize the KullbackLeibler (KL) divergence to p(x = x? |D). Compared to
+these surrogate assisted local stochastic search algorithms
+(Loshchilov et al., 2013; Abdolmaleki et al., 2015), the
+transformation of the optimization landscape (minimizing
+the KL-divergence to p(x = x? |D) instead of the objective function) facilitates learning of the surrogate model by
+lowering the variance in poorly performing regions, as illustrated in Fig. 1.
+To approximate p(x = x? |D) we rely on a probabilistic
+modeling of the objective function and to select the next
+point to sample we locally optimize an acquisition function. As such, our algorithm can also be seen as Bayesian
+optimization where the usual box constraint is moved towards a high value area of the objective function to restrict
+exploration.
 
-3. Preliminaries
-A Markov decision process (MDP) is a tuple,
-(S, A, R, P, µ), where S is the set of states, A is the
-set of actions, R : S × A × S → R is the reward function,
-P : S ×A×S → [0, 1] is the transition probability function
-(where P (s� |s, a) is the probability of transitioning to state
+Algorithm 1 Local Bayesian Optimization of Motor Skills
+Input: Initial policy π0 = N (µ0 , σ02 I), step-size , entropy reduction rate β
+Output: Policy πN
+for n = 1 to N do
+Fit: Gaussian pbn from local samples of p?n (Sec. 3.2)
+Optimize: (η ∗ , ω ∗ ) = arg min gn (η, ω)
+(Sec. 3.1.1)
+?
+η ? +ω ?
+Bayesian Update: (πn+1 )
+∝ πnη p?n (Sec. 3.1.1)
+Evaluate: xn from local samples of p?n
+(Sec. 3.3)
+Dn ←− Dn−1 ∪ {(xn , yn )}
+end for
 
-s� given that the previous state was s and the agent took
-action a in s), and µ : S → [0, 1] is the starting state
-distribution. A stationary policy π : S → P(A) is a map
-from states to probability distributions over actions, with
-π(a|s) denoting the probability of selecting action a in
-state s. We denote the set of all stationary policies by Π.
-In reinforcement learning, we aim to select a policy π
-which maximizes a performance measure, J(π), which is
-typically taken to be the �
-inﬁnite horizon discounted to.
-∞
-tal return, J(π) = E [ t=0 γ t R(st , at , st+1 )]. Here
-τ ∼π
+In reinforcement learning, probabilistic modeling was used
+to e.g. learn a transition model (Deisenroth & Rasmussen,
+2011) or the policy gradient (Ghavamzadeh et al., 2016)
+with Gaussian processes. Closer to our work, the use of
+an adaptive box constraint was explored in Bayesian optimization to ensure a safe optimization of a robot controller
+(Berkenkamp et al., 2016; Englert & Toussaint, 2016).
+Considering safety is crucial for motor skill learning on
+physical systems to prevent the evaluation of ’dangerous’
+parameters. Both approaches restrict exploration to an initial safe region of the parameter space that is incrementally
+expanded using additional problem assumptions. Without
+such assumptions our algorithm cannot guarantee safety
+but its local nature is expected to dampen the potential risk
+of global Bayesian optimization.
 
-γ ∈ [0, 1) is the discount factor, τ denotes a trajectory
-(τ = (s0 , a0 , s1 , ...)), and τ ∼ π is shorthand for indicating that the distribution over trajectories depends on π:
-s0 ∼ µ, at ∼ π(·|st ), st+1 ∼ P (·|st , at ).
+3. Local Bayesian optimization
+Let f : Rd 7→ R be an objective function. For example
+f (x) can be the expected reward of a robot controller parameterized by x ∈ Rd . We assume that the algorithm only
+has access to noisy evaluations y = f (x) + , where  ∼
+N (0, σs2 ) is Gaussian noise of unknown deviation σs . The
+algorithm will produce a sequence {(x1 , y1 ) . . . (xN , yN )}
+of parameter-evaluation pairs
+P and the goal is to minimize
+the cumulative regret N1 i f (x? ) − yi for some global
+maximizer x? of f . The cumulative regret emphasizes
+the inherent cost in evaluating a bad parameter, potentially
+causing wear and damage to the robot.
+Prior knowledge on an optimum’s location x? is given
+to the algorithm by a Gaussian distribution π0 =
+N (µ0 , σ02 I). In what follows we will indistinctly refer to
+π as a search distribution or a policy following the terminology of the stochastic search and reinforcement learning
+(RL) communities. In an RL context, an informative prior
+can often be obtained from human generated data or from a
+simulator. Specifically, we assume that the mean µ0 of π0
+is obtained by imitation learning if near-optimal demonstrations are available or by a preliminary optimization on
+a less accurate but inexpensive model of the system dy-
 
-Letting R(τ ) denote the discounted return of a trajec.
-tory, we express the on-policy value function as V π (s) =
-Eτ ∼π [R(τ )|s0 = s] and the on-policy action-value func.
-tion as Qπ (s, a) = Eτ ∼π [R(τ )|s0 = s, a0 = a]. The
-.
-advantage function is Aπ (s, a) = Qπ (s, a) − V π (s).
-Also of interest is the discounted
-future state distribution,
-�∞
-dπ , deﬁned by dπ (s) = (1−γ) t=0 γ t P (st = s|π). It allows us to compactly express the difference in performance
-between two policies π � , π as
-J(π � ) − J(π) =
+Local Bayesian Optimization of Motor Skills
+4
+
+4
+
+4
+2
+
+4
+
+4
+
+2
+
+2
+
+2
+
+2
+
+0
+
+0
+
+0
+
+-2
+
+0
+
+0
+
+-2
+
+-2
+
+-4
+
+-4
+
+-2
+
+-2
+
+-4
+
+-4
+
+-4
+
+-6
+
+-6
+
+-6
+
+-8
+
+-8
+
+-8
+-4
+
+-3
+
+-2
+
+-1
+
+0
 
 1
-E [Aπ (s, a)] ,
-1 − γ s∼dπ�
-a∼π
+
+2
+
+(a) Objective function f .
+
+-6
+
+-4
+
+-3
+
+-2
+
+-1
+
+0
+
+1
+
+2
+
+(b) Search distribution.
+
+-6
+
+-8
+-4
+
+-3
+
+-2
+
+-1
+
+0
+
+1
+
+2
+
+-8
+-4
+
+(c) Quad. approx. of f .
+
+-3
+
+-2
+
+-1
+
+0
+
+1
+
+(d) GP approx. of f .
+
+2
+
+-4
+
+-3
+
+-2
+
+-1
+
+0
+
+1
+
+(e) Gaussian approx.
+p(x? |D).
+
+2
+
+of
+
+Figure 1. The benefits of minimizing the KL divergence to p(x? |D) instead of maximizing a local approximation of the objective
+function f . a) The objective function f has two modes illustrated by the red (higher mode) and blue (lower mode) stars. b) The search
+distribution π draws samples in the area of both modes. The samples and their evaluation are stored in D. c) The quadratic approximation
+of f (minimizing the empirical mean squared error on D) captures variations of f even in low value areas and result in a poor orientation
+for the search distribution update as illustrated by the model’s optimum (magenta star in (c)). On the other side, the Gaussian process
+approximation of f (shown in (d)) is confident enough in its approximation for p(x? |D) to sample mainly around the higher mode (red
+star, see (e)). As a result, the Gaussian approximation of p(x? |D) only focuses on high value areas and results in a better direction for
+the search distribution update than the quadratic model of f .
+
+namics. Whereas σ0 is a hyper-parameter of the algorithm,
+manually set in our experiments, and expressing the confidence in the optimality of µ0 .
+
+tions can be used to obtain our search distribution update.
+
+The search distribution πn is updated by solving the optimization problem formally defined in Sec. 3.1.1. The
+objective of the optimization problem is to minimize the
+KL divergence between πn and p(x = x? |Dn ), the probability of x? being optimal according to the data set of
+parameter-evaluation pairs Dn . Solving this problem results in a Bayesian update, as shown in Alg. 1, where the
+prior πn (x) on the optimality of x is weighted by the likelihood p(x = x? |Dn ) of x being optimal according to Dn .
+Letting the likelihood p(x = x? |Dn ) be denoted by p?n (x),
+the first step of the algorithm is to fit pbn , a Gaussian approximation of p?n (Sec. 3.2). Subsequently, a dual function is
+optimized (Sec. 3.1.1) to make sure that the search distribution moves slowly towards p? as new evaluations are collected. Modulating the Bayesian update with the dual parameters η ∗ and ω ∗ is important since Dn is initially empty
+and p?n not initially informative. Finally, a new evaluations
+of f is requested by selecting xn from the previously generated samples of p?n and the process is iterated.
+
+The search distribution is updated such that its KL divergence w.r.t. p?n is minimized. Since future evaluations of f
+will be performed around the updated search distribution,
+it becomes critical to control the change of distribution between iterations by constraining the aforementioned minimization problem. These constraints will ensure that the
+exploration is not reduced too fast or that the mean is not
+moved too quickly from the initial solution µ0 . The resulting optimization problem is given by
+
+The next subsections give a detailed presentation of both
+the search distribution update and the sampling procedure
+from p?n .
+3.1. Search distribution update
+The search distribution in our algorithm is updated such as
+to minimize the KL divergence between πn and p?n . The
+resulting optimization problem is closely related to the one
+solved by the MORE algorithm (Abdolmaleki et al., 2015).
+In the next subsections, we will first formalize our search
+distribution update before briefly describing the search distribution update of MORE and showing how their deriva-
+
+3.1.1. T HE OPTIMIZATION PROBLEM
+
+arg min
+π
+
+subject to
+
+KL(π k p?n ),
+KL(π k πn )
+
+≤ ,
 
 (1)
 
-�
+H(πn ) − H(π)
 
-where by a ∼ π , we mean a ∼ π � (·|s), with explicit
-notation dropped to reduce clutter. For proof of (1), see
-(Kakade & Langford, 2002) or Section 10 in the supplementary material.
-�
-
-4. Constrained Markov Decision Processes
-A constrained Markov decision process (CMDP) is an
-MDP augmented with constraints that restrict the set of allowable policies for that MDP. Speciﬁcally, we augment the
-MDP with a set C of auxiliary cost functions, C1 , ..., Cm
-(with each one a function Ci : S × A × S → R mapping transition tuples to costs, like the usual reward), and
-limits d1 , ..., dm . Let JCi (π) denote the expected discounted return of policy
-�∞ π with respect to cost function
-Ci : JCi (π) = E [ t=0 γ t Ci (st , at , st+1 )]. The set of
-τ ∼π
-feasible stationary policies for a CMDP is then
-.
-ΠC = {π ∈ Π : ∀i, JCi (π) ≤ di } ,
-and the reinforcement learning problem in a CMDP is
-π ∗ = arg max J(π).
-π∈ΠC
-
-The choice of optimizing only over stationary policies is
-justiﬁed: it has been shown that the set of all optimal policies for a CMDP includes stationary policies, under mild
-
-Constrained Policy Optimization
-
-technical conditions. For a thorough review of CMDPs and
-CMDP theory, we refer the reader to (Altman, 1999).
-
-case performance and worst-case constraint violation with
-values that depend on a hyperparameter of the algorithm.
-
-We refer to JCi as a constraint return, or Ci -return for
-short. Lastly, we deﬁne on-policy value functions, actionvalue functions, and advantage functions for the auxiliary
-costs in analogy to V π , Qπ , and Aπ , with Ci replacing R:
-respectively, we denote these by VCπi , QπCi , and AπCi .
-
-To prove the performance guarantees associated with our
-surrogates, we ﬁrst prove new bounds on the difference
-in returns (or constraint returns) between two arbitrary
-stochastic policies in terms of an average divergence between them. We then show how our bounds permit a new
-analysis of trust region methods in general: speciﬁcally,
-we prove a worst-case performance degradation at each update. We conclude by motivating, presenting, and proving
-gurantees on our algorithm, Constrained Policy Optimization (CPO), a trust region method for CMDPs.
-
-5. Constrained Policy Optimization
-For large or continuous MDPs, solving for the exact optimal policy is intractable due to the curse of dimensionality
-(Sutton & Barto, 1998). Policy search algorithms approach
-this problem by searching for the optimal policy within a
-set Πθ ⊆ Π of parametrized policies with parameters θ
-(for example, neural networks of a ﬁxed architecture). In
-local policy search (Peters & Schaal, 2008), the policy is
-iteratively updated by maximizing J(π) over a local neighborhood of the most recent iterate πk :
-πk+1 = arg max J(π)
-π∈Πθ
-
-s.t. D(π, πk ) ≤ δ,
+≤ β,
 
 (2)
 
-where D is some distance measure, and δ > 0 is a step
-size. When the objective is estimated by linearizing around
-πk as J(πk ) + g T (θ − θk ), g is the policy gradient, and
-the standard policy gradient update is obtained by choosing
-D(π, πk ) = �θ − θk �2 (Schulman et al., 2015).
+R
+is the KL diverwhere KL(p k q) = p(x) log p(x)
+q(x) dx
+R
+gence between p and q and H(p) = − p(x) log(p(x))dx
+is the entropy of p. The hyper-parameters  and β respectively bound the change in distribution and the reduction in
+entropy between successive iterations.
+The use of the KL divergence to constrain the update is
+widespread in the reinforcement learning community (Peters et al., 2010; Schulman et al., 2015). When the search
+distributions π and πn are of Gaussian form, the KL divergence in Eq. (1) is impacted by three factors. On one side,
+by the change in entropy between the two distributions—
+having a direct impact on the exploration rate. On the other
+side, by the displacement of the mean and the rotation of
+the covariance matrix—not impacting the exploration rate.
+To better control the exploration, we choose to decouple
 
-In local policy search for CMDPs, we additionally require
-policy iterates to be feasible for the CMDP, so instead of
-optimizing over Πθ , we optimize over Πθ ∩ ΠC :
-πk+1 = arg max J(π)
+Local Bayesian Optimization of Motor Skills
 
-5.1. Policy Performance Bounds
-In this section, we present the theoretical foundation for
-our approach—a new bound on the difference in returns
-between two arbitrary policies. This result, which is of independent interest, extends the works of (Kakade & Langford, 2002), (Pirotta et al., 2013), and (Schulman et al.,
-2015), providing tighter bounds. As we show later, it also
-relates the theoretical bounds for trust region policy improvement with the actual trust region algorithms that have
-been demonstrated to be successful in practice (Duan et al.,
-2016). In the context of constrained policy search, we later
-use our results to propose policy updates that both improve
-the expected return and satisfy constraints.
-The following theorem connects the difference in returns
-(or constraint returns) between two arbitrary policies to an
-average divergence between them.
-Theorem 1. For any function f : S → R and any policies
-.
-π � and π, deﬁne δf (s, a, s� ) = R(s, a, s� ) + γf (s� ) − f (s),
-� .
-�πf = max |Ea∼π� ,s� ∼P [δf (s, a, s� )]| ,
+the reduction in entropy from the KL constraint. It was
+shown in (Abdolmaleki et al., 2015) that the additional entropy constraint can lead to significantly better solutions at
+the expense of a slower start.
+The optimization problem defined in this section is closely
+related to the one solved by MORE. In fact, when the inequality (2) is replaced by the equality constraint H(πn ) −
+H(π) = β for both algorithms then the two problems coincide; while only a small modification of the dual function
+is necessary otherwise. For the sake of clarity and to keep
+the paper self-contained, we will briefly introduce MORE
+before showing how we can reuse their derivation of the
+search distribution update in our algorithm.
+3.1.2. M ODEL -BASED R ELATIVE E NTROPY S EARCH
+MORE (Abdolmaleki et al., 2015) is a local stochastic
+search algorithm where the search distribution πn (x) is updated by solving the following constrained problem
+Z
+arg max
+π(x)f (x)dx
+π
 
-π∈Πθ
+subject to
 
-s.t. JCi (π) ≤ di i = 1, ..., m
+KL(π k πn )
+
+≤ ,
 
 (3)
 
-D(π, πk ) ≤ δ.
+H(πn ) − H(π)
 
-This update is difﬁcult to implement in practice because
-it requires evaluation of the constraint functions to determine whether a proposed point π is feasible. When using
-sampling to compute policy updates, as is typically done in
-high-dimensional control (Duan et al., 2016), this requires
-off-policy evaluation, which is known to be challenging
-(Jiang & Li, 2015). In this work, we take a different approach, motivated by recent methods for trust region optimization (Schulman et al., 2015).
-We develop a principled approximation to (3) with a particular choice of D, where we replace the objective and
-constraints with surrogate functions. The surrogates we
-choose are easy to estimate from samples collected on πk ,
-and are good local approximations for the objective and
-constraints. Our theoretical analysis shows that for our
-choices of surrogates, we can bound our update’s worst-
-
-s
-
-.
-Lπ,f (π ) = E π
-�
-
-s∼d
-a∼π
-s� ∼P
-
-��
-
-�
-�
-π � (a|s)
-�
-− 1 δf (s, a, s ) , and
-π(a|s)
-�
-
-2γ�πf
-. Lπ,f (π � )
-±
-=
-E [DT V (π � ||π)[s]] ,
-1−γ
-(1 − γ)2 s∼dπ
-�
-where DT V (π � ||π)[s] = (1/2) a |π � (a|s) − π(a|s)| is
-the total variational divergence between action distributions at s. The following bounds hold:
-±
-(π � )
-Dπ,f
-
-+
-−
-Dπ,f
-(π � ) ≥ J(π � ) − J(π) ≥ Dπ,f
-(π � ).
+≤ β,
 
 (4)
 
-Furthermore, the bounds are tight (when π � = π, all three
-expressions are identically zero).
-Before proceeding, we connect this result to prior work.
-By bounding the expectation Es∼dπ [DT V (π � ||π)[s]] with
-�
-maxs DT V (π � ||π)[s], picking f = V π , and bounding �πV π
-
-Constrained Policy Optimization
-
-to get a second factor of maxs DT V (π � ||π)[s], we recover
-(up to assumption-dependent factors) the bounds given by
-Pirotta et al. (2013) as Corollary 3.6, and by Schulman
-et al. (2015) as Theorem 1a.
-The choice of f = V π allows a useful form of the lower
-bound, so we give it as a corollary.
-�
-.
-=
-Corollary 1. For any policies π � , π, with �π
-maxs |Ea∼π� [Aπ (s, a)]|, the following bound holds:
-J(π � ) − J(π)
-
-�
-�
-�
+An analytic solution of the problem is obtained by locally
+approximating f with the quadratic model
+1
+Rn (x) = − xT Rn x + xT r n + rn ,
+2
+learned by linear regression from the data set Dn . Letting
+the search distribution πn (x) = N (x|µn , Σn ) at iteration
+n be parameterized by the mean µn and covariance matrix
+Σn , the aforementioned optimization problem yields the
+closed form update where the new mean and covariance
+are given by
+
 (5)
-2γ�π
-1
-π
-�
-E A (s, a) −
-DT V (π ||π)[s] .
-≥
-1 − γ s∼dπ�
-1−γ
-a∼π
+Σ−1
+= (η ? + ω ? )−1 η ? Σ−1
+n + Rn ,
+n+1
+
+?
+? −1
+? −1
+µn+1 = (η + ω ) Σn+1 η Σn µn + r n , (6)
+where η ? and ω ? are the Lagrange multipliers of the constraints (3) and (4) respectively, and are obtained by minimizing the dual function gn (η, ω) by gradient descent (Abdolmaleki et al., 2015).
+As can be seen in Eq. 5, the new covariance matrix is a
+trade-off between the old covariance and the local curvature of the objective function f —where the trade-off parameters are computed in order to satisfy both constraints
+of the optimization problem. As such, it is appropriate to
+use the covariance matrix of the search distribution in the
+kernel function for the local approximation of f when using GP regression.
+We additionally define MORE with equality constraint as
+a variant of MORE where the inequality constraint in (4)
 
-The bound (5) should be compared with equation (1). The
-term (1 − γ)−1 Es∼dπ ,a∼π� [Aπ (s, a)] in (5) is an approximation to J(π � ) − J(π), using the state distribution dπ in�
-stead of dπ , which is known to equal J(π � ) − J(π) to ﬁrst
-order in the parameters of π � on a neighborhood around π
-(Kakade & Langford, 2002). The bound can therefore be
-viewed as describing the worst-case approximation error,
-and it justiﬁes using the approximation as a surrogate for
-J(π � ) − J(π).
-Equivalent expressions for the auxiliary costs, based on the
-upper bound, also follow immediately; we will later use
-them to make guarantees for the safety of CPO.
-Corollary 2. For any policies π � , π, and any cost func�
-.
-tion Ci , with �πCi = maxs |Ea∼π� [AπCi (s, a)]|, the following bound holds:
-JCi (π � ) − JCi (π)
-�
-�
-�
-2γ�πCi
-1
-π
-�
-E ACi (s, a) +
-DT V (π ||π)[s] .
-≤
-1 − γ s∼dπ�
-1−γ
-a∼π
+is replaced with the equality constraint H(πn ) − H(π) =
+β, forcing the reduction in entropy at each iteration to be
+exactly β. This modification will not change the shape of
+the update but only the Lagrange multipliers, that can be
+obtained by simply alleviating the constraint ω ≥ 0 in the
+minimization of gn (η, ω).
+3.1.3. O PTIMIZATION PROBLEMS ’ EQUIVALENCE
+We now show that the optimization problem in our algorithm can be phrased as the optimization problem solved
+by MORE for the equality entropy constraint; while only a
+small modification of the dual minimization is required for
+the inequality entropy constraint. The equivalence of the
+optimization problems will allow us to use Eq. 5 and 6 to
+update our search distribution.
+Proposition 1. The optimization problem in Sec. 3.1.1 can
+be reduced to the optimization problem in 3.1.2 for the objective function f = log p?n when both problems enforce an
+exact entropy reduction constraint on π.
+Proof. We first rephrase the problem in Sec. 3.1.1 as the
+maximization over π of
+−KL(π k p?n ) + β − H(πn ),
+where we switched the sign of the KL divergence term and
+added the constant term β − H(πn ). These modifications
+will not change the value of the stationary points of the
+Lagrangian. The resulting Lagrangian is
+Z
+L(π, η, ω) =
 
-(6)
+π(x) log p?n (x)dx+η(−KL(π k πn ))
++ (ω + 1)(H(π) − H(πn ) + β),
 
-The bounds we have given so far are in terms of the
-TV-divergence between policies, but trust region methods
-constrain the KL-divergence between policies, so bounds
-that connect performance to the KL-divergence are desirable. We make the connection through Pinsker’s inequality (Csiszar & Körner, 1981): for arbitrary distributions p, q, the TV-divergence
-and KL-divergence are related
-�
-by DT V (p||q) ≤
-DKL (p||q)/2. Combining this with
-Jensen’s inequality, we obtain
-�
-��
-1
-�
-�
-DKL (π ||π)[s]
-E [DT V (π ||π)[s]] ≤ E π
-s∼dπ
-s∼d
-2
-�
-1
-E [DKL (π � ||π)[s]] (7)
-≤
-2 s∼dπ
-From (7) we immediately obtain the following.
+with dual variables η ≥ 0 and ω ∈ R and where we have
+split the term KL(π k p?n ) into the expected log-density of
+p?n and the entropy H(π) of π. A MORE formulation with
+similar entropy and KL divergence constraints and where
+the objective is to maximize the log-density log p?n yields
+the Lagrangian
+L0 (π, η, ω) =
 
-Corollary 3. In bounds (4), (5), and (6), make the substitution
-�
-1
-�
-E [DKL (π � ||π)[s]].
-E [DT V (π ||π)[s]] →
-s∼dπ
-2 s∼dπ
+Z
 
-The resulting bounds hold.
+π(x) log p?n (x)dx+η(−KL(π k πn ))
++ ω(H(π) − H(πn ) + β).
 
-5.2. Trust Region Methods
-Trust region algorithms for reinforcement learning (Schulman et al., 2015; 2016) have policy updates of the form
-πk+1 = arg max
+Since we have no constraint on ω, it is easy to see that
+the dual variable minimizing the dual of the first problem
+ω ? and of the second (MORE) problem ω 0∗ are related by
+ω ? = ω 0∗ − 1 and both problems will result in the same
+update of π.
+Intuitively, the minimization of KL(π k p?n ) can be reduced
+to the maximization (in expectation of π) of the log-density
 
-E [Aπk (s, a)]
+Local Bayesian Optimization of Motor Skills
 
-π∈Πθ s∼dπk
-a∼π
+log p?n because the equality constraint H(π) = H(πn ) − β
+annihilates the effect of the additional entropy term H(π)
+coming from the KL objective.
+From Proposition 1 and following the derivations in (Abdolmaleki et al., 2015), the search distribution πn+1 solution of the optimization problem in Sec. 3.1.1 is given by
+η?
 
-(8)
-
-s.t. D̄KL (π||πk ) ≤ δ,
-where D̄KL (π||πk ) = Es∼πk [DKL (π||πk )[s]], and δ > 0
-is the step size. The set {πθ ∈ Πθ : D̄KL (π||πk ) ≤ δ} is
-called the trust region.
-The primary motivation for this update is that it is an approximation to optimizing the lower bound on policy performance given in (5), which would guarantee monotonic
-performance improvements. This is important for optimizing neural network policies, which are known to suffer
-from performance collapse after bad updates (Duan et al.,
-2016). Despite the approximation, trust region steps usually give monotonic improvements (Schulman et al., 2015;
-Duan et al., 2016) and have shown state-of-the-art performance in the deep RL setting (Duan et al., 2016; Gu et al.,
-2017), making the approach appealing for developing policy search methods for CMDPs.
-Until now, the particular choice of trust region for (8) was
-heuristically motivated; with (5) and Corollary 3, we are
-able to show that it is principled and comes with a worstcase performance degradation guarantee that depends on δ.
-Proposition 1 (Trust Region Update Performance). Suppose πk , πk+1 are related by (8), and that πk ∈ Πθ . A
-lower bound on the policy performance difference between
-πk and πk+1 is
-√
-− 2δγ�πk+1
-,
-(9)
-J(πk+1 ) − J(πk ) ≥
-(1 − γ)2
-�
-�
-where �πk+1 = maxs �Ea∼πk+1 [Aπk (s, a)]�.
-
-Proof. πk is a feasible point of (8) with objective value 0,
-so Es∼dπk ,a∼πk+1 [Aπk (s, a)] ≥ 0. The rest follows by (5)
-and Corollary 3, noting that (8) bounds the average KLdivergence by δ.
-
-This result is useful for two reasons: 1) it is of independent
-interest, as it helps tighten the connection between theory
-and practice for deep RL, and 2) the choice to develop CPO
-as a trust region method means that CPO inherits this performance guarantee.
-
-Constrained Policy Optimization
-
-5.3. Trust Region Optimization for Constrained MDPs
-
-6. Practical Implementation
-
-Constrained policy optimization (CPO), which we present
-and justify in this section, is a policy search algorithm for
-CMDPs with updates that approximately solve (3) with a
-particular choice of D. First, we describe a policy search
-update for CMDPs that alleviates the issue of off-policy
-evaluation, and comes with guarantees of monotonic performance improvement and constraint satisfaction. Then,
-because the theoretically guaranteed update will take toosmall steps in practice, we propose CPO as a practical approximation based on trust region methods.
-
-In this section, we show how to implement an approximation to the update (10) that can be efﬁciently computed,
-even when optimizing policies with thousands of parameters. To address the issue of approximation and sampling
-errors that arise in practice, as well as the potential violations described by Proposition 2, we also propose to tighten
-the constraints by constraining upper bounds of the auxilliary costs, instead of the auxilliary costs themselves.
-
-By corollaries 1, 2, and 3, for appropriate coefﬁcients αk ,
-βki the update
-�
-πk+1 = arg max Eπ [Aπk (s, a)] − αk D̄KL (π||πk )
-
-For policies with high-dimensional parameter spaces like
-neural networks, (10) can be impractical to solve directly because of the computational cost. However, for
-small step sizes δ, the objective and cost constraints are
-well-approximated by linearizing around πk , and the KLdivergence constraint is well-approximated by second order expansion (at πk = π, the KL-divergence and its gradient are both zero). Denoting the gradient of the objective
-as g, the gradient of constraint i as bi , the Hessian of the
-.
-KL-divergence as H, and deﬁning ci = JCi (πk ) − di , the
-approximation to (10) is:
-
-π∈Πθ s∼d k
-a∼π
-
-s.t. JCi (πk ) +
-
-E
-
-s∼dπk
-a∼π
-
-�
-
-�
-�
-AπCki (s, a)
-+ βki D̄KL (π||πk ) ≤ di
-1−γ
-
-is guaranteed to produce policies with monotonically nondecreasing returns that satisfy the original constraints. (Observe that the constraint here is on an upper bound for
-JCi (π) by (6).) The off-policy evaluation issue is alleviated, because both the objective and constraints involve expectations over state distributions dπk , which we presume
-to have samples from. Because the bounds are tight, the
-problem is always feasible (as long as π0 is feasible). However, the penalties on policy divergence are quite steep for
-discount factors close to 1, so steps taken with this update
-might be small.
-Inspired by trust region methods, we propose CPO, which
-uses a trust region instead of penalties on policy divergence
-to enable larger step sizes:
-πk+1 = arg max
-
-E [Aπk (s, a)]
-
-π∈Πθ s∼dπk
-a∼π
-
-s.t. JCi (πk ) +
-
-�
-�
-1
-Eπ AπCki (s, a) ≤ di ∀i
-1 − γ s∼d k
-a∼π
-
-D̄KL (π||πk ) ≤ δ.
-
-(10)
-Because this is a trust region method, it inherits the performance guarantee of Proposition 1. Furthermore, by corollaries 2 and 3, we have a performance guarantee for approximate satisfaction of constraints:
-Proposition 2 (CPO Update Worst-Case Constraint Violation). Suppose πk , πk+1 are related by (10), and that Πθ in
-(10) is any set of policies with πk ∈ Πθ . An upper bound
-on the Ci -return of πk+1 is
-√
-π
-2δγ�Ck+1
-i
-JCi (πk+1 ) ≤ di +
-,
-(1 − γ)2
-�
-��
-�
-π
-= maxs �Ea∼πk+1 AπCki (s, a) �.
-where �Ck+1
-i
-
-6.1. Approximately Solving the CPO Update
-
-θk+1 = arg max g T (θ − θk )
-θ
-
-ci + bTi (θ − θk ) ≤ 0 i = 1, ..., m
-1
-(θ − θk )T H(θ − θk ) ≤ δ.
-2
-(11)
-Because the Fisher information matrix (FIM) H is always positive semi-deﬁnite (and we will assume it to be
-positive-deﬁnite in what follows), this optimization problem is convex and, when feasible, can be solved efﬁciently
-using duality. (We reserve the case where it is not feasi.
-ble for the next subsection.) With B = [b1 , ..., bm ] and
-.
-c = [c1 , ..., cm ]T , a dual to (11) can be expressed as
-s.t.
-
-max
-λ≥0
-ν�0
-
-�
-−1 � T −1
-λδ
-,
-g H g − 2rT ν + ν T Sν + ν T c −
-2λ
-2
-
-(12)
-.
-.
-where r = g T H −1 B, S = B T H −1 B. This is a convex
-program in m+1 variables; when the number of constraints
-is small by comparison to the dimension of θ, this is much
-easier to solve than (11). If λ∗ , ν ∗ are a solution to the dual,
-the solution to the primal is
-θ ∗ = θk +
-
-1 −1
-H (g − Bν ∗ ) .
-λ∗
-
-(13)
-
-Our algorithm solves the dual for λ∗ , ν ∗ and uses it to propose the policy update (13). For the special case where
-there is only one constraint, we give an analytical solution
-in the supplementary material (Theorem 2) which removes
-the need for an inner-loop optimization. Our experiments
-
-Constrained Policy Optimization
-
-Algorithm 1 Constrained Policy Optimization
-Input: Initial policy π0 ∈ Πθ tolerance α
-for k = 0, 1, 2, ... do
-Sample a set of trajectories D = {τ } ∼ πk = π(θk )
-Form sample estimates ĝ, b̂, Ĥ, ĉ with D
-if approximate CPO is feasible then
-Solve dual problem (12) for λ∗k , νk∗
-Compute policy proposal θ∗ with (13)
-else
-Compute recovery policy proposal θ∗ with (14)
-end if
-Obtain θk+1 by backtracking linesearch to enforce satisfaction of sample estimates of constraints in (10)
-end for
-have only a single constraint, and make use of the analytical solution.
-Because of approximation error, the proposed update may
-not satisfy the constraints in (10); a backtracking line
-search is used to ensure surrogate constraint satisfaction.
-Also, for high-dimensional policies, it is impractically expensive to invert the FIM. This poses a challenge for computing H −1 g and H −1 bi , which appear in the dual. Like
-(Schulman et al., 2015), we approximately compute them
-using the conjugate gradient method.
-6.2. Feasibility
-Due to approximation errors, CPO may take a bad step and
-produce an infeasible iterate πk . Sometimes (11) will still
-be feasible and CPO can automatically recover from its bad
-step, but for the infeasible case, a recovery method is necessary. In our experiments, where we only have one constraint, we recover by proposing an update to purely decrease the constraint value:
-�
-2δ
-∗
-H −1 b.
-θ = θk −
-(14)
-T
-b H −1 b
-As before, this is followed by a line search. This approach
-is principled in that it uses the limiting search direction as
-the intersection of the trust region and the constraint region
-shrinks to zero. We give the pseudocode for our algorithm
-(for the single-constraint case) as Algorithm 1, and have
-made our code implementation available online.1
-6.3. Tightening Constraints via Cost Shaping
-Because of the various approximations between (3) and our
-practical algorithm, it is important to build a factor of safety
-into the algorithm to minimize the chance of constraint violations. To this end, we choose to constrain upper bounds
 1
 
-https://github.com/jachiam/cpo
+πn+1 ∝ (πn ) η? +ω? (p?n ) η? +ω? ,
 
-on the original constraints, Ci+ , instead of the original constraints themselves. We do this by cost shaping:
-Ci+ (s, a, s� ) = Ci (s, a, s� ) + Δi (s, a, s� ),
+(7)
 
-(15)
+where η ? and ω ? are the Lagrange multipliers related to the
+KL and entropy constraints respectively and minimizing
+the dual function gn (η, ω). We refer the reader to Sec. 2.1
+in (Abdolmaleki et al., 2015) for the definition of gn (η, ω).
+When the entropy constraint is the inequality in (2) instead
+of an equality, the Lagrange multipliers for our update and
+the MORE update may differ. However, η ? and ω ? can still
+be obtained by the minimization of the same gn (η, ω) with
+the additional constraint ω ≥ 1.
+Note that the new search distribution πn+1 as defined in
+Eq. (7) is not necessarily Gaussian because of the multiplication by p?n . However, by approximating p?n by a Gaussian
+distribution pbn , log pbn will be a quadratic model and Eq. 5
+and 6 can be used to obtain a Gaussian πn+1 .
+3.2. Approximating the argmax distribution
+To obtain a closed form update of the Gaussian search distribution in Eq. (7), we will approximate p?n by fitting a
+Gaussian pbn to samples of p?n as shown in Fig. 1e. To
+generate samples from p?n , we use Thompson sampling
+(Chapelle & Li, 2011; Russo & Roy, 2014) from a probabilistic model of the objective function f .
+The probabilistic model of f follows from both a Gaussian process (GP) prior and a Gaussian likelihood assumption. We use in this paper the squared exponential kernel
+kn (xi , xj ) = θ0 exp(−θ1 (xi − xj )T Σ−1
+n (xi − xj )) with
+hyper-parameters θ0 and θ1 and Σn the covariance matrix
+of πn . The resulting model has hyper-parameter vector
+φ = (θ0 , θ1 , σs ), where σs2 is the noise variance of the
+likelihood function as previously defined. Samples from
+p?n are generated by i) sampling a hyper-parameter vector φ from the posterior distribution p(φ|Dn ) using slice
+sampling (Murray & Adams, 2010), ii) sampling a function from the GP posterior p(fe|Dn , φ) and iii) returning
+the argmax of fe.
+The computational complexity of evaluating fe is cubical in
+the number of requested evaluations as it involves a matrix
+inversion. As such, the exact maximization of fe can prove
+to be challenging. Prior work in the literature considered
+approximating fe with a linear function (see for example
+Hernández-Lobato et al. (2014), Sec. 2.1) and globally
 
-where Δi : S × A × S → R+ correlates in some useful
-way with Ci .
-In our experiments, where we have only one constraint, we
-partition states into safe states and unsafe states, and the
-agent suffers a safety cost of 1 for being in an unsafe state.
-We choose Δ to be the probability of entering an unsafe
-state within a ﬁxed time horizon, according to a learned
-model that is updated at each iteration. This choice confers
-the additional beneﬁt of smoothing out sparse constraints.
+maximizing the linear surrogate. In our local optimization context, we follow a more straightforward approach
+by generating samples from πn , and returning the sample
+with maximal value of fe. The rational behind searching
+the argmax of fe in the vicinity of πn is that samples from
+πn are likely to have high fe value since πn is updated such
+that the KL divergence w.r.t. p?n is minimized. The repeated process of drawing points from πn , drawing their
+value from the GP posterior and selecting the point with
+highest value will constitute a data set Dn? containing local
+samples from p?n .
+Once samples from p?n are generated and stored in Dn? , we
+set pbn = N (µ?n , Σ?n ) where µ?n and Σ?n are the sample
+mean and covariance of the samples in Dn? . Because pbn
+is Gaussian, log pbn is quadratic and the search distribution
+update in Eq. (7) yields a Gaussian distribution πn+1 with
+covariance and mean as defined in Eq. (5) and Eq. (6) respectively with Rn = Σ?n −1 and r n = Σ?n −1 µ?n .
+3.3. Sample generation
+The function f is initially evaluated at a point x0 drawn
+from the prior distribution π0 . In subsequent iterations, a
+point xn is randomly selected from Dn? , the set of samples
+used in the computation of pbn (Sec. 3.2).
+Experimentally, we noticed that the exploration in our algorithm is heavily influenced by the centering of the values
+{yi }n1 in Dn . Three variants of our algorithm are initially
+evaluated with different target values of the GP. The target
+values are obtained by subtracting from yi either the max
+the min or the mean of {yi }n1 . Since the GP modeling of
+f has a zero mean prior, the extreme case where the max
+(resp. the min) is subtracted from the data results in an optimistic (resp. pessimistic) exploration strategy considering
+that the objective function in unexplored areas have values higher (resp. lower) in expectation than the best (resp.
+worst) evaluation so far.
 
-7. Connections to Prior Work
-Our method has similar policy updates to primal-dual
-methods like those proposed by Chow et al. (2015), but
-crucially, we differ in computing the dual variables (the
-Lagrange multipliers for the constraints). In primal-dual
-optimization (PDO), dual variables are stateful and learned
-concurrently with the primal variables (Boyd et al., 2003).
-In a PDO algorithm for solving (3), dual variables would
-be updated according to
-νk+1 = (νk + αk (JC (πk ) − d))+ ,
+4. Experiments
+We initially investigate in this section the impact of the
+target centering (Sec. 3.3) on the exploration-exploitation
+trade-off of our algorithm. We then compare our algorithm to two state-of-the-art model based optimizers: the
+global Bayesian optimizer and the local Model-Based Relative Entropy Search (Abdolmaleki et al., 2015). The algorithms are compared on several continuous function benchmarks as well as a simulated robotics task.
+Benchmarks. Variants of our algorithm are first compared
+on randomly generated smooth 2 dimensional objective
+functions. We then conduct a comparison to the state-ofthe-art on the COmparing COntinuous optimisers (COCO)
 
-(16)
+Local Bayesian Optimization of Motor Skills
 
-where αk is a learning rate. In this approach, intermediary policies are not guaranteed to satisfy constraints—only
-the policy at convergence is. By contrast, CPO computes
-new dual variables from scratch at each update to exactly
-enforce constraints.
+testbed on the 20 functions f 5 to f 24 (we refer the reader to
+http://coco.gforge.inria.fr/ for an illustration and the mathematical definition of each function). We
+chose to split the experimentation between the uni-modal
+and the multi-modal categories of the testbed. The unimodal category is representative of the informed initialization hypothesis that only requires local improvements.
+While the multi-modal category assesses the robustness
+of our algorithm to more complex function landscapes—
+which can be encountered in practice despite the informed
+initialization if e.g. a too wide variance σ02 is initially set.
+We vary the dimension of the COCO functions from 3 to
+30 while the robotics task evaluates our algorithm on a 70
+dimensional setting.
+Algorithms. In what follows, we will refer to our algorithm as L-BayesOpt. We rely on the GPStuff library (Vanhatalo et al., 2013) for the GP implementation and the posterior sampling of hyper-parameters. We use the BayesOpt
+library (Martinez-Cantin, 2014) for global Bayesian optimization with a similar to L-BayesOpt squared exponential kernel and MCMC sampling of hyper-parameters and
+an additional Automatic Relevance Determination step executed every 50 samples. In the experiments we evaluate
+BayesOpt with both Expected Improvement and Thompson Sampling acquisition functions.
+In all of the experiments, L-BayesOpt and MORE will
+share the same initial policy, step-size , entropy reduction β and will sample ten points per iteration. We choose
+to use an equality constraint for the entropy reduction for
+both algorithms. As a result, both L-BayesOpt and MORE
+will have the same entropy at every iteration and any difference in performance will be attributed to a better location of the mean, adaptation of the covariance matrix or
+sampling procedure rather than a faster reduction in exploration. In all but the last experiment  = β = .05 while for
+the robotics experiment with an initial solution learned by
+imitation learning we set a more aggressive step size and
+entropy reduction  = β = 1.
+Evaluation criterion. The performance metric in RL
+is
+R typically given by the average return J(πn ) =
+πn (x)f (x)dx while in Bayesian optimization it is typically determined by the minimal evaluation min1≤i≤n yi
+reached at iteration n. When the evaluations are noisy the
+minimum evaluation is not a robust performance metric—
+nor an appropriate criterion for the algorithm to select the
+returned optimizer. In order to have a common evaluation
+criterion, all the approaches are seen as multi-armed
+P bandit
+algorithms and we use the cumulative regret n1 i f (x? )−
+yi as the evaluation criterion. The cumulative regret of
+(global) Bayesian optimizers is expected to be asymptotically lower than that of local optimizers as it always finds
+the global maximum given sufficiently many evaluations.
 
-8. Experiments
-In our experiments, we aim to answer the following:
-• Does CPO succeed at enforcing behavioral constraints
-when training neural network policies with thousands
-of parameters?
-• How does CPO compare with a baseline that uses
-primal-dual optimization? Does CPO behave better
-with respect to constraints?
-• How much does it help to constrain a cost upper bound
-(15), instead of directly constraining the cost?
-• What beneﬁts are conferred by using constraints instead of ﬁxed penalties?
-We designed experiments that are easy to interpret and motivated by safety. We consider two tasks, and train multiple
-different agents (robots) for each task:
+15
 
-Constrained Policy Optimization
+10
 
-Returns:
+5
 
-Constraint values: (closer to the limit is better)
+0
 
-(a) Point-Circle
+-5
 
-(b) Ant-Circle
+-10
 
-(c) Humanoid-Circle
+-10
 
-(d) Point-Gather
+-5
 
-(e) Ant-Gather
+0
 
-Figure 1. Average performance for CPO, PDO, and TRPO over several seeds (5 in the Point environments, 10 in all others); the x-axis is
-training iteration. CPO drives the constraint function almost directly to the limit in all experiments, while PDO frequently suffers from
-over- or under-correction. TRPO is included to verify that optimal unconstrained behaviors are infeasible for the constrained problem.
+5
 
-• Circle: The agent is rewarded for running in a wide
-circle, but is constrained to stay within a safe region
-smaller than the radius of the target circle.
-• Gather: The agent is rewarded for collecting green
-apples, and constrained to avoid red bombs.
-For the Circle task, the exact geometry is illustrated in Figure 5 in the supplementary material. Note that there are
-no physical walls: the agent only interacts with boundaries
-through the constraint costs. The reward and constraint cost
-functions are described in supplementary material (Section
-10.3.1). In each of these tasks, we have only one constraint;
-we refer to it as C and its upper bound from (15) as C + .
-We experiment with three different agents: a point-mass
-(S ⊆ R9 , A ⊆ R2 ), a quadruped robot (called an ‘ant’)
-(S ⊆ R32 , A ⊆ R8 ), and a simple humanoid (S ⊆
-R102 , A ⊆ R10 ). We train all agent-task combinations except for Humanoid-Gather.
-For all experiments, we use neural network policies with
-two hidden layers of size (64, 32). Our experiments are
-implemented in rllab (Duan et al., 2016).
-8.1. Evaluating CPO and Comparison Analysis
-Learning curves for CPO and PDO are compiled in Figure
-1. Note that our constraint value graphs show C + return,
-instead of the C return (except for in Point-Gather, where
-we did not use cost shaping due to that environment’s short
-time horizon), because this is what the algorithm actually
-constrains in these experiments.
-For our comparison, we implement PDO with (16) as the
+10
 
-(a) Humanoid-Circle
+(a) Sample objective function.
 
-(b) Point-Gather
+(b) Cumulative regret.
 
-Figure 2. The Humanoid-Circle and Point-Gather environments.
-In Humanoid-Circle, the safe area is between the blue panels.
+Figure 2. Three variants of L-BayesOpt (Sec. 3.3) and MORE
+evaluated on 11 randomly generated objective functions. The min
+variant results in a contained exploration and has the lowest cumulative regret during the first 500 function evaluations.
 
-update rule for the dual variables, using a constant learning
-rate α; details are available in supplementary material (Section 10.3.3). We emphasize that in order for the comparison to be fair, we give PDO every advantage that is given to
-CPO, including equivalent trust region policy updates. To
-benchmark the environments, we also include TRPO (trust
-region policy optimization) (Schulman et al., 2015), a stateof-the-art unconstrained reinforcement learning algorithm.
-The TRPO experiments show that optimal unconstrained
-behaviors for these environments are constraint-violating.
-We ﬁnd that CPO is successful at approximately enforcing constraints in all environments. In the simpler environments (Point-Circle and Point-Gather), CPO tracks the
-constraint return almost exactly to the limit value.
-By contrast, although PDO usually converges to constraintsatisfying policies in the end, it is not consistently
-constraint-satisfying throughout training (as expected). For
-example, see the spike in constraint value that it experi-
+Conversely, trading-off global optimality for fast local improvements might result in a lower regret for local optimizers when the evaluation budget is moderate.
+4.1. Exploration variants
+In this first set of experiments, we evaluate the different exploration strategies resulting from three different centering
+methods of the y values in Dn . We compare these three
+variants of L-BayesOpt on 11 randomly generated two dimensional Gaussian mixture objective functions (see Fig.
+2a for an illustration). We chose these functions as they
+are cheap to evaluate, easy to approximate by a GP and
+their multi-modal nature is appropriate for evaluating the
+exploration-exploitation trade-off of the three variants.
+As hypothesized in Sec. 3.3, the cumulative regret in Fig.
+2b shows that the min variant exhibits the lowest exploration and reduces the regret faster than the other optimizers. Yet, when compared to MORE it manages to converge
+to better local optima in 5 out of the 11 randomly generated
+objectives while MORE converges to a better optimum in
+one of the 6 remaining objectives. Note that MORE manages to decrease the regret faster than our algorithm during
+the first 100 evaluations. However, the sampling scheme relying on the Thompson sampling acquisition function and
+the convergence to higher modes gives the advantage to the
+L-BayesOpt variants after the initial 100 evaluations. In the
+remainder of the experimental section only the min variant
+of our algorithm will be considered.
+4.2. State-of-the-art benchmark comparisons
+We compare our algorithm to MORE and Bayesian optimization on the COCO testbed. We form two sets each containing 10 objective functions. The first one includes unimodal functions (f 5 to f 14) while the second one includes
+multi-modal function with an adequate (f 15 to f 19) and a
+weak (f 20 to f 24) global structure. Each function has a
+global optimum in [−5, 5]D , where D is the dimension of
+the objective function that we vary in the set {3, 10, 30}.
 
-Constrained Policy Optimization
+Local Bayesian Optimization of Motor Skills
 
-ences in Ant-Circle. Additionally, PDO is sensitive to the
-initialization of the dual variable. By default, we initialize ν0 = 0, which exploits no prior knowledge about the
-environment and makes sense when the initial policies are
-feasible. However, it may seem appealing to set ν0 high,
-which would make PDO more conservative with respect
-to the constraint; PDO could then decrease ν as necessary
-after the fact. In the Point environments, we experiment
-with ν0 = 1000 and show that although this does assure
-constraint satisfaction, it also can substantially harm performance with respect to return. Furthermore, we argue
-that this is not adequate in general: after the dual variable
-decreases, the agent could learn a new behavior that increases the correct dual variable more quickly than PDO
-can attain it (as happens in Ant-Circle for PDO; observe
-that performance is approximately constraint-satisfying until the agent learns how to run at around iteration 350).
-We ﬁnd that CPO generally outperforms PDO on enforcing constraints, without compromising performance with
-respect to return. CPO quickly stabilizes the constraint return around to the limit value, while PDO is not consistently able to enforce constraints all throughout training.
+(a) Multi-modal objectives, dim = 3.
 
-(a) Ant-Circle Return
+(b) Multi-modal objectives, dim = 10.
 
-(b) Ant-Gather Return
+(c) Multi-modal objectives, dim = 30.
 
-(c) Ant-Circle C Return
+(d) Uni-modal objectives, dim = 3.
 
-(d) Ant-Gather C Return
+(e) Uni-modal objectives, dim = 10.
 
-Figure 3. Using cost shaping (CS) in the constraint while optimizing generally improves the agent’s adherence to the true constraint
-on C return.
+(f) Uni-modal objectives, dim = 30.
 
-8.2. Ablation on Cost Shaping
-In Figure 3, we compare performance of CPO with and
-without cost shaping in the constraint. Our metric for comparison is the C return, the ‘true’ constraint. The cost shaping does help, almost completely accounting for CPO’s
-inherent approximation errors. However, CPO is nearly
-constraint-satisfying even without cost shaping.
-8.3. Constraint vs. Fixed Penalty
-In Figure 4, we compare CPO to a ﬁxed penalty method,
-where policies are learned using TRPO with rewards
-R(s, a, s� ) − νC + (s, a, s� ) for ν ∈ {1, 5, 50}.
+Figure 3. Evaluation on uni-modal and multi-modal functions of varying dimension of the COCO testbed of four algorithms: LBayesOpt, MORE and global Bayesian optimization using either Expected Improvement (EI) or Thompson Sampling (TS) acquisition
+function. Bayesian optimization is a global optimizer and its combination with Thompson sampling is as such a zero regret algorithm.
+However, when evaluation budget is moderate (≤ 500), the local optimization performed by L-BayesOpt yields faster improvements
+than Bayesian optimization when the objective function is uni-modal or when the dimensionality of the problem increases.
 
-We ﬁnd that ﬁxed penalty methods can be highly sensitive
-to the choice of penalty coefﬁcient: in Ant-Circle, a penalty
-coefﬁcient of 1 results in reward-maximizing policies that
-accumulate massive constraint costs, while a coefﬁcient of
-5 (less than an order of magnitude difference) results in
-cost-minimizing policies that never learn how to acquire
-any rewards. In contrast, CPO automatically picks penalty
-coefﬁcients to attain the desired trade-off between reward
-and constraint cost.
+The bounding box [−5, 5]D is provided to Bayesian optimization while for the local stochastic search algorithms
+we set the initial distribution to π0 = N (0, 3I). Note that
+this is not an informed initialization and none of the functions had their optimum on the null vector.
+Fig. 3 shows the performance of the four algorithms on the
+multi-modal (top row) and uni-modal (bottom row) function sets. On the multi-modal set of functions and when
+D = 3, Bayesian optimization with Thompson sampling
+proves to be an extremely efficient bandit algorithm for
+uncovering the highest reward point with a minimal number of evaluations. On the contrary, both local stochastic
+search algorithms struggle to improve over the initial performance. Upon closer inspection, this appears to be especially true for functions with weak global structure such
+as f 23. We hypothesize that for these highly multi-modal
+functions, both model based stochastic search algorithms
+learn poor quadratic models (when either approximating f
+or p?n ). The performance gap between Bayesian optimization and our algorithm reduces however as the dimensionality of the problem increases.
+On the uni-modal functions set, our algorithm reduces significantly faster the regret than Bayesian optimization. As
 
-9. Discussion
-In this article, we showed that a particular optimization
-problem results in policy updates that are guaranteed to
-both improve return and satisfy constraints. This enabled
-the development of CPO, our policy search algorithm for
-CMDPs, which approximates the theoretically-guaranteed
+the dimension of the objective function increases from
+D = 10 to D = 30, more evaluations are required by
+Bayesian optimization to reach our algorithm. Compared
+to MORE, and since the objectives are uni-modal, the use
+of an acquisition function is the main driving factor for the
+faster decrease of the regret. Note that even if the functions
+are uni-modal, both local search algorithms are not necessarily zero if the decrease in entropy is too fast.
+Both L-BayesOpt and BayesOpt/TS rely on the Thompson
+sampling acquisition function for selecting the next point
+to evaluate. While the acquisition function is maximized
+on the full support of the objective in the case of Bayesian
+optimization, it is only optimized in the vicinity of the current search distribution by our algorithm. The experiments
+on the COCO testbed show that when the function landscape enables the learning of an appropriate update direction for moving the search distribution, the adaptive strategy employed by our algorithm can be more efficient than
+the global search performed by Bayesian optimization.
+4.3. Robot ball in the cup
+The task’s objective is for the Barrett robot arm to swing
+the ball upward and place it in the cup (Fig. 4a). The
 
-(a) Ant-Circle Return
+Local Bayesian Optimization of Motor Skills
 
-(b) Ant-Circle C + -Return
+(a) Robot ball in a cup.
 
-Figure 4. Comparison between CPO and FPO (ﬁxed penalty optimization) for various values of ﬁxed penalty.
+(b) Cumulative regret.
 
-algorithm in a principled way. We demonstrated that CPO
-can train neural network policies with thousands of parameters on high-dimensional constrained control tasks, simultaneously maximizing reward and approximately satisfying
-constraints. Our work represents a step towards applying
-reinforcement learning in the real world, where constraints
-on agent behavior are sometimes necessary for the sake of
-safety.
+Figure 4. L-BayesOpt and MORE locally optimizing an imitation
+learning policy. The 7 DoF robot is controlled by a 70 parameters
+policy. L-BayesOpt is initially slower but is better at fine-tuning
+the policy later on. Plots are averaged over 5 runs.
 
-Acknowledgements
-The authors would like to acknowledge Peter Chen, who
-independently and concurrently derived an equivalent policy improvement bound.
-Joshua Achiam is supported by TRUST (Team for Research in Ubiquitous Secure Technology) which receives
-support from NSF (award number CCF-0424422). This
+optimization is performed on the 70 weights of the forcing function of a Dynamical Movement Primitive (DMP,
+Ijspeert & Schaal 2003) controlling the 7 joints of the robot.
+The initial forcing function weights µ0 are learned by linear regression from a single demonstrated trajectory that
+successfully swings the ball up but where the ball lands at
+circa 20cm from the cup. We compare the performance
+of MORE and L-BayesOpt in optimizing the initial policy π0 = N (µ0 , I) using the same hyper-parameters. The
+challenge of the task, in addition to the dimension of the
+action space, stems from the two exploration regimes required by the exploration scheme. While initially a significant amount of noise needs to be introduced to the parameters to get the ball closer to the cup; successfully getting the
+ball in the cup requires a more careful tuning of the forcing
+function.
+Fig. 4b shows the performance of both MORE and LBayesOpt on the robot ball in a cup task. MORE has a
+better initial sample efficiency and gets the ball closer to
+the cup at a faster pace than L-BayesOpt. However, the acquisition function based sampling scheme of our algorithm
+was more efficient for discovering parameters that successfully put the ball in the cup and results in a lower regret (averaged over 5 runs) after 1000 evaluations. The experiment
+shows that for such high dimensional tasks, our algorithm
+was better at tuning the policy only when the entropy of the
+search distribution was significantly reduced. This might
+be due to the low correlation between Euclidean distance
+between parameters and difference in reward. One promising direction for future work in a reinforcement learning
+context is to use kernels based on trajectory data distance
+instead of parameter distance in euclidian space (Wilson
+et al., 2014).
 
-Constrained Policy Optimization
+5. Discussion
+The algorithm presented in this paper can be seen as
+Bayesian optimization where the usual box constraint is rotated, shrunk and moved at each iteration towards the most
 
-project also received support from Berkeley Deep Drive
-and from Siemens.
+promising region of the objective function. The constant
+reduction of the entropy of the search distribution ensures
+that the objective function is not modeled and optimized on
+the entirety of its domain. Compared to (global) Bayesian
+optimization, we experimentally demonstrated on several
+continuous optimization benchmarks that it results in faster
+improvements over the initial solution, at the expense of
+global optimality. This property is especially useful when
+an initial informative solution is available and only requires
+to be locally improved.
+The computational cost of the search distribution update
+in our algorithm is significantly higher than most local
+stochastic search algorithms. This cost mainly arises from
+the full Bayesian treatment of the modeling of the objective
+function f . If the evaluation of f is cheap, a better performance per second is obtained by less expensive stochastic
+search algorithms where the additional computational budget can be spent in running additional randomized restarts
+of the algorithms (Auger & Hansen, 2005). However, if the
+optimization cost is dominated by the evaluation of f , the
+probabilistic modeling proved to be more sample efficient
+on several benchmarks by actively selecting the next point
+to evaluate. As a result, when f is expensive to evaluate
+our algorithm is expected to have better per second performance than state-of-the-art stochastic search algorithms.
+The search distribution update proposed in this paper is
+well founded and results in an interpretable update. At each
+iteration the current search distribution is simply weighted
+by p(x = x? |Dn ), the probability of x being optimal
+according to the current data set. Future work can further improve the sample efficiency of our algorithm in at
+least three ways. First, if the objective function is upper
+bounded and the bound is known, we expect that the integration of an additional constraint f (x) < f (x∗ ) for all x
+to lead to a more accurate probabilistic modeling and a better exploration-exploitation trade-off. Secondly, the search
+distribution update is phrased as the minimization of the
+I-projection of p(x = x? |Dn ), which has the property of
+focusing on one mode of the distribution (Bishop, 2006).
+However, the Gaussian approximation of p(x = x? |Dn )
+can average over multiple modes if the GP is unsure about
+which of them is the highest. We expected that a better update direction can be obtained if a clustering algorithm can
+detect the highest mode from samples of p(x = x? |Dn ).
+Finally and perharps most interestingly, we expect our algorithm to be able to scale to significantly higher dimensional policies in an RL setting if a trajectory data kernel is
+used (Wilson et al., 2014). Specifically, distance between
+policies can be measured by the similarity of actions taken
+in similar states. The local nature of our algorithm will additionally ensure that such similarity is evaluated on states
+that are likely to be reached by the evaluated policies.
+
+Local Bayesian Optimization of Motor Skills
+
+Acknowledgments
+The research leading to these results was funded by
+the DFG Project LearnRobotS under the SPP 1527 Autonomous Learning.
 
 References
-Altman, Eitan. Constrained Markov Decision Processes.
-pp. 260, 1999. ISSN 01676377. doi: 10.1016/
-0167-6377(96)00003-X.
-Amodei, Dario, Olah, Chris, Steinhardt, Jacob, Christiano,
-Paul, Schulman, John, and Mané, Dan. Concrete Problems in AI Safety. arXiv, 2016. URL http://arxiv.
-org/abs/1606.06565.
-Bou Ammar, Haitham, Tutunov, Rasul, and Eaton, Eric.
-Safe Policy Search for Lifelong Reinforcement Learning
-with Sublinear Regret. International Conference on Machine Learning, 37:19, 2015. URL http://arxiv.
-org/abs/1505.0579.
-Boyd, Stephen, Xiao, Lin, and Mutapcic, Almir. Subgradient methods. Lecture Notes of Stanford EE392, 2003.
-URL
-http://xxpt.ynjgy.com/resource/
-data/20100601/U/stanford201001010/
-02-subgrad{_}method{_}notes.pdf.
-Chow, Yinlam, Ghavamzadeh, Mohammad, Janson, Lucas,
-and Pavone, Marco. Risk-Constrained Reinforcement
-Learning with Percentile Risk Criteria. Journal of Machine Learning Research, 1(xxxx):1–49, 2015.
-Csiszar, I and Körner, J. Information Theory: Coding
-Theorems for Discrete Memoryless Systems. Book,
-244:452, 1981. ISSN 0895-4801. doi: 10.2307/
-2529636.
-URL http://www.getcited.org/
-pub/102082957.
-Duan, Yan, Chen, Xi, Schulman, John, and Abbeel, Pieter.
-Benchmarking Deep Reinforcement Learning for Continuous Control. The 33rd International Conference on
-Machine Learning (ICML 2016) (2016), 48:14, 2016.
-URL http://arxiv.org/abs/1604.06778.
-Garcı́a, Javier and Fernández, Fernando. A Comprehensive
-Survey on Safe Reinforcement Learning. Journal of Machine Learning Research, 16:1437–1480, 2015. ISSN
-15337928.
-Gu, Shixiang, Lillicrap, Timothy, Ghahramani, Zoubin,
-Turner, Richard E., and Levine, Sergey. Q-Prop:
-Sample-Efﬁcient Policy Gradient with An Off-Policy
-Critic. In International Conference on Learning Representations, 2017. URL http://arxiv.org/abs/
-1611.02247.
-Held, David, Mccarthy, Zoe, Zhang, Michael, Shentu,
-Fred, and Abbeel, Pieter. Probabilistically Safe Policy
+Abdolmaleki, Abbas, Lioutikov, Rudolf, Peters, Jan R,
+Lau, Nuno, Pualo Reis, Luis, and Neumann, Gerhard. Model-based relative entropy stochastic search.
+In Advances in Neural Information Processing Systems
+(NIPS), pp. 3523–3531. Curran Associates, Inc., 2015.
+Argall, Brenna, Chernova, Sonia, Veloso, Manuela M.,
+and Browning, Brett. A survey of robot learning from
+demonstration. Robotics and Autonomous Systems, 57
+(5):469–483, 2009.
+Auger, Anne and Hansen, Nikolaus. A restart cma evolution strategy with increasing population size. In IEEE
+Congress on Evolutionary Computation, volume 2, pp.
+1769–1776. IEEE, 2005.
+Bergstra, James, Bardenet, Rémi, Bengio, Yoshua, and
+Kégl, Balázs. Algorithms for hyper-parameter optimization. In Advances in Neural Information Processing Systems (NIPS), pp. 2546–2554, 2011.
+Berkenkamp, Felix, Schoellig, Angela P, and Krause, Andreas. Safe controller optimization for quadrotors with
+gaussian processes. In Robotics and Automation (ICRA),
+2016 IEEE International Conference on, pp. 491–496.
+IEEE, 2016.
+Bishop, Christopher M. Pattern Recognition and Machine
+Learning. Springer-Verlag New York, 2006.
+Brochu, Eric, de Freitas, Nando, and Ghosh, Abhijeet.
+Active preference learning with discrete choice data.
+In Advances in Neural Information Processing Systems
+(NIPS), pp. 409–416, 2007.
+Brochu, Eric, Cora, Vlad M., and de Freitas, Nando. A
+tutorial on bayesian optimization of expensive cost functions, with application to active user modeling and hierarchical reinforcement learning. CoRR, abs/1012.2599,
+2010.
+Bull, A. D. Convergence rates of efficient global optimization algorithms. 12:2879–2904, 2011.
+Calandra, Roberto, Seyfarth, André, Peters, Jan, and
+Deisenroth, Marc Peter. Bayesian optimization for learning gaits under uncertainty - an experimental comparison
+on a dynamic bipedal walker. Ann. Math. Artif. Intell.,
+76(1-2):5–23, 2016.
 
-Transfer. In Proceedings of the IEEE International Conference on Robotics and Automation (ICRA), 2017.
-Jiang, Nan and Li, Lihong. Doubly Robust Off-policy
-Value Evaluation for Reinforcement Learning. International Conference on Machine Learning, 2015. URL
-http://arxiv.org/abs/1511.03722.
-Kakade, Sham and Langford, John.
-Approximately
-Optimal Approximate Reinforcement Learning.
-Proceedings of the 19th International Conference
-on Machine Learning, pp. 267–274, 2002.
-URL
-http://www.cs.cmu.edu/afs/cs/Web/
-People/jcl/papers/aoarl/Final.pdf.
-Levine, Sergey, Finn, Chelsea, Darrell, Trevor, and
-Abbeel, Pieter. End-to-End Training of Deep Visuomotor Policies. Journal of Machine Learning Research, 17:1–40, 2016. ISSN 15337928. doi: 10.1007/
-s13398-014-0173-7.2.
-Lillicrap, Timothy P., Hunt, Jonathan J., Pritzel, Alexander,
-Heess, Nicolas, Erez, Tom, Tassa, Yuval, Silver, David,
-and Wierstra, Daan. Continuous control with deep reinforcement learning. In International Conference on
-Learning Representations, 2016. ISBN 2200000006.
-doi: 10.1561/2200000006.
-Lipton, Zachary C., Gao, Jianfeng, Li, Lihong, Chen,
-Jianshu, and Deng, Li. Combating Deep Reinforcement Learning’s Sisyphean Curse with Intrinsic Fear.
-In arXiv, 2017. ISBN 2004012439. URL http:
-//arxiv.org/abs/1611.01211.
+Chapelle, Olivier and Li, Lihong. An empirical evaluation
+of thompson sampling. In Advances in Neural Information Processing Systems (NIPS), pp. 2249–2257. Curran
+Associates, Inc., 2011.
+Deisenroth, M. and Rasmussen, C. PILCO: A ModelBased and Data-Efficient Approach to Policy Search. In
+International Conference on Machine Learning (ICML),
+pp. 465–472, 2011.
+Djolonga, Josip, Krause, Andreas, and Cevher, Volkan.
+High-dimensional gaussian process bandits. In Advances
+in Neural Information Processing Systems (NIPS), pp.
+1025–1033, 2013.
+Englert, Peter and Toussaint, Marc. Combined optimization and reinforcement learning for manipulations skills.
+In Robotics:Science and Systems 2016, 2016.
+Feurer, Matthias, Klein, Aaron, Eggensperger, Katharina,
+Springenberg, Jost Tobias, Blum, Manuel, and Hutter,
+Frank. Efficient and robust automated machine learning.
+In Advances in Neural Information Processing Systems
+(NIPS), pp. 2962–2970, 2015.
+Ghavamzadeh, Mohammad, Engel, Yaakov, and Valko,
+Michal. Bayesian policy gradient and actor-critic algorithms. Journal of Machine Learning Research, 17(66):
+1–53, 2016.
+Hansen, Nikolaus and Ostermeier, Andreas. Completely
+derandomized self-adaptation in evolution strategies.
+Evolutionary Computation, 9(2):159–195, 2001.
+Hernández-Lobato, José Miguel, Hoffman, Matthew W.,
+and Ghahramani, Zoubin. Predictive entropy search
+for efficient global optimization of black-box functions.
+In Advances in Neural Information Processing Systems
+(NIPS), pp. 918–926, 2014.
+Ijspeert, A. and Schaal, S. Learning Attractor Landscapes
+for Learning Motor Primitives. In Advances in Neural
+Information Processing Systems 15, (NIPS). MIT Press,
+Cambridge, MA, 2003.
+Jones, Donald R. A taxonomy of global optimization methods based on response surfaces. J. Global Optimization,
+21(4):345–383, 2001.
+Kandasamy, Kirthevasan, Schneider, Jeff G., and Póczos,
+Barnabás. High dimensional bayesian optimisation and
+bandits via additive models. In International Conference
+on Machine Learning (ICML), pp. 295–304, 2015.
+Kober, J., Bagnell, J. Andrew, and Peters, J. Reinforcement
+learning in robotics: A survey. International Journal of
+Robotics Research, July 2013.
+
+Local Bayesian Optimization of Motor Skills
+
+Li, Chun-Liang, Kandasamy, Kirthevasan, Póczos,
+Barnabás, and Schneider, Jeff G. High dimensional
+bayesian optimization via restricted projection pursuit
+models. In Proceedings of the 19th International Conference on Artificial Intelligence and Statistics, AISTATS
+2016, Cadiz, Spain, May 9-11, 2016, pp. 884–892, 2016.
+Lizotte, Daniel J., Wang, Tao, Bowling, Michael H., and
+Schuurmans, Dale. Automatic gait optimization with
+gaussian process regression. In IJCAI 2007, Proceedings of the 20th International Joint Conference on Artificial Intelligence, Hyderabad, India, January 6-12, 2007,
+pp. 944–949, 2007.
+Loshchilov, Ilya, Schoenauer, Marc, and Sebag, Michèle.
+Bi-population CMA-ES agorithms with surrogate models and line searches. In Genetic and Evolutionary
+Computation Conference, GECCO ’13, Amsterdam, The
+Netherlands, July 6-10, 2013, Companion Material Proceedings, pp. 1177–1184, 2013.
+Mannor, Shie, Rubinstein, Reuven, and Gat, Yohai. The
+Cross Entropy method for Fast Policy Search. In Proceedings of the 20th International Conference on Machine Learning, (ICML 2003), pp. 512–519, Washington, DC, USA, 2003.
+Martinez-Cantin, Ruben. Bayesopt: A bayesian optimization library for nonlinear optimization, experimental design and bandits. Journal of Machine Learning Research
+(JMLR), 15(1):3735–3739, January 2014. ISSN 15324435.
 Mnih, Volodymyr, Kavukcuoglu, Koray, Silver, David,
-Rusu, Andrei a, Veness, Joel, Bellemare, Marc G,
-Graves, Alex, Riedmiller, Martin, Fidjeland, Andreas K,
+Rusu, Andrei A., Veness, Joel, Bellemare, Marc G.,
+Graves, Alex, Riedmiller, Martin, Fidjeland, Andreas K.,
 Ostrovski, Georg, Petersen, Stig, Beattie, Charles, Sadik,
 Amir, Antonoglou, Ioannis, King, Helen, Kumaran,
 Dharshan, Wierstra, Daan, Legg, Shane, and Hassabis,
-Demis. Human-level control through deep reinforcement learning. Nature, 518(7540):529–533, 2015. ISSN
-0028-0836. doi: 10.1038/nature14236. URL http:
-//dx.doi.org/10.1038/nature14236.
-Mnih, Volodymyr, Badia, Adrià Puigdomènech, Mirza,
-Mehdi, Graves, Alex, Lillicrap, Timothy P., Harley, Tim,
-Silver, David, and Kavukcuoglu, Koray. Asynchronous
-Methods for Deep Reinforcement Learning. pp. 1–
-28, 2016. URL http://arxiv.org/abs/1602.
-01783.
-Moldovan, Teodor Mihai and Abbeel, Pieter. Safe Exploration in Markov Decision Processes. Proceedings of
-the 29th International Conference on Machine Learning, 2012. URL http://arxiv.org/abs/1205.
-4810.
+Demis. Human-level control through deep reinforcement
+learning. Nature, 518(7540):529–533, 02 2015.
+Murray, Iain and Adams, Ryan P. Slice sampling covariance hyperparameters of latent gaussian models. In
+Advances in Neural Information Processing Systems
+(NIPS), pp. 1732–1740, 2010.
+Peters, J., Mülling, K., and Altun, Y. Relative Entropy Policy Search. In Proceedings of the 24th National Conference on Artificial Intelligence (AAAI). AAAI Press,
+2010.
+Russo, Daniel and Roy, Benjamin Van. Learning to optimize via posterior sampling. Math. Oper. Res., 39(4):
+1221–1243, 2014.
 
-Constrained Policy Optimization
-
-Ng, Andrew Y., Harada, Daishi, and Russell, Stuart. Policy invariance under reward transformations : Theory
-and application to reward shaping. Sixteenth International Conference on Machine Learning, 3:278–287,
-1999. doi: 10.1.1.48.345.
-Peters, Jan and Schaal, Stefan. Reinforcement learning of
-motor skills with policy gradients. Neural Networks, 21
-(4):682–697, 2008. ISSN 08936080. doi: 10.1016/j.
-neunet.2008.02.003.
-Pirotta, Matteo, Restelli, Marcello, and Calandriello,
-Daniele. Safe Policy Iteration. Proceedings of the
-30th International Conference on Machine Learning, 28,
-2013.
-Schulman, John, Moritz, Philipp, Jordan, Michael, and
-Abbeel, Pieter. Trust Region Policy Optimization. International Conference on Machine Learning, 2015.
-Schulman, John, Moritz, Philipp, Levine, Sergey, Jordan,
-Michael, and Abbeel, Pieter. High-Dimensional Continuous Control Using Generalized Advantage Estimation.
-arXiv, 2016.
-Shalev-Shwartz, Shai, Shammah, Shaked, and Shashua,
-Amnon. Safe, Multi-Agent, Reinforcement Learning
-for Autonomous Driving. arXiv, 2016. URL http:
-//arxiv.org/abs/1610.03295.
+Schulman, John, Levine, Sergey, Jordan, Michael, and
+Abbeel, Pieter. Trust Region Policy Optimization. International Conference on Machine Learning (ICML), pp.
+16, 2015.
+Shahriari, Bobak, Swersky, Kevin, Wang, Ziyu, Adams,
+Ryan P., and de Freitas, Nando. Taking the human out of
+the loop: A review of bayesian optimization. Proceedings of the IEEE, 104(1):148–175, 2016.
 Silver, David, Huang, Aja, Maddison, Chris J., Guez,
 Arthur, Sifre, Laurent, van den Driessche, George,
 Schrittwieser, Julian, Antonoglou, Ioannis, Panneershelvam, Veda, Lanctot, Marc, Dieleman, Sander,
 Grewe, Dominik, Nham, John, Kalchbrenner, Nal,
 Sutskever, Ilya, Lillicrap, Timothy, Leach, Madeleine,
 Kavukcuoglu, Koray, Graepel, Thore, and Hassabis,
-Demis. Mastering the game of Go with deep neural networks and tree search. Nature, 529(7587):
-484–489, 2016. ISSN 0028-0836. doi: 10.1038/
-nature16961.
-URL http://dx.doi.org/10.
-1038/nature16961.
-Sutton, Richard S and Barto, Andrew G. Introduction to
-Reinforcement Learning. Learning, 4(1996):1–5, 1998.
-ISSN 10743529. doi: 10.1.1.32.7692. URL http://
-dl.acm.org/citation.cfm?id=551283.
-Uchibe, Eiji and Doya, Kenji. Constrained reinforcement learning from intrinsic and extrinsic rewards. 2007
-IEEE 6th International Conference on Development and
-Learning, ICDL, (February):163–168, 2007. doi: 10.
-1109/DEVLRN.2007.4354030.
+Demis. Mastering the game of Go with deep neural networks and tree search. Nature, 529(7587):484–489, January 2016.
+Snoek, Jasper, Larochelle, Hugo, and Adams, Ryan P.
+Practical bayesian optimization of machine learning algorithms. In Advances in Neural Information Processing
+Systems (NIPS), pp. 2960–2968, 2012.
+Snoek, Jasper, Swersky, Kevin, Zemel, Richard S., and
+Adams, Ryan P. Input warping for bayesian optimization
+of non-stationary functions. In International Conference
+on Machine Learning (ICML), pp. 1674–1682, 2014.
+Thomas, Philip S., Theocharous, Georgios, and
+Ghavamzadeh, Mohammad.
+High confidence policy improvement.
+In International Conference on
+Machine Learning (ICML), pp. 2380–2388, 2015.
+Vanhatalo, Jarno, Riihimäki, Jaakko, Hartikainen, Jouni,
+Jylänki, Pasi, Tolvanen, Ville, and Vehtari, Aki. Gpstuff:
+Bayesian modeling with gaussian processes. Journal of
+Machine Learning Research (JMLR), 14(1):1175–1179,
+April 2013. ISSN 1532-4435.
+Vazquez, E. and Bect, J. Convergence properties of the
+expected improvement algorithm with fixed mean and
+covariance functions. J. of Statistical Planning and Inference, 140:3088–3095, 2010.
+Wang, Ziyu, Hutter, Frank, Zoghi, Masrour, Matheson,
+David, and de Freitas, Nando. Bayesian optimization
+in a billion dimensions via random embeddings. J. Artif.
+Intell. Res. (JAIR), 55:361–387, 2016.
+Wilson, Aaron, Fern, Alan, and Tadepalli, Prasad. Using
+trajectory data to improve bayesian optimization for reinforcement learning. Journal of Machine Learning Research, 15(1):253–282, 2014.
 
 

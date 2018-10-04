@@ -1,1523 +1,955 @@
-Confident Multiple Choice Learning
+Accelerating Eulerian Fluid Simulation With Convolutional Networks
 
-Kimin Lee 1 Changho Hwang 1 KyoungSoo Park 1 Jinwoo Shin 1
+Jonathan Tompson 1 Kristofer Schlachter 2 Pablo Sprechmann 2 3 Ken Perlin 2
 
 Abstract
-Ensemble methods are arguably the most trustworthy techniques for boosting the performance
-of machine learning models. Popular independent ensembles (IE) relying on naı̈ve averaging/voting scheme have been of typical choice
-for most applications involving deep neural networks, but they do not consider advanced collaboration among ensemble models. In this paper,
-we propose new ensemble methods specialized
-for deep neural networks, called confident multiple choice learning (CMCL): it is a variant of
-multiple choice learning (MCL) via addressing
-its overconfidence issue. In particular, the proposed major components of CMCL beyond the
-original MCL scheme are (i) new loss, i.e., confident oracle loss, (ii) new architecture, i.e., feature sharing and (iii) new training method, i.e.,
-stochastic labeling. We demonstrate the effect of
-CMCL via experiments on the image classification on CIFAR and SVHN, and the foregroundbackground segmentation on the iCoseg. In particular, CMCL using 5 residual networks provides 14.05% and 6.60% relative reductions in
-the top-1 error rates from the corresponding IE
-scheme for the classification task on CIFAR and
-SVHN, respectively.
+Efficient simulation of the Navier-Stokes equations for fluid flow is a long standing problem
+in applied mathematics, for which state-of-theart methods require large compute resources. In
+this work, we propose a data-driven approach
+that leverages the approximation power of deeplearning with the precision of standard solvers
+to obtain fast and highly realistic simulations.
+Our method solves the incompressible Euler
+equations using the standard operator splitting
+method, in which a large sparse linear system
+with many free parameters must be solved. We
+use a Convolutional Network with a highly tailored architecture, trained using a novel unsupervised learning framework to solve the linear
+system. We present real-time 2D and 3D simulations that outperform recently proposed datadriven methods; the obtained results are realistic
+and show good generalization properties.
 
 1. Introduction
-Ensemble methods have played a critical role in the
-machine learning community to obtain better predictive
-performance than what could be obtained from any of
-the constituent learning models alone, e.g., Bayesian
-model/parameter averaging (Domingos, 2000), boosting
-(Freund et al., 1999) and bagging (Breiman, 1996). Recently, they have been successfully applied to enhancing
-the power of many deep neural networks, e.g., 80% of
+Real-time simulation of fluid flow is a long standing problem in many application domains: from computational
+fluid dynamics for industrial applications, to smoke and
+fluid effects for computer graphics and animation. High
+computational complexity of existing solutions has meant
+that real-time simulations have been possible under restricted conditions. In this work we propose a data-driven
+solution to the invicid-Euler equations that is faster than
+traditional methods, while remaining competitive in longterm simulation stability and accuracy. This work is focused on computer graphics animation as the driving application for our architecture, however the techniques presented here can be extended to more complicated forms of
+Navier-Stokes (with appropriate modifications that are outside the scope of this work).
 1
 
-School of Electrical Engineering, Korea Advanced Institute
-of Science and Technology (KAIST), Daejeon, Repulic of Korea.
-Correspondence to: Jinwoo Shin <jinwoos@kaist.ac.kr>.
-Proceedings of the 34 th International Conference on Machine
+Google Brain, Mountain View, USA 2 New York University,
+New York, USA 3 Google Deepmind, London, UK. Correspondence to: Jonathan Tompson <tompson@google.com>.
+th
+
+Proceedings of the 34 International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-top-5 best-performing teams on ILSVRC challenge 2016
-(Krizhevsky et al., 2012) employ ensemble methods. They
-are easy and trustworthy to apply for most scenarios.
-While there exists a long history on ensemble methods,
-the progress on developing more advanced ensembles specialized for deep neural networks has been slow. Despite continued efforts that apply various ensemble methods such as bagging and boosting to deep models, it has
-been observed that traditional independent ensembles (IE)
-which train models independently with random initialization achieve the best performance (Ciregan et al., 2012; Lee
-et al., 2015). In this paper, we focus on developing more
-advanced ensembles for deep models utilizing the concept
-of multiple choice learning (MCL).
-The MCL concept was originally proposed in (GuzmanRivera et al., 2012) under the scenario when inference procedures are cascaded:
-(a) First, generate a set of plausible outputs.
-(b) Then, pick the correct solution form the set.
-For example, (Park & Ramanan, 2011; Batra et al., 2012)
-proposed human-pose estimation methods which produce
-multiple predictions and then refine them by employing a
-temporal model, and (Collins & Koo, 2005) proposed a
-sentence parsing method which re-ranks the output of an
-initial system which produces a set of plausible outputs
-(Huang & Chiang, 2005). In such scenarios, the goal of
-the first stage (a) is generating a set of plausible outputs
-such that at least one of them is correct for the second stage
-(b), e.g., human operators. Under this motivation, MCL has
-been studied (Guzman-Rivera et al., 2014; 2012; Lee et al.,
-2016), where various applications have been demonstrated,
-e.g., image classification (Krizhevsky & Hinton, 2009), semantic segmentation (Everingham et al., 2010) and image
-captioning (Lin et al., 2014b). It trains an ensemble of
-multiple models by minimizing the so-called oracle loss,
-only focusing on the most accurate prediction produced by
-them. Consequently, it makes each model specialized for
-a certain subset of data, not for the entire one similarly as
-mixture-of-expert schemes (Jacobs et al., 1991).
-Although MCL focuses on the first stage (a) in cascaded
-scenarios and thus can produce diverse/plausible outputs, it
-might be not useful if one does not have a good scheme for
+The dynamics of a large number of physical phenomenon
+are governed by the incompressible Navier-Stokes equations, which are a set of partial differential equations that
+must hold throughout a fluid velocity field for all time steps.
+There are two main computational approaches for simulating these equations: the Lagrangian methods, that approximate continuous quantities using discrete moving particles (Gingold & Monaghan, 1977), and the Eulerian, methods that approximate quantities on a fixed grid (Foster &
+Metaxas, 1996). We adopt the latter for this work.
+Eulerian methods are able to produce accurate results simulating fluids like water with high compute costs. The most
+demanding portion of this method is the “pressure projection” step, which satisfies an incompressibility constraint.
+It involves solving the discrete Poisson equation and leads
+to a well-known sparse, symmetric and positive-definite
+linear system. Exact solutions can be found via traditional convex optimization techniques, such as the Preconditioned Conjugate Gradient (PCG) algorithm or via stationary iterative methods, like the Jacobi or Gauss-Seidel
+methods. PCG exhibits fast asymptotic convergence, however it suffers from high time-constants and is generally
+not suited to GPU hardware. The Jacobi method is used for
+real-time applications, however it suffers from poor asymptotic convergence. Additionally, the computational complexity of both these algorithms is strongly data-dependent
+(i.e. boundary condition dependent) and these iterative
+methods are truncated in real-time to fit within a computational budget.
+In this paper, we propose a machine learning based approach for accelerating this linear projection that is fast
+and whose complexity is data-independent. We leverage
+the power of deep-learning techniques to derive an approximate linear projection. We claim that our machine-learning
+approach can take advantage of the statistics of fluid data
+and the local sparsity structure of the discrete Poisson equation to learn an approximate method that ensures long-term
+stability using a fixed computational budget. The main contributions of this work are as follows:
+(i) We rephrase the learning task as an unsupervised
+learning problem; since ground-truth data is not required we can incorporate loss information from multiple time-steps and perform various forms of non-
 
-Confident Multiple Choice Learning
+Accelerating Eulerian Fluid Simulation With Convolutional Networks
 
-the second stage (b). One can use a certain average/voting
-scheme of the predictions made by models for (b), but MCL
-using deep neural networks often fails to make a correct
-decision since each network tends to be overconfident in
-its prediction. Namely, the oracle error/loss of MCL is low,
-but its top-1 error rate might be very high.
-Contribution. To address the issue, we develop the concept of confident MCL (CMCL) that does not lose any benefit of the original MCL, while its target loss and architecture are redesigned for making the second stage (b) easier.
-Specifically, it targets to generate a set of diverse/plausible
-confident predictions from which one can pick the correct
-one using a simple average/voting scheme. To this end, we
-first propose a new loss function, called confident oracle
-loss, for relaxing the overconfidence issue of MCL. Our
-key idea is to additionally minimize the Kullback-Leibler
-divergence from a predictive distribution to the uniform
-one in order to give confidence to non-specialized models.
-Then, CMCL that minimizes the new loss can be efficiently
-trained like the original MCL for certain classes of models
-including neural networks, via stochastic alternating minimization (Lee et al., 2016). Furthermore, when CMCL is
-applied to deep models, we propose two additional regularization techniques for boosting its performance: feature
-sharing and stochastic labeling. Despite the new components, we note that the training complexity of CMCL is
-almost same to that of MCL or IE.
-We apply the new ensemble model trained by the new
-training scheme for several convolutional neural networks (CNNs) including VGGNet (Simonyan & Zisserman, 2015), GoogLeNet (Szegedy et al., 2015), and ResNet
-(He et al., 2016) for image classification on the CIFAR
-(Krizhevsky & Hinton, 2009) and SVHN (Netzer et al.,
-2011) datasets, and fully-convolutional neural networks
-(FCNs) (Long et al., 2015) for foreground-background segmentation on the iCoseg dataset (Batra et al., 2010). First,
-for the image classification task, CMCL outperforms all
-baselines, i.e., the traditional IE and the original MCL,
-in top-1 error rates. In particular, CMCL of 5 ResNet
-with 20 layers provides 14.05% and 6.60% relative reductions in the top-1 error rates from the corresponding IE
-on CIFAR-10 and SVHN, respectively. Second, for the
-foreground-background segmentation task, CMCL using
-multiple FCNs with 4 layers also outperforms all baselines
-in top-1 error rates. Each model trained by CMCL generates high-quality solutions by specializing for specific images while each model trained by IE does not. We believe that our new approach should be of broader interest
-for many deep learning tasks requiring high accuracy.
-Organization. In Section 2, we introduce necessary backgrounds for multiple choice learning and the corresponding
-loss function. We describe the proposed loss and the corre-
+trivial data-augmentation.
+(ii) We propose a collection of domain-specific ConvNet
+architectural optimizations motivated by the linear
+system structure itself, which lead to both qualitative and quantitative improvements. We incorporate
+an in-line normalization scheme, we devise a multiresolution architecture to better simulate long range
+physical phenomena and we formulate the high level
+solver architecture to include a “pressure bottleneck”
+to prevent trivial solutions of our unsupervised objective.
+(iii) Our proposed simulator is stable and is fast enough to
+permit real-time simulation. Empirical measurements
+suggest good generalization properties to unseen settings.
+(iv) We provide a public dataset and processing pipeline
+to procedurally generate random ground-truth fluid
+frames for evaluation of simulation methods.
+The paper is organized as follows. We discuss related work
+in Section 2. In Section 3 we briefly introduce the fluid
+simulation techniques used in this paper. In Section 4 we
+present the proposed model. We provide implementation
+details in Section 5. Experimental results are described in
+Section 6 and conclusion are drawn in Section 7.
 
-sponding training scheme in Section 3. Section 4 provides
-additional techniques for the proposed ensemble model.
-Experimental results are reported in Section 5.
+2. Related Work
+Recent work has addressed the problem of computational
+performance in fluid simulations. (McAdams et al., 2010)
+proposed a multi-grid approach as a preprocessing step of
+the PCG method. This method can significantly improve
+performance in large scene settings. However, multi-grid
+methods are very difficult to implement, hard to parallelize
+on the GPU, have non-trivial “failure-cases” (e.g. multigrid complexity resorts to single-resolution complexity for
+simulations with highly irregular domain boundaries), and
+the method still requires a iterative optimization procedure
+with data-dependent complexity.
+Some methods propose inexact (but efficient) approximate
+solutions to the Poisson equation, such as iterated orthogonal projections (Molemaker et al., 2008) or coarse-Grid
+corrections (Lentine et al., 2010). While these approaches
+can be competitive in low resolution settings, they are data
+agnostic: they do not exploit the statistics of the data to be
+processed. A natural approach is to tackle the problem in a
+data-driven manner - by adapting the solver to the statistics
+of the data of interest. The main idea of data-driven methods is to reduce computation by operating on a representation of the simulation space of significantly lower dimensionality. The Galerkin projection transforms the dynamics
+of the fluid simulation to operations on linear combinations
+of pre-processed snap-shots (Treuille et al., 2006; De Witt
+et al., 2012). In (Raveendran et al., 2014) the authors pro-
 
-2. Preliminaries
-2.1. Multiple Choice Learning
-In this section, we describe the basic concept of multiple choice learning (MCL) (Guzman-Rivera et al., 2014;
-2012). Throughout this paper, we denote the set {1, . . . , n}
-by [n] for positive integer n. The MCL scheme is a type
-of ensemble learning that produces diverse outputs of high
-quality. Formally, given a training dataset D = {(xi , yi ) |
-i ∈ [N ], xi ∈ X , yi ∈ Y}, we consider an ensemble of M
-models f , i.e., (f1 , . . . , fM ). For some task-specific loss
-function ` (y, f (x)), the oracle loss over the dataset D is
-defined as follows:
-LO (D) =
+pose generating complex fluid simulations by interpolating
+a relatively small number of existing pre-processed simulations. The state graph formulation (Stanton et al., 2014)
+leverages the observation that on simple simulations only a
+small number of states are visited.
+More recently - and most related to this work - some authors have regarded the fluid simulation process as a supervised regression problem. These approaches train blackbox machine learning systems to predict the output produced by an exact solver using random regression forests
+(Ladický et al., 2015) or neural networks (Yang et al.,
+2016) for Lagrangian and Eulerian methods respectively.
+Ladický et al., propose an adaptation of regression forests
+for smoothed particle hydrodynamics. Given a set of handcrafted features corresponding to individual forces, the authors trained a regressor for predicting the state of each particle in the following time-step. Yang et al. train a patchbased neural network to predict the ground truth pressure
+given local previous-frame pressure, voxel occupancy, and
+velocity divergence of an input frame.
+A major limitation of existing learning-based methods is
+that they require a dataset of linear system solutions provided by an exact solver. Hence, targets cannot be computed during training and models are trained to predict the
+ground-truth output always starting from an initial frame
+produced by an exact solver, while at test time this initial
+frame is actually generated by the model itself. This discrepancy between training and simulation can yield errors
+that can accumulate quickly along the generated sequence.
+This problem is analogous to that encountered when generating sequences with recurrent neural networks, see (Bengio et al., 2015) and references therein. Additionally, the
+ConvNet architecture proposed by Yang et al. is not suited
+to our more general use-case; in particular it cannot accurately simulate long-range phenomena, such as gravity or
+buoyancy. While providing encouraging results that offer a
+significant speedup over their PCG baseline, their work is
+limited to data closely matching the training conditions (as
+we will discuss in Section 6).
+Finally we point out that our work is related to the emergent
+field of artificial intelligence (AI) referred as intuitive or
+naive physics. Despite the tremendous progress achieved
+in AI, agents are still far from achieving common sense
+reasoning, which is thought to play a crucial role in the development of general AI. Recent works have attempted to
+build neural models that can make predictions about stability, collisions, forces and velocities from images or videos,
+or interactions with an environment (e.g. (Lerer et al.,
+2016)). In this context, having accurate and efficient models for simulating a real world environment could be crucial
+for developing new learning systems (Hamrick et al., 2016;
+Fleuret, 2016; Byravan & Fox, 2016). We believe that our
 
-N
-X
-i=1
+Accelerating Eulerian Fluid Simulation With Convolutional Networks
 
-min ` (yi , fm (xi )) ,
+work could be used in this context in the more challenging
+setting of an agent interacting with fluids, see for instance
+(Kubricht et al., 2016).
 
-m∈[M ]
+3. Fluid Equations
+When a fluid has zero viscosity and is incompressible it
+is called inviscid, and can be modeled by the Euler equations (Batchelor, 1967):
+1
+∂u
+= −u · ∇u − ∇p + f
+∂t
+ρ
+∇·u=0
 
 (1)
-
-while the traditional independent ensemble (IE) loss is
-LE (D) =
-
-N
-X
-X
-
-` (yi , fm (xi )) .
-
 (2)
 
-i=1 m∈[M ]
-
-If all models have the same capacity and one can obtain
-the (global) optimum of the IE loss with respect to the
-model parameters, then all trained models should produce
-the same outputs, i.e., f1 = . . . = fM . On the other hand,
-the oracle loss makes the most accurate model optimize the
-loss function ` (y, f (x)) for each data x. Therefore, MCL
-produces diverse outputs of high quality by forcing each
-model to be specialized on a part of the entire dataset.
-Minimizing the oracle loss (1) is harder than minimizing
-the independent ensemble loss (2) since the min function is
-a non-continuous function. To address the issue, (GuzmanRivera et al., 2012) proposed an iterative block coordinate
-decent algorithm and (Dey et al., 2015) reformulated this
-problem as a submodular optimization task in which ensemble models are trained sequentially in a boosting-like
-manner. However, when one considers an ensemble of
-deep neural networks, it is challenging to apply these methods since they require either costly retraining or sequential
-training. Recently, (Lee et al., 2016) overcame this issue
-by proposing a stochastic gradient descent (SGD) based
-algorithm. Throughout this paper, we primarily focus on
-ensembles of deep neural networks and use the SGD algorithm for optimizing the oracle loss (1) or its variants.
-2.2. Oracle Loss for Top-1 Choice
-The oracle loss (1) used for MCL is useful for producing diverse/plausible outputs, but it is often inappropriate for ap-
-
-Confident Multiple Choice Learning
-Airplane
-
-0.0 %
-
-0.0 %
-
-93.6 %
-
-0.0 %
-
-0.0 %
-
-95.8%
-
-0.0%
-
-4.4%
-
-12.2%
-
-2.2%
-
-86.6%
-
-85.5%
-
-86.4%
-
-85.7%
-
-86.0%
-
-Automobile
-
-0.0 %
-
-0.0 %
-
-96.1 %
-
-0.0 %
-
-0.0 %
-
-0.0%
-
-0.0%
-
-0.8%
-
-98.6%
-
-9.0%
-
-90.7%
-
-90.3%
-
-90.5%
-
-90.6%
-
-90.5%
-
-Bird
-
-99.9 %
-
-0.0 %
-
-0.0 %
-
-0.0 %
-
-0.0 %
-
-0.1%
-
-0.3%
-
-2.4%
-
-4.1%
-
-94.0%
-
-75.4%
-
-75.9%
-
-74.5%
-
-76.3%
-
-76.5%
-
-Cat
-
-0.0 %
-
-0.0 %
-
-95.6 %
-
-0.0 %
-
-0.0 %
-
-94.5%
-
-2.6%
-
-0.0%
-
-0.0%
-
-0.2%
-
-68.5%
-
-66.5%
-
-66.1%
-
-67.1%
-
-67.1%
-
-Deer
-
-0.0 %
-
-0.0 %
-
-0.0 %
-
-97.5 %
-
-0.0 %
-
-0.0%
-
-23.6%
-
-1.2%
-
-98.7%
-
-4.5%
-
-85.8%
-
-86.3%
-
-86.1%
-
-86.1%
-
-86.2%
-
-Dog
-
-0.0 %
-
-97.0 %
-
-0.0 %
-
-0.0 %
-
-0.0 %
-
-15.8%
-
-8.0%
-
-2.9%
-
-4.7%
-
-91.7%
-
-76.3%
-
-75.6%
-
-77.5%
-
-75.0%
-
-76.5%
-
-Frog
-
-0.0 %
-
-0.0 %
-
-0.0 %
-
-0.0 %
-
-97.7 %
-
-7.1%
-
-0.9%
-
-99.2%
-
-2.7%
-
-0.0%
-
-90.1%
-
-90.7%
-
-90.3%
-
-91.4%
-
-90.6%
-
-Horse
-
-0.0 %
-
-0.0 %
-
-0.0 %
-
-0.0 %
-
-97.2 %
-
-0.0%
-
-0.0%
-
-98.1%
-
-0.0%
-
-0.0%
-
-87.3%
-
-86.9%
-
-86.6%
-
-86.3%
-
-87.2%
-
-Ship
-
-0.0 %
-
-0.0 %
-
-0.0 %
-
-97.2 %
-
-0.0 %
-
-0.0%
-
-97.3%
-
-0.0%
-
-0.0%
-
-0.0%
-
-91.6%
-
-91.6%
-
-91.4%
-
-91.7%
-
-90.7%
-
-Truck
-
-0.0 %
-
-97.4 %
-
-0.0 %
-
-0.0 %
-
-0.0 %
-
-96.1%
+Where u is the velocity (a 2D or 3D vector field), t is time, p
+is the pressure (a scalar field), f is the summation of external forces applied to the fluid body (buoyancy, gravity, etc)
+and ρ is fluid density. Equation 1 is known as the momentum equation, it arrises from applying Newton’s second
+law to fluid motion and describes how the fluid accelerates
+given the forces acting on it. Equation 2 is the incompressibility condition, which enforces the volume of the fluid to
+remain constant throughout the simulation. For readers unfamiliar with fluid mechanics and it’s associated prerequisite topics (multi-variable calculus, finite-difference methods, etc), we highly recommend (Bridson, 2008) as an introductory reference to this material.
+We numerically compute all spatial partial derivatives using finite difference (FD) methods on a MAC grid (Harlow
+& Welch, 1965). The MAC grid representation samples
+velocity components on the face of voxel cells, and the
+scalar quantities (e.g. pressure or density) at the voxel center. This representation removes the non-trivial nullspace
+of central differencing on the standard uniformly sampled
+grid and it simplifies boundary condition handling, since
+solid-cell boundaries are collocated with the velocity samples.
+Equations 1 and 2 can be solved via the standard operator
+splitting method, which involves an advection update and
+a “pressure projection” step. Here is an overview of the
+single time-step velocity update algorithm:
+Algorithm 1 Euler Equation Velocity Update
+1: Advection and Force Update to calculate u?t :
+2: (optional) Advect scalar components through ut−1
+3: Self-advect velocity field ut−1
+4: Add external forces fbody
+5: Add vorticity confinement force fvc
+6: Set normal component of solid-cell velocities.
+7: Pressure Projection to calculate ut :
+1
+∇ · u?t , to find pt
+8: Solve Poisson eqn, ∇2 pt = ∆t
+9: Apply velocity update ut = ut−1 − ρ1 ∇pt
+
+At a high level, Algorithm 1 step 1 ignores the pressure
+term (−∇p of Equation 1) to create an advected velocity
+field, u?t , which includes unwanted divergence, and then
+step 7 solves for pressure, p, to satisfy the incompressibility constraint (Equation 2). This produces a divergence free
+velocity field, ut . It can be shown that an exact solution
+of p in step 8, coupled with a semi-Lagrangian advection
+routine in steps 2 and 3, results in an unconditionally stable numerical solution. In our hybrid apporach we modify
+step 8 by replacing the exact projection for a learned one.
+For advection of scalar fields and self-advection of velocity, we perform a semi-Lagrangian backward particle trace
+using the Maccormack method (Selle et al., 2008). When
+the backward trace would otherwise sample the input field
+inside non-fluid cells (or outside the simulation domain),
+we instead clamp each line trace to the edge of the fluid
+boundary and sample the field at its surface.
+We use vorticity confinement (Steinhoff & Underhill,
+1994) to counteract unwanted numerical dissipation, which
+attempts to reintroduce small-scale detail by detecting the
+location of vortices in the flow field and then introducing
+artificial force terms to increase rotational motion around
+these vortices. This firstly involves calculating the vorticity strength, w = ∇ × u, using central difference and then
+calculating the per-voxel force, fvc = λh (N × w), where,
+N = ∇|w|/k∇|w|k, λ controls the amplitude of vorticity confinement, and h is the grid size (typically h = 1).
+Algorithm 1 step 8 is by far the most computationally
+demanding component. It involves solving the following
+Poisson equation:
+∇2 p t =
 
 1
+∇ · u?t
+∆t
 
-2
+(3)
 
-3
+Rewriting the above equation results in a large sparse linear system Apt = b, where A is referred to in the literature as the 5 or 7 point Laplacian matrix (for 2D and 3D
+grids respectively). Despite A being symmetric and positive semi-definite, the linear system often has a large number of free parameters, which means that with standard iterative solvers a large number of iterations must be performed to produce an adequately small residual. Furthermore, this number of iterations is strongly data-dependent.
+In this paper, we use an alternative machine learning (and
+data-driven) approach to solving this linear system, where
+we train a ConvNet model to infer pt . The details of this
+model will be covered in Section 4.
+After solving for pressure, the divergence free velocity is
+calculated by subtracting the FD gradient of pressure, ut =
+u?t − ρ1 ∇pt .
+To satisfy slip-condition boundaries at fluid to solid-cell interfaces, we set the velocity of MAC cells so that the com-
 
-4
+Accelerating Eulerian Fluid Simulation With Convolutional Networks
 
-5
+ponent along the normal of the boundary face is equal to the
+normal component of the object velocity (i.e. n̂ · ufluid =
+n̂ · usolid ). The MAC grid representation makes this trivial,
+as each solid cell boundary is at the sampling location of
+the velocity grid.
 
-0.5%
+4. Pressure Model
+In traditional formulations, incompressibility is obtained
+only when the pressure is a solution of the linear system
+of equations given in Equation 3. However, in real-time
+applications, PCG or Jacobi iterations are truncated before reaching convergence. Therefore the obtained velocity fields are divergent, which may lead to bad solutions
+(i.e. volume change of smoke or fluid and other visual artifacts) and even instability1 . As such, truncation forgoes
+treating the incompressibility condition as a hard constraint
+even if this is not the intention, and few guarantees can be
+given for quality of the divergence residual at termination.
+This is especially true in degenerate cases when the matrix in the sparse linear system A has a large number of
+free-parameters (for example with highly irregular geometry boundaries).
+At the heart of this problem is the ability to predict the runtime of PCG iterations as a function of the required accuracy and the specific data in which it is applied. While
+there is a vast amount of literature in convex optimization,
+how data complexity impacts convergence rate of convex
+solvers is still not well understood (Oymak et al., 2015).
+Recent works have attempted to shed some light on these
+questions (Oymak et al., 2015; Giryes et al., 2016). These
+results show that, given a fixed computational budget (allowing for only a small number of iterations) in projected
+gradient approaches, it is worthwhile using very inaccurate
+projections that may lead to a worse solution in the longterm, but are better to use with the given computational
+constraints. While this line of work is promising, current
+results only apply to random systems (such as Gaussian
+maps) and specific types of input data (with local low dimensional structure) in order to characterize the form of the
+inaccurate projections for a given problem. In the general
+case, given a fixed computational budget, there is currently
+no way of guaranteeing a pre-fixed tolerance with respect
+to the optimality conditions for all possible inputs.
+The fundamental observation is that, while there is no
+closed form solution and a numerical solution might be
+difficult to compute, the function mapping input data to
+the optimum of an optimization problem is deterministic.
+Therefore one can attempt to approximate it using a powerful regressor such as deep neural network. Building upon
 1
+Advection should only be done in a divergence-free velocity
+field and typically there are no long-term (or multi-frame) mechanisms to ensure divergence is not accumulated.
 
-0.0%
-3
-
-0.0%
-4
-
-28.0%
-5
-
-90.4%
-1
-
-89.3%
-2
-
-89.8%
-3
-
-90.0%
-4
-
-90.0%
-5
-
-(a) Multiple choice learning (MCL)
-
-2
-
-(b) Confident MCL (CMCL)
-
-(c) Independent ensemble (IE)
-
-Figure 1. Class-wise test set accuracy of each ensemble model trained by various ensemble methods. One can observe that most models
-trained by MCL and CMCL become specialists for certain classes while they are generalized in case of traditional IE.
-
-plications requiring a single choice, i.e., top-1 error. This
-is because ensembles of deep neural networks tend to be
-overconfident in their predictions, and it is hard to judge a
-better solution from their outputs. To explain this in more
-detail, we evaluate the performance of ensembles of convolutional neural networks (CNNs) for the image classification task on the CIFAR-10 dataset (Krizhevsky & Hinton,
-2009). We train ensembles of 5 CNNs (two convolutional
-layers followed by a fully-connected layer) using MCL.
-We also train the models using traditional IE which trains
-each model independently under different random initializations. Figure 1 summarizes the class-wise test set accuracy of each ensemble member. In the case of MCL, most
-models become specialists for certain classes (see Figure
-1(a)), while they are generalized in the case of traditional
-IE as shown in Figure 1(c). However, as expected, each
-model trained by MCL significantly outperforms for its
-specialized classes than that trained by IE. For choosing
-a single output, similar to (Wan et al., 2013; Ciregan et al.,
-2012), one can average the output probabilities from ensemble members trained by MCL, but the corresponding
-top-1 classification error rate is often very high (e.g., see
-Table 1 in Section 5). This is because each model trained
-by MCL is overconfident for its non-specialized classes.
-To quantify this, we also compute the entropy of the predictive distribution on the test data and use this to evaluate the quality of confidence/uncertainty level. Figure 2(a)
-reports the entropy extracted from the predictive distribution of one of ensemble models trained by MCL. One can
-observe that it has low entropy as expected for its specialized classes (i.e., classes that the model has a test accuracy higher than 90%). However, even for non-specialized
-classes, it also has low entropy. Due to this, with respect
-to top-1 error rates, simple averaging of models trained by
-MCL performs much worse than that of IE. Such issue typically occurs in deep neural networks since it is well known
-that they are poor at quantifying predictive uncertainties,
-and tend to be easily overconfident (Nguyen et al., 2015).
-
-3. Confident Multiple Choice Learning
-3.1. Confident Oracle Loss
-In this section, we propose a modified oracle loss for relaxing the issue of MCL described in the previous section.
-Suppose that the m-th model outputs the predictive distribution Pθm (y | x) given input x, where θm denotes the
-model parameters. Then, we define the confident oracle
-loss as the following integer programming variant of (1):
-
-LC (D) = min
-m
-vi
-
-M
-N X
+this observation, another key contribution of this work is
+that the learning task can be phrased as a completely unsupervised learning problem, if an appropriate ConvNet architecture is used. Instead of using supervised training to
+directly infer and score the next frame velocity (or pressure) - where the loss would be some distance measure to
+ground-truth data - we measure the squared L-2 norm of
+the divergence of the predicted velocity and minimize it directly:
 X
+2
+fobj =
+wi {∇ · ût }i
+i
 
-vim ` (yi , Pθm (y | xi ))
+=
 
-i=1 m=1
-
-!
-+ β (1 − vim ) DKL (U (y) k Pθm (y | xi ))
-(3a)
-subject to
-
-M
 X
+i
 
-vim = 1,
+
+wi ∇ ·
 
-m=1
-vim ∈
+
 
-{0, 1},
+u?t
 
-∀i,
+1
+− ∇p̂t
+ρ
 
-(3b)
+2
+(4)
+i
 
-∀i, m
+Where ût and p̂t are the predicted divergence free velocity and pressure fields respectively and wi is a per-vertex
+weighting term which emphasizes the divergence of voxels
+on geometry boundaries:
+wi = max (1, k − di )
+where di is a distance field with value 0 for solid cells, and
+for fluid cells is the minimum Euclidean distance of each
+fluid-cell to the nearest solid cell (i.e. a signed distance
+field encoding of the occupancy grid). Since the fluid-solid
+border represents a small fraction of the domain (due to
+the sparse nature of the occupancy grid), without importance weighting it contributes a small fraction of the overall
+loss-function, and might be ignored by our limited capacity
+ConvNet. However the effect of this term is not significant
+and has a minor contribution to the simulation quality.
+The Equation 4 formulation has two significant benefits.
+Firstly, since obtaining ground-truth velocity from expensive iterative methods is no longer necessary, we can perform non-trivial data-augmentation to the input velocity
+fields. Secondly, we can incorporate loss information from
+a composition of multiple time-steps without the need of
+running exact solvers for each frame. With this, we can
+further improve our ConvNet prediction and long-term stability by adding an additional term to our objective function
+that minimizes “long-term” divergence. We do so by stepping forward the simulation state from u0 for each training
+sample, to a small number of time-steps n in the future (i.e.
+we calculate ûn ).2 Then we calculate the scalar value of
+Equation 4 using this future frame and we add this to the
+global objective (to be minimized by SGD). This process is
+depicted in Figure 1.
+To infer p̂t we use a Convolutional Network architecture
+(fconv ) parameterized by its weights and biases, c, and
+2
 
-(3c)
+When training our model we step forward either n = 4 steps,
+with probability 0.9, or n = 25 with probability 0.1. Furthermore
+we use a random time-step - to promote time-step invariance according to ∆t = 1/30 ∗ (0.203 + |N (0, 1)|), where N (0, 1)
+is a random sample from a Normal Gaussian distribution.
 
-where DKL denotes the Kullback-Leibler (KL) divergence,
-U (y) is the uniform distribution, β is a penalty parameter,
-and vim is a flag variable to decide the assignment of xi to
-the m-th model. By minimizing the KL divergence from
-the predictive distribution to the uniform one, the new loss
-forces the predictive distribution to be closer to the uniform
-one, i.e., zero confidence, on non-specialized data, while
-those for specialized data still follow the correct one. For
-example, for classification tasks, the most accurate model
-for each data is allowed to optimize the classification loss,
-while others are forced to give less confident predictions by
-minimizing the KL divergence. We remark that although
-we optimize the KL divergence only for non-specialized
-data, one can also do it even for specialized data to regularize each model (Pereyra et al., 2017).
+Accelerating Eulerian Fluid Simulation With Convolutional Networks
+g0
 
-Confident Multiple Choice Learning
-CIFAR-10 (specialized)
-CIFAR-10 (non-specialized)
-SVHN (unseen)
+u0
 
-0.4
-0.2
+velocity divergence
 
-0.6
-0.4
-0.2
+Advect
+Advect
++
++
+u1
+u2
+Project
+Project
 
-0
-0.5
+Advect
++
+Project
 
-1.0
+2x1283
 
-1.5
+un
 
-2.0
+min(||∇·un ||2)
 
-2.5
+gt
 
-0.6
+2x2x2
+Pooling
 
-Masked
-Feature 𝐵1
+3x3x3 Conv
+ReLU
 
-Shared Feature
-𝐴 + 𝐵1
+8x1283
 
-Masked
-Feature 𝐴1
+8x1283
 
-Shared Feature
-𝐵 + 𝐴1
+3x3x3 Conv
+ReLU
+
+1x1x1 Conv
+ReLU
+
+8x1283
+
+Upscaling
+
+geom
+
+Figure 1. “Long-term” Velocity Divergence Minimization
+
+3x3x3 Conv
+ReLU
+
+3
+
+8x64
+
+8x643
+
+8x323
+
+8x323
+
+1x1x1 Conv
+ReLU
+
+8x1283
+
+1x1283
+
+pressure
+
+2x2x2
+Pooling
+
+Figure 3. Convolutional Network for Pressure Solve
+
+ut−1
+
+Advect
 
 +
 
-0.4
-0.2
+ut
 
-0
-0
+∇·u
 
-Hidden
-Feature 𝐴
+/s
 
-CIFAR-10 (seen)
-SVHN (unseen)
+fconv
 
-0.8
-Fraction
+s
 
-0.6
+fbody + fvc
 
-CIFAR-10 (specialized)
-CIFAR-10 (non-specialized)
-SVHN (unseen)
+p̂t
 
-0.8
-Fraction
+globally scale invariant (which helps generalization performance). Recall that while the network is learning a linear
+projection, the network itself is highly non-linear and so
+would otherwise be sensitive to input scale.
 
-Fraction
+∇p
+−1
 
-0.8
+ût
 
-+
+Figure 2. Velocity-Update Architecture
 
-0
-0
+whose input is the divergence of the velocity field, ∇ · u?t ,
+and a geometry field gt−1 (a Boolean occupancy grid that
+delineates the cell type for each voxel in our grid: fluid cell
+or solid cell):
+p̂t = fconv (c, ∇ · u?t , gt−1 )
 
-Entropy
+(5)
 
-(a) MCL
+We then optimize the parameters of this network, c, to
+minimize the objective fobj using standard deep-learning
+optimization approaches; namely we use Back Propagation (BPROP) to calculate all partial derivatives and the
+ADAM (Kingma & Ba, 2014) optimization algorithm to
+minimize the loss.
+A block diagram of our high-level model architecture is
+shown in Figure 2, and shows the computational blocks required to calculate the output ût for a single time-step. The
+advect block is a fixed function unit that encompasses the
+advection step of Algorithm 1. After advection, we add the
+body and vorticity confinement forces. We then calculate
+the divergence of the velocity field ∇·u?t which, along with
+geometry, is fed through a multi-stage ConvNet to produce
+p̂t . We then calculate the pressure divergence, and subtract
+it from the divergent velocity to produce ût . Note that the
+bottle-neck architecture avoids obtaining trivial solutions:
+the perturbation applied by the CNN to the divergent velocity is restricted to be a conservative vector field (i.e. the
+gradient field with potential p̂t ). Note that the only block
+with trainable parameters is the ConvNet model and that all
+blocks are differentiable.
+Since the ConvNet (fconv ) solves a linear system Apt = b,
+we are free to scale the left and right hand sides by some
+constant s; we calculate the standard deviation of the input velocity field, s = STD (u?t ), and normalize the input
+divergence by this scale value. We then undo the output
+pressure scale by multiplying by the scale reciprocal. By
+scale normalizing the input the learned network is made
 
-0.5
+The internal structure of the ConvNet architecture is shown
+in Figure 3. It consists of 5 stages of convolution (spatial or volumetric for 2D and 3D respectively) and Rectifying Linear layers (ReLU). The convolutional operator itself
+mimics the local sparsity structure of our linear system; at
+each layer, features are generated from local interactions
+and these local interactions have higher-level global behavior in the deeper layers of the network. However a single
+resolution network would have limited context which limits the network’s ability to model long-range external forces
+(for example the presence of gravity in a closed simulation
+domain results in a low frequency pressure gradient). As
+such, we add multi-resolution features to enable modeling
+long range physical phenomenon by downsampling the first
+hidden layer twice (average pooling), processing each resolution in parallel then upsampling (bilinear) the resultant
+low resolution features before accumulating them.
+Note that since our network is fully-convolutional, the size
+of the domain can be modified at inference time; while we
+train at 643 and 1282 resolutions for the 3D and 2D models
+respectively, the network can perform inference on any size
+domain.
+Further improvements can be made to the architecture
+of Figure 3. We have experimented with residual connections (He et al., 2015), gated convolutions (Dauphin
+et al., 2016) and significantly deeper network architectures.
+These techniques do improve accuracy but at the cost of
+added run-time and latency. Alternatively, run-time can
+be reduced by replacing full-rank convolution kernels with
+learned separable convolution stages (i.e. compositions of
+low-rank convolutions) or by using recent model compression techniques (Lin et al., 2015; Hinton et al., 2015) for
+moderate increases in output divergence.
+Why not to use a ConvNet to learn an end-to-end mapping that predicts the velocity field at each time-step? The
+chaotic change of velocity between frames is highly unstable and easily affected by external forces and other factors.
 
-1.0
+Accelerating Eulerian Fluid Simulation With Convolutional Networks
 
-1.5
+We argue that our proposed hybrid approach restricts the
+learning task to a stable projection step relieving the need
+of modeling the well understood advection and external
+body forces. The proposed method takes advantage of the
+understanding and modeling power of classic approaches,
+supporting enhancing tools such as vorticity confinement.
+Having said this, end-to-end models are conceptually simpler and, combined with adversarial training (Goodfellow
+et al., 2014), have shown promising results for difficult
+tasks such as video prediction (Mathieu et al., 2015). In
+that setting, fluid simulation is a very challenging test case
+and our proposed method represents an important baseline
+in terms of both accuracy and speed.
 
-2.0
+5. Dataset Creation and Model Training
 
-2.5
+Figure 4. A selection of 3D Models used in our dataset
 
-Entropy
+We generate a training set of 320 “scenes” (each with a
+random initial condition) and a test set of an additional 320
+scenes. Each “scene” contains 32 frames 0.8 seconds apart.
+We use a disjoint set of geometry for the test and training
+sets to test generalization performance. The dataset is public, as well as the code for generating it.
 
-(b) CMCL
+Note that while we do not need label information to train
+our ConvNet, our network’s generalization performance
+improves when using a dataset that approximately samples
+the manifold of real-world fluid states. To this end, we propose a procedural method to generate a corpus of initial
+frames for use in training.
 
-0
+During training, we further increase dataset coverage by
+performing data-augmentation. When stepping forward the
+simulator to calculate long-term divergence, we randomly
+add gravity, density and vorticity confinement of varying
+strengths and with a random gravity vector.
 
-0.5
+In lieu of real-world fluid data, we use synthetic data
+generated using an offline 3D solver, mantaflow (Pfaff &
+Thuerey). We then seed this solver with initial condition
+states generated via a random procedure using a combination of i. a pseudo-random turbulent field to initialize the
+velocity ii. a random placement of geometry within this
+field, and iii. procedurally adding localized input perturbations. We will now describe this procedure in detail.
 
-1.0
+6. Results and Analysis
 
-1.5
+Firstly, we use the wavelet turbulent noise of (Kim et al.,
+2008) to initialize a pseudo-random, divergence free velocity field. At the beginning of each simulation we randomly
+sample a set of noise parameters (e.g. wavelet spatial scale
+and amplitude) and we generate a random seed, which we
+then use to generate the velocity field.
 
-2.0
+To implement the model of (Yang et al., 2016) for comparison, we rephrase their patch-based architecture as an equivalent sliding window model comprised of a 3x3x3 conv and
+sigmoid stage followed by 3 stages of 1x1x1 convolutions
+and sigmoid with appropriate feature sizing. Note that this
+equivalent reimplementation as a ConvNet is significantly
+faster, as we can make use of the highly optimized convolution implementations from NVIDIA’s cudnn library. Yang
+et al. report 515ms per frame on a 96 x 128 x 96 grid,
+while our implementation of their model takes only 9.4ms
+per frame at this resolution.
 
-2.5
+Next we generate an occupancy grid by selecting objects
+from a database of models and randomly scaling, rotating and translating these objects in the simulation domain.
+We use a subset of 100 objects from the NTU 3D Model
+Database (Pu & Ramani, 2006); 50 models are used only
+when generating training set initial conditions and 50 for
+test samples. Figure 4 shows a selection of these models.
+For generating 2D simulation data, we simply take a 2D
+slice of the 3D voxel grid. Finally, we simulate small divergent input perturbations by modeling inflow moving across
+the velocity field using a collection of emitter particles of
+random time duration, position, velocity and size.
+With the above initial conditions, we use Manta to calculate
+u?t by advecting the velocity field and adding forces. We
+also step the simulator forward 256 frames (using Manta’s
+PCG-based solver), recording the velocity every 8 steps.
 
-Entropy
+The model of Section 4 was implemented in Torch7 (Collobert et al., 2011), with two CUDA baseline methods
+for comparison; a Jacobi-based iterative solver and a
+PCG-based solver (with incomplete Cholesky L0 preconditioner). For sparse linear system operations, we used primitives from NVIDIA’s cuSPARSE and cuBLAS libraries.
 
-(c) IE with AT
+The supervised loss specified by Yang et al. measures the
+distance to a ground-truth output pressure (i.e. they train
+a network in isolation to perform the pressure projection
+only). For our dataset, this loss does not result in accurate
+results. When fluid cells are surrounded by solid cells, each
+connected component of fluid represents and independent
+linear system, each with an arbitrary pressure offset. As
+such, we modified the learning procedure of Yang et al. to
+include a “pressure-normalization” routine which subtracts
+the mean pressure in each connected-component of fluid
+cells in the ground-truth pressure frames. This modification enabled SGD to converge when training their model on
 
-Hidden
-Feature 𝐵
+our dataset. However despite this correction, the model of
+Yang et al. does not learn an accurate linear projection on
+our data; our initial condition divergent velocity frames include large gradient and buoyancy terms, which results in a
+high amplitude, low frequency gradient in the ground-truth
+pressure. The small 3x3x3 input context of their model is
+not able to infer such low frequency outputs. Since these
+loss terms dominate the Yang et al. objective, the network
+over-trains to minimize it. Likely, this phenomena wasn’t
+evident in Yang et al.’s original results due to the low diversity of their training set, and the high correlation between
+their evaluation and training conditions (perhaps their intended use-case). The results of their model trained on their
+objective function can be seen in Figure 6.
 
-(d) Feature sharing
+runtime (ms)
 
-Figure 2. Histogram of the predictive entropy of model trained by (a) MCL (b) CMCL and (c) IE on CIFAR-10 and SVHN test data. In
-the case of MCL and CMCL, we separate the classes of CIFAR-10 into specialized (i.e., classes that model has a class-wise test accuracy
-higher than 90%) and non-specialized (others) classes. In the case of IE, we follow the proposed method by (Lakshminarayanan et al.,
-2016): train an ensemble of 5 models with adversarial training (AT) and measure the entropy using the averaged probability, i.e.,
-averaging output probabilities from 5 models. (d) Detailed view of feature sharing between two models. Grey units indicate that they
-are currently dropped. Masked features passed to a model are all added to generate the shared features.
+Accelerating Eulerian Fluid Simulation With Convolutional Networks
+jacobi (34 iterations)
+this work - small model
+this work
 
-3.2. Stochastic Alternating Minimization for Training
-In order to minimize the confident oracle loss (3) efficiently, we use the following procedure (Guzman-Rivera
-et al., 2012), which optimizes model parameters {θm } and
-assignment variables {vim } alternatively:
-1. Fix {θm } and optimize {vim }.
-Under fixed model parameters {θm }, the objective
-(3a) is decomposable with respect to assignments
-{vim } and it is easy to find optimal {vim }.
-2. Fix
-
-{vim }
-
-and optimize {θm }.
-
-Under fixed assignments {vim }, the objective (3a)
-is decomposable with respect to model parameters
-{θm }, and it requires each model to be trained independently.
-The above scheme iteratively assigns each data to a particular model and then independently trains each model only
-using its assigned data. Even though it monotonically decreases the objective, it is still highly inefficient since it
-requires training each model multiple times until assignments {vim } converge. To address the issue, we propose
-deciding assignments and update model parameters to the
-gradient directions once per each batch, similarly to (Lee
-et al., 2016). In other words, we perform a single gradientupdate on parameters in Step 2, without waiting for their
-convergence to a (local) optimum. In fact, (Lee et al., 2016)
-show that such stochastic alternating minimization works
-well for the oracle loss (1). We formally describe a detailed training procedure as the ‘version 0’ of Algorithm 1,
-and we will introduce the alternative ‘version 1’ later. This
-direction is complementary to ours, and we do not explore
-in this paper.
-
-Algorithm 1 Confident MCL (CMCL)
-Input: Dataset D = {(xi , yi ) | xi ∈ X , yi ∈ Y} and
-penalty parameter β
-Output: Ensemble of M trained models
-repeat
-Let U (y) be a uniform distribution
-Sample random batch B ⊂ D
-for m = 1 to M do
-Compute the loss of the m-th model:
-Lm
-i ←β
-
-X
-
-DKL (U (y) k Pθm
-(y | xi ))
-c
-
-m6
-b =m
-
-+ ` (yi , Pθm (yi | xi )) ,
-
-∀(xi , yi ) ∈ B
-
-end for
-for m = 1 to M do
-for i = 1 to |B| do
-if the m-th model has the lowest loss then
-Compute the gradient of the training loss
-` (yi , Pθm (yi | xi )) w.r.t θm
-else
-/∗ version 0: exact gradient ∗/
-Compute the gradient of the KL divergence
-βDKL (U (y) k Pθm (y | xi )) w.r.t θm
-/∗ version 1: stochastic labeling ∗/
-Compute the gradient of the cross entropy loss
-−β log Pθm (b
-yi | xi ) using ybi w.r.t θm where
-ybi ∼ U (y)
-end if
-end for
-Update the model parameters
-end for
-until convergence
-
-Confident Multiple Choice Learning
-
-3.3. Effect of Confident Oracle Loss
-Similar to Section 2.2, we evaluate the performance of the
-proposed training scheme using 5 CNNs for image classification on the CIFAR-10 dataset. As shown in Figure
-1(b), ensemble models trained by CMCL using the exact
-gradient (i.e., version 0 of Algorithm 1) become specialists for certain classes. For specialized classes, they show
-the similar performance compared to the models trained by
-MCL, i.e., minimizing the oracle loss (1), which considers
-only specialization (see Figure 1(a)). For non-specialized
-classes, ensemble members of CMCL are not overconfident, which makes it easy to pick a correct output via simple voting/averaging. We indeed confirm that each model
-trained by CMCL has not only low entropy for its specialized classes, but also exhibits high entropy for nonspecialized classes as shown in Figure 2(b).
-We also evaluate the quality of confidence/uncertainty level
-on unseen data using SVHN (Netzer et al., 2011). Somewhat surprisingly, each model trained by CMCL only using
-CIFAR-10 training data exhibits high entropy for SVHN
-test data, whereas models trained by MCL and IE are overconfident on it (see Figure 2(a) and 2(c)). We emphasize that our method can produce confident predictions significantly better than the proposed method by (Lakshminarayanan et al., 2016), which uses the averaged probability of ensemble models trained by IE to obtain high quality
-uncertainty estimates (see Figure 2(c)).
-
-4. Regularization Techniques
-In this section, we introduce advanced techniques for reducing the overconfidence and improving the performance.
-4.1. Feature Sharing
-We first propose a feature sharing scheme that stochastically shares the features among member models of CMCL
-to further address the overconfidence issue. The primary
-reason why deep learning models are overconfident is that
-they do not always extract general features from data. For
-examples, assume that some deep model only trains frogs
-and roses for classifying them. Although there might exist
-many kinds of features on their images, the model might
-make a decision based only on some specific features, e.g.,
-colors. In this case, ‘red’ apples can be classified as rose
-with high confidence. Such an issue might be more severe
-in CMCL (and MCL) compared to IE since members of
-CMCL are specialized to certain data. To address the issue,
-we suggest the feature ensemble approach that encourages
-each model to generate meaningful abstractions from rich
-features extracted from other models.
-Formally, consider an ensemble of M neural networks with
-L hidden layers. We denote the weight matrix for layer
-
-` of model m ∈ [M ] and `-th hidden feature of model
-`
-m by Wm
-and h`m , respectively. Instead of sharing the
-whole units of a hidden feature, we introduce random binary masks determining which units to be shared with other
-models. We denote the mask for layer ` from model n to
-m as σ `nm ∼ Bernoulli(λ), which has the same dimension with h`n (we use λ = 0.7 in all experiments). Then,
-the `-th hidden feature of model m with sharing (` − 1)-th
-hidden features is defined as follows:
-
-
-
-X
-`  `−1
-h`m (x) = φ Wm
-hm (x) +
-σ `nm ? h`−1
-(x) ,
-n
-n6=m
-
-where ? denotes element-wise multiplication and φ is the
-activation function. Figure 2(d) illustrates the proposed
-feature sharing scheme in an ensemble of deep neural networks. It makes each model learn more generalized features by sharing the features among them. However, one
-might expect that it might make each model overfitted due
-to the increased number of parameters that induces a single
-prediction, i.e., the statistical dependencies among outputs
-of models increase, which would hurt the ensemble effect.
-In order to handle this issue, we introduce the randomness
-in sharing across models in a similar manner to DropOut
-(Srivastava et al., 2014) using the random binary masks
-σ . In addition, we propose sharing features at lower layers
-since sharing the higher layers might overfit the overall networks more. For example, in all experiments with CNNs in
-this paper, we commonly apply feature sharing for hidden
-features just before the first pooling layer. We also remark
-that such feature sharing strategies for better generalization
-have also been investigated in the literature for different
-purposes (Misra et al., 2016; Rusu et al., 2016).
-4.2. Stochastic Labeling
-For more efficiency in minimizing the confident oracle loss,
-we also consider a noisy unbiased estimator of gradients of
-the KL divergence with Monte Carlo samples from the uniform distribution. The KL divergence from the predictive
-distribution to the uniform distribution can be written as
-follows:
-DKL (U (y) k Pθ (y | x))
-X
-U (y)
-=
-U (y) log
-Pθ (y | x)
-y
-X
-X
-=
-U (y) log U (y) −
-U (y) log Pθ (y | x).
-y
-
-y
-
-Hence, the gradient of the above KL divergence with respect to the model parameter θ becomes
-5θ DKL (U (y) k Pθ (y | x)) = −EU (y) [5θ log Pθ (y | x)].
-
-Confident Multiple Choice Learning
-
-From the above, we induce the following noisy unbiased
-estimator of gradients with Monte Carlo samples from the
-uniform distribution:
-− EU (y) [5θ log Pθ (y | x)] w −
-
-1X
-5θ log Pθ (y s | x),
-S s
-
-where y s ∼ U (y) and S is the number of samples. This
-random estimator takes samples from the uniform distribution U (y) and constructs estimates of the gradient using
-them. In other words, 5θ log Pθ (y s | x) is the gradient of
-the cross entropy loss under assigning a random label to x.
-This stochastic labeling provides efficiency in implementation/computation and stochastic regularization effects. We
-formally describe detailed procedures, as the version 1 of
-Algorithm 1.
-
-5. Experiments
-We evaluate our algorithm for both classification and
-foreground-background segmentation tasks using CIFAR10 (Krizhevsky & Hinton, 2009), SVHN (Netzer et al.,
-2011) and iCoseg (Batra et al., 2010) datasets. In all experiments, we compare the performance of CMCL with those
-of traditional IE and MCL using deep models. We provide
-the more detailed experimental setups including model architectures in the supplementary material.1
-5.1. Image Classification
-Setup. The CIFAR-10 dataset consists of 50,000 training
-and 10,000 test images with 10 image classes where each
-image consists of 32 × 32 RGB pixels. The SVHN dataset
-consists of 73,257 training and 26,032 test images.2 We
-pre-process the images with global contrast normalization
-and ZCA whitening following (Ian J. Goodfellow & Bengio, 2013; Zagoruyko & Komodakis, 2016), and do not use
-any data augmentation. Using these datasets, we train various CNNs, e.g., VGGNet (Simonyan & Zisserman, 2015),
-GoogLeNet (Szegedy et al., 2015), and ResNet (He et al.,
-2016). Similar to (Zagoruyko & Komodakis, 2016), we use
-the softmax classifier, and train each model by minimizing
-the cross-entropy loss using the stochastic gradient descent
-method with Nesterov momentum.
-For evaluation, we measure the top-1 and oracle error rates
-on the test dataset. The top-1 error rate is calculated by averaging output probabilities from all models and predicting
-the class of the highest probability. The oracle error rate is
-the rate of classification failure over all outputs of individual ensemble members for a given input, i.e., it measures
-whether none of the members predict the correct class for
-1
-
-Our code is available at https://github.com/
-chhwang/cmcl.
 2
-We do not use the extra SVHN dataset for training.
-
-Ensemble
-Method
-IE
-MCL
-CMCL
-
-Feature
-Sharing
-X
-X
-
-Stochastic
-Labeling
-X
-
-Oracle
-Error Rate
-10.65%
-4.40%
-4.49%
-5.12%
-3.32%
-
-Top-1
-Error Rate
-15.34%
-60.40%
-15.65%
-14.83%
-14.78%
-
-Table 1. Classification test set error rates on CIFAR-10 using various ensemble methods.
-
-an input. While a lower oracle error rate suggests higher
-diversity, a lower oracle error rate does not always bring
-a higher top-1 accuracy as this metric does not reveal the
-level of overconfidence of each model. By collectively
-measuring the top-1 and oracle error rates, one can grasp
-the level of specialization and confidence of a model.
-Contribution by each technique. Table 1 validates contributions of our suggested techniques under comparison
-with other ensemble methods IE and MCL. We evaluate an
-ensemble of five simple CNN models where each model
-has two convolutional layers followed by a fully-connected
-layer. We incrementally apply our optimizations to gauge
-the stepwise improvement by each component. One can
-note that CMCL significantly outperforms MCL in the top1 error rate even without feature sharing or stochastic labeling while it still provides a comparable oracle error rate.
-By sharing the 1st ReLU activated features, the top-1 error rates are improved compared to those that employ only
-confident oracle loss. Stochastic labeling further improves
-both error rates. This implies that stochastic labeling not
-only reduces computational burdens but also provides regularization effects.
-Overlapping. As a natural extension of CMCL, we also
-consider picking K specialized models instead of having
-only one specialized model, which was investigated for
-original MCL (Guzman-Rivera et al., 2012; Lee et al.,
-2016). This
-PMis easily achieved by modifying the constraint
-(3b) as m=1 vim = K, where K is an overlap parameter that controls training data overlap between the models.
-This simple but natural scheme brings extra gain in top-1
-performance by generalizing each model better. Table 2
-compares the performance of various ensemble methods
-with varying values of K. Under the choice of K = 4,
-CMCL of 10 CNNs provides 9.13% relative reduction in
-the top-1 error rates from the corresponding IE. Somewhat
-interestingly, IE has similar error rates on ensembles of
-both 5 and 10 CNNs, which implies that the performance
-of CMCL might be impossible to achieve using IE even if
-one increases the number of models in IE.
-Large-scale CNNs. We now evaluate the performance of
-our ensemble method when it is applied to larger-scale
-CNN models for image classification tasks on CIFAR-10
-
-Confident Multiple Choice Learning
-
-Ensemble Method
-
-K
-
-IE
-
-1
-2
-3
-4
-1
-2
-3
-4
-
-MCL
-
-CMCL
-
-Ensemble Size M = 5
-Oracle Error Rate Top-1 Error Rate
-10.65%
-15.34%
-4.40%
-60.40%
-3.75%
-20.66%
-4.73%
-16.24%
-5.83%
-15.65%
-3.32%
-14.78%
-3.69%
-14.25% (-7.11%)
-4.38%
-14.38%
-5.82%
-14.49%
-
-Ensemble Size M = 10
-Oracle Error Rate Top-1 Error Rate
-9.26%
-15.34%
-0.00%
-76.88%
-1.46%
-49.31%
-1.52%
-22.63%
-1.82%
-17.61%
-1.96%
-14.28%
-1.22%
-13.95%
-1.53%
-14.00%
-1.73%
-13.94% (-9.13%)
-
-Table 2. Classification test set error rates on CIFAR-10 with varying values of the overlap parameter K explained in Section 5.1. We
-use CMCL with both feature sharing and stochastic labeling. Boldface values in parentheses represent the relative reductions from the
-best results of MCL and IE.
-
-Model Name
-
-VGGNet-17
-
-GoogLeNet-18
-
-ResNet-20
-
-Ensemble
-Method
-- (single)
-IE
-MCL
-CMCL
-- (single)
-IE
-MCL
-CMCL
-- (single)
-IE
-MCL
-CMCL
-
-CIFAR-10
-Oracle Error Rate Top-1 Error Rate
-10.65%
-10.65%
-3.27%
-8.21%
-2.52%
-45.58%
-2.95%
-7.83% (-4.63%)
-10.15%
-10.15%
-3.37%
-7.97%
-2.41%
-52.03%
-2.78%
-7.51% (-5.77%)
-14.03%
-14.03%
-3.83%
-10.18%
-2.47%
-53.37%
-2.79%
-8.75% (-14.05%)
-
-SVHN
-Oracle Error Rate Top-1 Error Rate
-5.22%
-5.22%
-1.99%
-4.10%
-1.45%
-45.30%
-1.65%
-3.92% (-4.39%)
-4.59%
-4.59%
-1.78%
-3.60%
-1.39%
-37.92%
-1.36%
-3.44% (-4.44%)
-5.31%
-5.31%
-1.82%
-3.94%
-1.29%
-40.91%
-1.42%
-3.68% (-6.60%)
-
-Table 3. Classification test set error rates on CIFAR-10 and SVHN for various large-scale CNN models. We train an ensemble of 5
-models, and use CMCL with both feature sharing and stochastic labeling. Boldface values in parentheses indicate relative error rate
-reductions from the best results of MCL and IE.
-
-and SVHN datasets. Specifically, we test VGGNet (Simonyan & Zisserman, 2015), GoogLeNet (Szegedy et al.,
-2015), and ResNet (He et al., 2016). We share the nonlinear activated features right before the first pooling layer,
-i.e., the 6th, 2nd, and 1st ReLU activations for ResNet
-with 20 layers, VGGNet with 17 layers, and GoogLeNet
-with 18 layers, respectively. This choice is for maximizing the regularization effect of feature sharing while
-minimizing the statistical dependencies among the ensemble models. For all models, we choose the best hyperparameters for confident oracle loss among the penalty parameter β ∈ {0.5, 0.75, 1, 1.25, 1.5} and the overlapping
-parameter K ∈ {2, 3, 4}. Table 3 shows that CMCL consistently outperforms all baselines with respect to the top-1
-error rate while producing comparable oracle error rates to
-those of MCL. We also apply the feature sharing to IE as reported in Figure 4(a). Even though the feature sharing also
-improves the performance of IE, CMCL still outperforms
-IE: CMCL provides 6.11% relative reduction of the top-1
-
-error rate from the IE with feature sharing under the choice
-of M = 10. We also remark that IE with feature sharing has similar error rates as the ensemble size increases,
-while CMCL does not (i.e., the gain is more significant for
-CMCL). This implies that feature sharing is more effectively working for CMCL.
-5.2. Foreground-Background Segmentation
-In this section, we evaluate if ensemble models trained with
-CMCL produce high-quality segmentation of foreground
-and background of an image with the iCoseg dataset. The
-foreground-background segmentation is formulated as a
-pixel-level classification problem with 2 classes, i.e., 0
-(background) or 1 (foreground). To tackle the problem, we
-design fully convolutional networks (FCNs) model (Long
-et al., 2015) based on the decoder architecture presented in
-(Radford et al., 2016). The dataset consists of 38 groups of
-related images with pixel-level ground truth on foregroundbackground segmentation of each image. We only use im-
-
-Confident Multiple Choice Learning
-
-Input
-
-IE model 1
-
-IE model 2
-
-Prediction error rate:
-
-10.28 %
-
-10.99 %
-
-23.81 %
-
-8.34 %
-
-38.17 %
-
-8.71 %
-
-Prediction error rate:
-
-8.96 %
-
-9.79 %
-
-6.78 %
-
-34.12 %
-
-7.82 %
-
-33.39 %
-
-Ground truth
-
-CMCL model 1 CMCL model 2 MCL model 1 MCL model 2
-
-Figure 3. Prediction results of foreground-background segmentation for a few sample images. A test error rate is shown below each
-prediction. The ensemble models trained by CMCL and MCL generate high-quality predictions specialized for certain images.
-
-9.72
-
-9.5
-9.02
-
-9.0
-
-9
-
-8.75
-
-8.5
-
-13.5
-
-13.0
-
-MCL
-CMCL
-IE
-
-8.45
-
-12.5
-5
 
 10
 
-Ensemble size M
-
-Oracle error rate (%)
-
-Top-1 error rate (%)
-
-10.0
-
-14
-
-14.0
-Top-1 error rate (%)
-
-CMCL
-IE with FS
-IE without FS
-
-10.2
-
 1
 
-13
-12
-11
 10
 
-2
+0
 
-3
+10
 
+2^4
+
+2^5
+
+2^6
+
+2^7
+
+2^8
+
+resolution
+
+Figure 5. Pressure projection time (ms) versus resolution (PCG
+not shown for clarity).
+
+By contrast, our unsupervised objective minimizes divergence after the pressure gradient operator, whose FD calculation acts as a high-pass filter. This is a significant advantage; our objective function is “softer” on the divergence
+contribution for phenomena that the network cannot easily
+infer. For the remaining experimental results, we will evaluate an improved version of the Yang et al. model, which
+we call our “small-model”3 .
+Figure 5 shows the computation time of the Jacobi method,
+the small-model (sizing of Yang et al.) and this work4 .
+Note that for fair quantitative comparison of output residual, we choose the number of Jacobi iterations (34) to approximately match the FPROP time of our network (i.e. to
+compare divergence with fixed compute). Since the asymptotic complexity as a function of resolution is the same for
+Jacobi and our ConvNet, the FPROP times are equivalent.
+PCG is orders of magnitude slower at all resolutions and
+has been omitted for clarity. The small-model provides a
+significant speedup over other methods. The runtime for
+the PCG, Jacobi, this work, and the small-model at 1283
+grid resolution are 2521ms, 47.6ms, 39.9ms and 16.9ms
+respectively.
+Note that with custom hardware (Movidius; Google Inc.),
+separable convolutions and other architectural enhancements, we believe the runtime of our ConvNet could be reduced significantly. However, we leave this to future work.
+We simulated a 3D smoke plume using both our system and
+baseline methods. The simulation data was created using
+our real-time system (which supports basic real-time visu3
+
+The “small-model” is a single resolution pressure network
+with only 3x3x3 context and trained using the loss function, toplevel architectural improvements and data-augmentation strategies from this work. We include these experiments as a proxy
+comparison for the original model of Yang et al.
 4
+This runtime includes the pressure projection steps only: the
+velocity divergence calculation, the linear system solve and the
+velocity update. We use an NVIDIA Titan X GPU with 12GB of
+ram and an Intel Xeon E5-2690 CPU.
 
+Figure 6. Plume simulation (without vorticity confinement). Top
+left: Jacobi (34 iterations). Top Middle Jacobi (100 iterations).
+Top Right: PCG. Bottom left: Yang et al. Bottom middle: smallmodel. Bottom Right: this work.
+
+alization), and the accompanying figures and supplemental
+videos were rendered offline using Blender (Blender Foundation). Video examples of these experiments can be found
+in the supplemental materials. Since vorticity confinement
+tends to obfuscate simulation errors (by adding high frequency detail), Figures 6 and 7 were simulated without it.
+Figure 6 shows a rendered frame of our plume simulation
+(without geometry) for all methods at the same simulation time-step. Note that this boundary condition is not
+present in the training set and represents an input divergent flow 5 times wider than the largest impulse present
+during training. It is a difficult test of generalization performance. Qualitatively, the PCG solver, 100 iteration Jacobi solver and our network produce visually similar results. The small-model’s narrow receptive field cannot accurately simulate the large vortex under the plume, and as
+a result the plume rises too quickly (i.e. with too much
+upward velocity) and exhibits density blurring under the
+plume itself. The Jacobi method, when truncated early at
+34 iterations, introduces implausible high frequency noise
+and has an elongated shape due to inaccurate modeling
+
+Accelerating Eulerian Fluid Simulation With Convolutional Networks
+
+No geom
+With geom
+
+PCG
+
+Jacobi
+
+small-model
+
+this work
+
+<1e-3
+<1e-3
+
+2.44
+1.235
+
+3.436
+1.966
+
+2.482
+0.872
+
+Table 1. Maximum residual norm throughout our Plume simulation with and without geometry (maxt (||∇ · ut ||)
+
+Jacobi 34 iterations
+this work: small model
+this work: multi-frame
+this work: single frame
+
+Figure 7. Plume simulation with “Arch” geometry. Left: PCG.
+Middle small-model Right: this work.
+
+E (||∇ · û||)
+
+20
+15
+10
 5
+0
+0
 
-Ensemble size M
+of buoyancy forces. We also repeat the above simulation
+with solid cells from two models held out of our training
+set: the “arc de triomphe” model (Pu & Ramani, 2006)
+and the Stanford bunny (Turk & Levoy, 1994); the single
+frame results for the arch simulation are shown in Figure 7.
+Since this scene exhibits lots of turbulent flow, qualitative
+comparison is less useful. The small-model has difficulty
+minimizing divergence around large flat boundaries and results in high-frequency density artifacts as shown. Both
+ConvNet based methods lose some smoke density inside
+the arch due to negative divergence at the fluid-geometry
+boundary (specifically at the large flat ceiling).
+In addition to comparing divergence using fixed-compute,
+we also performed the above experiment by fixing divergence to maxt (||∇ · ut ||) = 0.872, and measuring compute. For Jacobi to match the divergence performance of
+our network, it requires 116 iterations and so is 4.1× slower
+than our network. Since calculating divergence at inference
+time is fast and efficient, PCG can be used as a fallback
+method if our system fails with minimal runtime penalty or
+if the application at hand requires an exact solution.
+Table 1 shows the maximum norm L2 linear system residual for each frame over the entire simulation. The maximum residual for the Yang et al. model was greater than
+1e5 for both simulations (i.e. it fails on this test case). Interestingly, early termination of the Jacobi method at 34
+iterations results in reduced long-term accuracy and visual
+quality (Figure 6), however the maximum per-frame residual is still relatively low. This suggests that single frame
+divergence alone is not a sufficient condition to maintain
+long-term accuracy, and that the multi-frame error propagation mechanisms are an extremely important (but harder
+to quantify) factor.
+As a test of long-term stability, we record the mean L2
+norm of velocity divergence (E (k∇ · ûi k)) across all samples in our test-set. The result of this experiment is shown
+in Figure 8. On our test-set frames, our method outper-
 
-(a)
+10
 
-MCL
-CMCL
-IE
+20
 
-(b)
+30
 
-1
+40
 
-2
+50
 
-3
+60
 
-4
+Timestep
 
-5
+Figure 8. E (k∇ · ûi k) versus time-step for each frame sample in
+our dataset (PCG not shown for clarity).
 
-Ensemble size M
+forms the small-model by a significant margin and is competitive with Jacobi truncated to 34 iterations. Figure 8
+also shows the results of our model when a single timestep loss is used. Adding multi-frame components not only
+improves the divergence residual over multiple time steps
+as expected (since this is what we are directly minimizing),
+but additionally the single frame divergence performance
+is also improved. We attribute this to the fact that these future frames effectively increase dataset diversity, and can
+be seen as a form of dataset augmentation to improve generalization performance.
 
-(c)
+7. Conclusion
+This work proposes a novel, fast and efficient method for
+calculating numerical solutions to the inviscid Euler Equations for fluid flow. We present a data-driven approach for
+approximate inference of the sparse linear system used to
+enforce the Navier-Stokes incompressibility condition - the
+“pressure projection” step. We propose an unsupervised
+training-loss, which incorporates multi-frame information
+to improve long-term stability. We also present a novel and
+tailored ConvNet architecture, which facilitates drop-in replacement with existing Eulerian-based solvers. While the
+proposed approach cannot guarantee finding an exact solution to the pressure projection step, it can empirically
+produce very stable divergence free velocity fields whose
+runtime and accuracy is better than the Jacobi method
+(a common technique used for real-time simulation) and
+whose visual results are comparable to PCG, while being orders of magnitude faster. Code, data and videos are
+made available at http://cims.nyu.edu/˜schlacht/
+CNNFluids.htm.
 
-Figure 4. (a) Top-1 error rate on CIFAR-10. We train an ensemble of M ResNets with 20 layers, and apply feature sharing (FS) to IE
-and CMCL. (b) Top-1 error rate and (c) oracle error rate on iCoseg by varying the ensemble sizes. The ensemble models trained by
-CMCL consistently improves the top-1 error rate over baselines.
-
-ages that are larger than 300 × 500 pixels. For each class,
-we randomly split 80% and 20% of the data into training
-and test sets, respectively. We train on 75 × 125 resized
-images using the bicubic interpolation (Keys, 1981). Similar to (Guzman-Rivera et al., 2012; Lee et al., 2016), we
-initialize the parameters of FCNs with those trained by IE
-for MCL and CMCL. For all experiments, CMCL is used
-with both feature sharing and stochastic labeling.
-Similar to (Guzman-Rivera et al., 2012), we define the percentage of incorrectly labeled pixels as prediction error
-rate. We measure the oracle error rate (i.e., the lowest error
-rate over all models for a given input) and the top-1 error
-rate. The top-1 error rate is measured by following the predictions of the member model that has a lower pixel-wise
-entropy, i.e., picking the output of a more confident model.
-For each ensemble method, we vary the number of ensemble models and measure the oracle error rate and test error
-rate. Figure 4(b) and 4(c) show both top-1 and oracle error rates for all ensemble methods. We remark that the ensemble models trained by CMCL consistently improves the
-top-1 error rate over baselines. In an ensemble of 5 models,
-we find that CMCL achieve up to 6.77% relative reduction
-
-in the top-1 error rate from the corresponding IE. As shown
-in Figure 3, an individual model trained by CMCL generates high-quality solutions by specializing itself in specific images (e.g., model 1 is specialized for ‘lobster’ while
-model 2 is specialized for ‘duck’) while each model trained
-by IE does not.
-
-6. Conclusion
-This paper proposes CMCL, a novel ensemble method of
-deep neural networks that produces diverse/plausible confident prediction of high quality. To this end, we address
-the over-confidence issues of MCL, and propose a new
-loss, architecture and training method. In our experiments,
-CMCL outperforms not only the known MCL, but also the
-traditional IE, with respect to the top-1 error rates in classification and segmentation tasks. The recent trend in the
-deep learning community tends to make models bigger and
-wider. We believe that our new ensemble approach brings a
-refreshing angle for developing advanced large-scale deep
-neural networks in many related applications.
-
-Confident Multiple Choice Learning
-
-Acknowledgements
-This work was supported in part by the ICT R&D Program
-of MSIP/IITP, Korea, under [2016-0-00563, Research on
-Adaptive Machine Learning Technology Development for
-Intelligent Autonomous Digital Companion], R0190-162012, [High Performance Big Data Analytics Platform Performance Acceleration Technologies Development], and
-by the National Research Council of Science & Technology (NST) grant by the Korea government (MSIP) (No.
-CRC-15-05-ETRI).
+Accelerating Eulerian Fluid Simulation With Convolutional Networks
 
 References
-Batra, Dhruv, Kowdle, Adarsh, Parikh, Devi, Luo, Jiebo,
-and Chen, Tsuhan. icoseg: Interactive co-segmentation
-with intelligent scribble guidance. In Computer Vision
-and Pattern Recognition (CVPR), pp. 3169–3176. IEEE,
-2010.
-Batra, Dhruv, Yadollahpour, Payman, Guzman-Rivera, Abner, and Shakhnarovich, Gregory. Diverse m-best solutions in markov random fields. In European Conference
-on Computer Vision (ECCV), pp. 1–16. Springer, 2012.
-Breiman, Leo. Bagging predictors. Machine learning, 24
-(2):123–140, 1996.
-Ciregan, Dan, Meier, Ueli, and Schmidhuber, Jürgen.
-Multi-column deep neural networks for image classification. In Computer Vision and Pattern Recognition
-(CVPR), pp. 3642–3649. IEEE, 2012.
+Batchelor, G.K. An Introduction to Fluid Dynamics.
+Cambridge Mathematical Library. Cambridge University Press, 1967.
+Bengio, Samy, Vinyals, Oriol, Jaitly, Navdeep, and
+Shazeer, Noam. Scheduled sampling for sequence prediction with recurrent neural networks. In Advances in
+Neural Information Processing Systems, pp. 1171–1179,
+2015.
+Blender Foundation. Bender open-source renderer v2.77a.
+http://www.blender.org.
+Bridson, R. Fluid Simulation for Computer Graphics.
+Ak Peters Series. Taylor & Francis, 2008. ISBN
+9781568813264. URL https://books.google.
+com/books?id=gFI8y87VCZ8C.
+Byravan, Arunkumar and Fox, Dieter. Se3-nets: Learning
+rigid body motion using deep neural networks. arXiv
+preprint arXiv:1606.02378, 2016.
+Collobert, Ronan, Kavukcuoglu, Koray, and Farabet,
+Clément. Torch7: A matlab-like environment for machine learning. In BigLearn, NIPS Workshop, 2011.
+Dauphin, Yann N, Fan, Angela, Auli, Michael, and Grangier, David. Language modeling with gated convolutional
+networks. arXiv preprint arXiv:1612.08083, 2016.
+De Witt, Tyler, Lessig, Christian, and Fiume, Eugene. Fluid
+simulation using laplacian eigenfunctions. ACM Trans.
+Graph., 31(1):10:1–10:11, February 2012. ISSN 07300301. doi: 10.1145/2077341.2077351. URL http:
+//doi.acm.org/10.1145/2077341.2077351.
+Fleuret, François. Predicting the dynamics of 2d objects
+with a deep residual network. 2016.
+Foster, Nick and Metaxas, Dimitri. Realistic animation
+of liquids. Graph. Models Image Process., 58(5):471–
+483, September 1996. ISSN 1077-3169. doi: 10.1006/
+gmip.1996.0039. URL http://dx.doi.org/10.
+1006/gmip.1996.0039.
+Gingold, Robert A and Monaghan, Joseph J. Smoothed
+particle hydrodynamics: theory and application to nonspherical stars. Monthly notices of the royal astronomical society, 181(3):375–389, 1977.
+Giryes, Raja, Eldar, Yonina C, Bronstein, Alex M, and
+Sapiro, Guillermo. Tradeoffs between convergence
+speed and reconstruction accuracy in inverse problems.
+arXiv preprint arXiv:1605.09232, 2016.
 
-multiple structured outputs. In Advances in neural information processing systems (NIPS), pp. 1799–1807,
-2012.
-Guzman-Rivera, Abner, Kohli, Pushmeet, Batra, Dhruv,
-and Rutenbar, Rob A. Efficiently enforcing diversity
-in multi-output structured prediction. In International
-Conference on Artificial Intelligence and Statistics (AISTATS), volume 2, pp. 3, 2014.
+Goodfellow, Ian, Pouget-Abadie, Jean, Mirza, Mehdi, Xu,
+Bing, Warde-Farley, David, Ozair, Sherjil, Courville,
+Aaron, and Bengio, Yoshua. Generative adversarial nets.
+In Advances in neural information processing systems,
+pp. 2672–2680, 2014.
+Google Inc.
+Tensor processing unit.
+http://
+cloudplatform.googleblog.com/2016/05/.
+Hamrick, Jessica B, Pascanu, Razvan, Vinyals, Oriol,
+Ballard, Andy, Heess, Nicolas, and Battaglia, Peter.
+Imagination-based decision making with physical models in deep neural networks. 2016.
+Harlow, Francis H. and Welch, J. Eddie. Numerical calculation of time-dependent viscous incompressible flow of
+fluid with free surface. Physics of Fluids, 8(12):2182–
+2189, 1965.
 He, Kaiming, Zhang, Xiangyu, Ren, Shaoqing, and Sun,
-Jian. Deep residual learning for image recognition.
-In Computer Vision and Pattern Recognition (CVPR),
+Jian. Deep residual learning for image recognition. arXiv
+preprint arXiv:1512.03385, 2015.
+Hinton, Geoffrey, Vinyals, Oriol, and Dean, Jeff. Distilling the knowledge in a neural network. arXiv preprint
+arXiv:1503.02531, 2015.
+Kim, Theodore, Thürey, Nils, James, Doug, and
+Gross, Markus. Wavelet turbulence for fluid simulation. ACM Trans. Graph., 27(3):50:1–50:6, August 2008. ISSN 0730-0301. doi: 10.1145/1360612.
+1360649. URL http://doi.acm.org/10.1145/
+1360612.1360649.
+Kingma, Diederik and Ba, Jimmy.
+method for stochastic optimization.
+arXiv:1412.6980, 2014.
+
+Adam: A
+arXiv preprint
+
+Kubricht, James, Jiang, Chenfanfu, Zhu, Yixin, Zhu, SongChun, Terzopoulos, Demetri, and Lu, Hongjing. Probabilistic simulation predicts human performance on viscous fluid-pouring problem. Retrieved March, 16:2016,
 2016.
-Huang, Liang and Chiang, David. Better k-best parsing.
-In Proceedings of the Ninth International Workshop on
-Parsing Technology, pp. 53–64. Association for Computational Linguistics, 2005.
-Ian J. Goodfellow, David Warde-Farley, Mehdi Mirza
-Aaron Courville and Bengio, Yoshua. Maxout networks. In International Conference on Machine Learning (ICML), pp. 1319–1327, 2013.
-Ioffe, Sergey and Szegedy, Christian. Batch normalization:
-Accelerating deep network training by reducing internal
-covariate shift. In International Conference on Machine
-Learning (ICML), pp. 448–456, 2015.
-Jacobs, Robert A, Jordan, Michael I, Nowlan, Steven J, and
-Hinton, Geoffrey E. Adaptive mixtures of local experts.
-Neural computation, 1991.
+Ladický, L’ubor, Jeong, SoHyeon, Solenthaler, Barbara,
+Pollefeys, Marc, and Gross, Markus. Data-driven
+fluid simulations using regression forests. ACM Trans.
+Graph., 34(6):199:1–199:9, October 2015. ISSN 07300301. doi: 10.1145/2816795.2818129. URL http:
+//doi.acm.org/10.1145/2816795.2818129.
+Lentine, Michael, Zheng, Wen, and Fedkiw, Ronald. A
+novel algorithm for incompressible flow using only a
+coarse grid projection. In ACM Transactions on Graphics (TOG), volume 29, pp. 114. ACM, 2010.
+Lerer, Adam, Gross, Sam, and Fergus, Rob. Learning physical intuition of block towers by example. arXiv preprint
+arXiv:1603.01312, 2016.
 
-Collins, Michael and Koo, Terry. Discriminative reranking
-for natural language parsing. Computational Linguistics,
-31(1):25–70, 2005.
+Accelerating Eulerian Fluid Simulation With Convolutional Networks
 
-Keys, Robert. Cubic convolution interpolation for digital image processing. IEEE transactions on acoustics,
-speech, and signal processing, 29(6):1153–1160, 1981.
+Lin, Zhouhan, Courbariaux, Matthieu, Memisevic, Roland,
+and Bengio, Yoshua. Neural networks with few multiplications. CoRR, abs/1510.03009, 2015. URL http:
+//arxiv.org/abs/1510.03009.
+Mathieu, Michael, Couprie, Camille, and LeCun, Yann.
+Deep multi-scale video prediction beyond mean square
+error. arXiv preprint arXiv:1511.05440, 2015.
+McAdams, Aleka, Sifakis, Eftychios, and Teran, Joseph.
+A parallel multigrid poisson solver for fluids simulation
+on large grids. In Proceedings of the 2010 ACM SIGGRAPH/Eurographics Symposium on Computer Animation, pp. 65–74. Eurographics Association, 2010.
+Molemaker, Jeroen, Cohen, Jonathan M, Patel, Sanjit,
+and Noh, Jonyong. Low viscosity flow simulations
+for animation. In Proceedings of the 2008 ACM SIGGRAPH/Eurographics Symposium on Computer Animation, pp. 9–18. Eurographics Association, 2008.
+Movidius. Myriad 2 visual processing unit. http://
+www.movidius.com/.
+Oymak, Samet, Recht, Benjamin, and Soltanolkotabi,
+Mahdi. Sharp time–data tradeoffs for linear inverse problems. arXiv preprint arXiv:1507.04793, 2015.
+Pfaff, Tobias and Thuerey, Nils. Mantaflow fluid simulator.
+http://mantaflow.com/.
+Pu, Jiantao and Ramani, Karthik. On visual similarity based 2d drawing retrieval. Comput. Aided Des.,
+38(3):249–259, March 2006. ISSN 0010-4485. doi:
+10.1016/j.cad.2005.10.009. URL http://dx.doi.
+org/10.1016/j.cad.2005.10.009.
+Raveendran, Karthik, Wojtan, Chris, Thuerey, Nils, and
+Turk, Greg. Blending liquids. ACM Trans. Graph., 33
+(4):137:1–137:10, July 2014. ISSN 0730-0301. doi:
+10.1145/2601097.2601126. URL http://doi.acm.
+org/10.1145/2601097.2601126.
+Selle, Andrew, Fedkiw, Ronald, Kim, Byungmoon, Liu,
+Yingjie, and Rossignac, Jarek. An unconditionally stable maccormack method. J. Sci. Comput., 35(2-3), June
+2008.
+Stanton, Matt, Humberston, Ben, Kase, Brandon, O’Brien,
+James F., Fatahalian, Kayvon, and Treuille, Adrien. Selfrefining games using player analytics. ACM Trans.
+Graph., 33(4):73:1–73:9, July 2014. ISSN 0730-0301.
+doi: 10.1145/2601097.2601196. URL http://doi.
+acm.org/10.1145/2601097.2601196.
+Steinhoff, John and Underhill, David. Modification of the
+euler equations for vorticity confinement: application to
+the computation of interacting vortex rings. Physics of
+Fluids (1994-present), 6(8):2738–2744, 1994.
 
-Dey, Debadeepta, Ramakrishna, Varun, Hebert, Martial,
-and Andrew Bagnell, J. Predicting multiple structured
-visual interpretations. In International Conference on
-Computer Vision (ICCV), pp. 2947–2955, 2015.
-
-Kingma, Diederik and Ba, Jimmy. Adam: A method for
-stochastic optimization. In International Conference on
-Learning Representations (ICLR), 2015.
-
-Domingos, Pedro. Bayesian averaging of classifiers and
-the overfitting problem. In International Conference on
-Machine Learning (ICML), volume 2000, pp. 223–230,
-2000.
-Everingham, Mark, Van Gool, Luc, Williams, Christopher KI, Winn, John, and Zisserman, Andrew. The pascal visual object classes (voc) challenge. International
-journal of computer vision, 88(2):303–338, 2010.
-Freund, Yoav, Schapire, Robert, and Abe, N. A short introduction to boosting. Journal-Japanese Society For Artificial Intelligence, 14(771-780):1612, 1999.
-Guzman-Rivera, Abner, Batra, Dhruv, and Kohli, Pushmeet. Multiple choice learning: Learning to produce
-
-Krizhevsky, Alex and Hinton, Geoffrey. Learning multiple
-layers of features from tiny images. 2009.
-Krizhevsky, Alex, Sutskever, Ilya, and Hinton, Geoffrey E.
-Imagenet classification with deep convolutional neural
-networks. In Advances in neural information processing
-systems (NIPS), pp. 1097–1105, 2012.
-Lakshminarayanan, Balaji, Pritzel, Alexander, and Blundell, Charles. Simple and scalable predictive uncertainty
-estimation using deep ensembles. NIPS Workshop on
-Bayesian Deep Learning, 2016.
-Lee, Stefan, Purushwalkam, Senthil, Cogswell, Michael,
-Crandall, David, and Batra, Dhruv. Why m heads are
-better than one: Training a diverse ensemble of deep networks. arXiv preprint arXiv:1511.06314, 2015.
-
-Confident Multiple Choice Learning
-
-Lee, Stefan, Prakash, Senthil Purushwalkam Shiva,
-Cogswell, Michael, Ranjan, Viresh, Crandall, David,
-and Batra, Dhruv. Stochastic multiple choice learning for
-training diverse deep ensembles. In Advances in neural
-information processing systems (NIPS), pp. 2119–2127,
-2016.
-
-Simonyan, Karen and Zisserman, Andrew. Very deep convolutional networks for large-scale image recognition. In
-International Conference on Learning Representations
-(ICLR), 2015.
-
-Lin, Min, Chen, Qiang, and Yan, Shuicheng. Network in
-network. In International Conference on Learning Representations (ICLR), 2014a.
-
-Srivastava, Nitish, Hinton, Geoffrey E, Krizhevsky, Alex,
-Sutskever, Ilya, and Salakhutdinov, Ruslan. Dropout:
-a simple way to prevent neural networks from overfitting. Journal of Machine Learning Research, 15(1):
-1929–1958, 2014.
-
-Lin, Tsung-Yi, Maire, Michael, Belongie, Serge, Hays,
-James, Perona, Pietro, Ramanan, Deva, Dollár, Piotr, and
-Zitnick, C Lawrence. Microsoft coco: Common objects
-in context. In European Conference on Computer Vision
-(ECCV), pp. 740–755. Springer, 2014b.
-
-Szegedy, Christian, Liu, Wei, Jia, Yangqing, Sermanet,
-Pierre, Reed, Scott, Anguelov, Dragomir, Erhan, Dumitru, Vanhoucke, Vincent, and Rabinovich, Andrew.
-Going deeper with convolutions. In Computer Vision and
-Pattern Recognition (CVPR), 2015.
-
-Long, Jonathan, Shelhamer, Evan, and Darrell, Trevor.
-Fully convolutional networks for semantic segmentation.
-In Computer Vision and Pattern Recognition (CVPR),
-pp. 3431–3440, 2015.
-
-Wan, Li, Zeiler, Matthew D., Zhang, Sixin, LeCun, Yann,
-and Fergus, Rob. Regularization of neural networks using dropconnect. In International Conference on Machine Learning (ICML), pp. 1058–1066, 2013.
-
-Misra, Ishan, Shrivastava, Abhinav, Gupta, Abhinav, and
-Hebert, Martial. Cross-stitch networks for multi-task
-learning. In Computer Vision and Pattern Recognition
-(CVPR), pp. 3994–4003, 2016.
-
-Zagoruyko, Sergey and Komodakis, Nikos. Wide residual networks. In British Machine Vision Conference
-(BMVC), 2016.
-
-Netzer, Yuval, Wang, Tao, Coates, Adam, Bissacco,
-Alessandro, Wu, Bo, and Ng, Andrew Y. Reading digits in natural images with unsupervised feature learning.
-NIPS Workshop on Deep Learning and Unsupervised
-Feature Learning, 2011(2):5, 2011.
-Nguyen, Anh, Yosinski, Jason, and Clune, Jeff. Deep neural networks are easily fooled: High confidence predictions for unrecognizable images. In Computer Vision
-and Pattern Recognition (CVPR), pp. 427–436, 2015.
-Park, Dennis and Ramanan, Deva. N-best maximal decoders for part models. In International Conference on
-Computer Vision (ICCV), pp. 2627–2634. IEEE, 2011.
-Pereyra, Gabriel, Tucker, George, Chorowski, Jan, Kaiser,
-Łukasz, and Hinton, Geoffrey. Regularizing neural networks by penalizing confident output distributions. In
-International Conference on Learning Representations
-(ICLR), 2017.
-Radford, Alec, Metz, Luke, and Chintala, Soumith. Unsupervised representation learning with deep convolutional
-generative adversarial networks. In International Conference on Learning Representations (ICLR), 2016.
-Rusu, Andrei A, Rabinowitz, Neil C, Desjardins, Guillaume, Soyer, Hubert, Kirkpatrick, James, Kavukcuoglu,
-Koray, Pascanu, Razvan, and Hadsell, Raia. Progressive neural networks. arXiv preprint arXiv:1606.04671,
-2016.
+Treuille, Adrien, Lewis, Andrew, and Popović, Zoran.
+Model reduction for real-time fluids. ACM Trans.
+Graph., 25(3):826–834, July 2006. ISSN 0730-0301.
+doi: 10.1145/1141911.1141962. URL http://doi.
+acm.org/10.1145/1141911.1141962.
+Turk, Greg and Levoy, Marc. Zippered polygon meshes
+from range images. pp. 311–318, 1994.
+Yang, Cheng, Yang, Xubo, and Xiao, Xiangyun. Datadriven projection method in fluid simulation. Computer
+Animation and Virtual Worlds, 27(3-4):415–424, 2016.
 
 

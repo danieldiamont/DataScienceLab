@@ -1,844 +1,1311 @@
-How to Escape Saddle Points Efficiently
-
-Chi Jin 1 Rong Ge 2 Praneeth Netrapalli 3 Sham M. Kakade 4 Michael I. Jordan 1
+Active Learning for Accurate Estimation of Linear Models
+Carlos Riquelme 1 Mohammad Ghavamzadeh 2 Alessandro Lazaric 3
 
 Abstract
-This paper shows that a perturbed form of gradient descent converges to a second-order stationary point in a number iterations which depends
-only poly-logarithmically on dimension (i.e., it is
-almost “dimension-free”). The convergence rate
-of this procedure matches the well-known convergence rate of gradient descent to first-order
-stationary points, up to log factors. When all saddle points are non-degenerate, all second-order
-stationary points are local minima, and our result
-thus shows that perturbed gradient descent can
-escape saddle points almost for free. Our results
-can be directly applied to many machine learning
-applications, including deep learning. As a particular concrete example of such an application,
-we show that our results can be used directly to
-establish sharp global convergence rates for matrix factorization. Our results rely on a novel
-characterization of the geometry around saddle
-points, which may be of independent interest to
-the non-convex optimization community.
+We explore the sequential decision-making problem where the goal is to estimate a number of linear models uniformly well, given a shared budget
+of random contexts independently sampled from
+a known distribution. For each incoming context,
+the decision-maker selects one of the linear models and receives an observation that is corrupted
+by the unknown noise level of that model. We
+present Trace-UCB, an adaptive allocation algorithm that learns the models’ noise levels while
+balancing contexts accordingly across them, and
+prove bounds for its simple regret in both expectation and high-probability. We extend the algorithm and its bounds to the high dimensional setting, where the number of linear models times
+the dimension of the contexts is more than the
+total budget of samples. Simulations with real
+data suggest that Trace-UCB is remarkably robust, outperforming a number of baselines even
+when its assumptions are violated.
 
 1. Introduction
-Given a function f : Rd → R, a gradient descent aims to
-minimize the function via the following iteration:
-xt+1 = xt − η∇f (xt ),
-where η > 0 is a step size. Gradient descent and its variants (e.g., stochastic gradient) are widely used in machine
-learning applications due to their favorable computational
-properties. This is notably true in the deep learning setting, where gradients can be computed efficiently via backpropagation (Rumelhart et al., 1988).
-Gradient descent is especially useful in high-dimensional
-settings because the number of iterations required to reach
+We study the problem faced by a decision-maker whose
+goal is to estimate a number of regression problems equally
+well (i.e., with a small prediction error for each of them),
+and has to adaptively allocate a limited budget of samples
+to the problems in order to gather information and improve
+its estimates. Two aspects of the problem formulation are
+key and drive the algorithm design: 1) The observations
+Y collected from each regression problem depend on side
+information (i.e., contexts X 2 Rd ) and we model the relationship between X and Y in each problem i as a linear
+function with unknown parameters i 2 Rd , and 2) The
+“hardness” of learning each parameter i is unknown in advance and may vary across the problems. In particular, we
 1
-
-University of California, Berkeley 2 Duke University
-Microsoft Research India 4 University of Washington. Correspondence to: Chi Jin <chijin@berkeley.edu>.
-3
+Stanford University, Stanford, CA, USA. 2 DeepMind, Mountain View, CA, USA (The work was done when the author was
+with Adobe Research). 3 Inria Lille, France. Correspondence to:
+Carlos Riquelme <rikel@stanford.edu>.
 
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-a point with small gradient is independent of the dimension
-(“dimension-free”). More precisely, for a function that is `gradient Lipschitz (see Definition 1), it is well known that
-gradient descent finds an -first-order stationary point (i.e.,
-a point x with k∇f (x)k ≤ ) within `(f (x0 ) − f ? )/2 iterations (Nesterov, 1998), where x0 is the initial point and
-f ? is the optimal value of f . This bound does not depend
-on the dimension of x. In convex optimization, finding an
--first-order stationary point is equivalent to finding an approximate global optimum.
-In non-convex settings, however, convergence to first-order
-stationary points is not satisfactory. For non-convex functions, first-order stationary points can be global minima,
-local minima, saddle points or even local maxima. Finding a global minimum can be hard, but fortunately, for
-many non-convex problems, it is sufficient to find a local
-minimum. Indeed, a line of recent results show that, in
-many problems of interest, all local minima are global minima (e.g., in tensor decomposition (Ge et al., 2015), dictionary learning (Sun et al., 2016a), phase retrieval (Sun
-et al., 2016b), matrix sensing (Bhojanapalli et al., 2016;
-Park et al., 2016), matrix completion (Ge et al., 2016),
-and certain classes of deep neural networks (Kawaguchi,
-2016)). Moreover, there are suggestions that in more general deep networks most of the local minima are as good as
-global minima (Choromanska et al., 2014).
-On the other hand, saddle points (and local maxima) can
-correspond to highly suboptimal solutions in many problems (see, e.g., Jain et al., 2015; Sun et al., 2016b). Furthermore, Dauphin et al. (2014) argue that saddle points
-are ubiquitous in high-dimensional, non-convex optimization problems, and are thus the main bottleneck in training neural networks. Standard analysis of gradient descent
-cannot distinguish between saddle points and local minima,
-leaving open the possibility that gradient descent may get
-stuck at saddle points, either asymptotically or for a sufficiently long time so as to make training times for arriving at
-a local minimum infeasible. Ge et al. (2015) showed that
-by adding noise at each step, gradient descent can escape
-all saddle points in a polynomial number of iterations, provided that the objective function satisfies the strict saddle
-property (see Assumption A2). Lee et al. (2016) proved
-that under similar conditions, gradient descent with random initialization avoids saddle points even without adding
+assume that the observations are corrupted by noise levels
+that are problem-dependent and must be learned as well.
+This scenario may arise in a number of different domains
+where a fixed experimentation budget (number of samples)
+should be allocated to different problems. Imagine a drug
+company that has developed several treatments for a particular form of disease. Now it is interested in having an accurate estimate of the performance of each of these treatments
+for a specific population of patients (e.g., at a particular
+geographical location). Given the budget allocated to this
+experiment, a number of patients n can participate in the
+clinical trial. Volunteered patients arrive sequentially over
+time and they are represented by a context X 2 Rd summarizing their profile. We model the health status of patient X
+after being assigned to treatment i by scalar Yi 2 R, which
+depends on the specific drug through a linear function with
+parameter i (i.e., Yi ⇡ X T i ). The goal is to assign each
+incoming patient to a treatment in such a way that at the end
+of the trial, we have an accurate estimate for all i ’s. This
+will allow us to reliably predict the expected health status
+of each new patient X for any treatment i. Since the parameters i and the noise levels are initially unknown, achieving this goal requires an adaptive allocation strategy for the
+n patients. Note that while n may be relatively small, as
+the ethical and financial costs of treating a patient are high,
+the distribution of the contexts X (e.g., the biomarkers of
+cancer patients) can be precisely estimated in advance.
+This setting is clearly related to the problem of pure exploration and active learning in multi-armed bandits (Antos et al., 2008), where the learner wants to estimate the
+mean of a finite set of arms by allocating a finite budget
+of n pulls. Antos et al. (2008) first introduced this setting
+where the objective is to minimize the largest mean square
+error (MSE) in estimating the value of each arm. While
+the optimal solution is trivially to allocate the pulls proportionally to the variance of the arms, when the variances
+are unknown an exploration-exploitation dilemma arises,
+where variance and value of the arms must be estimated at
+the same time in order to allocate pulls where they are more
+needed (i.e., arms with high variance). Antos et al. (2008)
+proposed
+p a forcing algorithm where all arms are pulled at
+least n times before allocating pulls proportionally to the
+estimated variances. They derived bounds on the regret,
+measuring the difference between the MSEs of the learn-
 
-How to Escape Saddle Points Efficiently
+Active Learning for Accurate Estimation of Linear Models
 
-Algorithm 1 Perturbed Gradient Descent (Meta-algorithm)
-for t = 0, 1, . . . do
-if perturbation condition holds then
-x t ← x t + ξt ,
-ξt uniformly ∼ B0 (r)
-xt+1 ← xt − η∇f (xt )
-
-ture. We show that when local strong convexity is present,
-the -dependence goes from a polynomial rate, 1/2 , to linear convergence, log(1/). As an example, we show that
-sharp global convergence rates can be obtained for matrix
-factorization as a direct consequence of our analysis.
-1.1. Our Contributions
-
-noise. However, this result does not bound the number of
-steps needed to reach a local minimum.
-Previous work explains why gradient descent avoids saddle points in the nonconvex setting, but not why it is efficient—all of them have runtime guarantees with high polynomial dependency in dimension d. For instance, the number of iterations required in Ge et al. (2015) is at least
-Ω(d4 ), which is prohibitive in high dimensional setting
-such as deep learning (typically with millions of parameters). Therefore, we wonder whether gradient descent type
-of algorithms are fundamentally slow in escaping saddle
-points, or it is the lack of our theoretical understanding
-while gradient descent is indeed efficient. This motivates
-the following question: Can gradient descent escape saddle points and converge to local minima in a number of
-iterations that is (almost) dimension-free?
-In order to answer this question formally, this paper investigates the complexity of finding -second-order stationary
-points. For ρ-Hessian Lipschitz functions (see Definition
-5), these points are defined as (Nesterov & Polyak, 2006):
-√
-k∇f (x)k ≤ ,
-and
-λmin (∇2 f (x)) ≥ − ρ.
-Under the assumption that all saddle points are strict
-(i.e., for any saddle point xs , λmin (∇2 f (xs )) < 0), all
-second-order stationary points ( = 0) are local minima.
-Therefore, convergence to second-order stationary points
-is equivalent to convergence to local minima.
-This paper studies a simple variant of gradient descent
-(with phasic perturbations, see Algorithm 1). For `-smooth
-functions that are also Hessian Lipschitz, we show that perturbed gradient descent will converge to an -second-order
-stationary point in Õ(`(f (x0 ) − f ? )/2 ), where Õ(·) hides
-polylog factors. This guarantee is almost dimension free
-(up to polylog(d) factors), answering the above highlighted
-question affirmatively. Note that this rate is exactly the
-same as the well-known convergence rate of gradient descent to first-order stationary points (Nesterov, 1998), up
-to log factors. Furthermore, our analysis admits a maximal step size of up to Ω(1/`), which is the same as that in
-analyses for first-order stationary points.
-As many real learning problems present strong local geometric properties, similar to strong convexity in the global
-setting (see, e.g. Bhojanapalli et al., 2016; Sun & Luo,
-2016; Zheng & Lafferty, 2016), it is important to note that
-our analysis naturally takes advantage of such local struc-
-
-This paper presents the first sharp analysis that shows that
-(perturbed) gradient descent finds an approximate secondorder stationary point in at most polylog(d) iterations, thus
-escaping all saddle points efficiently. Our main technical
-contributions are as follows:
-• For `-gradient Lipschitz, ρ-Hessian Lipschitz functions (possibly non-convex), gradient descent with appropriate perturbations finds an -second-order stationary point in Õ(`(f (x0 ) − f ? )/2 ) iterations. This
-rate matches the well-known convergence rate of gradient descent to first-order stationary points up to log
-factors.
-• Under a strict-saddle condition (see Assumption A2),
-the same convergence result applies for local minima.
-This means that gradient descent can escape all saddle
-points with only logarithmic overhead in runtime.
-• When the function has local structure, such as local
-strong convexity (see Assumption A3.a), the above results can be further improved to linear convergence.
-We give sharp rates that are comparable to previous
-problem-specific local analysis of gradient descent
-with smart initialization (see Section 1.2).
-• All the above results rely on a new characterization of
-the geometry around saddle points: points from where
-gradient descent gets stuck at a saddle point constitute
-a thin “band.” We develop novel techniques to bound
-the volume of this band. As a result, we can show that
-after a random perturbation the current point is very
-unlikely to be in the “band”; hence, efficient escape
-from the saddle point is possible (see Section 5).
-1.2. Related Work
-Over the past few years, there have been many problemspecific convergence results for non-convex optimization.
-One line of work requires a smart initialization algorithm
-to provide a coarse estimate lying inside a local neighborhood, from which popular local search algorithms enjoy
-fast local convergence (see, e.g., Netrapalli et al., 2013;
-Candes et al., 2015; Sun & Luo, 2016; Bhojanapalli et al.,
-2016). While there are not many results that show global
-convergence for non-convex problems, Jain et al. (2015)
-show that gradient descent yields global convergence rates
-for matrix square-root problems. Although these results
-
-How to Escape Saddle Points Efficiently
-Table 1. Oracle models and iteration complexity for convergence
-to second-order stationary point
-
-Algorithm
-
-Iterations
-
-Oracle
-
-Ge et al. (2015)
-Levy (2016)
-This Work
-
-O(poly(d/))
-O(d3 poly(1/))
-O(log4 (d)/2 )
-
-Gradient
-Gradient
-Gradient
-
-Agarwal et al. (2016) O(log(d)/7/4 ) Hessian-vector
-Carmon et al. (2016) O(log(d)/7/4 ) Hessian-vector
-Carmon & Duchi
-O(log(d)/2 ) Hessian-vector
-(2016)
-Nesterov & Polyak
-(2006)
-Curtis et al. (2014)
-
-O(1/1.5 )
-
-Hessian
-
-O(1/1.5 )
-
-Hessian
-
-give strong guarantees, the analyses are heavily tailored to
-specific problems, and it is unclear how to generalize them
-to a wider class of non-convex functions.
-For general non-convex optimization, there are a few previous results on finding second-order stationary points.
-These results can be divided into the following three categories, where, for simplicity of presentation, we only highlight dependence on dimension d and , assuming that all
-other problem parameters are constant from the point of
-view of iteration complexity:
-Hessian-based: Traditionally, only second-order optimization methods were known to converge to second-order
-stationary points. These algorithms rely on computing the
-Hessian to distinguish between first- and second-order stationary points. Nesterov & Polyak (2006) designed a cubic
-regularization algorithm which converges to an -secondorder stationary point in O(1/1.5 ) iterations. Trust region
-algorithms (Curtis et al., 2014) can also achieve the same
-performance if the parameters are chosen carefully. These
-algorithms typically require the computation of the inverse
-of the full Hessian per iteration, which can be very expensive.
-Hessian-vector-product-based: A number of recent papers have explored the possibility of using only Hessianvector products instead of full Hessian information in order
-to find second-order stationary points. These algorithms require a Hessian-vector product oracle: given a function f ,
-a point x and a direction u, the oracle returns ∇2 f (x) · u.
-Agarwal et al. (2016) and Carmon et al. (2016) presented
-accelerated algorithms that can find an -second-order stationary point in O(log d/7/4 ) steps. Also, Carmon &
-Duchi (2016) showed by running gradient descent as a
-subroutine to solve the subproblem of cubic regularization
-
-(which requires Hessian-vector product oracle), it is possible to find an -second-order stationary pointin O(log d/2 )
-iterations. In many applications such an oracle can be implemented efficiently, in roughly the same complexity as
-the gradient oracle. Also, when the function has a Hessian
-Lipschitz property such an oracle can be approximated by
-differentiating the gradients at two very close points (although this may suffer from numerical issues, thus is seldom used in practice).
-Gradient-based: Another recent line of work shows that it
-is possible to converge to a second-order stationary point
-without any use of the Hessian. These methods feature
-simple computation per iteration (only involving gradient
-operations), and are closest to the algorithms used in practice. Ge et al. (2015) showed that stochastic gradient descent could converge to a second-order stationary point in
-poly(d/) iterations, with polynomial of order at least four.
-This was improved in Levy (2016) to O(d3 · poly(1/))
-using normalized gradient descent. The current paper improves on both results by showing that perturbed gradient descent can actually find an -second-order stationary
-point in O(polylog(d)/2 ) steps, which matches the guarantee for converging to first-order stationary points up to
-polylog factors.
+ing algorithm and an optimal allocation showing that the
+regret decreases as O(n 3/2 ). A similar result is obtained
+by Carpentier et al. (2011) that proposed two algorithms
+that use upper confidence bounds on the variance to estimate the MSE of each arm and select the arm with the
+larger MSE at each step. When the arms are embedded
+in Rd and their mean is a linear combination with an unknown parameter, then the problem becomes an optimal
+experimental design problem (Pukelsheim, 2006), where
+the objective is to estimate the linear parameter and minimize the prediction error over all arms (see e.g., Wiens &
+Li 2014; Sabato & Munos 2014). In this paper, we consider
+an orthogonal extension to the original problem where a finite number of linear regression problems is available (i.e.,
+the arms) and random contexts are observed at each time
+step. Similarly to the setting of Antos et al. (2008), we
+assume each problem is characterized by a noise with different variance and the objective is to return regularized
+least-squares (RLS) estimates with small prediction error
+(i.e., MSE). While we leverage on the solution proposed
+by Carpentier et al. (2011) to deal with the unknown variances, in our setting the presence of random contexts make
+the estimation problem considerably more difficult. In fact,
+the MSE in one specific regression problem is not only determined by the variance of the noise and the number of
+samples used to compute the RLS estimate, but also by the
+contexts observed over time.
+Contributions. We propose T RACE -UCB, an algorithm
+that simultaneously learns the “hardness” of each problem,
+allocates observations proportionally to these estimates,
+and balances contexts across problems. We derive performance bounds for T RACE -UCB in expectation and highprobability, and compare the algorithm with several baselines. T RACE -UCB performs remarkably well in scenarios
+where the dimension of the contexts or the number of instances is large compared to the total budget, motivating the
+study of the high-dimensional setting, whose analysis and
+performance bounds are reported in App. F of Riquelme
+et al. (2017a). Finally, we provide simulations with synthetic data that support our theoretical results, and with real
+data that demonstrate the robustness of our approach even
+when some of the assumptions do not hold.
 
 2. Preliminaries
-In this section, we will first introduce our notation, and then
-present some definitions and existing results in optimization which will be used later.
-2.1. Notation
-We use bold upper-case letters A, B to denote matrices and
-bold lower-case letters x, y to denote vectors. Aij means
-the (i, j)th entry of matrix A. For vectors we use k·k to
-denote the `2 -norm, and for matrices we use k·k and k·kF
-to denote spectral norm and Frobenius norm respectively.
-We use σmax (·), σmin (·), σi (·) to denote the largest, the
-smallest and the i-th largest singular values respectively,
-and λmax (·), λmin (·), λi (·) for corresponding eigenvalues.
-For a function f : Rd → R, we use ∇f (·) and ∇2 f (·) to
-denote its gradient and Hessian, and f ? to denote the global
-minimum of f (·). We use notation O(·) to hide only absolute constants which do not depend on any problem parameter, and notation Õ(·) to hide only absolute constants and
-(d)
-log factors. We let Bx (r) denote the d-dimensional ball
-centered at x with radius r; when it is clear from context,
-we simply denote it as Bx (r). We use PX (·) to denote projection onto the set X . Distance and projection are always
-defined in a Euclidean sense.
+The problem. We consider m linear regression problems,
+where each instance i 2 [m] = {1, . . . , m} is characterized
+by a parameter i 2 Rd such that for any context X 2 Rd ,
+a random observation Y 2 R is obtained as
+Y = XT
 
-How to Escape Saddle Points Efficiently
+i
 
-2.2. Gradient Descent
-The theory of gradient descent often takes its point of departure to be the study of convex optimization.
-Definition 1. A differentiable function f (·) is `-smooth
-(or `-gradient Lipschitz) if:
-∀x1 , x2 , k∇f (x1 ) − ∇f (x2 )k ≤ `kx1 − x2 k.
-Definition 2. A twice-differentiable function f (·) is αstrongly convex if ∀x, λmin (∇2 f (x)) ≥ α
-Such smoothness guarantees imply that the gradient can
-not change too rapidly, and strong convexity ensures that
-there is a unique stationary point (and hence a global minimum). Standard analysis using these two properties shows
-that gradient descent converges linearly to a global optimum x? (see e.g. (Bubeck et al., 2015)).
-Theorem 1. Assume f (·) is `-smooth and α-strongly convex. For any  > 0, if we run gradient descent with step
-size η = 1` , iterate xt will be -close to x? in iterations:
++ ✏i ,
 
-Definition 4. For a differentiable function f (·), we say
-that x is a local minimum if x is a first-order stationary
-point, and there exists  > 0 so that for any y in the neighborhood of x, we have f (x) ≤ f (y); we also say x
-is a saddle point if x is a first-order stationary point but
-not a local minimum. For a twice-differentiable function
-f (·), we further say a saddle point x is strict (or nondegenerate) if λmin (∇2 f (x)) < 0.
-For a twice-differentiable function f (·), we know a saddle
-point x must satify λmin (∇2 f (x)) ≤ 0. Intuitively, for
-saddle point x to be strict, we simply rule out the undetermined case λmin (∇2 f (x)) = 0, where Hessian information alone is not enough to check whether x is a local
-minimum or saddle point. In most non-convex problems,
-saddle points are undesirable.
-To escape from saddle points and find local minima in a
-general setting, we move both the assumptions and guarantees in Theorem 2 one order higher. In particular, we
-require the Hessian to be Lipschitz:
-
-2`
-kx0 − x? k
-log
-α
-
-
-Definition 5. A twice-differentiable function f (·) is ρHessian Lipschitz if:
-
-In a more general setting, we no longer have convexity, let
-alone strong convexity. Though global optima are difficult
-to achieve in such a setting, it is possible to analyze convergence to first-order stationary points.
-Definition 3. For a differentiable function f (·), we say
-that x is a first-order stationary point if k∇f (x)k =
-0; we also say x is an -first-order stationary point if
-k∇f (x)k ≤ .
-
-∀x1 , x2 , k∇2 f (x1 ) − ∇2 f (x2 )k ≤ ρkx1 − x2 k.
-
-Under an `-smoothness assumption, it is well known that
-by choosing the step size η = 1` , gradient descent converges to first-order stationary points.
-Theorem 2 ((Nesterov, 1998)). Assume that the function
-f (·) is `-smooth. Then, for any  > 0, if we run gradient
-descent with step size η = 1` and termination condition
-k∇f (x)k ≤ , the output will be -first-order stationary
-point, and the algorithm will terminate within the following
-number of iterations:
-`(f (x0 ) − f ? )
-.
-2
-Note that the iteration complexity does not depend explicitly on intrinsic dimension; in the literature this is referred
-to as “dimension-free optimization.”
-Note that a first-order stationary point can be either a local
-minimum or a saddle point or a local maximum. For minimization problems, saddle points and local maxima are undesirable, and we abuse nomenclature to call both of them
-“saddle points” in this paper. The formal definition is as
-follows:
-
-That is, Hessian can not change dramatically in terms of
-spectral norm. We also generalize the definition of firstorder stationary point to higher order:
-Definition 6. For a ρ-Hessian Lipschitz function f (·),
-we say that x is a second-order stationary point if
-k∇f (x)k = 0 and λmin (∇2 f (x)) ≥ 0; we also say x is
--second-order stationary point if:
-k∇f (x)k ≤ ,
-
-and
-
-√
-λmin (∇2 f (x)) ≥ − ρ
-
-Second-order stationary points are very important in nonconvex optimization because when all saddle points are
-strict, all second-order stationary points are exactly local
-minima.
-Note that the literature sometime defines -second-order
-stationary point by two independent error terms; i.e., letting k∇f (x)k ≤ g and λmin (∇2 f (x)) ≥ −H . We instead follow the convention of Nesterov & Polyak (2006)
-√
-by choosing H = ρg to reflect the natural relations between the gradient and the Hessian.
-
-3. Main Result
-In this section we show that it possible to modify gradient descent in a simple way so that the resulting algorithm
-will provably converge quickly to a second-order stationary
-point.
-
-How to Escape Saddle Points Efficiently
-
-Algorithm
-2
-Perturbed
-PGD(x0 , `, ρ, , c, δ, ∆f )
-χ ← 3 max{log(
-√
-
-d`∆f
-c2 δ
-
-Gradient
-
-Descent:
-
-√
-
-), 4}, η ← c` , r ← χ2c · `
-q
-3
-← χc3 · ρ , tthres ← cχ2 · √`ρ
-
-gthres ← χ2c · , fthres
-tnoise ← −tthres − 1
-for t = 0, 1, . . . do
-if k∇f (xt )k ≤ gthres and t − tnoise > tthres then
-x̃t ← xt , tnoise ← t
-xt ← x̃t + ξt ,
-ξt uniformly ∼ B0 (r)
-if t − tnoise = tthres and f (xt ) − f (x̃tnoise ) > −fthres
-then
-return x̃tnoise
-xt+1 ← xt − η∇f (xt )
-
-The algorithm that we analyze is a perturbed form of gradient descent (see Algorithm 2). The algorithm is based on
-gradient descent with step size η. When the norm of the
-current gradient is small (≤ gthres ) (which indicates that the
-current iterate x̃t is potentially near a saddle point), the algorithm adds a small random perturbation to the gradient.
-The perturbation is added at most only once every tthres iterations.
-To simplify the analysis we choose the perturbation ξt to
-be uniformly sampled from a d-dimensional ball1 . The use
-of the threshold tthres ensures that the dynamics are mostly
-those of gradient descent. If the function value does not
-decrease enough (by fthres ) after tthres iterations, the algorithm outputs x̃tnoise . The analysis in this section shows that
-under this protocol, the output x̃tnoise is necessarily “close”
-to a second-order stationary point.
-We first state the assumptions that we require.
-Assumption A1. Function f (·) is both `-smooth and ρHessian Lipschitz.
-The Hessian Lipschitz condition ensures that the function
-is well-behaved near a saddle point, and the small perturbation we add will suffice to allow the subsequent gradient
-updates to escape from the saddle point. More formally, we
-have:
-Theorem 3. Assume that f (·) satisfies A1. Then there
-exists an absolute constant cmax such that, for any δ >
-2
-0,  ≤ `ρ , ∆f ≥ f (x0 ) − f ? , and constant c ≤
-cmax , PGD(x0 , `, ρ, , c, δ, ∆f ) will output an -secondorder stationary point, with probability 1−δ, and terminate
-in the following number of iterations:
-
-
-
-d`∆f
-`(f (x0 ) − f ? )
-4
-log
-.
-O
-2
-2 δ
-1
-
-Note that uniform sampling from a d-dimensional ball can
-1
-Y
-be done efficiently by sampling U d × kYk
-where U ∼
-Uniform([0, 1]) and Y ∼ N (0, Id ) (Harman & Lacko, 2010).
-
-Strikingly, Theorem 3 shows that perturbed gradient descent finds a second-order stationary point in almost the
-same amount of time that gradient descent takes to find
-first-order stationary point. The step size η is chosen as
-O(1/`) which is in accord with classical analyses of convergence to first-order stationary points. Though we state
-the theorem with a certain choice of parameters for simplicity of presentation, our result holds even if we vary the
-parameters up to constant factors.
-Without loss of generality, we can focus on the case  ≤
-`2 /ρ, as in Theorem 3. In the case  > `2 /ρ, standard
-gradient descent without perturbation—Theorem 2—easily
-solves the problem. This is because by A1, we always have
-√
-λmin (∇2 f (x)) ≥ −` ≥ − ρ, which means that all second-order stationary points are -first order stationary
-points.
-We believe that the dependence on at least one log d factor in the iteration complexity is unavoidable in the nonconvex setting, as our result can be directly applied to the
-principal component analysis problem, for which the best
-known runtimes (for the power method or Lanczos method)
-incur a log d factor due to random initialization. Establishing this formally is still an open question however.
-To provide some intuition for Theorem 3, consider an iterate xt which is not yet an -second-order stationary point.
-By definition, either (1) the gradient ∇f (xt ) is large, or
-(2) the Hessian ∇2 f (xt ) has a significant negative eigenvalue. Traditional analysis works in the first case. The
-crucial step in the proof of Theorem 3 involves handling
-the second case: when the gradient is small k∇f (xt )k ≤
-gthres and the Hessian has a significant negative eigenvalue
-√
-λmin (∇2 f (x̃t )) ≤ − ρ, then adding a perturbation, followed by standard gradient descent for tthres steps, decreases the function value by at least fthres , with high probability. The proof of this fact relies on a novel characterization of geometry around saddle points (see Section 5)
-If we are able to make stronger assumptions on the objective function we are able to strengthen our main result. This
-further analysis is presented in the next section.
-3.1. Functions with Strict Saddle Property
-In many real applications, objective functions further admit
-the property that all saddle points are strict (Ge et al., 2015;
-Sun et al., 2016a;b; Bhojanapalli et al., 2016; Ge et al.,
-2016). In this case, all second-order stationary points are
-local minima and hence convergence to second-order stationary points (Theorem 3) is equivalent to convergence to
-local minima.
-To state this result formally, we introduce a robust version
-of the strict saddle property (cf. Ge et al., 2015):
-Assumption A2. Function f (·) is (θ, γ, ζ)-strict saddle.
-
-How to Escape Saddle Points Efficiently
-
-That is, for any x, at least one of following holds:
-• k∇f (x)k ≥ θ.
-• λmin (∇2 f (x)) ≤ −γ.
-• x is ζ-close to X ? — the set of local minima.
-Intuitively, the strict saddle assumption states that the Rd
-space can be divided into three regions: 1) a region where
-the gradient is large; 2) a region where the Hessian has a
-significant negative eigenvalue (around saddle point); and
-3) the region close to a local minimum. With this assumption, we immediately have the following corollary:
-Corollary 4. Let f (·) satisfy A1 and A2. Then, there
-exists an absolute constant cmax such that, for any δ >
-0, ∆f ≥ f (x0 ) − f ? , constant c ≤ cmax , and letting
-˜ = min(θ, γ 2 /ρ), PGD(x0 , `, ρ, ˜, c, δ, ∆f ) will output a
-point ζ-close to X ? , with probability 1 − δ, and terminate
-in the following number of iterations:
-
-
-
-d`∆f
-`(f (x0 ) − f ? )
-4
-log
-.
-O
-˜2
-˜2 δ
-Corollary 4 shows after finding ˜-second-order stationary
-point by Theorem 3 where ˜ = min(θ, γ 2 /ρ), the output is
-also in the ζ-neighborhood of some local minimum.
-Note although Corollary 4 only explicitly asserts that the
-output will lie within some fixed radius ζ from a local
-minimum. In many real applications, we further have that
-ζ can be written as a function ζ(θ) which decreases linearly or polynomially depending on θ, while γ will be nondecreasing w.r.t θ. In these cases, the above corollary further gives a convergence rate to a local minimum.
-3.2. Functions with Strong Local Structure
-The convergence rate in Theorem 3 is polynomial in ,
-which is similar to that of Theorem 2, but is worse than the
-rate of Theorem 1 because of the lack of strong convexity.
-Although global strong convexity does not hold in the nonconvex setting that is our focus, in many machine learning
-problems the objective function may have a favorable local
-structure in the neighborhood of local minima (Ge et al.,
-2015; Sun et al., 2016a;b; Sun & Luo, 2016). Exploiting
-this property can lead to much faster convergence (linear
-convergence) to local minima. One such property that ensures such convergence is a local form of smoothness and
-strong convexity:
-Assumption A3.a. In a ζ-neighborhood of the set of local
-minima X ? , the function f (·) is α-strongly convex, and
-β-smooth.
-Here we use different letter β to denote the local smoothness parameter (in contrast to the global smoothness parameter `). Note that we always have β ≤ `.
-
-Algorithm 3 Perturbed Gradient Descent with Local Improvement: PGDli(x0 , `, ρ, , c, δ, ∆f , β)
-x0 ← PGD(x0 , `, ρ, , c, δ, ∆f )
-for t = 0, 1, . . . do
-xt+1 ← xt − β1 ∇f (xt )
-
-However, often even local α-strong convexity does not
-hold. We thus introduce the following relaxation:
-Assumption A3.b. In a ζ-neighborhood of the set of local
-minima X ? , the function f (·) satisfies a (α, β)-regularity
-condition if for any x in this neighborhood:
-h∇f (x), x−PX ? (x)i ≥
-
-α
-1
-kx − PX ? (x)k2 + k∇f (x)k2 .
-2
-2β
 (1)
 
-Here PX ? (·) is the projection on to the set X ? . Note (α, β)regularity condition is more general and is directly implied
-by standard β-smooth and α-strongly convex conditions.
-This regularity condition commonly appears in low-rank
-problems such as matrix sensing and matrix completion,
-and has been used in Bhojanapalli et al. (2016); Zheng &
-Lafferty (2016), where local minima form a connected set,
-and where the Hessian is strictly positive only with respect
-to directions pointing outside the set of local minima.
-Gradient descent naturally exploits local structure very
-well. In Algorithm 3, we first run Algorithm 2 to output
-a point within the neighborhood of a local minimum, and
-then perform standard gradient descent with step size β1 .
-We can then prove the following theorem:
-Theorem 5. Let f (·) satisfy A1, A2, and A3.a (or
-A3.b). Then there exists an absolute constant cmax such
-that, for any δ > 0,  > 0, ∆f ≥ f (x0 ) − f ? ,
-constant c ≤ cmax , and letting ˜ = min(θ, γ 2 /ρ),
-PGDli(x0 , `, ρ, ˜, c, δ, ∆f , β) will output a point that is close to X ? , with probability 1−δ, in the following number
-of iterations:
-
-
-
-
-`(f (x0 ) − f ? )
-d`∆f
-β
-ζ
-4
-O
-log
-+ log
-.
-˜2
-˜2 δ
-α
-
-Theorem 5 says that if strong local structure is present,
-the convergence rate can be boosted to linear convergence
-(log 1 ). In this theorem we see that sequence of iterations
-can be decomposed into two phases. In the first phase, perturbed gradient descent finds a ζ-neighborhood by Corollary 4. In the second phase, standard gradient descent takes
-us from ζ to -close to a local minimum. Standard gradient descent and Assumption A3.a (or A3.b) make sure that
-the iterate never steps out of a ζ-neighborhood in this second phase, giving a result similar to Theorem 1 with linear
-convergence.
+where the noise ✏i is an i.i.d. realization of a Gaussian dis2
+tribution N (0, i2 ). We denote by max
+= maxi i2 and
 
-How to Escape Saddle Points Efficiently
+P
+by 2 = 1/m i i2 , the largest and the average variance,
+respectively. We define a sequential decision-making problem over n rounds, where at each round t 2 [n], the learning algorithm A receives a context Xt drawn i.i.d. from
+N (0, ⌃), selects an instance It , and observes a random
+sample YIt ,t according to (1). By the end of the experiment,
+a training set Dn = {Xt , It , YIt ,t }t2[n] has been collected
+and all the m linear regression problems are solved, each
+problem i 2 [m] with its own training set Di,n (i.e., a subset of Dn containing samples with It = i), and estimates
+of the parameters { ˆi,n }i2[m] are returned. For each ˆi,n ,
+we measure its accuracy by the mean-squared error (MSE)
+⇥
+⇤
+Li,n ( ˆi,n ) = EX (X T i X T ˆi,n )2 = k i ˆi,n k2⌃ . (2)
+We evaluate the overall accuracy of the estimates returned
+by the algorithm A as
+⇥
+⇤
+Ln (A) = max EDn Li,n ( ˆi,n ) ,
+(3)
+i2[m]
 
-4. Example — Matrix Factorization
-As a simple example to illustrate how to apply our general theorems to specific non-convex optimization problems, we consider a symmetric low-rank matrix factorization problem, based on the following objective function:
-min f (U) =
+where the expectation is w.r.t. the randomness of the contexts Xt and observations Yi,t used to compute ˆi,n . The
+objective is to design an algorithm A that minimizes the
+loss (3). This requires defining an allocation rule to select
+the instance It at each step t and the algorithm to compute the estimates ˆi,n , e.g., ordinary least-squares (OLS),
+regularized least-squares (RLS), or Lasso. In designing a
+learning algorithm, we rely on the following assumption.
+Assumption 1. The covariance matrix ⌃ of the Gaussian
+distribution generating the contexts {Xt }nt=1 is known.
+This is a standard assumption in active learning, since in
+this setting the learner has access to the input distribution and the main question is for which context she should
+ask for a label (Sabato & Munos, 2014; Riquelme et al.,
+2017b). Often times, companies, like the drug company
+considered in the introduction, own enough data to have
+an accurate estimate of the distribution of their customers
+(patients).
+While in the rest of the paper we focus on Ln (A), our algorithm and analysis can be easily extended to similar objectives such as replacing the maximum
+in⇥ (3) with average
+⇤
+Pm
+across all instances, i.e., 1/m i=1 EDn Li,n ( ˆi,n ) , and
+⇥
+⇤
+using weighted errors, i.e., maxi wi EDn Li,n ( ˆi,n ) , by
+updating the score to focus on the estimated standard deviation and by including the weights in the score, respectively. Later in the paper, we also consider the case where
+the expectation in (3) is replaced by the high-probability
+error (see Eq. 17).
+Optimal static allocation with OLS estimates. While the
+distribution of the contexts is fixed and does not depend on
+the instance i, the errors Li,n ( ˆi,n ) directly depend on the
+variances i2 of the noise ✏i . We define an optimal baseline
 
-U∈Rd×r
+Active Learning for Accurate Estimation of Linear Models
+
+obtained when the noise variances { i2 }m
+i=1 are known. In
+particular, we focus on a static allocation algorithm Astat
+that selects each instance i exactly ki,n times, independently of the context,1 and returns an estimate ˆi,n computed by OLS as
+bi,n = XT Xi,n
+i,n
 
 1
-kUU> − M? k2F ,
+
+XT
+i,n Yi,n ,
+
+(4)
+
+where Xi,n 2 Rki,n ⇥d is the matrix of (random) samples
+obtained at the end of the experiment, and Yi,n 2 Rki,n
+is its corresponding vector of observations. It is simple to
+show that the global error corresponding to Astat is
+Ln (Astat ) = max
+
 2
+i
 
-iterations scaling as Õ(r(κ? )4 ). We suspect that this strong
-dependence on condition number arises from our generic
-assumption that the Hessian Lipschitz is uniformly upper
-bounded; it may well be the case that this dependence can
-be reduced in the special case of matrix factorization via a
-finer analysis of the geometric structure of the problem.
+i2[m]
 
-(2)
+ki,n
 
-where M? ∈ Rd×d .
-For simplicity, we assume
-rank(M? ) = r, and denote σ1? := σ1 (M? ), σr? :=
-σr (M? ). Clearly, in this case the global minimum of function value is zero, which is achieved at V? = TD1/2 where
-TDT> is the SVD of the symmetric real matrix M? .
-The following two lemmas show that the objective function
-in Eq. (2) satisfies the geometric assumptions A1, A2,and
-A3.b. Moreover, all local minima are global minima.
-Lemma 6. For any Γ ≥ σ1? , the function f (U) defined in
-Eq. (2) is 8Γ-smooth and 12Γ1/2 -Hessian Lipschitz, inside
-the region {U|kUk2 < Γ}.
-Lemma 7. For function f (U) defined in Eq. (2), all local minima are global minima. The set of global minima
-is X ? = {V? R|RR> = R> R = I}. Furthermore,
+⇣
+⇥ 1 ⇤⌘
+b
+Tr ⌃EDn ⌃
+,
+i,n
+
+(5)
+
+b i,n = XT Xi,n /ki,n 2 Rd⇥d is the empirical cowhere ⌃
+i,n
+variance matrix of the contexts assigned to instance i. Since
+the algorithm does not change the allocation depending on
+b 1 is distributed as an
+the contexts and Xt ⇠ N (0, ⌃), ⌃
+i,n
+inverse-Wishart and we may write (5) as
+Ln (Astat ) = max
+
+i2[m]
+
+d
+
+ki,n
+
+2
+i
+
+d
+
 1
-(σr? )3/2 , 13 σr? , 13 (σr? )1/2 )-strict saddle; and satf (U) is ( 24
-2 ?
-isfies a ( 3 σr , 10σ1? )-regularity condition in a 31 (σr? )1/2 neighborhood of X ? .
-One caveat is that since the objective function is actually
-a fourth-order polynomial with respect to U, the smoothness and Hessian Lipschitz parameters from Lemma 6 naturally depend on kUk. Fortunately, we can further show
-that gradient descent (even with perturbation) does not increase kUk beyond O(max{kU0 k, (σ1? )1/2 }). Then, applying Theorem 5 gives:
-Theorem 8. There exists an absolute constant cmax such
-that the following holds. For the objective function in
-Eq. (2), for any δ > 0 and constant c ≤ cmax ,
-and for Γ1/2 := 2 max{kU0 k, 3(σ1? )1/2 }, the output of
-2
-(σ ? )2
-PGDli(U0 , 8Γ, 12Γ1/2 , 108Γr 1/2 , c, δ, rΓ2 , 10σ1? ), will be close to the global minimum set X ? , with probability 1 − δ,
-after the following number of iterations:
-!
- 4
-
-
-Γ
-dΓ
-σ1?
-σr?
-4
-O r
-log
-+ ? log
+
 .
-σr?
-δσr?
-σr
-
-Theorem 8 establishes global convergence of perturbed
-gradient descent from an arbitrary initial point U0 , including exact saddle points. Suppose we initialize at U0 = 0,
-then our iteration complexity becomes:
-
-O r(κ? )4 log4 (dκ? /δ) + κ? log(σr? /) ,
-where κ? = σ1? /σr? is the condition number of the matrix
-M? . We see that in the first phase, to move from a neighborhood of the solution, our method requires a number of
 
-5. Proof Sketch for Theorem 3
-In this section we will present the key ideas underlying
-the main result of this paper (Theorem 3). We will first
-argue the correctness of Theorem 3 given two important
-intermediate lemmas. Then we turn to the main lemma,
-which establishes that gradient descent can escape from
-saddle points quickly. We present full proofs of all these
-results in Appendix A. Throughout this section, we use
-η, r, gthres , fthres and tthres as defined in Algorithm 2.
-5.1. Exploiting Large Gradient or Negative Curvature
-Recall that an -second-order stationary point is a point
-with a small gradient, and where the Hessian does not
-have a significant negative eigenvalue. Suppose we are
-currently at an iterate xt that is not an -second-order stationary point; i.e., it does not satisfy the above properties. There are two possibilities: (1) The gradient is large:
-k∇f (xt )k ≥ gthres ; or (2) Around the saddle point we have
-√
-k∇f (xt )k ≤ gthres and λmin (∇2 f (xt )) ≤ − ρ.
-The following two lemmas address these two cases respectively. They guarantee that perturbed gradient descent will
-decrease the function value in both scenarios.
-Lemma 9 (Gradient). Assume that f (·) satisfies A1. Then
-for gradient descent with stepsize η < 1` , we have
-f (xt+1 ) ≤ f (xt ) − η2 k∇f (xt )k2 .
-Lemma 10 (Saddle). (informal) Assume that f (·) satisfies A1, If xt satisfies k∇f (xt )k ≤ gthres and
-√
-λmin (∇2 f (xt )) ≤ − ρ, then adding one perturbation
-step followed by tthres steps of gradient descent, we have
-f (xt+tthres ) − f (xt ) ≤ −fthres with high probability.
+(6)
 
-We see that Algorithm 2 is designed so that Lemma 10
-can be directly applied. According to these two lemmas, perturbed gradient descent will decrease the function value either in the case of a large gradient, or around
-strict saddle points. Computing the average decrease in
-function value yields the total iteration complexity. Since
-Algorithm 2 only terminate when the function value decreases too slowly, this guarantees that the output must be
--second-order stationary point (see Appendix A for formal
-proofs).
+Thus, we derive the following proposition for the optimal
+static allocation algorithm A⇤stat .
 
-How to Escape Saddle Points Efficiently
+Proposition 1. Given m linear regression problems, each
+characterized by a parameter i , Gaussian noise with variance i2 , and Gaussian contexts with covariance ⌃, let
+n > m(d + 1), then the optimal OLS static allocation algorithm A⇤stat selects each instance
+✓
+◆
+2
+2
+i
+⇤
+ki,n
+= P i 2 n + (d + 1) 1
+,
+(7)
+2
+j
 
-have a quadratic function), the stuck region Xstuck consists
-of points x such that x − x̃ has a small e1 component. This
-is a straight band in two dimensions and a flat disk in high
-dimensions. However, when the Hessian is not constant,
-the shape of the stuck region is distorted. In two dimensions, it forms a “narrow band” as plotted in Figure 2 on
-top of the gradient flow. In three dimensions, it forms a
-“thin pancake” as shown in Figure 1.
+j
 
-Figure 1. Pertubation ball in 3D and “thin pancake” stuck region
+times (up to rounding effects), and incurs the global error
+✓
+◆2 !
+md
+⇤
+⇤
+2 md
+2
+Ln = Ln (Astat ) =
++O
+. (8)
+n
+n
+Proof. See Appendix A.1.2
 
-w
+Proposition 1 divides the problems into two types: those
+for which i2
+¯ 2 (wild instances) and those for which
+2
+2
+i < ¯ (mild instances). We see that for the first type,
+the second term in (7) is negative and the instance should
+be selected less frequently than in the context-free case
+(where the optimal allocation is given just by the first term).
+On the other hand, instances whose variance is below the
+1
+This strategy can be obtained by simply selecting the first
+instance k1,n times, the second one k2,n times, and so on.
+2
+All the proofs can be found in the appendices of the extended
+version of the paper (Riquelme et al., 2017a).
 
-Figure 2. “Narrow band” stuck region in 2D under gradient flow
+mean variance should be pulled more often. In any case,
+we see that the correction to the context-free allocation
+(i.e., the second term) is constant, as it does not depend on
+n. Nonetheless, it does depend on d and this suggests that
+in high-dimensional problems, it may significantly skew
+the optimal allocation.
+While A⇤stat effectively minimizes the prediction loss Ln ,
+it cannot be implemented in practice since the optimal allocation ki⇤ requires the variances i2 to be known at the
+beginning of the experiment. As a result, we need to devise
+a learning algorithm A whose performance approaches L⇤n
+as n increases. More formally, we define the regret of A as
+Rn (A) = Ln (A)
 
-5.2. Escaping from Saddle Points Quickly
-The proof of Lemma 9 is straightforward and follows from
-traditional analysis. The key technical contribution of this
-paper is the proof of Lemma 10, which gives a new characterization of the geometry around saddle points.
-Consider a point x̃ that satisfies the the preconditions of
-Lemma 10 (k∇f (x̃)k ≤ gthres and λmin (∇2 f (x̃)) ≤
-√
-− ρ). After adding the perturbation (x0 = x̃+ξ), we can
-view x0 as coming from a uniform distribution over Bx̃ (r),
-which we call the perturbation ball. We can divide this
-perturbation ball Bx̃ (r) into two disjoint regions: (1) an escaping region Xescape which consists of all the points x ∈
-Bx̃ (r) whose function value decreases by at least fthres after tthres steps; (2) a stuck region Xstuck = Bx̃ (r) − Xescape .
-Our general proof strategy is to show that Xstuck consists of
-a very small proportion of the volume of perturbation ball.
-After adding a perturbation to x̃, point x0 has a very small
-chance of falling in Xstuck , and hence will escape from the
-saddle point efficiently.
-Let us consider the nature of Xstuck . For simplicity, let us
-imagine that x̃ is an exact saddle point whose Hessian has
-only one negative eigenvalue, and d − 1 positive eigenvalues. Let us denote the minimum eigenvalue direction as
-e1 . In this case, if the Hessian remains constant (and we
+Ln (A⇤stat ) = Ln (A)
 
-The major challenge here is to bound the volume of this
-high-dimensional non-flat “pancake” shaped region Xstuck .
-A crude approximation of this “pancake” by a flat “disk”
-loses polynomial factors in the dimensionalilty, which
-gives a suboptimal rate. Our proof relies on the following
-crucial observation: Although we do not know the explicit
-form of the stuck region, we know it must be very “thin,”
-therefore it cannot have a large volume. The informal statement of the lemma is as follows:
-Lemma 11. (informal) Suppose x̃ satisfies the precondition of Lemma 10, and let e1 be the smallest eigendirection of ∇2 f (x̃). For any δ ∈ (0, 1/3] and any two
-√ points
-w, u ∈ Bx̃ (r), if w − u = µre1 and µ ≥ δ/(2 d), then
-at least one of w, u is not in the stuck region Xstuck .
-Using this lemma it is not hard to bound the volume of
-the stuck region: we can draw a straight line along the e1
-direction which intersects the perturbation ball (shown as
-purple line segment in Figure 2). For√any two points on
-this line segment that are at least δr/(2 d) away from each
-other (shown as red points w, u in Figure 2), by Lemma 11,
-we know at least one of them must not be in Xstuck . This
-implies if there is one point ũ ∈ Xstuck on this line segment,
-then√Xstuck on this line can be at most an interval of length
-δr/ d around ũ. This establishes the “thickness” of Xstuck
-in the e1 direction, which is turned into an upper bound on
-the volume of the stuck region Xstuck by standard calculus.
+L⇤n ,
 
-6. Conclusion
-This paper presents the first (nearly) dimension-free result
-for gradient descent in a general non-convex setting. We
-present a general convergence result and show how it can
-be further strengthened when combined with further structure such as strict saddle conditions and/or local regularity/convexity.
-There are still many related open problems. First, in the
-presence of constraints, it is worthwhile to study whether
-gradient descent still admits similar sharp convergence results. Another important question is whether similar techniques can be applied to accelerated gradient descent. We
-hope that this result could serve as a first step towards a
-more general theory with strong, almost dimension free
-guarantees for non-convex optimization.
+(9)
 
-How to Escape Saddle Points Efficiently
+and we expect Rn (A) = o(1/n). In fact, any allocation
+strategy that selects each instance a linear number of times
+(e.g., uniform sampling) achieves a loss Ln = O(1/n), and
+thus, a regret of order O(1/n). However, we expect that the
+loss of an effective learning algorithm decreases not just at
+the same rate as L⇤n but also with the very same constant,
+thus implying a regret that decreases faster than O(1/n).
+
+3. The T RACE -UCB Algorithm
+In this section, we present and analyze an algorithm of
+the form discussed at the end of Section 2, which we
+call T RACE -UCB, whose pseudocode is in Algorithm 1.
+Algorithm 1 T RACE -UCB Algorithm
+1: for i = 1, . . . , m do
+2:
+Select problem instance i exactly d + 1 times
+2
+3:
+Compute its OLS estimates ˆi,m(d+1) and ˆi,m(d+1)
+4: end for
+5: for steps t = m(d + 1) + 1, . . . , n do
+6:
+for problem instance 1  i  m do
+7:
+Compute score
+( i,t 1 is defined in (11))
+si,t
+
+1
+
+=
+
+2
+bi,t
+
+1
+
++
+
+ki,t
+
+i,t 1
+1
+
+ˆ 1
+Tr ⌃⌃
+i,t
+
+1
+
+8:
+end for
+9:
+Select problem instance It = arg maxi2[m] si,t 1
+10:
+Observe Xt and YIt ,t
+11:
+Update its OLS estimators ˆIt ,t and ˆI2t ,t
+12: end for
+13: Return RLS estimates { ˆi,n }m
+i=1 with regularization
+
+The regularization parameter = O(1/n) is provided to
+the algorithm as input, while in practice one could set
+independently for each arm using cross-validation.
+Intuition. Equation (6) suggests that while the parameters
+of the context distribution, particularly its covariance ⌃, do
+
+Active Learning for Accurate Estimation of Linear Models
+
+not impact the prediction error, the noise variances play the
+most important role in the loss of each problem instance.
+⇤
+This is in fact confirmed by the optimal allocation ki,n
+2
+in (7), where only the variances i appear. This evidence
+suggests that an algorithm similar to GAFS-MAX (Antos
+et al., 2008) or CH-AS (Carpentier et al., 2011), which
+were designed for the context-free case (i.e., each instance i
+is associated to an expected value and not a linear function)
+would be effective in this setting as well. Nonetheless, (6)
+holds only for static allocation algorithms that completely
+ignore the context and the history to decide which instance
+It to choose at time t. On the other hand, adaptive learning
+algorithms create a strong correlation between the dataset
+Dt 1 collected so far, the current context Xt , and the decision It . As a result, the sample matrix Xi,t is no longer a
+random variable independent of A, and using (6) to design
+a learning algorithm is not convenient, since the impact of
+the contexts on the error is completely overlooked. Unfortunately, in general, it is very difficult to study the potential
+correlation between the contexts Xi,t , the intermediate estimates ˆi,t , and the most suitable choice It . However, in
+the next lemma, we show that if at each step t, we select It
+as a function of Dt 1 , and not Xt , we may still recover an
+expression for the final loss that we can use as a basis for
+the construction of an effective learning algorithm.
+Lemma 2. Let A be a learning algorithm that selects
+the instances It as a function of the previous history,
+i.e., Dt 1 = {X1 , I1 , YI1 ,1 , . . . , Xt 1 , It 1 , YIt 1 ,t 1 }
+and computes estimates bi,n using OLS. Then, its loss after
+n steps can be expressed as
+ 2 ⇣
+⌘
+i
+b 1 ,
+Ln (A) = max EDn
+Tr ⌃⌃
+(10)
+i,n
+ki,n
+i2[m]
+where ki,n =
+
+Pn
+
+t=1
+
+b i,n = XT Xi,n /ki,n .
+I{It = i} and ⌃
+i,n
+
+Proof. See Appendix B.
+
+Remark 1 (assumptions). We assume noise and contexts
+are Gaussian. The noise Gaussianity is crucial for the es2
+timates of the parameter bi,t and variance bi,t
+to be independent of each other, for each instance i and time t (we
+actually need and derive a stronger result in Lemma 9, see
+Appendix B). This is key in proving Lemma 2, as it allows
+us to derive a closed form expression for the loss function
+which holds under our algorithm, and is written in terms of
+the number of pulls and the trace of the inverse empirical
+2
+covariance matrix. Note that bi,t drives our loss, while bi,t
+drives our decisions. One way to remove this assumption is
+by defining and directly optimizing a surrogate loss equal
+to (10) instead of (3). On the other hand, the Gaussianity of
+contexts leads to the whitened inverse covariance estimate
+b 1 being distributed as an inverse Wishart. As there
+⌃⌃
+i,n
+
+is a convenient closed formula for its mean, we can find
+⇤
+the exact optimal static allocation ki,n
+in Proposition 1, see
+(7). In general, for sub-Gaussian contexts, no such closed
+formula for the trace is available. However, as long as the
+⇤
+optimal allocation ki,n
+has no second order n↵ terms for
+1/2  ↵ < 1, it is possible to derive the same regret rate
+results that we prove later on for T RACE -UCB.
+Equation (10) makes it explicit that the prediction error
+comes from two different sources. The first one is the noise
+in the measurements Y, whose impact is controlled by the
+unknown variances i2 ’s. Clearly, the larger the i2 is, the
+more observations are required to achieve the desired accuracy. At the same time, the diversity of contexts across
+instances also impacts the overall prediction error. This is
+very intuitive, since it would be a terrible idea for the research center discussed in the introduction to estimate the
+parameters of a drug by providing the treatment only to a
+hundred almost identical patients. We say contexts are balb i,n is well conditioned. Therefore, a good
+anced when ⌃
+algorithm should take care of both aspects.
+There are two extreme scenarios regarding the contributions of the two sources of error. 1) If the number of
+contexts n is relatively large, since the context distribution is fixed, one can expect that contexts allocated to each
+instance eventually become balanced (i.e., T RACE -UCB
+does not bias the distribution of the contexts). In this case,
+it is the difference in i2 ’s that drives the number of times
+each instance is selected. 2) When the dimension d or the
+number of arms m is large w.r.t. n, balancing contexts becomes critical, and can play an important role in the final
+prediction error, whereas the i2 ’s are less relevant in this
+scenario. While a learning algorithm cannot deliberately
+choose a specific context (i.e., Xt is a random variable),
+we may need to favor instances in which the contexts are
+poorly balanced and their prediction error is large, despite
+the fact that they might have small noise variances.
+
+Algorithm. T RACE -UCB is designed as a combination of
+the upper-confidence-bound strategy used in CH-AS (Carpentier et al., 2011) and the loss in (10), so as to obtain a
+learning algorithm capable of allocating according to the
+estimated variances and at the same time balancing the error generated by context mismatch. We recall that all the
+quantities that are computed at every step of the algorithm
+are indexed at the beginning and end of a step t by i, t 1
+2
+b
+(e.g., bi,t
+1 ) and i, t (e.g., i,t ), respectively. At the end of
+each step t, T RACE -UCB first computes an OLS estimate
+bi,t , and then use it to estimate the variance b2 as
+i,t
+2
+bi,t
+=
+
+1
+Yi,t
+ki,t d
+
+b
+XT
+i,t i,t
+
+2
+
+,
+
+which is the average squared deviation of the predictions
+based on bi,t . We rely on the following concentration in-
+
+Active Learning for Accurate Estimation of Linear Models
+
+equality for the variance estimate of linear regression with
+Gaussian noise, whose proof is reported in Appendix C.1.
+
+App. D.1) that shows that T RACE -UCB behaves similarly
+to the optimal static allocation.
+
+Proposition 3. Let the number of pulls ki,t
+d + 1 and
+R maxi i2 . If 2 (0, 3/4), then for any instance i and
+step t > m(d + 1), with probability at least 1 2 , we have
+s
+✓
+◆2
+2mn
+64
+2
+2
+|ˆi,t
+|
+
+=
+R
+log
+. (11)
+i,t
+i
+ki,t d
+
+Theorem 5. Let > 0. With probability at least 1
+,
+the total number of contexts that T RACE -UCB allocates to
+each problem instance i after n rounds satisfies
+r
+C + 8CTr
+nd
+⇤
+ki,n ki,n
+⌦(n1/4 )
+(14)
+2
+
+Given (11), we can construct an upper-bound on the prediction error of any instance i and time step t as
+si,t
+
+1
+
+=
+
+2
+ˆi,t
+
+1
+
++
+
+ki,t
+
+i,t 1
+
+Tr
+
+1
+
+⇣
+
+ˆ 1
+⌃⌃
+i,t 1
+
+⌘
+
+,
+
+(12)
+
+and then simply select the instance which maximizes this
+score, i.e., It = arg maxi si,t 1 . Intuitively, T RACE -UCB
+favors problems where the prediction error is potentially
+large, either because of a large noise variance or because
+of significant unbalance in the observed contexts w.r.t. the
+target distribution with covariance ⌃. A subtle but critical
+aspect of T RACE -UCB is that by ignoring the current context Xt (but using all the past samples Xt 1 ) when choosing It , the distribution of the contexts allocated to each instance stays untouched and the second term in the score
+b 1 ), naturally tends to d as more and
+si,t 1 , i.e., Tr(⌃⌃
+i,t 1
+more (random) contexts are allocated to instance i. This is
+shown by Proposition 4 whose proof is in Appendix C.2.
+Proposition 4. Force the number of samples ki,t d + 1.
+If 2 (0, 1), for any i 2 [m] and step t > m(d + 1) with
+probability at least 1
+/2, we have
+⇣
+⌘
+s
+s
+✓
+◆2
+✓
+◆2
+ˆ 1
+Tr
+⌃
+⌃
+i,t
+d
+d
+1 CTr
+
+ 1 + 2CTr
+,
+ki,t
+d
+ki,t
+p
+with CTr = 1 + 2 log(4nm/ )/d.
+While Proposition 4 shows that the error term due to context mismatch tends to the constant d for all instances i as
+the number of samples tends to infinity, when t is small
+w.r.t. d and m, correcting for the context mismatch may
+significantly improve the accuracy of the estimates bi,n returned by the algorithm. Finally, note that while T RACE UCB uses OLS to compute estimates bi,t , it computes its
+returned parameters bi,n by ridge regression (RLS) with
+regularization parameter as
+ˆ = (XT Xi,n + I)
+i
+i,n
+
+1
+
+XT
+i,n Yi,n .
+
+(13)
+
+As we will discuss later, using RLS makes the algorithm
+more robust and is crucial in obtaining regret bounds both
+in expectation and high probability.
+Performance Analysis. Before proving a regret bound for
+T RACE -UCB, we report an intermediate result (proof in
+
+min
+
+min
+
+2
+where R
+max is known by the algorithm, and
+P we defined
+2
+C = 16R log(2mn/ ) and min = min
+/ j j2 .
+
+We now report our regret bound for the T RACE -UCB algorithm. The proof of Theorem 6 is in Appendix D.2.
+Theorem 6. The regret of the Trace-UCB algorithm,
+i.e., the difference between its loss and the loss of optimal
+static allocation (see Eq. (8)), is upper-bounded by
+✓
+◆
+1 ⇣ d ⌘3/2
+Ln (A) L⇤n  O 2
+.
+(15)
+min n
+min
+
+Eq. (15) shows that the regret decreases as O(n 3/2 ) as expected. This is consistent with the context-free results (Antos et al., 2008; Carpentier et al., 2011), where the regret
+decreases as n 3/2 , which is conjectured to be optimal.
+However, it is important to note that in the contextual case,
+the numerator also includes the dimensionality d. Thus,
+when n
+d, the regret will be small, and it will be larger
+when n ⇡ d. This motivates studying the high-dimensional
+setting (App. F). Eq. (15) also indicates that the regret
+depends on a problem-dependent constant 1/ min , which
+measures the complexity of the problem. Note that when
+2
+2
+max ⇡ min , we have 1/ min ⇡ m, but 1/ min could be
+2
+2
+much larger when max
+min .
+Remark 2. We introduce a baseline motivated by the
+context-free problem. At round t, let VAR -UCB selects
+the instance that maximizes the score3
+s0i,t
+
+1
+
+=
+
+2
+ˆi,t
+
+1
+
++
+
+ki,t
+
+i,t 1
+
+.
+
+(16)
+
+1
+
+The only difference with the score used by T RACE -UCB
+is the lack of the trace term in (12). Moreover, the regret
+of this algorithm has similar rate in terms of n and d as
+that of T RACE -UCB reported in Theorem 6. However, the
+simulations of Sect. 4 show that the regret of VAR -UCB is
+actually much higher than that of T RACE -UCB, specially
+when dm is close to n. Intuitively, when n is close to dm,
+balancing contexts becomes critical, and VAR -UCB suffers
+because its score does not explicitly take them into account.
+Sketch of the proof of Theorem 6. The proof is divided
+into three parts. 1) We show that the behavior of the ridge
+3
+Note that VAR -UCB is similar to both the CH-AS and B-AS
+algorithms in Carpentier et al. (2011).
+
+Active Learning for Accurate Estimation of Linear Models
+
+loss of T RACE -UCB is similar to that reported in Lemma 2
+for algorithms that rely on OLS; see Lemma 19 in Ap2
+pendix E. The independence of the ˆi,t and ˆi,t
+estimates
+is again essential (see Remark 1). Although the loss of
+T RACE -UCB depends on the ridge estimate of the parameters ˆi,n , the decisions made by the algorithm at each
+2
+round only depend on the variance estimates ˆi,t
+and observed contexts. 2) We follow the ideas in Carpentier et al.
+(2011) to lower-bound the total number of pulls ki,n for
+each i 2 [m] under a good event (see Theorem 5 and its
+proof in Appendix D.1). 3) We finally use the ridge regularization to bound the impact of those cases outside the
+good event, and combine everything in Appendix D.2.
+The regret bound of Theorem 6 shows that the largest
+expected loss across the problem instances incurred by
+T RACE -UCB quickly approaches the loss of the optimal
+static allocation algorithm (which knows the true noise
+variances). While Ln (A) measures the worst expected loss,
+at any specific realization of the algorithm, there may be
+one of the instances which is very poorly estimated. As a
+result, it would also be desirable to obtain guarantees for
+the (random) maximum loss
+e n (A) = max k
+L
+i2[m]
+
+i
+
+ˆi,n k2 .
+
+(17)
+
+⌃
+
+In particular, we are able to prove the following highe n (A) for T RACE -UCB.
+probability bound on L
+Theorem 7. Let > 0, and assume k i k2  Z for all i,
+for some Z > 0. With probability at least 1
+,
+
+en 
+L
+
+m
+P
+
+j=1
+
+n
+
+2
+j ⇣
+
+d + 2 log
+
+3m ⌘
+
++O
+
+✓
+
+1 ⇣
+
+2
+min
+
+d
+n
+
+min
+
+⌘3 ◆
+2
+
+. (18)
+
+Note that the first term in (18) corresponds to the first term
+of the loss for the optimal static allocation, and the second
+term is, again, a n 3/2 deviation. However, in this case, the
+guarantees hold simultaneously for all the instances.
+Sketch of the proof of Theorem 7. In the proof we slightly
+modify the confidence ellipsoids for the ˆi,t ’s, based
+on self-normalized martingales, and derived in (AbbasiYadkori et al., 2011); see Thm. 13 in App. C. By means of
+the confidence ellipsoids we control the loss in (17). Their
+radiuses depend on the number of samples per instance, and
+we rely on a high-probability events to compute a lower
+bound on the number of samples. In addition, we need to
+make sure the mean norm of the contexts will not be too
+large (see Corollary 15 in App. C). Finally, we combine the
+lower bound on ki,n with the confidence ellipsoids to conclude the desired high-probability guarantees in Thm. 7.
+High-Dimensional Setting. High-dimensional linear models are quite common in practice, motivating the study of
+the n < dm case, where the algorithms discussed so far
+
+break down. We propose S PARSE -T RACE -UCB in Appendix F, an extension of T RACE -UCB that assumes and
+takes advantage of joint sparsity across the linear functions.
+The algorithm has two-stages: first, an approximate support is recovered, and then, T RACE -UCB is applied to the
+induced lower dimensional space. We discuss and extend
+our high-probability guarantees to S PARSE -T RACE -UCB
+under suitable standard assumptions in Appendix F.
+
+4. Simulations
+In this section, we provide empirical evidence to support
+our theoretical results. We consider both synthetic and realworld problems, and compare the performance (in terms of
+normalized MSE) of T RACE -UCB to uniform sampling,
+optimal static allocation (which requires the knowledge of
+noise variances), and the context-free algorithm VAR -UCB
+(see Remark 2). We do not compare to GFSP-MAX and
+GAFS-MAX (Antos et al., 2008) since they are outperformed by CH-AS Carpentier et al. (2011) and VAR -UCB
+is the same as CH-AS, except for the fact that we use the
+concentration inequality in Prop. 3, since we are estimating
+the variance from a regression problem using OLS.
+First, we use synthetic data to ensure that all the assumptions of our model are satisfied, namely we deal with linear regression models with Gaussian context and noise.
+We set the number of problem instances to m = 7 and
+consider two scenarios: one in which all the noise variances are equal to 1 and one where they are not equal,
+and 2 = (0.01, 0.02, 0.75, 1, 2, 2, 3). In the latter case,
+2
+2
+max / min = 300. We study the impact of (independently)
+increasing dimension d and horizon n on the performance,
+while keeping all other parameters fixed. Second, we consider real-world datasets in which the underlying model is
+non-linear and the contexts are not Gaussian, to observe
+how T RACE -UCB behaves (relative to the baselines) in settings where its main underlying assumptions are violated.
+Synthetic Data. In Figures 1(a,b), we display the results
+for fixed horizon n = 350 and increasing dimension d.
+For each value of d, we run 10, 000 simulations and report
+the median of the maximum error across the instances for
+each simulation. In Fig. 1(a), where i2 ’s are equal, uniform
+sampling and optimal static allocation execute the same allocation since there is no difference in the expected losses
+of different instances. Nonetheless we notice that VAR UCB suffers from poor estimation as soon as d increases,
+while T RACE -UCB is competitive with the optimal performance. This difference in performance can be explained
+by the fact that VAR -UCB does not control for contextual
+balance, which becomes a dominant factor in the loss of a
+learning strategy for problems of high dimensionality. In
+Fig. 1(b), in which i2 ’s are different, uniform sampling is
+no longer optimal but even in this case VAR -UCB performs
+
+Active Learning for Accurate Estimation of Linear Models
+1.0
+
+1.0
+Var-UCB
+Uniform Allocation
+Optimal Static Allocation
+Trace-UCB
+
+0.6
+
+0.4
+
+0.6
+
+0.4
+
+0.2
+
+5
+
+10
+2
+
+15
+
+20
+d
+
+25
+
+30
+
+35
+
+0.0
+
+(b)
+
+= (1, 1, 1, 1, 1, 1, 1).
+
+1.0
+
+5
+
+10
+2
+
+15
+
+20
+d
+
+25
+
+30
+
+35
+
+0.0
+
+0.6
+
+0.4
+
+0.2
+
+2
+
+200
+
+250
+n
+
+300
+
+350
+
+0.6
+
+0.4
+
+= (0.01, 0.02, 0.75, 1, 2, 2, 3).
+
+0.0
+
+200
+2
+
+250
+n
+
+300
+
+350
+
+= (1, 1, 1, 1, 1, 1, 1).
+
+1.0
+Var-UCB
+Uniform Allocation
+Optimal Static Allocation
+Trace-UCB
+
+0.2
+
+150
+
+150
+
+(c)
+
+= (0.01, 0.02, 0.75, 1, 2, 2, 3).
+
+0.8
+MSE (max 4.06)
+
+MSE (max 3.5)
+
+0.2
+
+1.0
+Var-UCB
+Uniform Allocation
+Optimal Static Allocation
+Trace-UCB
+
+0.8
+
+(d)
+
+0.4
+
+0.2
+
+(a)
+
+0.0
+
+0.6
+
+Var-UCB
+Uniform Allocation
+Optimal Static Allocation
+Trace-UCB
+
+0.8
+MSE (max 4.07)
+
+0.0
+
+Var-UCB
+Uniform Allocation
+Optimal Static Allocation
+Trace-UCB
+
+0.8
+MSE (max 1.74)
+
+0.8
+MSE (max 8.49)
+
+MSE (max 8.93)
+
+0.8
+
+1.0
+Var-UCB
+Uniform Allocation
+Optimal Static Allocation
+Trace-UCB
+
+0.6
+
+0.4
+
+0.2
+
+150
+
+(e)
+
+200
+2
+
+250
+n
+
+300
+
+= (1, 1, 1, 1, 1, 1, 1).
+
+350
+
+0.0
+
+(f)
+
+150
+2
+
+200
+
+250
+n
+
+300
+
+350
+
+= (0.01, 0.02, 0.75, 1, 2, 2, 3).
+
+Figure 1. White Gaussian synthetic data with m = 7. In Figures (a,b), we set n = 350. In Figures (c,d,e,f), we set d = 10.
+
+better than uniform sampling only for small d < 23, where
+it is more important to control for the i2 ’s. For larger dimensions, balancing uniformly the contexts eventually becomes a better strategy, and uniform sampling outperforms
+VAR -UCB. In this case too, T RACE -UCB is competitive
+with the optimal static allocation even for large d, successfully balancing both noise variance and contextual error.
+Next, we study the performance of the algorithms w.r.t. n.
+We report two different losses, one in expectation (3) and
+one in high probability (17), corresponding to the results
+we proved in Theorems 6 and 7, respectively. In order to
+approximate the loss in (3) (Figures 1(c,d)) we run 30, 000
+simulations, compute the average prediction error for each
+instance i 2 [m], and finally report the maximum mean error across the instances. On the other hand, we estimate the
+loss in (17) (Figures 1(e,f)) by running 30, 000 simulations,
+taking the maximum prediction error across the instances
+for each simulation, and finally reporting their median.
+In Figures 1(c, d), we display the loss for fixed dimension
+d = 10 and horizon from n = 115 to 360. In Figure 1(c),
+T RACE -UCB performs similarly to the optimal static allocation, whereas VAR -UCB performs significantly worse,
+
+ranging from 25% to 50% higher errors than T RACE -UCB,
+due to some catastrophic errors arising from unlucky contextual realizations for an instance. In Fig. 1(d), as the number of contexts grows, uniform sampling’s simple context
+balancing approach is enough to perform as well as VAR UCB that again heavily suffers from large mistakes. In
+both figures, T RACE -UCB smoothly learns the i2 ’s and
+outperforms uniform sampling and VAR -UCB. Its performance is comparable to that of the optimal static allocation,
+especially in the case of equal variances in Fig. 1(c).
+In Figure 1(e), T RACE -UCB learns and properly balances
+observations extremely fast and obtains an almost optimal
+performance. Similarly to figures 1(a,c), VAR -UCB struggles when variances ˆi2 are almost equal, mainly because it
+gets confused by random deviations in variance estimates
+ˆi2 , while overlooking potential and harmful context imbalances. Note that even when n = 360 (rightmost point), its
+median error is still 25% higher than T RACE -UCB’s. In
+Fig. 1(f), as expected, uniform sampling performs poorly,
+due to mismatch in variances, and only outperforms VAR UCB for small horizons in which uniform allocation pays
+off. On the other hand, T RACE -UCB is able to success-
+
+Active Learning for Accurate Estimation of Linear Models
+1.0
+
+0.7
+0.6
+0.5
+0.4
+
+Var-UCB
+Uniform Allocation
+Trace-UCB
+
+0.95
+
+0.8
+MSE (max 1.27)
+
+MSE (max 418.88)
+
+1.00
+
+Var-UCB
+Uniform Allocation
+Trace-UCB
+
+0.9
+
+0.90
+
+0.85
+
+0.80
+
+0.3
+500
+
+600
+
+700
+
+n
+
+800
+
+900
+
+1000
+
+200
+
+250
+
+300
+
+n
+
+350
+
+400
+
+450
+
+Figure 2. Results on Jester (left) with d = 40, m = 10 and MovieLens (right) with d = 25, m = 5. Median over 1000 simulations.
+
+fully handle the tradeoff between learning and allocating
+according to variance estimates ˆi2 , while accounting for
+b i , even for very low n. We observe
+the contextual trace ⌃
+that for large n, VAR -UCB eventually reaches the performance of the optimal static allocation and T RACE -UCB.
+In practice the loss in (17) (figures 1(e,f)) is often more relevant than (3), since it is in high probability and not in expectation, and T RACE -UCB shows excellent performance
+and robustness, regardless of the underlying variances i2 .
+Real Data. T RACE -UCB is based on assumptions such as
+linearity, and Gaussianity of noise and context that may not
+hold in practice, where data may show complex dependencies. Therefore, it is important to evaluate the algorithm
+with real-world data to see its robustness to the violation
+of its assumptions. We consider two collaborative filtering datasets in which users provide ratings for items. We
+choose a dense subset of k users and p items, where every
+user has rated every item. Thus, each user is represented
+by a p-dimensional vector of ratings. We define the user
+context by d out of her p ratings, and learn to predict her
+remaining m = p d ratings (each one is a problem instance). All item ratings are first centered, so each item’s
+mean is zero. In each simulation, n out of the k users are selected at random to be fed to the algorithm, also in random
+order. Algorithms can select any instance as the dataset
+contains the ratings of every instance for all the users. At
+the end of each simulation, we compute the prediction error
+for each instance by using the k n users that did not participate in training for that simulation. Finally, we report
+the median error across all simulations.
+Fig. 2(a) reports the results using the Jester Dataset
+by (Goldberg et al., 2001) that consists of joke ratings in
+a continuous scale from 10 to 10. We take d = 40 joke
+ratings as context and learn the ratings for another 9 jokes.
+In addition, we add another function that counts the total
+number of movies originally rated by the user. The latter
+is also centered, bounded to the same scale, and has higher
+variance (without conditioning on X). The number of to-
+
+tal users is k = 3811, and m = 10. When the number
+of observations is limited, the advantage of T RACE -UCB
+is quite significant (the improvement w.r.t. uniform allocation goes from 45% to almost 20% for large n, while w.r.t.
+VAR -UCB it goes from almost 30% to roughly 5%), even
+though the model and context distribution are far from linear and Gaussian, respectively.
+Fig. 2(b) shows the results for the MovieLens
+dataset (Maxwell Harper & Konstan, 2016) that consists of movie ratings between 0 and 5 with 0.5 increments.
+We select 30 popular movies rated by k = 1363 users,
+and randomly choose m = 5 of them to learn (so
+d = 25). In this case, all problems have similar variance
+2
+2
+(ˆmax
+/ˆmin
+⇡ 1.3) so uniform allocation seems appropriate. Both T RACE -UCB and VAR -UCB modestly improve
+uniform allocation, while their performance is similar.
+
+5. Conclusions
+We studied the problem of adaptive allocation of n contextual samples of dimension d to estimate m linear functions equally well, under heterogenous noise levels i2
+that depend on the linear instance and are unknown to
+the decision-maker. We proposed T RACE -UCB, an optimistic algorithm that successfully solves the explorationexploitation dilemma by simultaneously learning the i2 ’s,
+allocating samples accordingly to their estimates, and balancing the contextual information across the instances. We
+also provide strong theoretical guarantees for two losses of
+interest: in expectation and high-probability. Simulations
+were conducted in several settings, with both synthetic and
+real data. The favorable results suggest that T RACE -UCB
+is reliable, and remarkably robust even in settings that fall
+outside its assumptions, thus, a useful and simple tool to
+implement in practice.
+Acknowledgements. A. Lazaric is supported by French Ministry
+of Higher Education and Research, Nord-Pas-de-Calais Regional
+Council and French National Research Agency projects ExTraLearn (n.ANR-14-CE24-0010-01).
+
+Active Learning for Accurate Estimation of Linear Models
 
 References
-Agarwal, Naman, Allen-Zhu, Zeyuan, Bullins, Brian,
-Hazan, Elad, and Ma, Tengyu. Finding approximate local minima for nonconvex optimization in linear time.
-arXiv preprint arXiv:1611.01146, 2016.
-Bhojanapalli, Srinadh, Neyshabur, Behnam, and Srebro,
-Nathan. Global optimality of local search for low
-rank matrix recovery. arXiv preprint arXiv:1605.07221,
-2016.
-Bubeck, Sébastien et al. Convex optimization: Algorithms
-R in Machine
-and complexity. Foundations and Trends
-Learning, 8(3-4):231–357, 2015.
-Candes, Emmanuel J, Li, Xiaodong, and Soltanolkotabi,
-Mahdi. Phase retrieval via wirtinger flow: Theory and
-algorithms. IEEE Transactions on Information Theory,
-61(4):1985–2007, 2015.
-Carmon, Yair and Duchi, John C. Gradient descent efficiently finds the cubic-regularized non-convex newton
-step. arXiv preprint arXiv:1612.00547, 2016.
-Carmon, Yair, Duchi, John C, Hinder, Oliver, and Sidford,
-Aaron. Accelerated methods for non-convex optimization. arXiv preprint arXiv:1611.00756, 2016.
-Choromanska, Anna, Henaff, Mikael, Mathieu, Michael,
-Arous, Gérard Ben, and LeCun, Yann. The loss surface
-of multilayer networks. arXiv:1412.0233, 2014.
-Curtis, Frank E, Robinson, Daniel P, and Samadi, Mohammadreza. A trust region algorithm with a worst-case iteration complexity of\ mathcal {O}(\ epsilonˆ{-3/2}) for
-nonconvex optimization. Mathematical Programming,
-pp. 1–32, 2014.
-Dauphin, Yann N, Pascanu, Razvan, Gulcehre, Caglar,
-Cho, Kyunghyun, Ganguli, Surya, and Bengio, Yoshua.
-Identifying and attacking the saddle point problem in
-high-dimensional non-convex optimization. In Advances
-in Neural Information Processing Systems, pp. 2933–
-2941, 2014.
-Ge, Rong, Huang, Furong, Jin, Chi, and Yuan, Yang. Escaping from saddle points—online stochastic gradient
-for tensor decomposition. In COLT, 2015.
-Ge, Rong, Lee, Jason D, and Ma, Tengyu. Matrix completion has no spurious local minimum. In Advances in
-Neural Information Processing Systems, pp. 2973–2981,
-2016.
-Harman, Radoslav and Lacko, Vladimı́r. On decompositional algorithms for uniform sampling from n-spheres
-and n-balls. Journal of Multivariate Analysis, 101(10):
-2297–2304, 2010.
+Abbasi-Yadkori, Y., Pál, D., and Szepesvári, Cs. Improved
+algorithms for linear stochastic bandits. In Advances in
+Neural Information Processing Systems, pp. 2312–2320,
+2011.
+Antos, A., Grover, V., and Szepesvári, Cs. Active learning
+in multi-armed bandits. In International Conference on
+Algorithmic Learning Theory, pp. 287–302, 2008.
+Carpentier, A., Lazaric, A., Ghavamzadeh, M., Munos, R.,
+and Auer, P. Upper-confidence-bound algorithms for
+active learning in multi-armed bandits. In Algorithmic
+Learning Theory, pp. 189–203. Springer, 2011.
+Goldberg, K., Roeder, T., Gupta, D., and Perkins, C. Eigentaste: A constant time collaborative filtering algorithm.
+Information Retrieval, 4(2):133–151, 2001.
+Hastie, T., Tibshirani, R., and Wainwright, M. Statistical
+learning with sparsity: the lasso and generalizations.
+CRC Press, 2015.
+Maxwell Harper, F. and Konstan, J. The movielens
+datasets: History and context. ACM Transactions on Interactive Intelligent Systems (TiiS), 5(4):19, 2016.
+Negahban, S. and Wainwright, M. Simultaneous support recovery in high dimensions: Benefits and perils of
+block-regularization. IEEE Transactions on Information
+Theory, 57(6):3841–3863, 2011.
+Obozinski, G., Wainwright, M., and Jordan, M. Support
+union recovery in high-dimensional multivariate regression. The Annals of Statistics, pp. 1–47, 2011.
+Pukelsheim, F. Optimal Design of Experiments. Classics in
+Applied Mathematics. Society for Industrial and Applied
+Mathematics, 2006.
+Raskutti, G., Wainwright, M. J, and Yu, B. Restricted
+eigenvalue properties for correlated gaussian designs.
+Journal of Machine Learning Research, 11(8):2241–
+2259, 2010.
+Riquelme, C., Ghavamzadeh, M., and Lazaric, A. Active
+learning for accurate estimation of linear models. arXiv
+preprint arXiv:1703.00579, 2017a.
+Riquelme, C., Johari, R., and Zhang, B. Online active
+linear regression via thresholding. In Thirty-First AAAI
+Conference on Artificial Intelligence, 2017b.
+Sabato, S. and Munos, R. Active regression by stratification. In Advances in Neural Information Processing
+Systems, pp. 469–477, 2014.
+Vershynin, R. Introduction to the non-asymptotic analysis
+of random matrices. arXiv:1011.3027, 2010.
 
-Jain, Prateek, Jin, Chi, Kakade, Sham M, and Netrapalli,
-Praneeth. Computing matrix squareroot via non convex
-local search. arXiv preprint arXiv:1507.05854, 2015.
-Kawaguchi, Kenji. Deep learning without poor local minima. In Advances In Neural Information Processing Systems, pp. 586–594, 2016.
-Lee, Jason D, Simchowitz, Max, Jordan, Michael I, and
-Recht, Benjamin. Gradient descent only converges to
-minimizers. In Conference on Learning Theory, pp.
-1246–1257, 2016.
-Levy, Kfir Y. The power of normalization: Faster evasion of
-saddle points. arXiv preprint arXiv:1611.04831, 2016.
-Nesterov, Yu. Introductory lectures on convex programming volume i: Basic course. Lecture notes, 1998.
-Nesterov, Yurii and Polyak, Boris T. Cubic regularization
-of newton method and its global performance. Mathematical Programming, 108(1):177–205, 2006.
-Netrapalli, Praneeth, Jain, Prateek, and Sanghavi, Sujay.
-Phase retrieval using alternating minimization. In Advances in Neural Information Processing Systems, pp.
-2796–2804, 2013.
-Park, Dohyung, Kyrillidis, Anastasios, Caramanis, Constantine, and Sanghavi, Sujay. Non-square matrix
-sensing without spurious local minima via the burermonteiro approach. arXiv preprint arXiv:1609.03240,
-2016.
-Rumelhart, David E, Hinton, Geoffrey E, and Williams,
-Ronald J. Learning representations by back-propagating
-errors. Cognitive modeling, 5, 1988.
-Sun, Ju, Qu, Qing, and Wright, John. Complete dictionary
-recovery over the sphere i: Overview and the geometric picture. IEEE Transactions on Information Theory,
-2016a.
-Sun, Ju, Qu, Qing, and Wright, John. A geometric analysis of phase retrieval. In Information Theory (ISIT),
-2016 IEEE International Symposium on, pp. 2379–2383.
-IEEE, 2016b.
-Sun, Ruoyu and Luo, Zhi-Quan. Guaranteed matrix completion via non-convex factorization. IEEE Transactions
-on Information Theory, 62(11):6535–6579, 2016.
-Zheng, Qinqing and Lafferty, John. Convergence analysis
-for rectangular matrix completion using burer-monteiro
-factorization and gradient descent.
-arXiv preprint
-arXiv:1605.07051, 2016.
+Wainwright, M. High-dimensional statistics: A nonasymptotic viewpoint. Draft, 2015.
+Wang, W., Liang, Y., and Xing, E. Block regularized lasso
+for multivariate multi-response linear regression. In AISTATS, 2013.
+Wiens, D. and Li, P. V-optimal designs for heteroscedastic regression. Journal of Statistical Planning and Inference, 145:125–138, 2014.
 
 

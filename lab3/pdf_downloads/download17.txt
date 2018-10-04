@@ -1,1310 +1,1150 @@
-Natasha: Faster Non-Convex Stochastic Optimization
-via Strongly Non-Convex Parameter
-
-Zeyuan Allen-Zhu 1
+Modular Multitask Reinforcement Learning with Policy Sketches
+Jacob Andreas 1 Dan Klein 1 Sergey Levine 1
 
 Abstract
-Given a non-convex function f (x) that is an average of n smooth functions, we design stochastic first-order methods to find its approximate
-stationary points. The performance of our new
-methods depend on the smallest (negative) eigenvalue −σ of the Hessian. This parameter σ
-captures how strongly non-convex f (x) is, and
-is analogous to the strong convexity parameter
-for convex optimization. At least in theory, our
-methods outperform known results for a range of
-parameter σ, and can also be used to find approximate local minima. Our result implies an interesting dichotomy: there exists a threshold σ0 so
-that the (currently) fastest methods for σ > σ0
-and for σ < σ0 have different behaviors: the former scales with n2/3 and the latter scales with
-n3/4 .
+We describe a framework for multitask deep reinforcement learning guided by policy sketches.
+Sketches annotate tasks with sequences of named
+subtasks, providing information about high-level
+structural relationships among tasks but not how
+to implement them—specifically not providing
+the detailed guidance used by much previous
+work on learning policy abstractions for RL (e.g.
+intermediate rewards, subtask completion signals, or intrinsic motivations). To learn from
+sketches, we present a model that associates every subtask with a modular subpolicy, and jointly
+maximizes reward over full task-specific policies by tying parameters across shared subpolicies. Optimization is accomplished via a decoupled actor–critic training objective that facilitates
+learning common behaviors from multiple dissimilar reward functions. We evaluate the effectiveness of our approach in three environments
+featuring both discrete and continuous control,
+and with sparse rewards that can be obtained only
+after completing a number of high-level subgoals. Experiments show that using our approach
+to learn policies guided by sketches gives better
+performance than existing techniques for learning task-specific or shared policies, while naturally inducing a library of interpretable primitive behaviors that can be recombined to rapidly
+adapt to new tasks.
 
+1. Introduction
+This paper describes a framework for learning composable deep subpolicies in a multitask setting, guided only
+by abstract sketches of high-level behavior. General reinforcement learning algorithms allow agents to solve tasks
+in complex environments. But tasks featuring extremely
 1
+University of California, Berkeley. Correspondence to: Jacob
+Andreas <jda@cs.berkeley.edu>.
 
-Introduction
-
-We study the problem of composite non-convex minimization:
-n
-o
-n
-1X
-fi (x)
-min F (x) := ψ(x) + f (x) := ψ(x) +
-n i=1
-x∈Rd
-(1.1)
-where each fi (x) is nonconvex but smooth, and ψ(·) is
-proper convex, possibly nonsmooth, but relatively simple.
-We are interested in finding a point x that is an approximate
-local minimum of F (x).
-Pn
-• The finite-sum structure f (x) = n1 i=1 fi (x) arises
-prominently in large-scale machine learning tasks. In
-particular, when minimizing loss over a training set,
-each example i corresponds to one loss function fi (·)
-in the summation. This finite-sum structure allows one
-to perform stochastic gradient descent with respect to a
-Future version of this paper shall be found at http://
-arxiv.org/abs/1702.00763. 1 Microsoft Research. Correspondence to: Zeyuan Allen-Zhu <zeyuan@csail.mit.edu>.
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-random ∇fi (x).
-• The so-called proximal term ψ(x) adds more generality to the model. For instance, if ψ(x) is the indicator
-function of a convex set, then problem (1.1) becomes
-constraint minimization; if ψ(x) = kxk1 , then we can
-allow problem (1.1) to perform feature selection. In
-general, ψ(x) has to be a simple function where the
+τ1: make planks
+b1: get wood
+
+K1
+
+b2: use workbench
+
+Π1
+π1
+π2
+
+τ2: make sticks
+b1: get wood
+b3: use toolshed
+
+K2
+
+Π2
+π1
+π3
+
+π3
+π2
+π1
+
+π1
+
+Figure 1: Learning from policy sketches. The figure shows simplified versions of two tasks (make planks and make sticks, each
+associated with its own policy (⇧1 and ⇧2 respectively). These
+policies share an initial high-level action b1 : both require the
+agent to get wood before taking it to an appropriate crafting station. Even without prior information about how the associated behavior ⇡1 should be implemented, knowing that the agent should
+initially follow the same subpolicy in both tasks is enough to learn
+a reusable representation of their shared structure.
+
+delayed rewards or other long-term structure are often difficult to solve with flat, monolithic policies, and a long
+line of prior work has studied methods for learning hierarchical policy representations (Sutton et al., 1999; Dietterich, 2000; Konidaris & Barto, 2007; Hauser et al., 2008).
+While unsupervised discovery of these hierarchies is possible (Daniel et al., 2012; Bacon & Precup, 2015), practical
+approaches often require detailed supervision in the form
+of explicitly specified high-level actions, subgoals, or behavioral primitives (Precup, 2000). These depend on state
+representations simple or structured enough that suitable
+reward signals can be effectively engineered by hand.
+But is such fine-grained supervision actually necessary to
+achieve the full benefits of hierarchy? Specifically, is it
+necessary to explicitly ground high-level actions into the
+representation of the environment? Or is it sufficient to
+simply inform the learner about the abstract structure of
+policies, without ever specifying how high-level behaviors
+should make use of primitive percepts or actions?
+To answer these questions, we explore a multitask reinforcement learning setting where the learner is pre-
+
+Modular Multitask Reinforcement Learning with Policy Sketches
+
+sented with policy sketches. Policy sketches are short, ungrounded, symbolic representations of a task that describe
+its component parts, as illustrated in Figure 1. While symbols might be shared across tasks (get wood appears in
+sketches for both the make planks and make sticks tasks),
+the learner is told nothing about what these symbols mean,
+in terms of either observations or intermediate rewards.
+We present an agent architecture that learns from policy
+sketches by associating each high-level action with a parameterization of a low-level subpolicy, and jointly optimizes over concatenated task-specific policies by tying
+parameters across shared subpolicies. We find that this
+architecture can use the high-level guidance provided by
+sketches, without any grounding or concrete definition, to
+dramatically accelerate learning of complex multi-stage behaviors. Our experiments indicate that many of the benefits
+to learning that come from highly detailed low-level supervision (e.g. from subgoal rewards) can also be obtained
+from fairly coarse high-level supervision (i.e. from policy
+sketches). Crucially, sketches are much easier to produce:
+they require no modifications to the environment dynamics or reward function, and can be easily provided by nonexperts. This makes it possible to extend the benefits of
+hierarchical RL to challenging environments where it may
+not be possible to specify by hand the details of relevant
+subtasks. We show that our approach substantially outperforms purely unsupervised methods that do not provide the
+learner with any task-specific guidance about how hierarchies should be deployed, and further that the specific use
+of sketches to parameterize modular subpolicies makes better use of sketches than conditioning on them directly.
+The present work may be viewed as an extension of recent
+approaches for learning compositional deep architectures
+from structured program descriptors (Andreas et al., 2016;
+Reed & de Freitas, 2016). Here we focus on learning in interactive environments. This extension presents a variety of
+technical challenges, requiring analogues of these methods
+that can be trained from sparse, non-differentiable reward
+signals without demonstrations of desired system behavior.
+Our contributions are:
+• A general paradigm for multitask, hierarchical, deep
+reinforcement learning guided by abstract sketches of
+task-specific policies.
+• A concrete recipe for learning from these sketches,
+built on a general family of modular deep policy representations and a multitask actor–critic training objective.
+The modular structure of our approach, which associates
+every high-level action symbol with a discrete subpolicy,
+naturally induces a library of interpretable policy fragments
+
+that are easily recombined. This makes it possible to evaluate our approach under a variety of different data conditions: (1) learning the full collection of tasks jointly via
+reinforcement, (2) in a zero-shot setting where a policy
+sketch is available for a held-out task, and (3) in a adaptation setting, where sketches are hidden and the agent must
+learn to adapt a pretrained policy to reuse high-level actions in a new task. In all cases, our approach substantially
+outperforms previous approaches based on explicit decomposition of the Q function along subtasks (Parr & Russell,
+1998; Vogel & Jurafsky, 2010), unsupervised option discovery (Bacon & Precup, 2015), and several standard policy gradient baselines.
+We consider three families of tasks: a 2-D Minecraftinspired crafting game (Figure 3a), in which the agent must
+acquire particular resources by finding raw ingredients,
+combining them together in the proper order, and in some
+cases building intermediate tools that enable the agent to alter the environment itself; a 2-D maze navigation task that
+requires the agent to collect keys and open doors, and a 3-D
+locomotion task (Figure 3b) in which a quadrupedal robot
+must actuate its joints to traverse a narrow winding cliff.
+In all tasks, the agent receives a reward only after the final
+goal is accomplished. For the most challenging tasks, involving sequences of four or five high-level actions, a taskspecific agent initially following a random policy essentially never discovers the reward signal, so these tasks cannot be solved without considering their hierarchical structure. We have released code at http://github.com/
+jacobandreas/psketch.
+
+2. Related Work
+The agent representation we describe in this paper belongs to the broader family of hierarchical reinforcement
+learners. As detailed in Section 3, our approach may be
+viewed as an instantiation of the options framework first
+described by Sutton et al. (1999). A large body of work
+describes techniques for learning options and related abstract actions, in both single- and multitask settings. Most
+techniques for learning options rely on intermediate supervisory signals, e.g. to encourage exploration (Kearns &
+Singh, 2002) or completion of pre-defined subtasks (Kulkarni et al., 2016). An alternative family of approaches employs post-hoc analysis of demonstrations or pretrained
+policies to extract reusable sub-components (Stolle & Precup, 2002; Konidaris et al., 2011; Niekum et al., 2015).
+Techniques for learning options with less guidance than the
+present work include Bacon & Precup (2015) and Vezhnevets et al. (2016), and other general hierarchical policy
+learners include Daniel et al. (2012), Bakker & Schmidhuber (2004) and Menache et al. (2002). We will see that
+the minimal supervision provided by policy sketches re-
+
+Modular Multitask Reinforcement Learning with Policy Sketches
+
+sults in (sometimes dramatic) improvements over fully unsupervised approaches, while being substantially less onerous for humans to provide compared to the grounded supervision (such as explicit subgoals or feature abstraction
+hierarchies) used in previous work.
+Once a collection of high-level actions exists, agents are
+faced with the problem of learning meta-level (typically
+semi-Markov) policies that invoke appropriate high-level
+actions in sequence (Precup, 2000). The learning problem
+we describe in this paper is in some sense the direct dual
+to the problem of learning these meta-level policies: there,
+the agent begins with an inventory of complex primitives
+and must learn to model their behavior and select among
+them; here we begin knowing the names of appropriate
+high-level actions but nothing about how they are implemented, and must infer implementations (but not, initially,
+abstract plans) from context. Our model can be combined
+with these approaches to support a “mixed” supervision
+condition where sketches are available for some tasks but
+not others (Section 4.5).
+Another closely related line of work is the Hierarchical
+Abstract Machines (HAM) framework introduced by Parr
+& Russell (1998). Like our approach, HAMs begin with
+a representation of a high-level policy as an automaton
+(or a more general computer program; Andre & Russell,
+2001; Marthi et al., 2004) and use reinforcement learning to fill in low-level details. Because these approaches
+attempt to learn a single representation of the Q function
+for all subtasks and contexts, they require extremely strong
+formal assumptions about the form of the reward function
+and state representation (Andre & Russell, 2002) that the
+present work avoids by decoupling the policy representation from the value function. They perform less effectively
+when applied to arbitrary state representations where these
+assumptions do not hold (Section 4.3). We are additionally unaware of past work showing that HAM automata can
+be automatically inferred for new tasks given a pre-trained
+model, while here we show that it is easy to solve the corresponding problem for sketch followers (Section 4.5).
+Our approach is also inspired by a number of recent efforts
+toward compositional reasoning and interaction with structured deep models. Such models have been previously used
+for tasks involving question answering (Iyyer et al., 2014;
+Andreas et al., 2016) and relational reasoning (Socher et al.,
+2012), and more recently for multi-task, multi-robot transfer problems (Devin et al., 2016). In the present work—as
+in existing approaches employing dynamically assembled
+modular networks—task-specific training signals are propagated through a collection of composed discrete structures
+with tied weights. Here the composed structures specify time-varying policies rather than feedforward computations, and their parameters must be learned via interaction
+
+rather than direct supervision. Another closely related family of models includes neural programmers (Neelakantan
+et al., 2015) and programmer–interpreters (Reed & de Freitas, 2016), which generate discrete computational structures but require supervision in the form of output actions
+or full execution traces.
+We view the problem of learning from policy sketches as
+complementary to the instruction following problem studied in the natural language processing literature. Existing
+work on instruction following focuses on mapping from
+natural language strings to symbolic action sequences that
+are then executed by a hard-coded interpreter (Branavan
+et al., 2009; Chen & Mooney, 2011; Artzi & Zettlemoyer,
+2013; Tellex et al., 2011). Here, by contrast, we focus on
+learning to execute complex actions given symbolic representations as a starting point. Instruction following models
+may be viewed as joint policies over instructions and environment observations (so their behavior is not defined in
+the absence of instructions), while the model described in
+this paper naturally supports adaptation to tasks where no
+sketches are available. We expect that future work might
+combine the two lines of research, bootstrapping policy
+learning directly from natural language hints rather than the
+semi-structured sketches used here.
+
+3. Learning Modular Policies from Sketches
+We consider a multitask reinforcement learning problem arising from a family of infinite-horizon discounted
+Markov decision processes in a shared environment. This
+environment is specified by a tuple (S, A, P, ), with S a
+set of states, A a set of low-level actions, P : S ⇥ A ⇥ S !
+R a transition probability distribution, and a discount factor. Each task ⌧ 2 T is then specified by a pair (R⌧ , ⇢⌧ ),
+with R⌧ : S ! R a task-specific reward function and
+⇢⌧ : S ! R an initial distribution over states. For a fixed
+sequence {(si , ai )} of states and actions obtained from a
+rollout of a given policy, weP
+will denote the empirical return
 1
-kx − x0 k2 }
-projection operation arg minx {ψ(x) + 2η
-is efficiently computable. At a first reading of this paper, one can assume ψ(x) ≡ 0 for simplicity.
-Many non-convex machine learning problems fall into
-problem (1.1). Most notably, training deep neural networks
-and classifications with sigmoid loss correspond to (1.1)
-where neither fi (x) or f (x) is convex. However, our understanding to this challenging non-convex problem is very
-limited.
-1.1
+starting in state si as qi := j=i+1 j i 1 R(sj ). In addition to the components of a standard multitask RL problem,
+we assume that tasks are annotated with sketches K⌧ , each
+consisting of a sequence (b⌧ 1 , b⌧ 2 , . . .) of high-level symbolic labels drawn from a fixed vocabulary B.
+3.1. Model
+We exploit the structural information provided by sketches
+by constructing for each symbol b a corresponding subpolicy ⇡b . By sharing each subpolicy across all tasks annotated
+with the corresponding symbol, our approach naturally
+learns the shared abstraction for the corresponding subtask,
+without requiring any information about the grounding of
+that task to be explicitly specified by annotation.
 
-Strongly Non-Convex Optimization
+Modular Multitask Reinforcement Learning with Policy Sketches
 
-Let L be the smoothness parameter for each fi (x), meaning
-all the eigenvalues of ∇2 fi (x) lie in [−L, L].1
-We denote byP
-σ ∈ [0, L] the strong-nonconvexity parameter
-n
-of f (x) = n1 i=1 fi (x), meaning that
-all the eigenvalues of ∇2 f (x) lie in [−σ, L].
-We emphasize that parameter σ is analogous to the strongconvexity parameter µ for convex optimization, where all
-the eigenvalues of ∇2 f (x) lie in [µ, L] for some µ > 0.
-We wish to find an ε-approximate stationary point (a.k.a.
-critical point) of F (x), that is
-a point x satisfying kG(x)k ≤ ε
-where G(x) is the so-called gradient mapping of F (x) (see
-Section 2 for a formal definition). In the special case of
-ψ(·) ≡ 0, gradient mapping G(x) is the same as gradient
-∇f (x), so x satisfies k∇f (x)k ≤ ε.
-Since f (·) is σ-strongly nonconvex, any ε-approximate stationary point is automatically also an (ε, σ)-approximate
-local minimum — meaning that the Hessian of the output
-point ∇2 f (x)  −σI is approximately positive semidefinite (PSD).
+Algorithm 1 TRAIN - STEP(⇧, curriculum)
+1: D
+;
+2: while |D| < D do
+3:
+// sample task ⌧ from curriculum (Section 3.3)
+4:
+⌧ ⇠ curriculum(·)
+5:
+// do rollout
+6:
+d = {(si , ai , (bi = K⌧,i ), qi , ⌧ ), . . .} ⇠ ⇧⌧
+7:
+D
+D[d
+8: // update parameters
+9: for b 2 B, ⌧ 2 T do
+10:
+d = {(si , ai , b0 , qi , ⌧ 0 ) 2 D : b0 = b, ⌧ 0 = ⌧ }
+11:
+// update subpolicy
+P
+↵
+12:
+✓b
+✓b + D
+c⌧ (si )
+d r log ⇡b (ai |si ) qi
+13:
+// update criticP
+14:
+⌘⌧
+⌘⌧ + D d rc⌧ (si ) qi c⌧ (si )
+
+Algorithm 2 TRAIN - LOOP()
+
+At each timestep, a subpolicy may select either a low-level
+action a 2 A or a special STOP action. We denote the
+augmented state space A+ := A [ {STOP}. At a high
+level, this framework is agnostic to the implementation of
+subpolicies: any function that takes a representation of the
+current state onto a distribution over A+ will do.
+
+over all ✓b to maximize expected discounted reward
+X
+X
+⇥X i
+⇤
+J(⇧) :=
+J(⇧⌧ ) :=
+Esi ⇠⇧⌧
+R⌧ (si )
+
+1:
+2:
+3:
+4:
+5:
+6:
+7:
+8:
+9:
+10:
+11:
+12:
+13:
+14:
+
+// initialize subpolicies randomly
+⇧ = INIT()
+`max
 1
-This definition also applies to functions f (x) that are not
-twice differentiable, see Section 2 for details.
-
-Natasha: Faster Non-Convex Stochastic Optimization Via Strongly Non-Convex Parameter
-
-1.2
-
-Motivations and Remarks
-complexity (log-scale)
-
-• We focus on strongly non-convex optimization because
-introducing this parameter σ allows us to perform a
-more refined study of non-convex optimization. If σ
-equals L then L-strongly nonconvex optimization is
-equivalent to the general non-convex optimization.
-• We focus only on finding stationary points as opposed to local minima, because in a recent study —
-see Appendix A— researchers have shown that finding
-(ε, δ)-approximate local minima reduces to finding εapproximate stationary points in an O(δ)-strongly nonconvex function.
-• Parameter σ is often not constant and can be much
-smaller than√L. For instance, second-order methods often find (ε, ε)-approximate local√minima (Nesterov,
-2008) and this corresponds to σ = ε.
-1.3
-
-Known Results
-
-Despite the widespread use of nonconvex models in machine learning and related fields, our understanding to nonconvex optimization is still very limited. Until recently,
-nearly all research papers have been mostly focusing on either σ = 0 or σ = L:
-• If σ = 0, the accelerated SVRG method (ShalevShwartz, 2016; Allen-Zhu & Yuan, 2016) finds x satisfying F (x)p− F (x∗ ) ≤ ε, in gradient complexity
-
-e n + n3/4 L/ε .2 This result is irrelevant to this
-O
-paper because f (x) is simply convex.
-• If σ = L, the SVRG method (Allen-Zhu & Hazan,
-2016) finds an ε-approximate stationary point of F (x)
-in gradient complexity O(n + n2/3 L/ε2 ).
-• If σ = L, gradient descent finds an ε-approximate stationary point in gradient complexity O(nL/ε2 ).
-• If σ = L, stochastic gradient descent finds an ε-approx.
-stationary point in gradient complexity O(L2 /ε4 ).
-Throughout this paper, we refer to gradient complexity
-as the total number of stochastic gradient computations
-∇fi (x) and proximal computations y ← Proxψ,η (x) :=
+loop
+rmin
 1
-arg miny {ψ(y) + 2η
-ky − xk2 }.3
-Very recently, it was observed by two independent
-groups (Agarwal et al., 2017; Carmon et al., 2016) —
-although implicitly, see Section 2.1— that for solving the
-σ-strongly nonconvex problem, one can repeatedly regularize F (x) to make it σ-strongly convex, and then apply
-the accelerated SVRG method to minimize this regularized
+// initialize `max -step curriculum uniformly
+T 0 = {⌧ 2 T : |K⌧ |  `max }
+curriculum(·) = Unif(T 0 )
+while rmin < rgood do
+// update parameters (Algorithm 1)
+TRAIN - STEP (⇧, curriculum)
+curriculum(⌧ ) / 1[⌧ 2 T 0 ](1 Êr⌧ ) 8⌧ 2 T
+rmin
+min⌧ 2T 0 Êr⌧
+`max
+`max + 1
+
+⌧
+
+⌧
+
+i
+
+across all tasks ⌧ 2 T .
+
+In this paper, we focus on the case where each ⇡b is represented as a neural network.1 These subpolicies may be
+viewed as options of the kind described by Sutton et al.
+(1999), with the key distinction that they have no initiation
+semantics, but are instead invokable everywhere, and have
+no explicit representation as a function from an initial state
+to a distribution over final states (instead implicitly using
+the STOP action to terminate).
+
+3.2. Policy Optimization
+
+Given a fixed sketch (b1 , b2 , . . . ), a task-specific policy ⇧⌧
+is formed by concatenating its associated subpolicies in sequence. In particular, the high-level policy maintains a subpolicy index i (initially 0), and executes actions from ⇡bi
+until the STOP symbol is emitted, at which point control is
+passed to ⇡bi+1 . We may thus think of ⇧⌧ as inducing a
+Markov chain over the state space S ⇥ B, with transitions:
+
+where the baseline or “critic” c can be chosen independently of the future without introducing bias into the gradient. Recalling our previous definition of qi as the empirical return starting from si , this form of the gradient corresponds to a generalized advantage estimator (Schulman
+et al., 2015a) with = 1. Here c achieves close to the
+optimal variance (Greensmith et al., 2004) when it is set
+
+(s, bi ) ! (s0 , bi )
+
+! (s, bi+1 )
+
+with pr.
+
+P
+
+a2A ⇡bi (a|s)
+
+with pr. ⇡bi (STOP|s)
+
+i
+
+· P (s0 |s, a)
+
+Note that ⇧⌧ is semi-Markov with respect to projection of
+the augmented state space S ⇥ B onto the underlying state
+space S. We denote
+S the complete family of task-specific
+policies ⇧ := ⌧ {⇧⌧ }, and let each ⇡b be an arbitrary
+function of the current environment state parameterized by
+some weight vector ✓b . The learning problem is to optimize
+1
+
+Here that optimization is accomplished via a simple decoupled actor–critic method. In a standard policy gradient approach, with a single policy ⇡ with parameters ✓, we compute gradient steps of the form (Williams, 1992):
+X
+r✓ J(⇡) =
+r✓ log ⇡(ai |si ) qi c(si ) , (1)
+
+For ease of presentation, this section assumes that these subpolicy networks are independently parameterized. As described in
+Section 4.2, it is also possible to share parameters between subpolicies, and introduce discrete subtask structure by way of an
+embedding of each symbol b.
+
+b1
+
+a1
+
+a2
+
+b2
+
+a3
+
+stop
+
+π1
+
+s1
+
+a4
+
+a5
+
+a6
+
+stop
+
+s5
+
+s6
+
+s7
+
+π2
+
+s2
+
+s3
+
+s4
+
+s4
+
+Figure 2: Model overview. Each subpolicy ⇡ is uniquely associated with a symbol b implemented as a neural network that maps
+from a state si to distributions over A+ , and chooses an action ai
+by sampling from this distribution. Whenever the STOP action is
+sampled, control advances to the next subpolicy in the sketch.
+
+Modular Multitask Reinforcement Learning with Policy Sketches
+
+exactly equal to the state-value function V⇡ (si ) = E⇡ qi for
+the target policy ⇡ starting in state si .
+The situation becomes slightly more complicated when
+generalizing to modular policies built by sequencing subpolicies. In this case, we will have one subpolicy per symbol but one critic per task. This is because subpolicies ⇡b
+might participate in a number of composed policies ⇧⌧ ,
+each associated with its own reward function R⌧ . Thus individual subpolicies are not uniquely identified with value
+functions, and the aforementioned subpolicy-specific statevalue estimator is no longer well-defined. We extend the
+actor–critic method to incorporate the decoupling of policies from value functions by allowing the critic to vary persample (that is, per-task-and-timestep) depending on the
+reward function with which
+P the sample is associated. Noting that r✓b J(⇧) = t:b2K⌧ r✓b J(⇧⌧ ), i.e. the sum of
+gradients of expected rewards across all tasks in which ⇡b
+participates, we have:
+X
+r✓ J(⇧) =
+r✓ J(⇧⌧ )
+⌧
+
+=
+
+XX
+⌧
+
+i
+
+r✓b log ⇡b (a⌧ i |s⌧ i ) qi
+
+c⌧ (s⌧ i ) , (2)
+
+where each state-action pair (s⌧ i , a⌧ i ) was selected by the
+subpolicy ⇡b in the context of the task ⌧ .
+Now minimization of the gradient variance requires that
+each c⌧ actually depend on the task identity. (This follows immediately by applying the corresponding argument
+in Greensmith et al. (2004) individually to each term in the
+sum over ⌧ in Equation 2.) Because the value function is
+itself unknown, an approximation must be estimated from
+data. Here we allow these c⌧ to be implemented with an
+arbitrary function approximator with parameters ⌘⌧ . This
+is trained to minimize a squared error criterion, with gradients given by
+
+1X
+r⌘ ⌧
+(qi c⌧ (si ))2
+2 i
+X
+=
+r⌘⌧ c⌧ (si ) qi c⌧ (si ) . (3)
+
+these steps, which is driven by a curriculum learning procedure, is specified in Algorithm 2.) This is an on-policy
+algorithm. In each step, the agent samples tasks from a task
+distribution provided by a curriculum (described in the following subsection). The current family of policies ⇧ is
+used to perform rollouts in each sampled task, accumulating the resulting tuples of (states, low-level actions, highlevel symbols, rewards, and task identities) into a dataset D.
+Once D reaches a maximum size D, it is used to compute
+gradients w.r.t. both policy and critic parameters, and the
+parameter vectors are updated accordingly. The step sizes
+↵ and in Algorithm 1 can be chosen adaptively using any
+first-order method.
+3.3. Curriculum Learning
+For complex tasks, like the one depicted in Figure 3b, it is
+difficult for the agent to discover any states with positive
+reward until many subpolicy behaviors have already been
+learned. It is thus a better use of the learner’s time to focus
+on “easy” tasks, where many rollouts will result in high
+reward from which appropriate subpolicy behavior can be
+inferred. But there is a fundamental tradeoff involved here:
+if the learner spends too much time on easy tasks before
+being made aware of the existence of harder ones, it may
+overfit and learn subpolicies that no longer generalize or
+exhibit the desired structural properties.
+To avoid both of these problems, we use a curriculum learning scheme (Bengio et al., 2009) that allows the model
+to smoothly scale up from easy tasks to more difficult
+ones while avoiding overfitting. Initially the model is presented with tasks associated with short sketches. Once average reward on all these tasks reaches a certain threshold,
+the length limit is incremented. We assume that rewards
+across tasks are normalized with maximum achievable reward 0 < qi < 1. Let Êr⌧ denote the empirical estimate of
+the expected reward for the current policy on task ⌧ . Then
+at each timestep, tasks are sampled in proportion to 1 Êr⌧ ,
+which by assumption must be positive.
+
+Alternative forms of the advantage estimator (e.g. the TD
+residual R⌧ (si )+ V⌧ (si+1 ) V⌧ (si ) or any other member
+of the generalized advantage estimator family) can be easily substituted by simply maintaining one such estimator
+per task. Experiments (Section 4.4) show that conditioning on both the state and the task identity results in noticeable performance improvements, suggesting that the variance reduction provided by this objective is important for
+efficient joint learning of modular policies.
+
+Intuitively, the tasks that provide the strongest learning signal are those in which (1) the agent does not on average
+achieve reward close to the upper bound, but (2) many
+episodes result in high reward. The expected reward component of the curriculum addresses condition (1) by ensuring that time is not spent on nearly solved tasks, while
+the length bound component of the curriculum addresses
+condition (2) by ensuring that tasks are not attempted until
+high-reward episodes are likely to be encountered. Experiments show that both components of this curriculum learning scheme improve the rate at which the model converges
+to a good policy (Section 4.4).
+
+The complete procedure for computing a single gradient
+step is given in Algorithm 1. (The outer training loop over
+
+The complete curriculum-based training procedure is specified in Algorithm 2. Initially, the maximum sketch length
+
+i
+
+Modular Multitask Reinforcement Learning with Policy Sketches
+
+`max is set to 1, and the curriculum initialized to sample
+length-1 tasks uniformly. (Neither of the environments
+we consider in this paper feature any length-1 tasks; in
+this case, observe that Algorithm 2 will simply advance to
+length-2 tasks without any parameter updates.) For each
+setting of `max , the algorithm uses the current collection
+of task policies ⇧ to compute and apply the gradient step
+described in Algorithm 1. The rollouts obtained from the
+call to TRAIN - STEP can also be used to compute reward
+estimates Êr⌧ ; these estimates determine a new task distribution for the curriculum. The inner loop is repeated until the reward threshold rgood is exceeded, at which point
+`max is incremented and the process repeated over a (nowexpanded) collection of tasks.
+
+4. Experiments
+We evaluate the performance of our approach in three environments: a crafting environment, a maze navigation environment, and a cliff traversal environment. These environments involve various kinds of challenging low-level
+control: agents must learn to avoid obstacles, interact with
+various kinds of objects, and relate fine-grained joint activation to high-level locomotion goals. They also feature
+hierarchical structure: most rewards are provided only after the agent has completed two to five high-level actions in
+the appropriate sequence, without any intermediate goals to
+indicate progress towards completion.
+4.1. Implementation
+In all our experiments, we implement each subpolicy as a
+feedforward neural network with ReLU nonlinearities and
+a hidden layer with 128 hidden units, and each critic as a
+linear function of the current state. Each subpolicy network
+receives as input a set of features describing the current
+state of the environment, and outputs a distribution over
+actions. The agent acts at every timestep by sampling from
+this distribution. The gradient steps given in lines 8 and 9
+of Algorithm 1 are implemented using RMSP ROP (Tieleman, 2012) with a step size of 0.001 and gradient clipping
+to a unit norm. We take the batch size D in Algorithm 1 to
+be 2000, and set = 0.9 in both environments. For curriculum learning, the improvement threshold rgood is 0.8.
+4.2. Environments
+The crafting environment (Figure 3a) is inspired by the
+popular game Minecraft, but is implemented in a discrete
+2-D world. The agent may interact with objects in the
+world by facing them and executing a special USE action.
+Interacting with raw materials initially scattered around the
+environment causes them to be added to an inventory. Interacting with different crafting stations causes objects in the
+agent’s inventory to be combined or transformed. Each task
+
+τ: get gold
+b1: get wood
+
 2
 
-e to hide poly-logarithmic factors in n, L, 1/ε.
-We use O
-Some authors also refer to them as incremental first-order oracle (IFO) and proximal oracle (PO) calls. In most machine learning applications, each IFO and PO call can be implemented to run
-in time O(d) where d is the dimension of the model, or even in
-time O(s) if s is the average sparsity of the data vectors.
-3
+K
 
-𝜎=0
+b2: get iron
 
-𝑛𝐿
-𝜀2
+(a)
 
-𝑛𝜎
-𝜀2
-𝑛2/3 𝐿2 𝜎
-𝜀2
-𝑛3/4 𝐿𝜎
-𝜀2
+1
 
-1/2
+b3: use workbench
 
-𝜎 = 𝐿/ 𝑛
-
-𝑛2/3 𝐿
-𝜀2
-
-1/3
-
-repeatSVRG
-Natasha
-SVRG
-gradient descent
-𝜎=𝐿
-
-Figure 1: Comparison to prior works
-
-function. Under mild assumption σ ≥ ε2 , this approach
-• finds an ε-approximate
-stationary point in gradient
-√
-
-Lσ
-e nσ+n3/4
-complexity O
-.
-ε2
-We call this method repeatSVRG in this paper. Unfortunately, repeatSVRG is even slower than the vanilla SVRG
-for σ = L by a factor n1/3 , see Figure 1.
-Remark on SGD. Stochastic gradient descent (SGD) has
-a slower convergence rate (i.e., in terms of 1/ε4 ) than other
-cited first-order methods (i.e., in terms of 1/ε2 ), see for
-instance (Ghadimi & Lan, 2015). However, the complexity
-of SGD does not depend on n and thus is incomparable to
-gradient descent, SVRG, or repeatSVRG.4 This is one of
-the main motivations to study how to reduce the complexity
-of non-SGD methods, especially in terms of n.
-1.4
-
-Our New Results
-
-In this paper, we identify an interesting dichotomy with respect to the spectrum of the nonconvexity parameter
-√ σ ∈
-[0, L]. In particular, we showed that if σ ≥ L/ n, then
-our new method Natasha finds an ε-approximate stationary point of F (x) in gradient complexity
-
-1 n2/3 (L2 σ)1/3 
-O n log +
-.
-ε
-ε2
-In other words, together with repeatSVRG, we have improved the gradient complexity for σ-stringly nonconvex
-optimization to5
-
-n 3/4 √Lσ n2/3 (L2 σ)1/3 o
-e min n
-O
-,
-ε2
-ε2
-√
-and the first term in the min is smaller
-√ if σ < L/ n and
-the second term is smaller if σ > L/ n. We illustrate our
 4
 
-In practice, there are examples in non-convex empirical risk
-minimization (Allen-Zhu & Hazan, 2016) and in training neural
-networks (Allen-Zhu & Hazan, 2016; Reddi et al., 2016) where
-SVRG can outperform SGD. Of course, for deep learning tasks,
-SGD remains to be the best practical method of choice.
-5
-We remark here that this is under mild assumptions for ε being sufficiently small. For instance, the result of (Agarwal et al.,
-2017; Carmon et al., 2016) requires ε2 ≤ σ. In our result, the
-term n log 1ε disappears when ε6 ≤ L2 σ/n.
+3
 
-Natasha: Faster Non-Convex Stochastic Optimization Via Strongly Non-Convex Parameter
+b4: get gold
 
-performance improvement in Figure 1. Our result matches
-that of SVRG for σ = L, and has a much simpler analysis.
-Additional Results. One can take a step further and ask
-what if each function fi (x) is (`1 , `2 )-smooth for parameters `1 , `2 ≥ σ, meaning that all the eigenvalues of ∇2 fi (x)
-lie in [−`2 , `1 ].
-We show that a variant of our method, which we call
-Natashafull , solves this more refined problem of (1.1) with
-2/3
-1/3 
-as
-total gradient complexity O n log 1ε + n (`1ε2`2 σ)
-long as `σ1 `22 ≤ n2 .
-Remark 1.1. In applications, `1 and `2 can be of very different magnitudes. The most influential example is finding
-the leading eigenvector of a symmetric matrix. Using the
-so-called shift-and-invert reduction (Garber et al., 2016),
-computing the leading eigenvector reduces to the convex version of problem (1.1), where each fi (x) is (λ, 1)smooth for λ  1. Other examples include all the applications that are built on shift-and-invert, including high
-rank SVD/PCA (Allen-Zhu & Li, 2016), canonical component analysis (Allen-Zhu & Li, 2017a), online matrix learning (Allen-Zhu & Li, 2017b), and approximate local minima algorithms (Agarwal et al., 2017; Carmon et al., 2016).
-Mini-Batch. Our result generalizes trivially to the minibatch stochastic setting, where in each iteration one computes ∇fi (x) for b random choices of index i ∈ [n] and average them. The stated gradient complexities of Natasha
-and Natashafull can be adjusted so that the factor n2/3 is
-replaced with n2/3 b1/3 .
+τ: go to goal
+
+2
+
+(b)
+
+1
+
+1
+
+3
+2
+
+b1: north
+
+K
+
+b2: east
+b3: east
+
+3
+
+Figure 3: Examples from the crafting and cliff environments used
+in this paper. An additional maze environment is also investigated.
+(a) In the crafting environment, an agent seeking to pick up the
+gold nugget in the top corner must first collect wood (1) and iron
+(2), use a workbench to turn them into a bridge (3), and use the
+bridge to cross the water (4). (b) In the cliff environment, the
+agent must reach a goal position by traversing a winding sequence
+of tiles without falling off. Control takes place at the level of
+individual joint angles; high-level behaviors like “move north”
+must be learned.
+
+in this game corresponds to some crafted object the agent
+must produce; the most complicated goals require the agent
+to also craft intermediate ingredients, and in some cases
+build tools (like a pickaxe and a bridge) to reach ingredients
+located in initially inaccessible regions of the environment.
+The maze environment (not pictured) corresponds closely
+to the the “light world” described by Konidaris & Barto
+(2007). The agent is placed in a discrete world consisting of a series of rooms, some of which are connected by
+doors. Some doors require that the agent first pick up a
+key to open them. For our experiments, each task corresponds to a goal room (always at the same position relative
+to the agent’s starting position) that the agent must reach
+by navigating through a sequence of intermediate rooms.
+The agent has one sensor on each side of its body, which
+reports the distance to keys, closed doors, and open doors
+in the corresponding direction. Sketches specify a particular sequence of directions for the agent to traverse between
+rooms to reach the goal. The sketch always corresponds
+to a viable traversal from the start to the goal position, but
+other (possibly shorter) traversals may also exist.
+The cliff environment (Figure 3b) is intended to demonstrate the applicability of our approach to problems involving high-dimensional continuous control. In this environment, a quadrupedal robot (Schulman et al., 2015b) is
+placed on a variable-length winding path, and must navi-
+
+Modular Multitask Reinforcement Learning with Policy Sketches
+
+0.6
+
+Joint
+Opt–Crit
+Indep
+
+0.4
+
+Q automaton
+
+0.2
+0.0
+
+0.0
+
+0.5
+
+1.0
+
 1.5
 
-Our New Idea. In this paper, we propose Natasha and
-Natashafull , two methods that are no longer black-box reductions to SVRG. Both of them still divide iterations into
-e the
-epochs of length n, and compute gradient estimators ∇
-same way as SVRG. However, we do not apply compute
-e directly.
-xt − α ∇
-• In our base algorithm Natasha, we divide each epoch
-into p sub-epochs, each with a starting vector b
-x. Our
-σ2
-1/3
-n)
-.
-Then,
-we
-theory suggests the choice p ≈ ( L
-2
-e
-e
-replace the use of ∇ with ∇ + 2σ(xt − b
-x). This is
-equivalent to replacing f (x) with its regularized version
-f (x) + σkx −b
-xk2 , where the center b
-x varies across subepochs. We provide pseudocode in Algorithm 1 and illustrate it in Figure 2.
-We view this additional term 2σ(xt − b
-x) as a type of
-retraction, which stabilizes the algorithm by moving
-the vector a bit in the backward direction towards b
-x.
-• In our full algorithm Natashafull , we add one more ingredient on top of Natasha. That is, we perform upe with respect to a difdates zt+1 ← Proxψ,α (zt − α∇)
-x
-ferent sequence {zt }, and then define xt = 21 zt + 12 b
-e at points xt . We
-and compute gradient estimators ∇
-provide pseudocode in Algorithm 2 in the appendix.
-We view this averaging xt = 21 zt + 21 b
-x as another type
-of retraction, which stabilizes the algorithm by moving towards b
-x. The technique of computing gradients at
-points xt but moving a different sequence of points zt is
-related to the Katyusha momentum recently developed
-for convex optimization (Allen-Zhu, 2017).
-
-Our Techniques
-
-Let us first recall the main idea behind stochastic variancereduced methods, such as SVRG (Johnson & Zhang, 2013).
-The SVRG method divides iterations into epochs, each of
-e for each epoch,
-length n. It maintains a snapshot point x
-and computes the full gradient ∇f (e
-x) only for snapshots.
-Then, in each iteration t at point xt , SVRG defines gradient
-e = ∇fi (xt ) − ∇fi (e
-estimator ∇
-x) + ∇f (e
-x) which satisfies
-e
-Ei [∇] = ∇f (xt ), and performs proximal update xt+1 ←
-
-e for some learning rate α. (Recall that
-Proxψ,α xt − α∇
-e
-if ψ(·) ≡ 0 then we would have xt+1 ← xt − α∇.)
-In nearly all the aforementioned results for nonconvex optimization, researchers have either directly applied
-SVRG (Allen-Zhu & Hazan, 2016) (for the case σ = L),
-or repeatedly applied SVRG (Agarwal et al., 2017; Carmon
-et al., 2016) (for general σ ∈ [0, L]). This puts some limitation in the algorithmic design, because SVRG requires
-each epoch to be of length exactly n.6
-6
-
-The epoch length of SVRG is always n (or a constant multiple of n in practice), because this ensures the computation of
-e is of amortized gradient complexity O(1). The per-iteration
-∇
-complexity of SVRG is thus the same as the traditional stochastic
-
-1.6
-
-Other Related Work
-
-Methods based on variance-reduced stochastic gradients
-were first introduced for convex optimization. The first
-such method is SAG by Schmidt et al (Schmidt et al.,
-2013). The two most popular choices for gradient estimators are the SVRG-like one we adopted in this paper (independently introduced by (Johnson & Zhang, 2013; Zhang
-et al., 2013), and the SAGA-like one introduced by (Defazio et al., 2014). In nearly all applications, the results
-proven for SVRG-like estimators and SAGA-like estimators are simply exchangeable (therefore, the results of this
-paper naturally generalize to SAGA-like estimators).
-The first “non-convex use” of variance reduction is by
-Shalev-Shwartz (Shalev-Shwartz, 2016) who assumes that
-each fi (x) is non-convex but their average f (x) is still convex. This result has been slightly improved to several more
-refined settings (Allen-Zhu & Yuan, 2016). The first truly
-non-convex use of variance reduction (i.e., for f (x) being
-also non-convex) is independently by (Allen-Zhu & Hazan,
-2016) and (Reddi et al., 2016). First-order methods only
-gradient descent (SGD).
-
-Natasha: Faster Non-Convex Stochastic Optimization Via Strongly Non-Convex Parameter
-next 𝒙
-𝒙
-
-…
-
-…
-
-…
-…
-
-…
-regularized by 𝜎 𝑥 − 𝑥
-
-…
-2
-
-regularized by 𝜎 𝑥 − 𝑥
-
-…
-2
-
-regularized by 𝜎 𝑥 − 𝑥
-
-2
-
-Figure 2: One full epoch of Natasha. The n iterations are divided into p sub-epochs, each consisting of m = n/p steps.
-
-find stationary points (unless there is extra assumption on
-the randomness of the data), and converge no faster than
-1/ε2 .
-When the second-order Hessian information is used, one
-can (1) find local minima instead of stationary points, and
-(2) improve the 1/ε2 rate to 1/ε1.5 . The first such result is by cubic-regularized Newton’s method (Nesterov,
-2008); however, its per-iteration complexity is very high.
-Very recently, two independent groups of authors tackled
-this problem from a somewhat similar viewpoint (Carmon
-et al., 2016; Agarwal et al., 2017): if the computation
-of
-
-Hessian-vector multiplications (i.e., ∇2 fi (x) v) is on the
-same order of the computation
-of gradients ∇fi (x),7 then
-√
-one can obtain a (ε, ε)-approximate local minimum in
-3/4 
-n
-e 1.5
-gradient complexity O
-+ εn1.75 , if we use big-O to
-ε
-also hide dependencies on the smoothness parameters.
-Other related papers include Ge et al. (Ge et al., 2015)
-where the authors showed that a noise-injected version of
-SGD converges to local minima instead of critical points,
-as long as the underlying function is “strict-saddle.” Their
-theoretical running time is a large polynomial in the dimension. Lee et al. (Lee et al., 2016) showed that gradient
-descent, starting from a random point, almost surely converges to a local minimum if the function is “strict-saddle”.
-The rate of convergence required is somewhat unknown.
-
-2
-
-Preliminaries
-
-Throughout this paper, we denote by k · k the Euclidean
-norm. We use i ∈R [n] to denote that i is generated from
-[n] = {1, 2, . . . , n} uniformly at random. We denote by
-∇f (x) the full gradient of function f if it is differentiable,
-and ∂f (x) any subgradient if f is only Lipschitz continuous at point x. We let x∗ be any minimizer of F (x).
-Recall some definitions on strong convexity (SC), strongly
-nonconvexity, and smoothness.
-Definition 2.1. For a function f : Rd → R,
-7
-
-A lot of interesting problems satisfy this property, including
-training neural nets.
-
-• f is σ-strongly convex if ∀x, y ∈ Rd , it satisfies
-σ
-f (y) ≥ f (x) + h∂f (x), y − xi + kx − yk2 .
-2
-• f is σ-strongly nonconvex if ∀x, y ∈ Rd , it satisfies
-σ
-f (y) ≥ f (x) + h∂f (x), y − xi − kx − yk2 .
-2
-d
-• f is (`1 , `2 )-smooth if ∀x, y ∈ R , it satisfies
-`1
-2 kx
-
-− yk2 ≥ f (y)
-`2
-≥ f (x) + h∇f (x), y − xi − kx − yk2 .
-2
-• f is L-smooth if it is (L, L)-smooth.
-f (x) + h∇f (x), y − xi +
-
-The (`1 , `2 )-smoothness parameters were introduced
-in (Allen-Zhu & Yuan, 2016) to tackle the convex setting
-of problem (1.1). The notion of strong nonconvexity is
-also known as “almost convexity (Carmon et al., 2016)”
-or “lower smoothness (Allen-Zhu & Yuan, 2016).” We refrain from using the name “almost convexity” because it
-coincides with several other non-equivalent definitions in
-optimization literatures.
-Definition 2.2. Given a parameter η > 0, the gradient
-mapping of F (·) in (1.1) at point x is
-
-1
-Gη (x) :=
-x − x0
-η
-
-	
-1
-where x0 = arg miny ψ(y) + h∇f (x), yi + 2η
-ky − xk2 .
-In particular, if ψ(·) ≡ 0, then Gη (x) ≡ ∇f (x).
-The following theorem for the SVRG method can be found
-for instance in (Allen-Zhu & Yuan, 2016), which is built on
-top of the results (Shalev-Shwartz, 2016; Lin et al., 2015;
-Frostig et al., 2015):
-Pn
-Theorem 2.3 (SVRG). Let G(y) := ψ(y) + n1 i=1 gi (y)
-be σ-strongly convex, then the SVRG method finds a point
-y satisfying G(y) − G(y ∗ ) ≤ ε
-
-2
-1
-• with gradient complexity O (n + L
-σ 2 ) log ε , if each
-gi (·) is L-smooth (for L ≥ σ); or
-• with gradient complexity O (n + `σ1 `22 ) log
-gi (·) is (`1 , `2 )-smooth (for `1 , `2 ≥ σ).
-
-1
-ε
-
-
-
-, if each
-
-Natasha: Faster Non-Convex Stochastic Optimization Via Strongly Non-Convex Parameter
-
-If one performs
-the running times become
-p acceleration,
-
-e n + n3/4 L/σ and O
-e n + n3/4 (`1 `2 σ 2 )1/4 .
-O
-2.1
-
-RepeatSVRG
-
-We recall the idea behind a simple algorithm —that we call
-repeatSVRG— which finds the ε-approximate stationary
-points for problem (1.1) when f (x) is σ-strongly nonconvex. The algorithm is divided into stages. In each stage t,
-consider a modified function Ft (x) := F (x) + σkx − xt k2 .
-It is easy to see that Ft (x) is σ-strongly convex, so one can
-apply the accelerated SVRG method to minimize Ft (x).
-Let xt+1 be any sufficiently accurate approximate minimizer of Ft (x).8
-Now, one can prove (c.f. Section 4) that xt+1 is an
-O(σkxt − xt+1 k)-approximate stationary point for F (x).
-Therefore, if σkxt − xt+1 k ≤ ε we can stop the algorithm
-because we have already found an O(ε)-approximate stationary point. If σkxt − xt+1 k > ε , then it must satisfy that F (xt ) − F (xt+1 ) ≥ σkxt − xt+1 k2 ≥ Ω(ε2 /σ),
-but this cannot happen for more than T = O εσ2 (F (x0 ) −
-F ∗ ) stages. Therefore, the total gradient complexity is
-T multiplied with the complexity of
-paccelerated SVRG
-e + n3/4 L/σ) according to
-in each stage (which is O(n
-Theorem 2.3).
-Remark 2.4. The complexity of repeatSVRG can be inferred from (Agarwal et al., 2017; Carmon et al., 2016), but
-is not explicitly stated. For instance, the paper (Carmon
-et al., 2016) does not allow F (x) to have a non-smooth
-proximal term ψ(x), and applies accelerated gradient descent instead of accelerated SVRG.
-
-3
-
-Our Algorithms
-
-We introduce two variants of our algorithms: (1) the base
-method Natasha targets on the simple regime when f (x)
-and each fi (x) are both L-smooth, and (2) the full method
-Natashafull targets on the more refined regime when f (x)
-is L-smooth but each fi (x) is (`1 , `2 )-smooth.
-Both methods follow the general idea of variance-reduced
-stochastic gradient descent: in each inner-most iteration,
-e that is of the form
-they compute a gradient estimator ∇
-e
-e =
-∇ = ∇f (e
-x)−∇fi (e
-x)+∇fi (x) and satisfies Ei∈R [n] [∇]
-e is a snapshot point that is changed once
-∇f (x). Here, x
-every n iterations (i.e., for each different k = 1, 2, . . . , T 0
-in the pseudocode), and we call it a full epoch for every
-distinct k. Notice that the amortized gradient complexity
-e is O(1) per-iteration.
-for computing ∇
-Base Method. In Natasha (see Algorithm 1), as illustrated by Figure 2, we divide each full epoch into p subepochs s = 0, 1, . . . , p − 1, each of length m = n/p. In
-8
-
-Since the accelerated SVRG method has a linear convergence
-rate for strongly convex functions, the complexity to find such
-xt+1 only depends logarithmically on this accuracy.
-
-each sub-epoch s, we start with a point x0 = b
-x, and replace
-f (x) with its regularized version f s (x) := f (x) + σkx −
-b
-xk2 . Then, in each iteration t of the sub-epoch s, we
-e with respect to f s (xt ),
-• compute gradient estimator ∇
-
-e yi +
-• perform update xt+1 = arg miny ψ(y) + h∇,
-	
-1
-2
-ky
-−
-x
-k
-with
-learning
-rate
-α.
-t
-2α
-Effectively, the introduction of the regularizer σkx − b
-xk2
-makes sure that when performing update xt ← xt+1 , we
-also move a bit towards point b
-x (i.e., retraction by regularization). Finally, when the sub-epoch is done, we define b
-x
-to be a random one from {x0 , . . . , xm−1 }.
-Full Method. In Natashafull (see full version), we also
-divide each full epoch into p sub-epochs. In each sub-epoch
-s, we start with a point x0 = z0 = b
-x and define f s (x) :=
-2
-f (x) + σkx − b
-xk . However, this time in each iteration t,
-we
-e with respect to f s (xt ),
-• compute gradient estimator ∇
-
-e yi +
-• perform update zt+1 = arg miny ψ(y) + h∇,
-	
-1
-2
-with learning rate α, and
-2α ky − zt k
-x.
-• choose xt+1 = 21 zt+1 + 12 b
-Effectively, the regularizer σkx−b
-xk2 makes sure that when
-performing updates, we move a bit towards point b
-x (i.e.,
-retraction by regularization); at the same time, the choice
-xt+1 = 21 zt+1 + 12 b
-x also helps us move towards point b
-x
-(i.e., retraction by the so-called “Katyusha momentum”9 ).
-Finally, when the sub-epoch is over, we define b
-x to be a
-random one from the set {x0 , . . . , xm−1 }, and move to the
-next sub-epoch.
-
-4
-
-A Sufficient Stopping Criterion
-
-In this section, we present a sufficient condition for finding
-approximate stationary points in a σ-strongly nonconvex
-function. Lemma 4.1 below states that, if we regularize the
-original function and define G(x) := F (x) + σkx − b
-xk2
-for an arbitrary point b
-x, then the minimizer of G(x) is an
-approximate saddle-point for F (x).
-Lemma 4.1. Suppose G(y) = F (y) + σky −b
-xk2 for some
-∗
-given point b
-x, and let x be the minimizer of G(y). If we
-minimize G(y) and obtain a point x satisfying
-G(x) − G(x∗ ) ≤ δ 2 σ ,
-
-1
-then for every η ∈ 0, max{L,4σ}
-we have the gradient
-mapping
-
-kGη (x)k2 ≤ 12σ 2 kx∗ − b
-xk2 + O δ 2 .
-Notice that when ψ(x) ≡ 0 this lemma is trivial, and can
-be found for instance in (Carmon et al., 2016). The main
-9
-The idea for this second kind of retraction, and the idea of
-having the updates on a sequence zt but computing gradients at
-points xt , is largely motivated by our recent work on the Katyusha
-momentum and the Katyusha acceleration (Allen-Zhu, 2017).
-
-Natasha: Faster Non-Convex Stochastic Optimization Via Strongly Non-Convex Parameter
-
-Algorithm 1 Natasha(x∅ , p, T 0 , α)
-Input: starting vector x∅ , sub-epoch count p ∈ [n], epoch count T 0 , learning rate α > 0.
-Output: vector xout .
-1: b
-x ← x∅ ; m ← n/p; X ← [];
-2: for k ← 1 to T 0 do
- T 0 full epochs
-e ←b
-3:
-x
-x; µ ← ∇f (e
-x);
-4:
-for s ← 0 to p − 1 do
- p sub-epochs in each epoch
-5:
-x0 ← b
-x; X ← [X, b
-x];
-6:
-for t ← 0 to m − 1 do
- m iterations in each sub-epoch
-7:
-i ← a random choice from {1, · · · , n}.
-
-e ← ∇fi (xt ) − ∇fi (e
-e = ∇ f (x) + σkx − b
-8:
-∇
-x) + µ + 2σ(xt − b
-x)
- Ei [∇]
-xk2 x
-t
-	
-
-1
-e yi
-ky − xt k2 + h∇,
-9:
-xt+1 = arg miny∈Rd ψ(y) + 2α
-10:
-end for
-b
-11:
-x ← a random choice from {x0 , x1 , . . . , xm−1 };
- for practitioners, choose the average
-12:
-end for
-13: end for
-14: b
-x ← a random vector in X;
- for practitioners, choose the last
-15: xout ← an approximate minimizer of G(y) := F (y) + σky − b
-xk2 using SVRG.
-16: return xout .
- it suffices to run SVRG for O(n log 1ε ) iterations.
-
-technical difficulty arises in order to deal with ψ(x) 6= 0.
-The proof is included in the full version.
-
-5
-
-Base Method: Analysis for One Full Epoch
-
-In this section, we consider problem (1.1) where each fi (x)
-is L-smooth and F (x) is σ-strongly nonconvex. We use
-our base method Natasha to minimize F (x), and analyze
-its behavior for one full epoch in this section. We assume
-σ ≤ L without loss of generality, because any L-smooth
-function is also L-strongly nonconvex.
-Notations. We introduce the following notations for analysis purpose only.
-• Let b
-xs be the vector b
-x at the beginning of sub-epoch s.
-• Let xst be the vector xt in sub-epoch s.
-• Let ist be the index i ∈ [n] in sub-epoch s at iteration t.
-• Let f s (x) := f (x) + σkx − b
-xs k2 , F s (x) := F (x) +
-s 2
-s
-b
-σkx − x k , and x∗ := arg minx {F s (x)}.
-e s (xs ) := ∇fi (xs )−∇fi (e
-• Let ∇f
-x)+∇f (e
-x)+2σ(xt −
-t
-t
-b
-x) where i = ist .
-e (xst ) := ∇fi (xst ) − ∇fi (e
-x) + ∇f (e
-x) where
-• Let ∇f
-i = ist .
-We obviously have that f s (x) and F s (x) are σ-strongly
-convex, and f s (x) is (L + 2σ)-smooth.
-5.1
-
-Variance Upper Bound
-
-The following lemma gives an upper bound on the variance
-e s (xst ):
-of the gradient estimator ∇f
-
-
-e s (xst ) − ∇f s (xst )k2 ≤
-Lemma 5.1. We have Eist k∇f
-P
-s−1
-pL2 kxst − b
-xs k2 + pL2 k=0 kb
-xk − b
-xk+1 k2 .
-
-Proof. We have
-
-
-
-
-e s (xst ) − ∇f s (xst )k2 = Eis k∇f
-e (xst ) − ∇f (xst )k2
-Eist k∇f
-t
-
-
-2 
-= Ei∈R [n]  ∇fi (xst ) − ∇fi (e
-x) − ∇f (xst ) − ∇f (e
-x)) 
-¬
-2 
-
-≤ Ei∈ [n] ∇fi (xst ) − ∇fi (e
-x )
-R
-
-­
-
-2 
-
-≤ pEi∈R [n] ∇fi (xst ) − ∇fi (b
-xs )
-2 
-
-Ps−1
-+ p k=0
-Ei∈R [n] ∇fi (b
-xk ) − ∇fi (b
-xk+1 )
-®
-Ps−1 k
-≤ pL2 kxst − b
-xs k2 + pL2 k=0
-kb
-x −b
-xk+1 k2 .
-
-Above, inequality ¬ is because for any random vector ζ ∈
-Rd , it holds that Ekζ − Eζk2 = Ekζk2 − kEζk2 ; inequality
-e and for any p vectors a1 , a2 , . . . , ap ∈
-­ is because b
-x0 = x
-d
-R , it holds that ka1 +· · ·+ap k2 ≤ pka1 k2 +· · ·+pkap k2 ;
-and inequality ® is because each fi (·) is L-smooth.
-
-5.2
-
-Analysis for One Sub-Epoch
-
-The following inequality is classically known as the “regret inequality” for mirror descent (Allen-Zhu & Orecchia,
-2017), and its proof is classical (see full version):
-e s (xst ), xs − ui + ψ(xs ) − ψ(u) ≤
-Fact 5.2. h∇f
-kxst −uk2
-2α
-
-−
-
-kxst+1 −uk2
-2α
-
-t+1
-kxs −xs k2
-− t+12α t
-
-t+1
-
-for every u ∈ Rd .
-
-The following lemma is our main contribution for the base
-method Natasha.
-Lemma 5.3. As long as α ≤
-h
-i
-E F s (b
-xs+1 ) − F s (xs∗ )
-
-1
-2L+4σ ,
-
-we have
-
-s
-i
-h F s (b
-X
-xs ) − F s (xs∗ )
-≤E
-+αpL2
-kb
-xk −b
-xk+1 k2
-.
-σαm/2
-k=0
-
-Natasha: Faster Non-Convex Stochastic Optimization Via Strongly Non-Convex Parameter
-
-Proof. We first compute that
-F s (xst+1 ) − F s (u) = f s (xst+1 ) − f s (u) + ψ(xst+1 ) − ψ(u)
-¬
-
-≤ f s (xst ) + h∇f s (xst ), xst+1 − xst i +
-
-Dividing both sides by m and rearranging the terms (using
-1
-2σα ≥ 1), we have
-
-L + 2σ s
-kxt − xst+1 k2
-2
-
-h
-i
-E F s (b
-xs+1 ) − F s (xs∗ )
-
-− f s (u) + ψ(xst+1 ) − ψ(u)
-­
-
-L + 2σ s
-kxt − xst+1 k2
-2
-+ h∇f s (xst ), xst − ui + ψ(xst+1 ) − ψ(u) .
-
-≤E
-
-≤ h∇f s (xst ), xst+1 − xst i +
-
-(5.1)
-
-s
-
-Above, inequality ¬ uses the fact that f (·) is (L + 2σ)smooth; and inequality ­ uses the convexity of f s (·). Now,
-we take expectation with respect to ist on both sides of (5.1),
-and derive that:
-
-
-Eist F s (xst+1 ) − F s (u)
-h
-¬
-e s (xst ) − ∇f s (xst ), xst − xst+1 i + h∇f
-e s (xst ), xst+1 − ui
-≤ Eist h∇f
-i
-L + 2σ s
-kxt − xst+1 k2 + ψ(xst+1 ) − ψ(u)
-+
-2
-h
-s
-2
-­
-e s (xst ) − ∇f s (xst ), xst − xst+1 i + kxt − uk
-≤ Eist h∇f
-2α
-i
-kxst+1 − uk2
-1
-L + 2σ  s
-−
-−
-kxt+1 − xst k2
-−
-2α
-2α
-2
-h 
-s
-2i
-s
-2
-®
-
-2
-e s (xst ) − ∇f s (xst ) + kxt − uk − kxt+1 − uk
-≤ Eist α∇f
-2α
-2α
-s−1
-h
-X
-¯
-≤ Eist αpL2 kxst − b
-xs k2 + αpL2
-kb
-xk − b
-xk+1 k2
-k=0
-
-kxs − uk2 i
-kxs − uk2
-+ t
-− t+1
-.
-2α
-2α
-
-(5.2)
-
-Above, inequality ¬ is follows from (5.1) together with
-e s (xst )] = ∇f s (xst ) implies
-the fact that Eist [∇f
-
-
-Eist h∇f s (xst ), xst+1 − xst i + h∇f s (xst ), xst − ui
-
-
-e s (xst )−∇f s (xst ), xst −xst+1 i+h∇f
-e s (xst ), xst+1 −ui ;
-= Eist h∇f
-1
-inequality ­ uses Fact 5.2; inequality ® uses α ≤ 2L+4σ
-1
-1
-together with Young’s inequality ha, bi ≤ 2 kak2 + 2 kbk2 ;
-and inequality ¯ uses Lemma 5.1.
-Finally, choosing u = xs∗ to be the (unique) minimizer of
-F s (·) = f s (·) + ψ(·), and telescoping inequality (5.2) for
-t = 0, 1, . . . , m − 1, we have
-
-h m−1
-X
-i
-E
-F s (xst ) − F s (xs∗ )
-t=1
-
-h kxs − xs k2 m−1
-X
-0
-∗
-≤E
-+
-αpL2 kxst − b
-xs k2
-2α
-t=0
-+ αpL2
-
-s−1
-X
-
-kb
-xk − b
-xk+1 k2
-
-i
-
-k=0
-s
-h F s (b
-i
-X
-xs ) − F s (xs∗ )
-≤E
-+ αpmL2
-kb
-xk − b
-xk+1 k2
-.
-σα
-k=0
-
-Above, the second inequality uses the fact that b
-xs+1 is chos
-s
-sen from {x0 , . . . , xm−1 } uniformly at random, as well as
-the σ-strong convexity of F s (·).
-
-5.3
-
-h F s (b
-xs ) − F s (xs )
-∗
-
-σαm/2
-
-+ αpL2
-
-s
-X
-
-kb
-xk − b
-xk+1 k2
-
-i
-
-.
-
-
-
-k=0
-
-Analysis for One Full Epoch
-
-One can telescope Lemma 5.3 for an entire epoch and arrive at the following lemma (see full version):
-1
-4
-Lemma 5.4. If α ≤ 2L+4σ
-, α ≥ σm
-and α ≤ p2σL2 , we
-have
-p−1 h
-h
-i
-X
-i
-E F s (b
-xs ) − F s (xs∗ ) ≤ 2E F (b
-x0 ) − F (b
-xp ) .
-s=0
-
-6
-
-Base Method: Final Theorem
-
-We are now ready to state and prove our main convergence
-theorem for Natasha:
-Theorem 1. Suppose in (1.1), each fi (x) is L-smooth
-and F (x) is σ-strongly nonconvex for σ ≤ L. Then, if
-
-L2
-σ2
-1/3
-and α = Θ( p2σL2 ), our base
-σ 2 ≤ n, p = Θ ( L2 n)
-method Natasha outputs a point xout satisfying
- 2 1/3 2/3 
-E[kGη (xout )k2 ] ≤ O (L σ)T 0 n n
-· (F (x∅ ) − F ∗ ) .
-
-1
-. In other words, to obtain
-for every η ∈ 0, max{L,4σ}
-E[kGη (xout )k2 ] ≤ ε2 , we need gradient complexity
-
-
-1 (L2 σ)1/3 n2/3
-· (F (x∅ ) − F ∗ ) .
-O n log +
-2
-ε
-ε
-In the above theorem, we have assumed σ ≤ L without
-loss of generality because any L-smooth function is also
-2
-L-strongly nonconvex. Also, we have assumed L
-σ2 ≤ n
-and if this inequality does not hold, then one should apply
-repeatSVRG for a faster running time (see Figure 1).
-1/3
-σ2
-, m =
-Proof of Theorem 1. We choose p = 24L
-2n
-4
-1
-n/p, and α = σm
-= 6p2σL2 ≤ 2L+4σ
-, so we can apply
-Lemma 5.4. If we telescope Lemma 5.4 for the entire algorithm (which has T 0 full epochs), and use the fact that
-b
-xp of the previous epoch equals b
-x0 of the next epoch, we
-conclude that if we choose a random epoch and a random
-subepoch s, we will have
-2
-E[F s (b
-xs ) − F s (xs∗ )] ≤
-(F (x∅ ) − F ∗ ) .
-pT 0
-By the σ-strong convexity of F s (·), we have E[σkb
-xs −
-4
-s 2
-∅
-∗
-x∗ k ] ≤ pT 0 (F (x ) − F ).
-Now, F s (x) = F (x) + σkx −b
-xs k2 satisfies the assumption
-of G(x) in Lemma 4.1. If we use the SVRG method (see
-Theorem 2.3) to minimize the convex function F s (x), we
-
-Natasha: Faster Non-Convex Stochastic Optimization Via Strongly Non-Convex Parameter
-
-get an output xout satisfying F s (xout ) − F s (xs∗ ) ≤ ε2 σ in
-
-2
-1
-1
-gradient complexity O (n + L
-σ 2 ) log ε ≤ O(n log ε ).
-We can therefore apply Lemma 4.1 and conclude that this
-output xout satisfies
- σ 
-· (F (x∅ ) − F ∗ )
-E[kGη (xout )k2 ] ≤ O
-pT 0
- 2 1/3 2/3 
-· (F (x∅ ) − F ∗ ) .
-= O (L σ)T 0 n n
-In other words, we obtain E[kGη (xout )k2 ] ≤ ε2 using
-
-
-2
-1/3 2/3
-T 0 n = O n + (L σ)ε2 n · (F (x∅ ) − F ∗ )
-computations of the stochastic gradients. Here, the additive
-term n is because T 0 ≥ 1.
-
-Allen-Zhu, Zeyuan and Li, Yuanzhi. LazySVD: Even
-Faster SVD Decomposition Yet Without Agonizing
-Pain. In NIPS, 2016.
-Allen-Zhu, Zeyuan and Li, Yuanzhi. Doubly Accelerated
-Methods for Faster CCA and Generalized Eigendecomposition. In Proceedings of the 34th International Conference on Machine Learning, ICML ’17, 2017a.
-Allen-Zhu, Zeyuan and Li, Yuanzhi. Follow the Compressed Leader: Faster Online Learning of Eigenvectors
-and Faster MMWU. In Proceedings of the 34th International Conference on Machine Learning, ICML ’17,
-2017b.
-
-Finally, adding this with O(n log 1ε ), the gradient complexity for the application of SVRG in the last line of Natasha,
-we finish the proof of the total gradient complexity.
-
-
-Allen-Zhu, Zeyuan and Orecchia, Lorenzo. Linear Coupling: An Ultimate Unification of Gradient and Mirror
-Descent. In Proceedings of the 8th Innovations in Theoretical Computer Science, ITCS ’17, 2017.
-
-7
-
-Allen-Zhu, Zeyuan and Yuan, Yang. Improved SVRG
-for Non-Strongly-Convex or Sum-of-Non-Convex Objectives. In ICML, 2016.
-
-Full Method: Final Theorem
-
-We analyze and state the main theorems for our full method
-Natashafull in the full version of this paper.
-
-8
-
-Conclusion
-
-Stochastic gradient descent and gradient descent (including
-alternating minimization) have become the canonical methods for solving non-convex machine learning tasks. However, can we design new non-convex methods to run even
-faster than SGD or GD?
-This present paper tries to tackle this general question, by
-providing a new Natasha method which is intrinsically different from GD or SGD. It runs faster than GD and SVRGbased methods at least in theory. We hope that this could
-be a non-negligible step towards our better understanding
-of non-convex optimization.
-Finally, our results give rise to an interesting dichotomy in
-the best-known complexity of first-order non-convex opti√
-mization: the complexity scales
-with n3/4 for σ < L/ n
-√
-and with n2/3 for σ > L/ n. It remains open to investigate whether this dichotomy is intrinsic, or we can design
-a more efficient algorithm that outperforms both.
+Episode
+
+2.0
+
+2.5
+
+3.0
+⇥106
+
+avg. reward
+
+avg. reward
+
+0.8
+
+Maze environment
+
+1.0
+
+Modular
+(ours)
+
+0.8
+
+Modular
+(ours)
+
+0.6
+
+Opt–Crit
+
+0.4
+
+Joint
+Indep.
+
+0.2
+0.0
+
+Q automaton
+
+0.0
+
+0.5
+
+1.0
+
+1.5
+
+Episode
+
+(a)
+
+2.0
+
+2.5
+
+3.0
+⇥106
+
+(b)
+
+log(avg. reward)
+
+Crafting environment
+
+1.0
+
+1.5
+1.0
+0.5
+0.0
+0.5
+1.0
+1.5
+2.0
+2.5
+3.0
+
+Cliff environment
+Modular
+
+Joint
+Opt–Crit
+
+0.0 0.5 1.0 1.5 2.0 2.5 3.0 3.5 4.0
+⇥108
+Timestep
+
+(c)
+
+Figure 4: Comparing modular learning from sketches with standard RL baselines. Modular is the approach described in this paper, while
+Independent learns a separate policy for each task, Joint learns a shared policy that conditions on the task identity, Q automaton learns
+a single network to map from states and action symbols to Q values, and Opt–Crit is an unsupervised option learner. Performance
+for the best iteration of the (off-policy) Q automaton is plotted. Performance is shown in (a) the crafting environment, (b) the maze
+environment, and (c) the cliff environment. The modular approach is eventually able to achieve high reward on all tasks, while the
+baseline models perform considerably worse on average.
+
+gate to the end without falling off. This task is designed to
+provide a substantially more challenging RL problem, due
+to the fact that the walker must learn the low-level walking skill before it can make any progress, but has simpler
+hierarchical structure than the crafting environment. The
+agent receives a small reward for making progress toward
+the goal, and a large positive reward for reaching the goal
+square, with a negative reward for falling off the path.
+A listing of tasks and sketches is given in Appendix A.
+4.3. Multitask Learning
+The primary experimental question in this paper is whether
+the extra structure provided by policy sketches alone is
+enough to enable fast learning of coupled policies across
+tasks. We aim to explore the differences between the
+approach described in Section 3 and relevant prior work
+that performs either unsupervised or weakly supervised
+multitask learning of hierarchical policy structure. Specifically, we compare our modular to approach to:
+1. Structured hierarchical reinforcement learners:
+(a) the fully unsupervised option–critic algorithm
+of Bacon & Precup (2015)
+(b) a Q automaton that attempts to explicitly represent the Q function for each task / subtask combination (essentially a HAM (Andre & Russell,
+2002) with a deep state abstraction function)
+2. Alternative ways of incorporating sketch data into
+standard policy gradient methods:
+(c) learning an independent policy for each task
+(d) learning a joint policy across all tasks, conditioning directly on both environment features
+and a representation of the complete sketch
+
+The joint and independent models performed best when
+trained with the same curriculum described in Section 3.3,
+while the option–critic model performed best with a
+length–weighted curriculum that has access to all tasks
+from the beginning of training.
+Learning curves for baselines and the modular model are
+shown in Figure 4. It can be seen that in all environments,
+our approach substantially outperforms the baselines: it induces policies with substantially higher average reward and
+converges more quickly than the policy gradient baselines.
+It can further be seen in Figure 4c that after policies have
+been learned on simple tasks, the model is able to rapidly
+adapt to more complex ones, even when the longer tasks
+involve high-level actions not required for any of the short
+tasks (Appendix A).
+Having demonstrated the overall effectiveness of our approach, our remaining experiments explore (1) the importance of various components of the training procedure, and
+(2) the learned models’ ability to generalize or adapt to
+held-out tasks. For compactness, we restrict our consideration on the crafting domain, which features a larger and
+more diverse range of tasks and high-level actions.
+4.4. Ablations
+In addition to the overall modular parameter-tying structure
+induced by our sketches, the key components of our training procedure are the decoupled critic and the curriculum.
+Our next experiments investigate the extent to which these
+are necessary for good performance.
+To evaluate the the critic, we consider three ablations: (1)
+removing the dependence of the model on the environment
+state, in which case the baseline is a single scalar per task;
+(2) removing the dependence of the model on the task, in
+which case the baseline is a conventional generalized advantage estimator; and (3) removing both, in which case
+
+Modular Multitask Reinforcement Learning with Policy Sketches
+Critics
+
+1.0
+
+0.4
+
+{}
+
+avg. reward
+
+0.6
+
+0.2
+
+{len, wgt}
+{len}
+
+0.8
+
+{wgt}
+
+0.6
+
+{}
+
+0.4
+0.2
+
+0.0
+
+0.5
+
+1.0
+
+1.5
+
+Episode
+
+2.0
+
+2.5
+
+0.0
+
+3.0
+⇥106
+
+0.0
+
+0.5
+
+1.0
+
+(a)
+
+1.5
+
+Episode
+
+2.0
+
+2.5
+
+3.0
+⇥106
+
+(b)
+Performance by task
+
+1.0
+0.8
+
+avg. reward
+
+avg. reward
+
+0.8
+
+0.0
+
+Curricula
+
+1.0
+{task, state}
+{state}
+{task}
+
+0.6
+
+Model
+Joint
+Independent
+Option–Critic
+Modular (ours)
+
+Multitask
+
+0-shot
+
+Adaptation
+
+.49
+.44
+.47
+.89
+
+.01
+–
+–
+.77
+
+–
+.01
+.42
+.76
+
+Table 1: Accuracy and generalization of learned models in the
+crafting domain. The table shows the task completion rate for
+each approach after convergence under various training conditions. Multitask is the multitask training condition described in
+Section 4.3, while 0-Shot and Adaptation are the generalization
+experiments described in Section 4.5. Our modular approach consistently achieves the best performance.
+
+0.4
+0.2
+0.0
+
+0.0
+
+0.5
+
+1.0
+
+1.5
+
+Episode
+
+2.0
+
+2.5
+
+3.0
+⇥106
+
+(c)
+Figure 5: Training details in the crafting domain. (a) Critics: lines
+labeled “task” include a baseline that varies with task identity,
+while lines labeled “state” include a baseline that varies with state
+identity. Estimating a baseline that depends on both the representation of the current state and the identity of the current task is
+better than either alone or a constant baseline. (b) Curricula: lines
+labeled “len” use a curriculum with iteratively increasing sketch
+lengths, while lines labeled “wgt” sample tasks in inverse proportion to their current reward. Adjusting the sampling distribution
+based on both task length and performance return improves convergence. (c) Individual task performance. Colors correspond to
+task length. Sharp steps in the learning curve correspond to increases of `max in the curriculum.
+
+the baseline is a single scalar, as in a vanilla policy gradient
+approach. Results are shown in Figure 5a. Introducing both
+state and task dependence into the baseline leads to faster
+convergence of the model: the approach with a constant
+baseline achieves less than half the overall performance of
+the full critic after 3 million episodes. Introducing task and
+state dependence independently improve this performance;
+combining them gives the best result.
+We also investigate two aspects of our curriculum learning
+scheme: starting with short examples and moving to long
+ones, and sampling tasks in inverse proportion to their accumulated reward. Experiments are shown in Figure 5b.
+Both components help; prioritization by both length and
+weight gives the best results.
+4.5. Zero-shot and Adaptation Learning
+In our final experiments, we consider the model’s ability to
+generalize beyond the standard training condition. We first
+consider two tests of generalization: a zero-shot setting, in
+which the model is provided a sketch for the new task and
+must immediately achieve good performance, and a adaptation setting, in which no sketch is provided and the model
+must learn the form of a suitable sketch via interaction in
+the new task.
+
+We hold out two length-four tasks from the full inventory
+used in Section 4.3, and train on the remaining tasks. For
+zero-shot experiments, we simply form the concatenated
+policy described by the sketches of the held-out tasks, and
+repeatedly execute this policy (without learning) in order to
+obtain an estimate of its effectiveness. For adaptation experiments, we consider ordinary RL over high-level actions
+B rather than low-level actions A, implementing the highlevel learner with the same agent architecture as described
+in Section 3.1. Note that the Independent and Option–
+Critic models cannot be applied to the zero-shot evaluation,
+while the Joint model cannot be applied to the adaptation
+baseline (because it depends on pre-specified sketch features). Results are shown in Table 1. The held-out tasks
+are sufficiently challenging that the baselines are unable to
+obtain more than negligible reward: in particular, the joint
+model overfits to the training tasks and cannot generalize to
+new sketches, while the independent model cannot discover
+enough of a reward signal to learn in the adaptation setting.
+The modular model does comparatively well: individual
+subpolicies succeed in novel zero-shot configurations (suggesting that they have in fact discovered the behavior suggested by the semantics of the sketch) and provide a suitable basis for adaptive discovery of new high-level policies.
+
+5. Conclusions
+We have described an approach for multitask learning
+of deep multitask policies guided by symbolic policy
+sketches. By associating each symbol appearing in a sketch
+with a modular neural subpolicy, we have shown that it is
+possible to build agents that share behavior across tasks in
+order to achieve success in tasks with sparse and delayed
+rewards. This process induces an inventory of reusable and
+interpretable subpolicies which can be employed for zeroshot generalization when further sketches are available, and
+hierarchical reinforcement learning when they are not. Our
+work suggests that these sketches, which are easy to produce and require no grounding in the environment, provide
+an effective scaffold for learning hierarchical policies from
+minimal supervision.
+
+Modular Multitask Reinforcement Learning with Policy Sketches
+
+Acknowledgments
+JA is supported by a Facebook fellowship and a Berkeley
+AI / Huawei fellowship.
 
 References
-Agarwal, Naman, Allen-Zhu, Zeyuan, Bullins, Brian,
-Hazan, Elad, and Ma, Tengyu. Finding Approximate Local Minima for Nonconvex Optimization in Linear Time.
-In STOC, 2017.
-Allen-Zhu, Zeyuan. Katyusha: The First Direct Acceleration of Stochastic Gradient Methods. In STOC, 2017.
-Allen-Zhu, Zeyuan and Hazan, Elad. Variance Reduction
-for Faster Non-Convex Optimization. In NIPS, 2016.
+Andre, David and Russell, Stuart. Programmable reinforcement learning agents. In Advances in Neural Information
+Processing Systems, 2001.
+Andre, David and Russell, Stuart. State abstraction for programmable reinforcement learning agents. In Proceedings of the Meeting of the Association for the Advancement of Artificial Intelligence, 2002.
+Andreas, Jacob, Rohrbach, Marcus, Darrell, Trevor, and
+Klein, Dan. Learning to compose neural networks for
+question answering. In Proceedings of the Annual Meeting of the North American Chapter of the Association for
+Computational Linguistics, 2016.
+Artzi, Yoav and Zettlemoyer, Luke. Weakly supervised
+learning of semantic parsers for mapping instructions to
+actions. Transactions of the Association for Computational Linguistics, 1(1):49–62, 2013.
+Bacon, Pierre-Luc and Precup, Doina. The option-critic architecture. In NIPS Deep Reinforcement Learning Workshop, 2015.
+Bakker, Bram and Schmidhuber, Jürgen. Hierarchical reinforcement learning based on subgoal discovery and subpolicy specialization. In Proc. of the 8-th Conf. on Intelligent Autonomous Systems, pp. 438–445, 2004.
+Bengio, Yoshua, Louradour, Jérôme, Collobert, Ronan, and
+Weston, Jason. Curriculum learning. pp. 41–48. ACM,
+2009.
+Branavan, S.R.K., Chen, Harr, Zettlemoyer, Luke S., and
+Barzilay, Regina. Reinforcement learning for mapping
+instructions to actions. In Proceedings of the Annual
+Meeting of the Association for Computational Linguistics, pp. 82–90. Association for Computational Linguistics, 2009.
+Chen, David L. and Mooney, Raymond J. Learning to interpret natural language navigation instructions from observations. In Proceedings of the Meeting of the Association
+for the Advancement of Artificial Intelligence, volume 2,
+pp. 1–2, 2011.
+Daniel, Christian, Neumann, Gerhard, and Peters, Jan. Hierarchical relative entropy policy search. In Proceedings
+of the International Conference on Artificial Intelligence
+and Statistics, pp. 273–281, 2012.
 
-Carmon, Yair, Duchi, John C., Hinder, Oliver, and Sidford,
-Aaron. Accelerated Methods for Non-Convex Optimization. ArXiv e-prints, abs/1611.00756, November 2016.
-Defazio, Aaron, Bach, Francis, and Lacoste-Julien, Simon.
-SAGA: A Fast Incremental Gradient Method With Support for Non-Strongly Convex Composite Objectives.
-In NIPS, 2014. URL http://arxiv.org/abs/
-1407.0202.
-Frostig, Roy, Ge, Rong, Kakade, Sham M., and Sidford,
-Aaron. Un-regularizing: approximate proximal point
-and faster stochastic algorithms for empirical risk minimization. In ICML, volume 37, pp. 1–28, 2015. URL
-http://arxiv.org/abs/1506.07512.
-Garber, Dan, Hazan, Elad, Jin, Chi, Kakade, Sham M.,
-Musco, Cameron, Netrapalli, Praneeth, and Sidford,
-Aaron. Robust shift-and-invert preconditioning: Faster
-and more sample efficient algorithms for eigenvector
-computation. In ICML, 2016.
-Ge, Rong, Huang, Furong, Jin, Chi, and Yuan, Yang. Escaping from saddle points—online stochastic gradient
-for tensor decomposition. In Proceedings of the 28th Annual Conference on Learning Theory, COLT 2015, 2015.
-Ghadimi, Saeed and Lan, Guanghui.
-Accelerated gradient methods for nonconvex nonlinear and stochastic programming.
-Mathematical Programming, pp. 1–26, feb 2015.
-ISSN
-0025-5610.
-doi:
-10.1007/s10107-015-0871-8.
-URL
-http://arxiv.org/abs/1310.
-3787http://link.springer.com/10.1007/
-s10107-015-0871-8.
+Devin, Coline, Gupta, Abhishek, Darrell, Trevor, Abbeel,
+Pieter, and Levine, Sergey. Learning modular neural
+network policies for multi-task and multi-robot transfer.
+arXiv preprint arXiv:1609.07088, 2016.
+Dietterich, Thomas G. Hierarchical reinforcement learning
+with the maxq value function decomposition. J. Artif.
+Intell. Res. (JAIR), 13:227–303, 2000.
+Greensmith, Evan, Bartlett, Peter L, and Baxter, Jonathan.
+Variance reduction techniques for gradient estimates in
+reinforcement learning. Journal of Machine Learning
+Research, 5(Nov):1471–1530, 2004.
+Hauser, Kris, Bretl, Timothy, Harada, Kensuke, and
+Latombe, Jean-Claude. Using motion primitives in probabilistic sample-based planning for humanoid robots.
+In Algorithmic foundation of robotics, pp. 507–522.
+Springer, 2008.
+Iyyer, Mohit, Boyd-Graber, Jordan, Claudino, Leonardo,
+Socher, Richard, and Daumé III, Hal. A neural network for factoid question answering over paragraphs. In
+Proceedings of the Conference on Empirical Methods in
+Natural Language Processing, 2014.
+Kearns, Michael and Singh, Satinder. Near-optimal reinforcement learning in polynomial time. Machine Learning, 49(2-3):209–232, 2002.
+Konidaris, George and Barto, Andrew G. Building portable
+options: Skill transfer in reinforcement learning. In IJCAI, volume 7, pp. 895–900, 2007.
+Konidaris, George, Kuindersma, Scott, Grupen, Roderic,
+and Barto, Andrew. Robot learning from demonstration
+by constructing skill trees. The International Journal of
+Robotics Research, pp. 0278364911428653, 2011.
+Kulkarni, Tejas D, Narasimhan, Karthik R, Saeedi, Ardavan, and Tenenbaum, Joshua B. Hierarchical deep reinforcement learning: Integrating temporal abstraction and
+intrinsic motivation. arXiv preprint arXiv:1604.06057,
+2016.
+Marthi, Bhaskara, Lantham, David, Guestrin, Carlos, and
+Russell, Stuart. Concurrent hierarchical reinforcement
+learning. In Proceedings of the Meeting of the Association for the Advancement of Artificial Intelligence, 2004.
+Menache, Ishai, Mannor, Shie, and Shimkin, Nahum.
+Q-cutdynamic discovery of sub-goals in reinforcement
+learning. In European Conference on Machine Learning, pp. 295–306. Springer, 2002.
+Neelakantan, Arvind, Le, Quoc V, and Sutskever, Ilya.
+Neural programmer: Inducing latent programs with gradient descent. arXiv preprint arXiv:1511.04834, 2015.
 
-Natasha: Faster Non-Convex Stochastic Optimization Via Strongly Non-Convex Parameter
+Modular Multitask Reinforcement Learning with Policy Sketches
 
-Johnson, Rie and Zhang, Tong. Accelerating stochastic gradient descent using predictive variance reduction.
-In Advances in Neural Information Processing Systems,
-NIPS 2013, pp. 315–323, 2013.
-Lee, Jason D., Simchowitz, Max, Jordan, Michael I., and
-Recht, Benjamin. Gradient descent only converges to
-minimizers. In Proceedings of the 29th Conference on
-Learning Theory, COLT 2016, New York, USA, June 2326, 2016, pp. 1246–1257, 2016.
-Lin, Hongzhou, Mairal, Julien, and Harchaoui, Zaid.
-A Universal Catalyst for First-Order Optimization.
-In NIPS, 2015. URL http://arxiv.org/pdf/
-1506.02186v1.pdf.
-Nesterov, Yurii. Accelerating the cubic regularization of
-newton’s method on convex problems. Mathematical
-Programming, 112(1):159–181, 2008.
-Reddi, Sashank J., Hefny, Ahmed, Sra, Suvrit, Poczos,
-Barnabas, and Smola, Alex. Stochastic variance reduction for nonconvex optimization. ArXiv e-prints,
-abs/1603.06160, March 2016.
-Schmidt, Mark, Le Roux, Nicolas, and Bach, Francis. Minimizing finite sums with the stochastic average gradient. arXiv preprint arXiv:1309.2388, pp. 1–45, 2013.
-URL http://arxiv.org/abs/1309.2388. Preliminary version appeared in NIPS 2012.
-Shalev-Shwartz, Shai. SDCA without Duality, Regularization, and Individual Convexity. In ICML, 2016.
-Zhang, Lijun, Mahdavi, Mehrdad, and Jin, Rong. Linear
-convergence with condition number independent access
-of full gradients. In Advances in Neural Information Processing Systems, pp. 980–988, 2013.
+Niekum, Scott, Osentoski, Sarah, Konidaris, George,
+Chitta, Sachin, Marthi, Bhaskara, and Barto, Andrew G.
+Learning grounded finite-state representations from unstructured demonstrations. The International Journal of
+Robotics Research, 34(2):131–157, 2015.
+
+Vogel, Adam and Jurafsky, Dan. Learning to follow navigational directions. In Proceedings of the Annual Meeting of the Association for Computational Linguistics,
+pp. 806–814. Association for Computational Linguistics,
+2010.
+
+Parr, Ron and Russell, Stuart. Reinforcement learning with
+hierarchies of machines. In Advances in Neural Information Processing Systems, 1998.
+
+Williams, Ronald J. Simple statistical gradient-following
+algorithms for connectionist reinforcement learning.
+Machine learning, 8(3-4):229–256, 1992.
+
+Precup, Doina. Temporal abstraction in reinforcement
+learning. PhD thesis, 2000.
+Reed, Scott and de Freitas, Nando. Neural programmerinterpreters. Proceedings of the International Conference on Learning Representations, 2016.
+Schulman, John, Moritz, Philipp, Levine, Sergey, Jordan,
+Michael, and Abbeel, Pieter. High-dimensional continuous control using generalized advantage estimation.
+arXiv preprint arXiv:1506.02438, 2015a.
+Schulman, John, Moritz, Philipp, Levine, Sergey, Jordan,
+Michael, and Abbeel, Pieter. Trust region policy optimization. 2015b.
+Socher, Richard, Huval, Brody, Manning, Christopher, and
+Ng, Andrew. Semantic compositionality through recursive matrix-vector spaces. In Proceedings of the Conference on Empirical Methods in Natural Language Processing, pp. 1201–1211, Jeju, Korea, 2012.
+Stolle, Martin and Precup, Doina. Learning options in reinforcement learning. In International Symposium on Abstraction, Reformulation, and Approximation, pp. 212–
+223. Springer, 2002.
+Sutton, Richard S, Precup, Doina, and Singh, Satinder. Between MDPs and semi-MDPs: A framework for temporal abstraction in reinforcement learning. Artificial intelligence, 112(1):181–211, 1999.
+Tellex, Stefanie, Kollar, Thomas, Dickerson, Steven, Walter, Matthew R., Banerjee, Ashis Gopal, Teller, Seth, and
+Roy, Nicholas. Understanding natural language commands for robotic navigation and mobile manipulation.
+In In Proceedings of the National Conference on Artificial Intelligence, 2011.
+Tieleman, Tijmen. RMSProp (unpublished), 2012.
+Vezhnevets, Alexander, Mnih, Volodymyr, Agapiou, John,
+Osindero, Simon, Graves, Alex, Vinyals, Oriol, and
+Kavukcuoglu, Koray. Strategic attentive writer for learning macro-actions. arXiv preprint arXiv:1606.04695,
+2016.
 
 

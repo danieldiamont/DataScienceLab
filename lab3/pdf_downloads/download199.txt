@@ -1,1370 +1,1416 @@
-Coresets for Vector Summarization
-with Applications to Network Graphs
+Resource-efficient Machine Learning in 2 KB RAM for the Internet of Things
 
-Dan Feldman 1 Sedat Ozer 2 Daniela Rus 2
+Ashish Kumar 1 Saurabh Goyal 2 Manik Varma 1
 
 Abstract
-We provide a deterministic data summarization
-algorithm
-that approximates the mean p̄ =
-P
-1
-p
-of a set P of n vectors in Rd , by a
-p∈P
-n
-weighted mean p̃ of a subset of O(1/ε) vectors,
-i.e., independent of both n and d. We prove that
-the squared Euclidean distance between p̄ and p̃
-is at most ε multiplied by the variance of P . We
-use this algorithm to maintain an approximated
-sum of vectors from an unbounded stream, using memory that is independent of d, and logarithmic in the n vectors seen so far. Our main
-application is to extract and represent in a compact way friend groups and activity summaries
-of users from underlying data exchanges. For example, in the case of mobile networks, we can
-use GPS traces to identify meetings; in the case
-of social networks, we can use information exchange to identify friend groups. Our algorithm
-provably identifies the Heavy Hitter entries in a
-proximity (adjacency) matrix. The Heavy Hitters
-can be used to extract and represent in a compact way friend groups and activity summaries of
-users from underlying data exchanges. We evaluate the algorithm on several large data sets.
+This paper develops a novel tree-based algorithm, called Bonsai, for efficient prediction on
+IoT devices – such as those based on the Arduino Uno board having an 8 bit ATmega328P
+microcontroller operating at 16 MHz with no native floating point support, 2 KB RAM and 32
+KB read-only flash. Bonsai maintains prediction accuracy while minimizing model size and
+prediction costs by: (a) developing a tree model
+which learns a single, shallow, sparse tree with
+powerful nodes; (b) sparsely projecting all data
+into a low-dimensional space in which the tree is
+learnt; and (c) jointly learning all tree and projection parameters. Experimental results on multiple benchmark datasets demonstrate that Bonsai can make predictions in milliseconds even on
+slow microcontrollers, can fit in KB of memory,
+has lower battery consumption than all other algorithms while achieving prediction accuracies
+that can be as much as 30% higher than stateof-the-art methods for resource-efficient machine
+learning. Bonsai is also shown to generalize to
+other resource constrained settings beyond IoT
+by generating significantly better search results
+as compared to Bing’s L3 ranker when the model
+size is restricted to 300 bytes. Bonsai’s code can
+be downloaded from (BonsaiCode).
 
 1. Introduction
-The wide-spread use of smart phones, wearable devices,
-and social media creates a vast space of digital footprints
-for people, which include location information from GPS
-traces, phone call history, social media postings, etc. This
-is an ever-growing wealth of data that can be used to identify social structures and predict activity patterns. We wish
-to extract the underlying social network of a group of mobile users given data available about them (e.g. GPS traces,
-phone call history, news articles, etc.) in order to identify
-and predict their various activities such as meetings, friend
-1
+Objective: This paper develops a novel tree-based algorithm, called Bonsai, which can be trained on a laptop, or
+the cloud, and can then be shipped onto severely resource
+constrained Internet of Things (IoT) devices.
+Resource constrained devices: The Arduino Uno board
+has an 8 bit ATmega328P microcontroller operating at 16
+MHz with 2 KB SRAM and 32 KB read-only flash mem1
+Microsoft Research, Bangalore, India 2 CSE Department, IIT
+Delhi, India. Correspondence to: <manik@microsoft.com>.
 
-University of Haifa, Israel, 2 CSAIL, MIT. Correspondence
-to: Dan Feldman <dannyf.post@gmail.com>.
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-groups, gathering places, collective activity patterns, etc.
-There are several key challenges to achieve these capabilities. First, the data is huge so we need efficient methods
-for processing and representing the data. Second, the data
-is multi-modal heterogeneous. This presents challenges in
-data processing and representation, but also opportunities
-to extract correlations that may not be visible in a single
-data source. Third, the data is often noisy.
-We propose an approach based on coresets to extract underlying connectivity information while performing data summarization for a given a large data set. We focus our intuition examples and evaluations on social networks because
-of their intuitive nature and access to data sets, although
-the method is general and applies to networks of information in general. Our approach works on streaming datasets
-to represent the data in a compact (sparse) way. Our coreset
-algorithm gets a stream of vectors and approximates their
-sum using small memory. Essentially, a coreset C is a significantly smaller portion (a scaled subset) of the original
-and large set D of vectors. Given D and the algorithm A,
-where running algorithm A on D is intractable due to lack
-of memory, the task-specific coreset algorithm efficiently
-reduces the data set D to a coreset C so that running the algorithm A on C requires a low amount of memory and the
-result is provable approximately the same as running the
-algorithm on D. Coreset captures all the important vectors
-in D for a given algorithm A. The challenges are computing C fast and proving that C is the right scaled subset, i.e.,
-running the algorithm on C gives approximately the same
-result as running the algorithm on D.
-More specifically, the goal of this paper is to suggest a way
-to maintain a sparse representation of an n × d matrix, by
-maintaining a sparse approximation of each of its rows. For
-example, in a proximity matrix associated with a social network, instead of storing the average proximity to each of n
-users, we would like to store only the N  n largest entries in each row (known as “Heavy Hitters”), which correspond to the people seen by the user most often. Given
-an unbounded stream of movements, it is hard to tell which
-are the people the user met most, without maintaining a
-counter to each person. For example, consider the special
-case N = 1. We are given a stream of pairs (i, val) where
-i ∈ {1, · · · , n} is an index of a counter, and val is a real
-number that represents a score for this counter. Our goal is
+ory. The BBC Micro:Bit has a 32 bit ARM Cortex M0 microcontroller operating at 16 MHz with 16 KB SRAM and
+256 KB read-only flash. Neither provides hardware support for floating point operations. Billions of such tiny IoT
+microcontrollers have been deployed in the world (Meunier
+et al., 2014). Before deployment, the OS and all application
+code and data are burnt onto flash, leaving only a few KB
+for storing the trained ML model, prediction code, feature
+extraction code and associated data and parameters. After deployment, the only writable memory available is the
+2 KB (Uno) or 16 KB (Micro:Bit) of SRAM which might
+not be sufficient to hold even a single feature vector.
+The Internet of Things: A number of applications have
+been developed for consumer, enterprise and societal IoT
+including predictive maintenance, intelligent healthcare,
+smart cities and housing, etc. The dominant paradigm for
+these applications, given the severe resource constraints of
+IoT devices, has been that the IoT device is dumb – it just
+senses its environment and transmits the sensor readings to
+the cloud where all the decision making happens.
+Motivating scenarios: This paper proposes an alternative
+paradigm where the IoT device can make predictions locally without necessarily connecting to the cloud. This enables many scenarios, beyond the pale of the traditional
+paradigm, where it is not possible to transmit data to the
+cloud due to latency, bandwidth, privacy and energy concerns. For instance, consider a microcontroller implanted
+in the brain which warns patients about impending seizures
+so that they can call for help, pull over if they are driving,
+etc. Making predictions locally would allow the device to
+work everywhere irrespective of cloud connectivity. Furthermore, alerts could be raised more quickly with local
+predictions than if all the sensor readings had to be first
+transmitted to the cloud. In addition, since the energy required for executing an instruction might be much lower
+than the energy required to transmit a byte, making predictions locally would extend battery life significantly thereby
+avoiding repeated brain surgery and might also prevent
+brain tissue damage due to excess heat dissipation from the
+communicating radio. Finally, people might not be willing
+to transmit such sensitive data to the cloud. These characteristics are shared by many other scenarios including implants in the heart, precision agriculture on disconnected
+farms, smart spectacles for the visually impaired, etc.
 
-Coresets for Vector Summarization with Applications to Network Graphs
+Resource-efficient Machine Learning in 2 KB RAM for the Internet of Things
 
-to identify which counter has the maximum average score
-till now, and approximate that score. While that is easy to
-do by maintaining the sum of n scores, our goal is to maintain only a constant set of numbers (memory words). In
-general, we wish to have a provable approximation to each
-of the n accumulated scores (row in a matrix), using, say,
-only O(1) memory. Hence, maintaining an n × n matrix
-would take O(n) instead of O(n2 ) memory. For millions
-of users or rows, this means 1 Gigabytes of memory can be
-stored in RAM for real-time updates, compared to millions
-of Gigabytes. Such data reduction will make it practical to
-keep hundreds of matrices for different types of similarities
-(sms, phone calls, locations), different types of users, and
-different time frames (average proximity in each day, year,
-etc). This paper contributes the following: (1) A compact
-representation for streaming proximity data for a group of
-many users; (2) A coreset construction algorithm for maintaining the social network with error guarantees; (3) An
-evaluation of the algorithm on several data sets.
-Theoretical Contribution: These results are based on an
-algorithm that computes an ε-coreset C of size |C| =
-O(1/ε) for the mean of a given set, and every error parameter ε ∈ (0, 1) as defined in Section 2. Unlike previous results, this algorithm is deterministic, maintains a weighted
-subset of the input vectors (which keeps their sparsity), can
-be applied on a set of vectors whose both cardinality n and
-dimension d is arbitrarily large or unbounded. Unlike existing randomized sketching algorithms for summing item
-frequencies (1-sparse binary vectors), this coreset can be
-used to approximate the sum of arbitrary real vectors, including negative entries (for decreasing counters), dense
-vectors (for fast updates), fractions (weighted counter) and
-with error that is based on the variance of the vectors (sum
-of squared distances to their mean) which might be arbitrarily smaller than existing errors: sum/max of squared/nonsquared distances to the origin (`2 /`1 /`∞ ).
-1.1. Solution Overview
-We implemented a system that demonstrates the use and
-performance of our suggested algorithm. The system constructs a sparse social graph from the GPS locations of real
-moving smart-phone users and maintains the graph in a
-streaming fashion as follows.
-Input stream: The input to our system is an unbounded stream of (real-time) GPS points, where
-each point is represented in the vector format of
-(time, userID, longitude, latitude). We maintain an approximation of the average proximity of each user to all
-the other n − 1 users seen so far, by using space (memory)
-that is only logarithmic in n. The overall memory would
-then be near-linear in n, in contrast to the quadratic O(n2 )
-memory that is needed to store the exact average proximity vector for each of the n users. We maintain a dynamic
-array of the n user IDs seen so far and assume, without
+Tree algorithms: Tree algorithms are general and can be
+used for classification, regression, ranking and other problems commonly found in the IoT setting. Even more importantly, they are ideally suited to IoT applications as they can
+achieve good prediction accuracies with prediction times
+and energies that are logarithmic in the number of training
+points. Unfortunately, they do not directly fit on tiny IoT
+devices as their space complexity is linear rather than logarithmic. In particular, learning shallow trees, or aggressively pruning deep trees or large ensembles, to fit in just a
+few KB often leads to poor prediction accuracy.
+Bonsai: This paper develops a novel tree learner, called
+Bonsai, designed specifically for severely resource constrained IoT devices based on the following contributions.
+First, Bonsai learns a single, shallow, sparse tree so as to
+reduce model size but with powerful nodes for accurate
+prediction. Second, both internal and leaf nodes in Bonsai
+make non-linear predictions. Bonsai’s overall prediction
+for a point is the sum of the individual node predictions
+along the path traversed by the point. Path based prediction allows Bonsai to accurately learn non-linear decision
+boundaries while sharing parameters along paths to further
+reduce model size. Third, Bonsai learns a sparse matrix
+which projects all data points into a low-dimensional space
+in which the tree is learnt. This allows Bonsai to fit in a few
+KB of flash. Furthermore, the sparse projection is implemented in a streaming fashion thereby allowing Bonsai to
+tackle IoT applications where even a single feature vector
+might not fit in 2 KB of RAM. Fourth, rather than learning
+the Bonsai tree node by node in a greedy fashion, all nodes
+are learnt jointly, along with the sparse projection matrix,
+so as to optimally allocate memory budgets to each node
+while maximising prediction accuracy.
+Implementation: Another contribution is an efficient implementation of Bonsai which reduces its prediction costs
+on the Arduino and Micro:Bit to be even lower than that of
+an unoptimized linear classifier. This allows Bonsai to enjoy the prediction accuracy of a non-linear classifier while
+paying less than linear costs. This paper does not focus on
+the system and implementation details due to space limitations but the interested reader is referred to the publically
+available source code (BonsaiCode).
+Results: These contributions allow Bonsai to make predictions in milliseconds even on slow microcontrollers, fit
+in a few KB of flash and extend battery life beyond all
+other algorithms. Furthermore, it is demonstrated on multiple benchmark datasets that Bonsai’s prediction accuracies
+can approach those of uncompressed kNN classifiers, RBFSVMs, single hidden layer neural networks and gradient
+boosted decision tree ensembles whose models might take
+many MB of RAM. It is also demonstrated that Bonsai’s
+prediction accuracies for a given model size can be as much
 
-loss of generality, that the user IDs are distinct and increasing integers from 1 to n. Otherwise we use a hash table
-from user IDs to such integers. In general, the system is
-designed to handle any type of streaming records in the format (streamID, v) where v is a d-dimensional vector of
-reals, to support the other applications. Here, the goal is to
-maintain a sparse approximation to the sum of the vectors
-v that were assigned to each stream ID.
-Proximity matrix: We also maintain an (non-sparse) array pos of length n that stores the current location of each
-of the n users seen so far. That array forms the current n2
-pairs of proximities prox(u, v) between every pair of users
-and their current locations u and v. These pairs correspond
-to what we call the proximity matrix at time t, which is a
-symmetric adjacency n × n matrix of a social graph, where
-the edge weight of a pair of users (an entry in this matrix)
-is their proximity at the current time t. We are interested in
-maintaining the sum of these proximity matrices over time,
-which, after division by n, will give the average proximity between every two users over time. This is the average
-proximity matrix. Since the average proximity matrix and
-each proximity matrix at a given time require O(n2 ) memory, we cannot keep them all in memory. Our goal is to
-maintain a sparse approximation version of each of row in
-the average proximity matrix which will use only O(log n)
-memory. Hence, the required memory by the system will
-be O(n log n) instead of O(n2 ).
-Average proximity vector: The average proximity vector is a row vector of length n in the average proximity matrix for each of the n users. We maintain only a
-sparse approximation vector for each user, thus, only the
-non-zeroes entries are kept in memory as a set of pairs
-of type (index, value). We define the proximity between
-the current location vectors u, v ∈ R3 of two users as:
-prox(u, v) := e−dist(u,v) .
-Coreset for a streamed average: Whenever a new
-record (time, userID, longitude, latitude) is inserted to
-the stream, we update the entries for that user as his/her
-current position array pos is changed. Next, we compute
-that n proximities from that user to each of the other users.
-Note that in our case, the proximity from a user to himself
-is always e0 = 1. Each proximity proxj where 1 ≤ j ≤ n
-is converted to a sparse vector (0, · · · , 0, proxj , 0, · · · , 0)
-with one non-zero entry. This vector should be added to the
-average proximity vector of user j, to update the jth entry.
-Since maintaining the exact average proximity vector will
-take O(n) memory for each of the n users, we instead add
-this sparse vector to an object (“coreset”) that maintains an
-approximation to the average proximity vector of user j.
-Our problem is then reduced to the problem of maintaining a sparse average of a stream of sparse vectors in Rn ,
-using O(log n) memory. Maintaining such a stream for
-each of the n users seen so far, will take overall memory
+as 30% higher than state-of-the-art methods for resourceefficient machine learning. Finally, Bonsai is shown to generalize to other resource constrained settings beyond IoT by
+producing significantly better search results than Bing’s L3
+ranker when the model size is restricted to 300 bytes.
 
-Coresets for Vector Summarization with Applications to Network Graphs
+2. Related Work
+The literature on resource-efficient machine learning is vast
+and specialized solutions have been developed for reducing the prediction costs of kNN algorithms (Kusner et al.,
+2014b; Wang et al., 2016), SVMs (Hsieh et al., 2014; Jose
+et al., 2013; Le et al., 2013; Li et al., 2016), deep learning (Iandola et al., 2016; Han et al., 2016; Yang et al., 2015;
+Denton et al., 2014; Wu et al., 2016; Rastegari et al., 2016;
+Hubara et al., 2016; Shankar et al., 2016; Ioannou et al.,
+2016a), model compression (Bucilua et al., 2006; Ba &
+Caruana, 2014), feature selection (Kusner et al., 2014a; Xu
+et al., 2013; 2012; Nan et al., 2015; Wang et al., 2015) and
+applications such as face detection (Viola & Jones, 2004).
+Resource-efficient tree classifiers are particularly germane
+to this paper. The standard approach is to greedily grow
+the decision tree ensemble node by node until the prediction budget is exhausted. A popular alternative is to first
+learn the random forest or gradient boosted decision tree
+ensemble to maximize prediction accuracy and then use
+pruning techniques to meet the budget constraints (Duda
+et al., 2002; Dekel et al., 2016; Nan et al., 2016; Li, 2001;
+Breiman et al., 1984; Zhang & Huei-chuen, 2005; Sherali
+et al., 2009; Kulkarni & Sinha, 2012; Rokach & Maimon,
+2014; Joly et al., 2012). Unfortunately, such techniques are
+fundamentally limited as they attempt to approximate complex non-linear decision boundaries using a small number
+of axis-aligned hyperplanes. This can lead to poor prediction accuracies as observed in Section 5.
+Tree models have also been developed to learn more complex decision boundaries by moving away from learning
+axis-aligned hyperplanes at internal nodes and constant
+predictors at the leaves. For instance, (Breiman, 2001;
+Murthy et al., 1994; Kontschieder et al., 2015) learnt more
+powerful branching functions at internal nodes based on
+oblique cuts and full hyperplanes while (Utgoff, 1989;
+Hsieh et al., 2014) learnt more powerful leaf node predictors based on linear classifiers, kernelized SVMs, etc. Bonsai achieves better budget utilization than such models by
+learning shorter trees, typically depth 4 or lower, and by
+sharing the parameters between leaf node predictors.
+The models closest to Bonsai are Decision Jungles (Shotton et al., 2013) and LDKL (Jose et al., 2013). Bonsai improves upon LDKL by learning its tree in a lowdimensional space, learning sparse branching functions and
+predictors and generalizing the model to multi-class classi-
 
-of O(n log n) as desired, compared to the exact solution
-that requires O(n2 ) memory. We generalize and formalize this problem, as well as the approximation error and its
-practical meaning, in Section 2.
-1.2. Related Work
-As mobile applications become location-aware, the representation and analysis of location-based data sets become
-more important and useful in various domains (Wasserman, 1980; Hogan, 2008; Carrington et al., 2005; Dinh
-et al., 2010; Nguyen et al., 2011; Lancichinetti & Fortunato, 2009). An interesting application is to extract the relationships between mobile users (in other words, their social network) from their location data (Liao, 2006; Zheng,
-2011; Dinh et al., 2013). Therefore, in this paper, we use
-coresets to represent and approximate (streaming) GPSbased location data for the extraction of the social graphs.
-The problem in social network extraction from GPS data
-is closely related to the frequency moment problem. Frequency approximation is considered the main motivation
-for streaming in the seminal work of (Alon et al., 1996a),
-known as the “AMS paper”, which introduced the streaming model.
-Coresets have been used in many related applications. The
-most relevant are coresets for k-means; see (Barger & Feldman, 2015) and reference therein. Our result is related to
-coreset for 1-mean that approximates the mean of a set
-of points. A coreset as defined in this paper can be easily obtained by uniform sampling of O(log d log(1/δ))/ε2
-or O(1/(δε)) points from the input, where δ ∈ (0, 1) is
-the probability of failure. However, for sufficiently large
-stream the probability of failure during the stream approaches 1. In addition, we assume that d may be arbitrarily large. In (Barger & Feldman, 2015) such a coreset
-was suggested but its size is exponential in 1/ε. We aim
-for a deterministic construction of size independent of d
-and linear in 1/ε.
-A special case of such coreset for the case that the mean is
-the origin (zero) was suggested in (Feldman et al., 2016),
-based on Frank-Wolfe, with applications to coresets for
-PCA/SVD. In this paper we show that the generalization
-to any center is not trivial and requires a non-trivial embedding of the input points to a higher dimensional space.
-Each of the above-mentioned prior techniques has at least
-one of the following disadvantages: (1) It holds only for
-positive entries. Our algorithm supports any real vector.
-Negative values may be used for deletion or decreasing of
-counters, and fraction may represent weights. (2) It is randomized, and thus will always fail on unbounded stream.
-Our algorithm is deterministic. (3) It supports only s = 1
-non-zero entries. Our algorithm supports arbitrary number
-of non-zeroes entries with only linear dependency of the
-required memory on s. (4) It projects the input vectors on
+Resource-efficient Machine Learning in 2 KB RAM for the Internet of Things
 
-a random subspace, which diminishes the sparsity of these
-vectors. Our algorithm maintains a small weighted subset
-of the vectors. This subset keeps the sparsity of the input
-and thus saves memory, but also allows us to learn the representative indices of points (time stamps in our systems)
-that are most important in this sense.
-The most important difference and the main contribution of
-our paper is the error guarantee. Our error function in (1)
-is similar to kp̄ − p̂k` ≤ ε kp̄kq for ` = 2 on the left hand
-side. Nevertheless, the error on the right hand side might be
-significantly smaller: instead of taking the sum of squared
-distances to the origin (norm of the average vector), we use
-the variance, which is the sum of squared distances to the
-mean. The later one is always smaller, since the mean of a
-set of vectors minimized their sum of squared distances.
+fication, ranking, etc. Decision Jungles are similar to Bonsai in that they share node parameters using a DAG structure. Unfortunately, Decision Jungles need to learn deep
+tree ensembles with many nodes as they use weak constant
+classifiers as leaf node predictors. Bonsai can have lower
+model size and higher accuracy as it learns a single, shallow
+tree in a low-dimensional space with non-linear predictors.
+Note that while tree based cost-sensitive feature selection
+methods are not directly relevant, their performance is nevertheless empirically compared to Bonsai’s in Section 5.
 
-2. Problem Statement
-The input is an unbounded stream vectors p1 , p2 , · · · in Rd .
-Here, we assume that each vector has one non-zero entry.
-In the social network example, d is the number of users
-and each vector is in the form (0, · · · , 0, proxj , 0, · · · , 0),
-where proxj is the proximity between the selected user and
-user j. Note that for each user, we independently maintain
-an input stream of proximities to each of the other users,
-and the approximation of its average. In addition, we get
-another input: the error parameter N , which is related to
-the memory used by the system. Roughly, the required
-memory for an input stream will be O(N log n) and the
-approximation error will be ε := 1/N . That is, our algorithms are efficient when N is a constant that is much
-smaller than the number of vectors that were read from
-stream, 2 < N  n. For example, to get roughly 1 percents of error, we have ε = 0.01, and the memory is about
-100n, compared to n2 for the exact average proximity.
-The output p̂ is an N -sparse approximation to the average
-vector in the stream over the n vectors p1 , · · · , pn seen so
-far. That is, an
-Papproximation to the centroid, or center of
-mass, p̄ = n1 i pi . Here and in what follows, the sum is
-over i ∈ {1, · · · , n}. Note that even if s = 1, the average p̄ might have n  N non-zero entries, as in the case
-where pi = (0, · · · , 0, 1, 0, · · · , 0) is the ith row of the
-identity matrix. The sparse approximation p̂ of the average vector p̄ has the following properties: (1) The vector p̂
-has at most N non-zero entries. (2) The vector p̂ approximates the vector of average proximities p̄ in the sense that
-the (Euclidean) distance between the two vectors is var/N
-where var is the variance of all the vectors seen so far in the
-stream. More formally,
-Pn kp̄ − p̂k2 ≤ εvar, where ε = 1/N
-is the error, p̄ = n1 i=1 pi is the average vector in Rd for
-the n input vectors, and the variance is the sum of squared
-distances to the average vector.
-Distributed and parallel computation. Our system supports distributed and streaming input simultaneously in a
-“embarrassingly parallel” fashion. E.g., this allows multi-
-
-Coresets for Vector Summarization with Applications to Network Graphs
-
-3. New Coreset Algorithms
-
-Figure 1. Coreset computation of streaming data that is distributed among M = 2 machines. The odd/even vectors in the
-stream (leaves) are compressed by the machine on the left/right,
-respectively. A server (possibly one of these machine) collects the
-coreset C7 and D7 from each machine to obtain the final coreset
-C of the n = 32 vectors seen so far. Each level of each tree stores
-at most one coreset in memory, and overall of O(log n) coresets.
-
-ple users to send their streaming smart-phone data to the
-cloud simultaneously in real-time. There is no assumption
-regarding the order of the data in user ID. Using M nodes,
-each node will have to use only 1/M fraction of the memory to (log n)O(1) /M that is used by one node for the same
-problem, and the average insertion time for a new point will
-be reduced by a factor of M to (log n)O(1) /M .
-Parallel coreset computation of unbounded streams of distributed data was suggested in (Feldman & Tassa, 2015),
-as an extension to the classic merge-and-reduce framework
-in (Bentley & Saxe, 1980; Har-Peled, 2006). We apply this
-framework on our off-line algorithm to handle streaming
-and distributed data (see Section 3).
-Generalizations.
-Above we assume that each vector
-in the stream has a single non-zero entry. To generalize
-that, we now assume that each vector has at most s nonzeroes entries and that these vectors are weighted (e.g. by
-their importance). Under these assumptions,
-Pn we wish to
-approximate the weighted mean p̄ =
-i=1 ui pi where
-u = (u1 , · · · , un ) is a weight vector that represents distribution, i.e., ui ≥ 0 for every i ∈ [n]. Then, our problem
-is formalized as follows.
-Problem 1 Consider an unbounded stream of real vectors p1 , p2 , · · · , where each vector is represented only by
-its non-zero entries, i.e., pairs (entryIndex, value) ∈
-{1, 2, 3, . . .} × R. Maintain a subset of N  n input vectors, and a corresponding vector of positive reals (weights)
-PN
-w1 , w2 , · · · , wN , where
-Pnthe sum p̂ := i=1 wi pi approximates the sum p̄ = i=1 pi of the n vectors seen so far
-in the stream up to a provably
-that depends on
-Pn small error
-2
-its variance var(p) := i=1 kpi − p̄k2 . Formally, for an
-error parameter ε that may depend on N ,
-kp̄ − p̂k ≤ εvar(p).
+3. The Bonsai Model for Efficient Prediction
+Overview: Bonsai learns a single, shallow sparse tree
+whose predictions for a point x are given by
+X
+>
+y(x) =
+Ik (x)W>
 (1)
-We provide a solution for this problem mainly by proving
-Theorem 1 for off-line data, and turn it into algorithms for
-streaming and distributed data as explained in Section 3.
-
-In this section we first describe an algorithm for approximating the sum of n streaming vectors using one pass. The
-algorithm calls its off-line version as a sub-procedure. We
-then explain how to run the algorithm on distributed and
-unbounded streaming data using M machines or parallel
-threads. The size of the weighted subset of vectors that are
-maintained in memory, and the insertion time per new vector in the stream are logarithmic on the number n of vectors
-in the stream. Using M machines, the memory and running
-time per machine is reduced by a factor of M .
-3.1. Streaming and Distributed Data
-Overview. The input to Algorithm 1 is a stream provided
-as a pointer to a device that sends the next input vectors in
-a stream that consists of n vectors, upon request, For example, a hard drive, a communication socket, or a web-service
-that collects information from the users. The second parameter ε defines the approximation error. The required
-memory grows linearly with respect to 1/ε.
-Algorithm 1 maintains a binary tree whose leaves are the
-input vectors, and each inner node is a coreset, as in the left
-or right hand side of Fig. 1. However, at most one coreset in each level of the tree is actually stored in memory.
-In Line 1, we initialize the current height of this tree. Using log(n)/ε vectors in memory our algorithm returns an
-O(ε)-coreset, but to get exactly ε-coreset, we increase it in
-Line 2 by a constant factor α that can be find in the proof
-of Theorem 1. In Lines 3-14, we read batches (sets) of
-O(log(n)/ε) vectors from the stream and compress them.
-The last batch may be smaller. Line 4 defines the next batch
-P . Unlike the coresets in the nodes of the tree, we assume
-that the input vectors are unweighted, so, Line 5 defines a
-weight 1 for each input vector. Line 6 reduce the set P by
-half to the weighted coreset (S, w) using Algorithm 2 (the
-off-line coreset construction.) Theorem 1 guarantees that
-such a compression is possible.
-In Lines 8–12 we add the new coreset (S, w) to the lowest
-level ` of the binary tree, if it is not assigned to a coreset
-already, i.e., S` is not empty. Otherwise, we merge the new
-coreset (S, w) with the level’s coreset S` , mark the level as
-empty from coresets (S` ← ∅), and continue to the next
-higher level of the tree until we reach a level ` that is not
-assigned to a coreset , i.e., S` = ∅. Line 13 handle the
-case where we reach to the root of the tree, and a new (top)
-level is created. In this case, only the new root of the tree
-contains a coreset.
-When the streaming is over, in Lines 15–16 we collect the
-active coreset in each of the O(log n) tree levels (if it has
-one) and return the union of these coresets.
-Parallel computation on distributed data. In this model
-each machine has its own stream of data, and computes its
-
-Coresets for Vector Summarization with Applications to Network Graphs
-
-coreset independently and in parallel to the other machines,
-as described above. Whenever we wish to get the coreset
-for the union of streaming vectors, we collect the current
-coreset from each machine on a single machine or a server.
-Since each machine sends only a coreset, the communication is also logarithmic in n. For M ≥ 2 machines and a
-single input stream, we send every ith point in the stream
-to the ith machine, for every i between 1 and M . For example, if M = 2, the odd vectors will be sent to the first
-machine, and every second (even) vector will be sent to the
-second machine. Then, each machine will compute a coreset for its own unbounded stream; See Fig 1.
-3.2. Off-line data reduction
-Algorithm 2 is called by Algorithm 1 and its variant in the
-last sub-section for compressing a given small set P of vectors in memory by computing its coreset. As in Line 10
-of Algorithm 1, the input itself might be a coreset of another set, thus we assume that the input has a corresponding
-weight vector u. Otherwise, we assign a weight 1 for each
-input vector, i.e., u = (1, · · · , 1). The output of Algorithm
-1 is an ε-coreset (S, w) of size |S| = O(1/ε) for a given
-ε ∈ (0, 1). While the number n of input vectors can be of
-an arbitrary size, Algorithm 2 always passes an input set of
-n = 2|S| points to get output that is smaller by half.
-Overview of Algorithm 2: In Line 1 the desired mean
-Eu that we wish to approximate is computed. Lines 2–
-4 are used for adding an extra dimension for each input
-vector later. In Lines 4-6 we normalize the augmented input, by constructing a set q1 , · · · , qn of unit vectors
-P with a
-new set of weights s1 , · · · , sn whose mean is i si qi =
-(0, · · · , 0, x/v). We then translate this mean to the origin
-by defining the new set H in Line 7.
-The main coreset construction is computed in Lines 9–13
-on the normalized set H whose mean is the origin and its
-vectors are on the unit ball. This is a greedy, gradient descent method, based on the Frank-Wolfe framework (Feldman et al., 2016). In iteration i = 1, we begin with an arbitrary input point c1 in H. Since c1 is a unit vector, its distance from the mean of H (origin) is 1. In Line 11– 12 we
-compute the farthest point h2 from c1 , and approximates
-the mean using only c1 and the new point h2 . This is done,
-by projecting the origin on the line segment through c1 and
-h2 , to get an improved approximation c2 that is closer to
-the origin. We continue to add input points in this manner,
-where in the ith iteration another input point is selected for
-the coreset, and the new center is a convex combination of
-i points. In the proof of Theorem 1 it is shown that the distance to the origin in the ith iteration is α/i, which yields
-an ε-approximation after β = O(α/ε) iterations.
-The resulting center cβ is spanned by β input vectors.
-In Line 11 we compute their new weights based on their
-distances from cβ . Lines 14–16 are used to convert the
-
-weights of the vectors in the normalized H back to the
-original input set of vectors. The algorithm then returns the
-small subset of β input vectors with their weights vector w.
-Algorithm 1: S TREAMING -C ORESET(stream, ε)
-An input stream of n vectors in Rd .
-an error parameter ε ∈ (0, 1)
-Output:
-An ε-coreset (S, w) for the set of n vectors;
-see Theorem 1.
-Set max ← 0
-Set α to be a sufficiently large constant that can be
-derived from the proof of Theorem 1.
-while stream is not empty do
-Set P ← next d2α ln(n)/εe input vectors in
-stream
-Set u ← (1, · · · , 1) where u has |P | entries.
-Set (S, w) ← C ORESET(P, u, ε/(α ln(n))
-Set ` ← 1
-while S` 6= ∅ and ` ≤ max do
-Set S` ← S ∪ S`
-Set (S, w) ← C ORESET(S` , w` , ε)
-Set S` ← ∅
-Set ` ← ` + 1
-
-Input:
-
-1
-2
-3
-4
-5
-6
-7
-8
-9
-10
-11
-12
-13
-14
-15
-16
-
-if ` > max then
-Set max ← `
-Set (S` , w` ) ← (S, w)
-Smax
-Set S ← i=1 Si and w ← (w1 , w2 , · · · , wmax )
-return (S, w)
-
-4. Correctness
-In this section we show that Algorithm 1 computes correctly the coreset for the average vector in Theorem 1.
-Let Dn denote all the possible distributions over n items,
-i.e., D is the unit simplex
-Dn = {(u1 , · · · , un ) ∈ Rn | ui ≥ 0 and
-
-Pn
-
-i=1
-
-ui = 1} .
-
-Given
-P a set P = {p1 , · · · , pn } of vectors, the mean of P is
-1
-i=1 pi . This is also the expectation of a random vector
-n
-that is chosen uniformly at random from P . The sum of
-variances of this vector is the sum of squared distances to
-the mean. More generally, for a distribution
-Pn u ∈ S over the
-vectors of P , the (weighted) mean is i=1 ui pi , which is
-the expected value of a vector chosen randomly using the
-distribution u. The variance varu is the sum of weighted
-squared distances to the mean. By letting N = 1/ε in
-the following theorem, we conclude that there is always a
-sparse distribution w of at most 1/ε non-zeroes entries, that
-yields an approximation to its weighted mean, up to an εfraction of the variance.
-Theorem 1 (Coreset for the average vector) Let u ∈
-Dn be a distribution over a set P = {p1 , · · · , pn } of
-n vectors in Rd , and let N ≥ 1. Let (S, w) denote
-the output of a call to C ORESET(P, u, 1/N ); see Algo-
-
-Coresets for Vector Summarization with Applications to Network Graphs
-X
-
-Algorithm 2: C ORESET(P, u, ε)
-A set P of vectors in Rd ,
-a positive weight vector u = (u1 , · · · , un ),
-an error parameter ε ∈ (0, 1)
-Output: PAn
-n ε-coreset (S, w) for (P, u)
-Set Eu ←P i=1 ui pi
-n
-Set x ← j=1 uj kpj − Eu k
-Pn
-Set v ← j=1 uj k(pj − Eu , x)k
-for i ← 1 to n do
-(pi − Eu , x)
-Set qi ←
-k(pi − Eu , x)k
-ui k(pi − Eu , x)k
-Set si ←
-v
-Set H ← {qi − (0, · · · , 0, x/v) | i ∈ [n]}
-Set α ← a sufficiently large constant that can be
-derived from the proof of Theorem 1.
-Set c1 ← an arbitrary vector in H
-for i ← 1 to β := dα/εe do
-hi+1 ← farthest point from ci in H
-ci+1 ← the projection of the origin on the
-segment ci , hi+1
-Compute w0 = (w10 , · · · , wβ0 ) ∈ S β such that
-Pβ
-cβ = i=1 wi0 hi+1
-for i ← 1 to β do
-vwi0
-w00 i ←
-(pi − Eu , x)
-w00
-wi ← Pβ i
-00
-j=1 wj
-
-i
-
-Input:
-
-1
-2
-3
-4
-5
-
-6
-7
-8
-9
-10
-11
-12
-
-13
-
-14
-15
-
-16
-
-17
-18
-19
-
-1X
-ui (pi − Eu , x)
-v i
-
-1
-=
-v
-
-!
-X
-
-ui pi −
-
-X
-
-um E u ,
-
-X
-
-m
-
-i
-
-uk x
-
-(3)
-
+k Zx ◦ tanh(σVk Zx)
 k
 
-
-
-
-X
-1 X
-x
+where ◦ denotes the elementwise Hadamard product, σ is a
+user tunable hyper-parameter, Z is a sparse projection matrix and Bonsai’s tree is parameterized by Ik , Wk and Vk
+where Ik (x) is an indicator function taking the value 1 if
+node k lies along the path traversed by x and 0 otherwise
+and Wk and Vk are sparse predictors learnt at node k. The
+prediction function is designed to minimize the model size,
+prediction time and prediction energy, while maintaining
+prediction accuracy, even at the expense of increased training costs. The function is also designed to minimize the
+working memory required as the Uno provides only 2 KB
+of writeable memory for storing the feature vector, programme variables and intermediate computations.
+Streaming sparse projection: Bonsai projects each
+D-dimensional input feature vector x into a low D̂dimensional space using a learnt sparse projection matrix
+ZD̂×D . Bonsai uses fixed point arithmetic for all math
+computation, including Zx, when implemented on the IoT
+device so as to avoid floating point overheads. Note that D̂
+could be as low as 5 for many binary classification applications. This has the following advantages. First, it reduces
+Bonsai’s model size as all tree parameters are now learnt
+in the low-dimensional space. Second, when D̂ is small,
+Zx could be stored directly in the microcontroller’s registers thereby reducing prediction time and energy. Third,
+learning the projection matrix jointly with the tree parameters improves prediction accuracy. Fourth, since Zx can
+be computed in a streaming fashion, this allows Bonsai to
+tackle IoT applications where even a single feature vector
+cannot fit in 2 KB of SRAM. This is critical since standard tree implementations are unable to handle a streaming feature vector – the entire feature vector needs to be
+streamed for the root node to determine whether to pass the
+point down to the left or right child and therefore the vector
+is unavailable for processing at subsequent nodes. Some
+
+implementations work around this limitation by simultaneously evaluating the branching function at all nodes as the
+vector is streamed but this increases the prediction costs
+from logarithmic to linear which might not be acceptable.
+Branching function at internal nodes: Bonsai computes
+Ik by learning a sparse vector θ at each internal node such
+that the sign of θ > Zx determines whether point x should
+be branched to the node’s left or right child. Using more
+powerful branching functions than the axis-aligned hyperplanes in standard decision trees allows Bonsai to learn
+shallow trees which can fit in a few KB. Of course, this
+is not a novel idea, and is insufficient in itself to allow a
+single, shallow decision tree to make accurate predictions.
+Node predictors: Decision trees, random forests and
+boosted tree ensembles are limited to making constant predictions at just the leaf nodes. This restricts their prediction accuracy when there are very few leaves. In contrast,
+for a multi-class, multi-label or regression problem with L
+targets, Bonsai learns matrices WD̂×L and VD̂×L at both
+leaf and internal nodes so that each node predicts the vector W> Zx◦tanh(σV> Zx). Note that the functional form
+of the node predictor was chosen as it was found to work
+well empirically (other forms could be chosen if found to
+be more appropriate). Further note that W and V will reduce to vectors for binary classification, ranking and singletarget regression. Bonsai’s overall predicted vector is given
+by (1) and is the sum of the individual vectors predicted
+by the nodes lying along the path traversed by x. This allows Bonsai to accurately learn non-linear decision boundaries using shallow trees with just a few nodes. Furthermore, path based prediction allows parameter sharing and
+therefore reduces model size as compared to putting independent classifiers of at least equal complexity in the leaf
+nodes alone. For instance, a depth 4 Bonsai tree with 15
+internal and 16 leaf nodes stores 31 W and 31 V matrices
+with overall predictions being the sum of 4 terms depending on the path taken. If parameters were not shared and
+each leaf node independently learnt 4 W and 4 V matrices
+to make predictions of at least equal complexity, then a total of 16 × 4 = 64 W and 64 V matrices would need to be
+stored thereby exceeding the memory budget. As an implementation detail, note that Bonsai uses the approximation
+tanh(x) ≈ x if |x| < 1 and signum(x) otherwise in order
+to avoid floating point computation.
+
+4. Training Bonsai
+Notation: Bonsai learns a balanced tree of user specified
+height h with 2h − 1 internal nodes and 2h leaf nodes. The
+parameters that need to be learnt include: (a) Z: the sparse
+projection matrix; (b) θ = [θ 1 , . . . , θ 2h −1 ]: the parameters of the branching function at each internal node; and (c)
+W = [W1 , . . . , W2h+1 −1 ] and V = [V1 , . . . , V2h+1 −1 ]:
+
+Resource-efficient Machine Learning in 2 KB RAM for the Internet of Things
+
+the predictor parameters at each node. Let Θ = [θ, W, V]
+denote a matrix obtained by stacking all the parameters together except for Z. Finally, it is assumed that N training points {(xi , yi )N
+i=1 } have been provided and that budget constraints B¯ Z and BΘ on the projection matrix and
+tree parameters have been specified depending on the flash
+memory available on the IoT device.
+
+and smooths the objective function by initially allowing
+points to traverse multiple paths in the tree. In particular, the indicator function Ik (x) is relaxed
+to Ik>1 (x)
+
+k=
+1
+k−2j
+>
+I
+(x)
+1
++
+(−1)
+tanh(σ
+θ
+Zx)
+where
+j
 =
-.
-ui pi −
-uj pj , x = 0, · · · , 0,
-v
-v
-i
 j
-
-Since
-(s1 , · · · , sn ) ∈ Dn we have that the point p =
-P
-i si qi is in the convex hull of Q = {q1 , · · · , qn }. By
-applying the Frank-Wolfe algorithm as described in (Clarkson, 2005) for the function f (s) = kAsk, where each row
-of A corresponds to a vector in Q, we conclude that there
-is w0 = (w10 , · · · , wn0 ) ∈ Dn that has at most N non-zero
-entries such that 
-2
-P
-P
-
-P
-2
-2
-k i (si − wi0 )qi k =  i si qi − j wj0 qj  = kp − qk ≤ N1 . (4)
-For every i ∈ [n], define
-wi00 =
-
-vwi0
-k(pi − Eu , x)k
-
-w00
-wi = P i 00 .
-j wj
-
-and
-
-We thus have:
-P
-2 P
-2
-P
-
-
-kEu − Ew k2 =  i ui pi − j wj pj  =  i (ui − wi )pi  (5)
-P
-2
-=  i (ui − wi )(pi − Eu , x)
-P 
-
-u ,x)k
-= v 2  i ui k(pi −E
-−
-v
-P 
-
-= v 2  i si −
-
-w ← (w1 , · · · , wβ )
-S ← {v1 , · · · , wβ }
-return (S, w)
-
-rithm 1. Then w ∈ DnP
-consists O(N ) non-zero entries,
-such P
-that the sum p̄ =
-i=1 ui pi deviates from the sum
-n
-p̂ = i=1 wi pi by at most a (1/N )-fraction of the variPn
-2
-2
-u
-ance varu = i=1 ui kpi − p̄k2 , i.e., kp̄ − p̂k2 ≤ var
-N .
-
-si qi =
-
-(wi00 /
-
-P
-
+I
 j
+2
+2 is
+k’s parent node in a balanced tree, I1 (x) = 1 and the parameter σI controls the fidelity of the approximation. Gradients can now be computed as
 
-P 
+Optimization problem: Bonsai’s parameters are learnt as
 
-= v 2  i si −
+∇θl Ik (x) = σI Ik (x)Pkl (x)Zx
+X
+∇Z Ik (x) =
+σI Ik (x)Pkl (x)θ l x>
 
+λW
+λθ
+Tr(θ > θ) +
+Tr(W> W)
+2
+2
+λZ
+λV
+Tr(V> V) +
+Tr(ZZ> )
++
+2
+2
+N
+1 X
++
+L(xi , yi , y(xi ); Z, Θ)
+N i=1
+
+min J (Z, Θ) =
+Z,Θ
+
+(3)
+(4)
+
+l
+
+(2)
+
+s. t. kZk0 ≤ BZ , kΘk0 ≤ BΘ
+where y(xi ) is Bonsai’s prediction for point xi as given
+in (1) and L is an appropriately chosen loss function for
+classification, regression, ranking, etc. For instance, L =
+max(0, 1 − yi y(xi )) with yi ∈ {−1, +1} for binary classification and L = maxy∈Y ((yi − y)> y(xi ) + 1 − y>
+i y)
+with Y = {y|y ∈ {0, 1}L , 1> y = 1} and yi ∈ Y for
+multi-class classification. It is worth emphasizing that the
+optimization problem is formulated such that all parameters are learnt jointly subject to the budget constraints. This
+leads to significantly higher prediction accuracies than if Z
+were first learnt independently, say using sparse PCA, and
+then Θ was learnt afterwards (see Section 5).
+Algorithm: Optimizing (2) over the space of all balanced
+trees of height h is a hard, non-convex problem. Tree growing algorithms typically optimize such problems by greedily growing the tree a node at a time starting from the root.
+Unfortunately, this leads to a suboptimal utilization of the
+memory budget in Bonsai’s case as it is not clear a priori
+how much budget to allocate to each node. For instance,
+it is not apparent whether the budget should be distributed
+equally between all nodes or whether the root node should
+be allocated more budget and, if so, by how much.
+Algorithm - Joint learning of nodes: Bonsai therefore
+learns all node parameters jointly with the memory budget for each node being determined automatically as part
+of the optimization. The difficulty with joint learning is
+that a node’s ancestors need to be learnt before it can
+be determined which training points will reach the node.
+Furthermore, the path traversed by a training point is a
+sharply discontinuous function of θ and Z thereby rendering gradient based techniques ineffective. Various approaches have been proposed in the literature for tackling
+these difficulties (Jose et al., 2013; Kontschieder et al.,
+2015; Norouzi et al., 2015; Xu et al., 2013; Ioannou et al.,
+2016b). Bonsai follows the approach of (Jose et al., 2013)
+
+l
+where Pkl (x) = δkl ((−1)Ck (l) − tanh(σI θ >
+l Zx)), δk = 1
+if node l is an ancestor of node k and 0 otherwise and
+Ck (l) = 1 if node k is in the right subtree of node l and 0
+otherwise. Of course, allowing a point to traverse multiple
+paths increases prediction costs. Some approaches therefore allow multiple paths during training but select a single path during prediction (Xu et al., 2013; Ioannou et al.,
+2016b). At each node, a point x is greedily branched to the
+child node having the greatest Ik (x). Unfortunately, this
+can lead to a drop in accuracy as the model learnt during
+training is different from the one used for prediction.
+
+Bonsai therefore follows an alternative strategy where σI
+is tuned during training to ensure that points gradually start
+traversing at most a single path as optimization progresses.
+In particular, σI is initialized to a small value, such as 0.01,
+so as to ensure that tanh values are not saturated. As optimization progresses, σI is gradually increased so that tanh
+tends to the signum function and Ik (x) goes back to being
+an indicator function by the time convergence is reached.
+This allows Bonsai to directly use the learnt model for prediction and was found to empirically lead to good results.
+Algorithm - Gradient descent with iterative hard
+thresholding: Various gradient based approaches, including those based on alternating minimization, were tried for
+optimizing (2). A gradient descent based algorithm with
+iterative hard thresholding (IHT) was empirically found
+to yield the best solutions. Gradient descent was chosen
+over stochastic gradient descent as it removed the burden of
+step size tuning, led to slightly better prediction accuracies
+while keeping training time acceptable. For instance, training times range from 2 minutes for USPS-2 to 15 minutes
+for MNIST-2 on a single core of a laptop with an Intel Core
+i7-3667U processor at 2 GHz with 8 GB of RAM. Stochastic gradient descent could be utilized for larger datasets or
+if training costs also needed to be minimized. The algorithm proceeds iteratively based on the following gradient
+and IHT steps in each iteration.
+Algorithm - Gradient step: Given feasible Zt and Θt
+with a feasible allocation of the memory budget to various
+nodes at time step t, Bonsai applies M updates of gradient descent keeping the support of Z and Θ fixed so that
+
+Resource-efficient Machine Learning in 2 KB RAM for the Internet of Things
+
+the budget allocations to nodes remain unchanged and the
+memory constraints are never violated. The update equations at each time step are
+t
+Zt+1 = Zt − ηZ
+∇Z J (Zt , Θt )|supp(Zt )
+
+Θ
+
+t+1
+
+t
+
+=Θ −
+
+t
+ηΘ
+∇Θ J (Zt , Θt )|supp(Θt )
+
+(5)
 (6)
 
- 2
+with step sizes ηZ and ηΘ being chosen according to the
+Armijo rule and |supp indicating that the gradient was being computed only for the non-zero entries. M = 5 and
+M = 15 iterations were found to work well for binary and
+multi-class classification respectively. This allows Bonsai
+to decrease the objective function value without changing
+the budget allocation of various nodes.
+Algorithm - IHT step: In order to improve the budget allocation, Bonsai performs a single gradient update with unrestricted support. This violates the memory constraints and
+Bonsai therefore projects the solution onto the feasible set
+by retaining the parameters with the largest magnitudes
+t+M
+Zt+M +1 = TBZ (Zt+M − ηZ
+∇Z J (Zt+M , Θt+M ))
+t+M
+Θt+M +1 = TBΘ (Θt+M − ηΘ
+∇Θ J (Zt+M , Θt+M ))
 
-wi k(pi −Eu ,x)k
-qi 
-v
-
-wj00 )·k(pi −Eu ,x)k
-v
-w0
-P i 00
-j wj
-
- 2
-
-qi 
-
- 2
-
-qi  ,
-
-(8)
-(9)
-
-whereP
-(5) is byP
-the definitions of EuPand Ew , P
-(6) follows
-since i ui = i wi = 1 and thus i ui y = j uj y for
-every vector y, (8) follows by the definitions of wi and qi ,
-and (9) by the definition of wi0 . Next, we bound (9). Since
-for every two reals y, z,
-2yz ≤ y 2 + z 2
-
-(10)
-
-by letting y = kak and z = kbk for a, b ∈ Rd ,
-ka + bk2 ≤ kak2 + kbk2 + 2 kak kbk
-
-By the O(·) notation above, it suffices to prove that there is
-a constant α > 0 such that N ≥ α and
-2
-u
-kEu − Ew k2 ≤ αvar
-(2)
-N ,
-where Eu = p̄ and Ew = p̂. The proof is constructive and
-thus immediately implies Algorithm 1. Indeed, let
-P
-P
-x = j uj kpj − Eu k , and v = j uj k(pj − Eu , x)k.
-Here and in what follows, k·k = k·k2 and all the sums are
-over [n] = {1, · · · , n}. For every i ∈ [n] let
-(pi −Eu ,x)
-u ,x)k
-qi = k(p
-, and si = ui k(pi −E
-.
-v
-i −Eu ,x)k
-Hence,
-
-(7)
-
-≤ kak2 + kbk2 + (kak2 + kbk2 ) = 2 kak2 + 2 kbk2 .
-
-(11)
-
-P
-P 0
+where Tk is an operator returning k of its arguments which
+have the largest magnitudes while setting the rest to 0. This
+allows Bonsai to move to another feasible solution with
+even lower objective function value by improving the memory budget distribution across nodes.
+Algorithm - Convergence: In general, projected gradient
+descent based algorithms might oscillate for non-convex
+problems. However, (Blumensath & Davies, 2008) prove
+that for smooth objective functions, gradient descent algorithms with IHT do indeed converge to a saddle point solution. Furthermore, if the objective function satisfies the Restricted Strong Convexity (RSC) property in a local region,
+then projected gradient descent with IHT will converge to
+the local minimum in that region (Jain et al., 2014). In practice, it was observed that the algorithm generally converged
+to a good solution soon and therefore was terminated after
+T = 300 iterations were reached.
 0
-By substituting a =
-i (si − wi )qi and b =
-i (wi −
-0
-Pwi 00 )qi in (11), we obtain
-w
-j
-
-j
-
-2
-
-
-! 2
-X
-
-X
-
-wi0
-
-
-
 
 0
-(12)
-si − P 00 qi  ≤ 2  (si − wi )qi 
 
+Algorithm - Initialization & re-training: Z and Θ
+could be set randomly. Prediction accuracy gains of up to
+1.5% could be observed if Bonsai was initialized by taking
+T steps of gradient descent without any budget constraints
+followed by a hard thresholding step. Further gains of 1.5%
+could be observed by taking another T steps of gradient descent with fixed support after termination. This helped in
+fine-tuning Bonsai’s parameters once the memory budget
+allocation had been finalized across the tree nodes.
+More details about the optimization can be found in the
+supplementary material by clicking here.
 
+5. Experiments
+Datasets: Experiments were carried out on a number of
+publically available binary and multi-class datasets including Chars4K (Campos et al., 2009), CIFAR10 (Krizhevsky,
+2009), MNIST (LeCun et al., 1998), WARD (Yang et al.,
+2009), USPS (Hull, 1994), Eye (Kasprowski & Ober,
+2004), RTWhale (RTW), and CUReT (Varma & Zisserman, 2005). Binary versions of these datasets were downloaded from (Jose et al., 2013). Bing’s L3 Ranking is a proprietary dataset where ground truth annotations specifying
+the relevance of query-document pairs have been provided
+on a scale of 0-4. Table 1 lists these datasets’ statistics.
+Baseline algorithms: Bonsai was compared to stateof-the-art algorithms for resource-efficient ML spanning
+tree, kNN, SVM and single hidden layer neural network
+algorithms including Decision Jungles (Shotton et al.,
+2013; Pohlen), Feature Budgeted Random Forests (BudgetRF) (Nan et al., 2015), Gradient Boosted Decision Tree
+Ensemble Pruning (Tree Pruning) (Dekel et al., 2016),
+Pruned Random Forests (BudgetPrune) (Nan et al., 2016),
+Local Deep Kernel Learning (LDKL) (Jose et al., 2013),
+Neural Network Pruning (NeuralNet Pruning) (Han et al.,
+2016) and Stochastic Neighbor Compression (SNC) (Kusner et al., 2014b). The differences between some of these
+algorithms and Bonsai is briefly discussed in Section 2.
+Publically available implementations of all algorithms were
+used taking care to ensure that published results could be
+reproduced thereby verifying the code and hyper-parameter
+settings. Note that Bonsai is not compared to deep convolutional neural networks as they have not yet been demonstrated to fit on such tiny IoT devices. In particular, convolutions are computationally expensive, drain batteries
+and produce intermediate results which do not fit in 2 KB
+RAM. Implementing them on tiny microcontrollers is still
 
+Table 1: Dataset statistics - the number after the dataset
+name represents the number of classes so as to distinguish
+between the binary and multi-class versions of the dataset.
+Dataset
+L3 Ranking
+Chars4K-2
+CIFAR10-2
+WARD-2
+USPS-2
+MNIST-2
+Eye-2
+RTWhale-2
+CUReT-61
+MNIST-10
+Chars4K-62
 
+# Train
+704,841
+4,397
+50,000
+4,503
+7,291
+60,000
+456
+5,265
+4,204
+60,000
+4,397
 
-w
-j
-j
-i
-i
+# Test
+123,268
+1,886
+10,000
+1,931
+2,007
+10,000
+196
+5,264
+1,403
+10,000
+1,886
 
-! 2
-X
+# Features
+50
+400
+400
+1,000
+256
+784
+8,192
+2,000
+610
+784
+400
 
-w0
+Resource-efficient Machine Learning in 2 KB RAM for the Internet of Things
+Chars4K−62
 
+CUReT−61
 
-+ 2
-wi0 − P i 00 qi  .
+MNIST−10
 
+L3 Ranking
 
-w
-j
-j
-i
-(13)
+30
 
-Coresets for Vector Summarization with Applications to Network Graphs
+BonsaiOpt
+Bonsai
+NeuralNet Pruning
+SNC
+Decision Jungle
+BudgetPrune
+BudgetRF
 
-Bound on (13): Observe that
+80
 
-! 2 
-X
-X
-
-wi0
-
-
-
+20
+10
 0
-wi0
-wi − P 00 qi  = 
 
+50
 
+70
+0
 
+100
 
-w
-j
-j
-i
-i
+Model Size (KB)
 
-!2
+50
+
+90
+85
+80
+0
+
+100
+
+Model Size (KB)
+
+BonsaiOpt
+Bonsai
+NeuralNet Pruning
+SNC
+Decision Jungle
+BudgetPrune
+BudgetRF
+
+50
+
+nDCG@1
+
+40
+
+52
+
+95
+
+90
+
+Accuracy (%)
+
+BonsaiOpt
+Bonsai
+NeuralNet Pruning
+SNC
+Decision Jungle
+BudgetPrune
+BudgetRF
+
+50
+
+Accuracy (%)
+
+Accuracy (%)
+
+60
+50
+48
+46
+44
+42
+0.2
+
+100
+
+Model Size (KB)
+
+Bonsai
+FastRank
+
+0.4
+
+0.6
+
+0.8
+
+Model Size (KB)
 
 1
 
+Figure 1: Multi-class & Ranking Datasets - Bonsai dominates over the state-of-the-art resource-efficient ML algorithms
+by as much as 30.7% on Chars4K-62 and 28.9% on CUReT-61. BonsaiOpt’s gains are even higher. Some methods do not
+appear on the graphs as their accuracies were not high enough to fall within the y-axis limits. Bonsai also dominates Bing’s
+FastRank L3 ranker. Figure best viewed magnified.
+RTWhale−2
 
-00
+Eye−2
 
-w
-j
-j
-2
-!2 
-X
+90
 
-1
+10
 
-0 
-P
-1−
-·
-wi qi  .
-00
+80
+0
 
+15
 
-j wj
-i
-(14)
+5
 
-=
+10
 
-√v .
-Nx
+Model Size (KB)
 
-Let τ =
-v=
+Chars4K−2
 
-P
+72
+70
+68
+10
 
-j
+15
 
-1− P
+74
+72
+70
+68
+0
 
-By the triangle inequality
+5
 
-uj k(pj − Eu , x)k ≤
+10
 
-P
+Model Size (KB)
 
-j
+15
 
-uj kpj − Eu k + x = 2x. (15)
+92
 
-By choosing c > 16 in (2) we have N ≥ 16, so
-τ≤
+5
 
-√2
-N
+10
 
-≤
+Model Size (KB)
 
-1
-2.
+92
+90
+5
 
-(16)
+10
 
-Substituting a = − i si qi and b = i (si − wj0 )qj in (11)
-bounds the right expression of (14) by
-P
+Model Size (KB)
 
-P
+15
 
+Legend
 
-2
+94
 
-2
+90
+0
 
-2
-X
+94
 
-X
+88
+0
 
-X
+15
 
+96
+Accuracy (%)
 
+Accuracy (%)
 
+Accuracy (%)
 
+74
 
+10
 
+USPS−2
 
-wi0 qi  ≤ 2 
-si qi  + 2  (si − wj0 )qj 
+76
 
+5
 
+5
 
+Model Size (KB)
 
+CIFAR10−2
 
+76
 
+Model Size (KB)
 
-i
+92
+90
+0
 
-i
+15
 
-i
+78
 
-Figure 2. Given a set of vectors from a standard Gaussian distribution, the graph shows the `2 error (y-axis) between their sum and
-their approximated sum using only N samples (the x-axis) based
-on Count Sketch (Charikar et al., 2004), Count Min (Cormode &
-Muthukrishnan, 2005a), Count Median (Cormode & Muthukrishnan, 2005b), BJKST (Bar-Yossef et al., 2002), F2-Sketch (Alon
-et al., 1996b), and our coreset.
+66
+0
 
-(17)
+94
 
-2(1 + τ 2 )
-2x2
-2
-≤ 2 +
-=
-,
-v
-N
-τ 2N
-
-where the last inequality follows from (3) and (4). For
-bounding the left expression of (14), note that
-(1 −
-
-X
-
-wj00 )2
-
-j
-
-1−
-
-=
-
-X
-
-wj0
-
-j
-
-v
-·
-k(pj − Eu , x)k
-
-!2
-(18)
-
-Figure 3. The overview of our designed system to extract and rep
-2
-
-X 0 ( v (pj − Eu ), v) 
-resent
-social networks is given.
-
-
-≤ (0, · · · , 0, 1) −
-wj · x
-
-
-k(p
-j − Eu , x)k 
-j
-
-2 for a sufficiently large constant α, e.g. α = 3, where in the
-
-
-(pj − Eu , x)  last inequality we used (16). Since v ≤ 2x by (15) we have
-x X 0
-v 2 
-wj ·
 −
-= 2  0, · · · , 0,
 
-x 
-v
-k(pj − Eu , x)k 
-j
-X
-2
+5
 
+Model Size (KB)
 
+85
 
-v ≤ 2x = 2
-uj kpj − Eu k
-v 2 X
-v2
+96
 
-0
-2
-j
-= 2  (si − wi )qi  ≤
-=τ ,
-2
+Accuracy (%)
 
-√
-x  i
-Nx
-X q
-u kp − E k
-=
+55
 
-2
+MNIST−2
 
-2
+96
+Accuracy (%)
 
-where (18) follows since kbk ≤ k(a, b)k for every pair
-a, b of vectors,
-and the last inequality is by (3) and (4).
-P
-Hence, j wj00 ≥ 1 − τ , and
-
+Accuracy (%)
 
-1−
+Accuracy (%)
 
-P 1 00
-j wj
+60
 
-2
-
-=
-
-
-
-2
-P
-1− i wi00
-P
-00
-j wj
-
-≤
-
-Combining (14) and (17) bounds (13) by
-
-2
-! 2
-!2 
-X
-
-X
-
-w0
-1
-
-
-
-
-2
-wi0 − P i 00 qi  = 2 1 − P 00
-·
-wi0 qi 
-
-
-
-
-w
-w
-j
-j
-j
-j
-i
-i
-2(1 + τ 2 )
-4(1 + τ 2 )
-2τ 2
-≤
-·
-=
-.
-2
-2
-(1 − τ )
-τ N
-N (1 − τ )2
-
-Bound on (12): Plugging the last inequality, (4) and (12)
-! 2
-in (9) yields X
-
+50
 0
 
-w
+WARD−2
 
-si − P i 00 qi 
+98
 
-j wj
-i
+15
 
-2
+BonsaiOpt
+Bonsai
+GBDT
+Tree Pruning
+LDKL
+LDKL−L1
+NeuralNet Pruning
+SNC
+Decision Jungle
+BudgetPrune
+BudgetRF
+−
 
-! 2
+Figure 2: Binary Datasets - Bonsai dominates over state-of-the-art resource-efficient ML algorithms with gains of 8.6% on
+RTWhale-2 and 8.2% on Eye-2 in the 0-2 KB range. BonsaiOpt’s gains are even higher. Figure best viewed magnified.
+an open research problem. Bonsai’s performance was however compared to that of uncompressed single hidden layer
+neural networks without convolutions, Gradient Boosted
+Decision Trees (GBDT), kNN classifiers and RBF-SVMs.
 
-X
- 
- X
-wi0
+of the algorithms were implemented on the Uno and their
+prediction times and energies were compared to Bonsai’s.
 
+Hyper-parameters: The publically provided training set
+for each dataset was subdivided into 80% for training and
+20% for validation. The hyper-parameters of all algorithms were tuned on the validation set. Once the hyperparameters had been fixed, the algorithms were trained on
+the full training set and results were reported on the publically available test set.
 
+Implementation: Results are presented throughout for an
+unoptimized implementation of Bonsai for a fair comparison with the other methods. For instance, 4 bytes were
+used to store floating point numbers for all algorithms, all
+floating point operations were simulated in software, etc.
+However, results are also presented for an optimized implementation of Bonsai, called BonsaiOpt, where numbers
+were stored in a 1 byte fixed point format, tanh was approximated, all floating point operations were avoided, etc.
 
-0
-2 
-0
-P
-≤ 2v  (si − wi )qi 
-+
-wi −
-qi 
-00
+Evaluation: IoT applications would like to maximize their
+prediction accuracies using the best model that might fit
+within the available flash memory while minimizing their
+prediction times and energies. Accuracies of all algorithms
+are therefore presented for a range of model sizes. Some
 
+Comparison to uncompressed methods: The results in
+Tables 2 and 3 demonstrate that Bonsai’s prediction accuracies could compete with those of uncompressed kNN,
+GBDT, RBF-SVM and neural network classifiers with significantly larger model sizes. On RTWhale-2, Chars4K-62
 
+Resource-efficient Machine Learning in 2 KB RAM for the Internet of Things
 
+Table 2: Binary Datasets - Bonsai can sometimes outperform uncompressed methods with significantly larger models.
+Dataset
+RTWhale-2
+Chars4K-2
+Eye-2
+WARD-2
+CIFAR10-2
+USPS-2
+MNIST-2
 
-j wj
-i
-i
-
-
-2(1 + τ 2 )
-2v 2
-αv 2
-≤
-1+
-≤
-,
-N
-(1 − τ )2
-N
+Bonsai (%)
+2KB 16KB
+61.74 61.74
+74.28 76.67
+88.26 90.31
+95.85 96.89
+73.02 76.64
+94.42 95.72
+94.38 96.47
 
+GBDT (%)
 
-kEu − Ew k2 = v 2 
+kNN (%)
 
+RBF-SVM (%)
 
-(19)
+NeuralNet (%)
 
-√
-√
-varu uj ·
+56.95 (1172 KB)
+72.38 ( 625 KB)
+83.16 ( 234 KB)
+97.77 (1172 KB)
+77.19 (1562 KB)
+95.91 ( 234 KB)
+98.36 (1172 KB)
 
-j
+51.75 ( 41143 KB)
+67.28 ( 6870 KB)
+76.02 ( 14592 KB)
+94.98 ( 17590 KB)
+73.70 ( 78125 KB)
+96.70 ( 7291 KB)
+96.90 (183750 KB)
 
-j
+53.82 (39905 KB)
+75.60 ( 6062 KB)
+93.88 ( 7937 KB)
+96.42 ( 7222 KB)
+81.68 (63934 KB)
+96.86 ( 1660 KB)
+98.08 (35159 KB)
 
-p√
+52.26 (3910 KB)
+72.53 ( 314 KB)
+90.31 (6402 KB)
+92.75 (3914 KB)
+75.90 ( 314 KB)
+95.86 ( 504 KB)
+98.33 (3070 KB)
 
-u
+Table 3: Multi-class Datasets - Bonsai can sometimes outperform uncompressed methods with significantly larger models.
+Dataset
+Chars4K-62
+CUReT-61
+MNIST-10
 
-varu
-j
-
-X √
-uj kpj − Eu k2
-≤
-varu uj +
-√
-varu
-j
-=
+Bonsai (%)
+58.59 (101 KB)
+95.23 (115 KB)
+97.01 ( 84 KB)
 
-τ2
-.
-(1−τ )2
+GBDT (%)
+43.34 (9687 KB)
+90.81 (2383 KB)
+97.90 (5859 KB)
 
-2·
+kNN (%)
+39.32 ( 6833 KB)
+89.81 ( 10037 KB)
+94.34 (183984 KB)
 
-√
-√
-1 X
-varu + √
-uj kpj − Eu k2 = 2 varu ,
-varu j
+Table 4: The effect of Bonsai’s components - Performing
+sparse PCA independently before training is not as effective as Bonsai’s joint optimization of the projection matrix.
 
-where in the second inequality we used (10). Plugging this
-in (19) and replacing N by 4αN = O(N ) in the proof
-above, yields the desired bound
-kEu − Ew k2 ≤
+Method
+Bonsai with random initialization
+and without re-training
+Bonsai without re-training
+Bonsai
+Bonsai with sparse PCA
+Tree Pruning with sparse PCA
+Decision Jungle with sparse PCA
+RBF-SVM with sparse PCA
 
-αv 2
-N
+Accuracy
+(%)
 
-≤
+Model
+size
+(KB)
 
-4α·varu
-.
-N
+74.12
 
-5. Experimental Results
-We implemented the coreset algorithms in 1 and 2. We also
-implemented a brute force method for determining the social network that considers the entire data. We used this
-method to derive the ground truth for the social network
-for small scale data. Our system’s overview is given in Figure 3 and explained in Section 1.1. The coreset algorithm
-computes the heavy hitters by approximating the sum of
+16
 
-Coresets for Vector Summarization with Applications to Network Graphs
+75.19
+76.67
+58.32
+63.57
+61.67
+71.10
 
-Figure 4. The normalized error (y-axis) of proximities for the
-GPS traces taxi-drivers in the New York City Cab dataset using
-only N samples (N increases along x-axis).
+16
+16
+16
+16
+16
+136
 
-the columns of the proximity matrix as explained in Section 1.1. In this section, we have used different data sets
-from three different sources: In our first experiment, we
-compared our coreset algorithm’s error with other sketch
-algorithms (Charikar et al., 2004; Cormode & Muthukrishnan, 2005a). The second dataset is the New York City
-Cab dataset1 and the third data set is from Stanford2 and
-includes six different graph-based data sets. In all the
-figures shown in this section, the x axis shows the coreset size (N) and the y axis represents the normalized error value (Error ∗ mean(var(pi )2 )/mean(norm(pi ))),
-where Error = kpi − p̄k2 . In our experiments, we ran N
-iterations and wrote down the empirical error .
-Comparison to sketch algorithms: Since the algorithms
-in (Charikar et al., 2004; Cormode & Muthukrishnan,
-2005a) focused on selecting the entries at scalar level (i.e.,
-individual entries from a vector), in this experiment, we
-generated a small scale synthetic data (standard Gaussian
-distribution) and compared the error made by our coreset implementation to four other sketch implementations.
-These sketch algorithms are: Count Sketch, Count Min,
-Count Median, BJKST and F2-Sketch (see Fig. 2). For the
-sketch algorithms, we used the code available at3 . We plot
-the results in Fig. 2 where our Coresets algorithm showed
-better approximation than all other well known sketch techniques for all N values.
-Application on NYC data: Here we applied our algorithm
-on the NYC data. The data contains the location information of 13249 taxi cabs with 14776616 entries. The goal
-here is showing how the error on Coreset approximation
-would change on real data with respect to N (we expect
-that the error would reduce with respect to N as the theory
-suggests). This can be seen in Fig. 4, where x axis is the
-coreset size (N) and y axis is the normalized error.
-Application on Stanford Data Sets: Here we apply our algorithm on six different data sets from Stanford: Amazon,
-Youtube, DBLP, LiveJournal, Orkut and Wikitalk data sets.
-We run the Coreset algorithm to approximate the total number of connectivities each node has. We computed the error
-1
+and Chars4K-2, Bonsai’s accuracies were higher than all
+other methods by 4.8%, 3.2% and 1.1% while its model
+size was lower by 977x, 13x and 157x respectively. Bonsai’s accuracies were lower by 1.0% - 5.0% on the other
+datasets with model size gains varying from 55x to 3996x.
+Note that, while BonsaiOpt’s accuracies were similar to
+Bonsai’s, its model sizes would be even lower.
+Comparison to resource-efficient ML algorithms: The
+results in Figures 2 and 3 demonstrate that Bonsai’s prediction accuracies dominate those of state-of-the-art resourceefficient ML algorithms for all model sizes. In fact, Bonsai
+could outperform all other algorithms, including tree algorithms by as much as 30.7% on Char4K-62 and 28.9% on
+CUReT-61 for a given model size. For binary datasets, the
+largest gains were observed in the 0-2 KB regime including 8.6% on RTWhale-2 and 8.2% on Eye-2. Of course,
+BonsaiOpt’s gains were even higher on both binary and
 
-https://publish.illinois.edu/dbwork/open-data/
-https://snap.stanford.edu/data/
-3
-https://github.com/jiecchen/StreamLib/
-2
+RBF-SVM (%)
+48.04 ( 7738 KB)
+97.43 ( 8941 KB)
+97.30 (39084 KB)
 
-(a) Amazon data
+NeuralNet (%)
+55.35 (1266 KB)
+95.51 (1310 KB)
+98.44 (4652 KB)
 
-(c) DBLP data
+multi-class datasets. These results validate Bonsai’s model,
+showing it to be accurate and compact and demonstrate that
+Bonsai’s optimization algorithm yields good solutions.
+L3 ranking: Bonsai was shown to generalise to other
+resource-constrained scenarios beyond IoT by ranking documents in response to queries on Bing. Bonsai was trained
+by replacing the classification gradients with rank-sensitive
+gradients approximating nDCG (Burges, 2010). As can be
+seen in Figure 1, using a 300 byte model, Bonsai could
+outperform Bing’s FastRank L3 ranker by 8.3%. In fact,
+Bonsai could achieve almost the same ranking accuracy as
+FastRank but with a 660x smaller model.
+Prediction on the Arduino Uno: Table 5 presents the prediction costs per test point for the highest accuracy models
+with size less than 2 KB for a few methods that were implemented on the Arduino Uno. The BonsaiOpt model was a
+more efficient implementation of the chosen Bonsai model.
+The results indicate that BonsaiOpt could be significantly
+more accurate, faster and energy-efficient as compared to
+other algorithms including an unoptimized linear classifier.
+Transmitting the test feature vector to the cloud, whenever
+possible, and running uncompressed GBDT might sometimes yield higher accuracies but would also consume 47x497x more energy which might not be feasible.
+Bonsai’s components: The contribution of Bonsai’s components on the Chars4K-2 dataset is presented in Table 4. Modest reductions in accuracy were observed without proper initialization or re-training. Learning a projection matrix independently via sparse PCA before training reduced accuracy significantly as compared to Bonsai’s
+joint training of the projection matrix and tree parameters.
+Other tree and uncompressed methods also did not benefit
+much by training in the sparse PCA space.
 
-(b) YouTube data
+Resource-efficient Machine Learning in 2 KB RAM for the Internet of Things
 
-(d) Wikitalk data
+Table 5: Prediction costs per test point on the Arduino Uno with the highest accuracy model of size less than 2 KB – The
+BonsaiOpt model was a more efficient implementation of the chosen Bonsai model. BonsaiOpt was significantly more
+accurate, faster and energy-efficient than all other methods. Transmitting the test feature vector to the cloud, whenever
+possible, and running uncompressed GBDT might sometimes yield higher accuracies but would also consume 47x-497x
+more energy which might not be feasible in many IoT applications.
 
-(e) Orkut data
-(f) LiveJournal data
-Figure 5. The normalized error (y-axis) of the coreset for network
-structure approximation is shown for four different datasets using
-only N samples (N increases along x-axis).
+Dataset
 
-for each of the seven different N values from [100, 200,
-300, 400, 500, 600, 900] for each data set. We used the
-first 50000 entries from the Orkut, Live Journal, Youtube
-and Wiki data sets and the first 5000 entries from Amazon
-and DBLP data set. The results are shown in Figure 5.
-In the figures, y axis represents the normalized error. The
-results demonstrate the utility of our proposed method for
-summarization.
+Eye-2
 
-6. Conclusion
-In this paper we proposed a new coreset algorithm for
-streaming data sets with applications to summarizing large
-networks to identify the ”heavy hitters”. The algorithm
-takes a stream of vectors as input and maintains their sum
-using small memory. Our presented algorithm shows better
-performance at even lower values of non-zero entries (i.e.,
-at higher sparsity rates) when compared to the other existing sketch techniques. We demonstrated that our algorithm
-can catch the heavy hitters efficiently in social networks
-from the GPS-based location data and in several graph data
-sets from the Stanford data repository.
+RTWhale-2
+
+Chars4K-2
+
+WARD-2
+
+CIFAR10-2
+
+USPS-2
+
+MNIST-2
+
+Model Size (KB)
+Accuracy (%)
+Prediction Time (ms)
+Prediction Energy (mJ)
+Model Size (KB)
+Accuracy (%)
+Prediction Time (ms)
+Prediction Energy (mJ)
+Model Size (KB)
+Accuracy (%)
+Prediction Time (ms)
+Prediction Energy (mJ)
+Model Size (KB)
+Accuracy (%)
+Prediction Time (ms)
+Prediction Energy (mJ)
+Model Size (KB)
+Accuracy (%)
+Prediction Time (ms)
+Prediction Energy (mJ)
+Model Size (KB)
+Accuracy (%)
+Prediction Time (ms)
+Prediction Energy (mJ)
+Model Size (KB)
+Accuracy (%)
+Prediction Time (ms)
+Prediction Energy (mJ)
+
+BonsaiOpt
+
+Bonsai
+
+Linear
+
+LDKL
+
+0.30
+88.78
+10.75
+2.64
+0.33
+60.94
+5.24
+1.29
+0.50
+74.71
+4.21
+1.03
+0.47
+95.70
+4.85
+1.18
+0.50
+73.05
+4.55
+1.11
+0.50
+94.42
+2.93
+0.71
+0.49
+94.28
+5.17
+1.27
+
+1.20
+88.26
+12.26
+3.01
+1.32
+61.74
+7.11
+1.75
+2.00
+74.28
+8.55
+2.10
+1.86
+95.86
+8.13
+1.99
+1.98
+73.02
+8.16
+2.01
+2.00
+94.42
+5.57
+1.37
+1.96
+94.38
+8.90
+2.18
+
+2.00
+80.10
+15.13
+3.72
+0.86
+50.76
+4.68
+1.15
+1.56
+51.06
+7.39
+1.81
+1.99
+87.57
+7.48
+1.84
+1.56
+69.11
+7.73
+1.90
+1.02
+83.11
+4.15
+1.02
+1.93
+86.16
+6.72
+1.65
+
+1.88
+66.33
+15.80
+3.89
+1.00
+50.24
+6.16
+1.52
+1.95
+67.29
+8.61
+2.13
+1.99
+89.64
+9.99
+2.47
+1.88
+67.54
+8.12
+2.00
+1.87
+91.96
+5.59
+1.37
+1.87
+87.01
+8.72
+2.16
+
+6. Conclusions
+This paper proposed an alternative IoT paradigm, centric
+to the device rather than the cloud, where ML models run
+on tiny IoT devices without necessarily connecting to the
+cloud thereby engendering local decision making capabilities. The Bonsai tree learner was developed towards this
+end and demonstrated to be fast, accurate, compact and
+energy-efficient at prediction time. Bonsai was deployed
+on the Arduino Uno board as it could fit in a few KB of
+flash, required only 70 bytes of writable memory for binary classification and 500 bytes for a 62 class problem,
+handled streaming features and made predictions in milliseconds taking only milliJoules of energy. Bonsai’s prediction accuracies could be as much as 30% higher as com-
+
+NeuralNet
+Pruning
+1.96
+80.45
+15.48
+3.81
+1.17
+52.44
+8.86
+2.18
+1.96
+63.90
+14.09
+3.48
+1.91
+91.76
+14.22
+3.49
+1.96
+67.01
+13.87
+3.43
+2.00
+88.68
+9.51
+2.33
+1.90
+88.65
+14.67
+3.59
+
+Cloud GBDT
+234.00
+83.16
+2186.59
+1311.95
+1172.00
+56.95
+521.27
+312.76
+625.00
+72.38
+160.40
+63.52
+1172.00
+97.77
+293.13
+116.08
+1562.00
+77.19
+160.40
+63.52
+234.00
+95.91
+83.45
+33.05
+1172.00
+98.36
+264.96
+104.92
+
+pared to state-of-the-art resource-efficient ML algorithms
+for a fixed model size and could even approach and outperform those of uncompressed models taking many MB of
+RAM. Bonsai achieved these gains by developing a novel
+model based on a single, shallow, sparse tree learnt in a
+low-dimensional space. Predictions made by both internal and leaf nodes and the sharing of parameters along
+paths allowed Bonsai to learn complex non-linear decision
+boundaries using a compact representation. Bonsai’s code
+is available from (BonsaiCode) and is part of Microsoft’s
+ELL machine learning compiler for IoT devices.
+
+Resource-efficient Machine Learning in 2 KB RAM for the Internet of Things
 
 Acknowledgements
-Support for this research has been provided in part by Ping
-An Insurance and NSFSaTC-BSF CNC 1526815. We are
-grateful for this support.
-
-Coresets for Vector Summarization with Applications to Network Graphs
+We are grateful to Yeshwanth Cherapanamjeri, Ofer Dekel,
+Chirag Gupta, Prateek Jain, Ajay Manchepalli, Nagarajan Natarajan, Praneeth Netrapalli, Bhargavi Paranjape,
+Suresh Parthasarathy, Vivek Seshadri, Rahul Sharma, Harsha Vardhan Simhadri, Manish Singh and Raghavendra
+Udupa for many helpful discussions and feedback.
 
 References
-Alon, Noga, Matias, Yossi, and Szegedy, Mario. The space
-complexity of approximating the frequency moments. In
-Proceedings of the twenty-eighth annual ACM symposium on Theory of computing, pp. 20–29. ACM, 1996a.
-Alon, Noga, Matias, Yossi, and Szegedy, Mario. The space
-complexity of approximating the frequency moments. In
-Proceedings of the twenty-eighth annual ACM symposium on Theory of computing, pp. 20–29. ACM, 1996b.
-Bar-Yossef, Ziv, Jayram, TS, Kumar, Ravi, Sivakumar, D,
-and Trevisan, Luca. Counting distinct elements in a data
-stream. In International Workshop on Randomization
-and Approximation Techniques in Computer Science, pp.
-1–10. Springer, 2002.
-Barger, Artem and Feldman, Dan. k-means for streaming and distributed big sparse data. SDM’16 and arXiv
-preprint arXiv:1511.08990, 2015.
-Bentley, Jon Louis and Saxe, James B. Decomposable
-searching problems i. static-to-dynamic transformation.
-Journal of Algorithms, 1(4):301–358, 1980.
-Carrington, Peter J, Scott, John, and Wasserman, Stanley.
-Models and methods in social network analysis, volume 28. Cambridge university press, 2005.
-Charikar, Moses, Chen, Kevin, and Farach-Colton, Martin. Finding frequent items in data streams. Theoretical
-Computer Science, 312(1):3–15, 2004.
-Clarkson, K. L. Subgradient and sampling algorithms for
-l1 -regression. In Proc. 16th Annu. ACM-SIAM Symp. on
-Discrete algorithms (SODA), pp. 257–266, 2005. ISBN
-0-89871-585-7.
-Cormode, Graham and Muthukrishnan, S. An improved
-data stream summary: the count-min sketch and its applications. Journal of Algorithms, 55(1):58–75, 2005a.
-Cormode, Graham and Muthukrishnan, S. An improved
-data stream summary: the count-min sketch and its applications. Journal of Algorithms, 55(1):58–75, 2005b.
-Dinh, Thang N, Xuan, Ying, Thai, My T, Park, EK, and
-Znati, Taieb. On approximation of new optimization
-methods for assessing network vulnerability. In INFOCOM, 2010 Proceedings IEEE, pp. 1–9. IEEE, 2010.
-Dinh, Thang N, Nguyen, Nam P, and Thai, My T. An adaptive approximation algorithm for community detection
-in dynamic scale-free networks. In INFOCOM, 2013
-Proceedings IEEE, pp. 55–59. IEEE, 2013.
-Feldman, Dan and Tassa, Tamir. More constraints, smaller
-coresets: constrained matrix approximation of sparse big
+The right whale dataset. https://www.kaggle.com/
+c/whale-detection-challenge/data.
+Ba, J. and Caruana, R. Do deep nets really need to be deep?
+In NIPS, 2014.
+Blumensath, T. and Davies, M. E. Iterative thresholding for
+sparse approximations. Journal of Fourier Analysis and
+Applications, 14(5-6), 2008.
+BonsaiCode.
+Code for Bonsai.
+http://www.
+manikvarma.org/code/Bonsai/download.
+html.
+Breiman, L. Random forests. ML, 2001.
 
-data. In Proceedings of the 21th ACM SIGKDD International Conference on Knowledge Discovery and Data
-Mining (KDD’15), pp. 249–258. ACM, 2015.
-Feldman, Dan, Volkov, Mikhail, and Rus, Daniela. Dimensionality reduction of massive sparse datasets using
-coresets. In NIPS, 2016. URL http://arxiv.org/
-abs/1503.01663.
-Har-Peled, Sariel. Coresets for discrete integration and
-clustering. In FSTTCS 2006: Foundations of Software
-Technology and Theoretical Computer Science, pp. 33–
-44. Springer, 2006.
-Hogan, Bernie. Analyzing social networks. The Sage handbook of online research methods, pp. 141, 2008.
-Lancichinetti, Andrea and Fortunato, Santo. Community
-detection algorithms: a comparative analysis. Physical
-review E, 80(5):056117, 2009.
-Liao, Lin. Location-based activity recognition. PhD thesis,
-University of Washington, 2006.
-Nguyen, Nam P, Dinh, Thang N, Xuan, Ying, and Thai,
-My T. Adaptive algorithms for detecting community
-structure in dynamic social networks. In INFOCOM,
-2011 Proceedings IEEE, pp. 2282–2290. IEEE, 2011.
-Wasserman, Stanley. Analyzing social networks as stochastic processes. Journal of the American statistical association, 75(370):280–294, 1980.
-Zheng, Yu. Location-based social networks: Users.
-In Computing with spatial trajectories, pp. 243–276.
-Springer, 2011.
+Hubara, I., Courbariaux, M., Soudry, D., El-Yaniv, R., and
+Bengio, Y. Quantized neural networks: Training neural networks with low precision weights and activations.
+CoRR, abs/1609.07061, 2016.
+Hull, J. J. A database for handwritten text recognition research. IEEE PAMI, 16, 1994.
+Iandola, F. N., Moskewicz, M. W., Ashraf, K., Han, S.,
+Dally, W. J., and Keutzer, K. Squeezenet: Alexnet-level
+accuracy with 50x fewer parameters and <1MB model
+size. CoRR, abs/1602.07360, 2016.
+Ioannou, Y., Robertson, D., Cipolla, R., and Criminisi, A.
+Deep roots: Improving cnn efficiency with hierarchical
+filter groups. arXiv preprint arXiv:1605.06489, 2016a.
+Ioannou, Y., Robertson, D., Kontschieder, D. Zikicand P.,
+Shotton, J., Brown, M., and Criminisi, A. Decision forests, convolutional networks and the models inbetween. arXiv preprint arXiv:1603.01250, 2016b.
+Jain, P., Tewari, A., and Kar, P. On iterative hard thresholding methods for high-dimensional m-estimation. In
+NIPS, 2014.
+
+Breiman, L., Friedman, J., Stone, C. J., and Olshen, R. A.
+Classification and regression trees. In CRC press, 1984.
+
+Joly, A., Schnitzler, F., Geurts, P., and Wehenkel, L. L1based compression of random forest models. In ESANN,
+2012.
+
+Bucilua, C., Caruana, R., and Niculescu-Mizil, A. Model
+compression. In Proceedings of the 12th ACM SIGKDD
+international conference on Knowledge discovery and
+data mining, 2006.
+
+Jose, C., Goyal, P., Aggrwal, P., and Varma, M. Local deep
+kernel learning for efficient non-linear svm prediction.
+In ICML, 2013. https://manikvarma.github.
+io/code/LDKL/download.html.
+
+Burges, C. J. From ranknet to lambdarank to lambdamart:
+An overview. Learning, 11(23-581), 2010.
+Campos, T. E., Babu, B. R., and Varma, M. Character
+recognition in natural images. In VISAPP(2), 2009.
+Dekel, O., Jacobbs, C., and Xiao, L. Pruning decision
+forests. In Personal Communications, 2016.
+Denton, E. L., Zaremba, W., Bruna, J., LeCun, Y., and Fergus, R. Exploiting linear structure within convolutional
+networks for efficient evaluation. In NIPS, 2014.
+
+Kasprowski, P. and Ober, J. Eye movement in biometrics.
+In eccv, 2004.
+Kontschieder, P., Fiterau, M., Criminisi, A., and Bulo, S. R.
+Deep neural decision forests. In ICCV, 2015.
+Krizhevsky, A. Learning multiple layers of features from
+tiny images. Technical report, 2009.
+Kulkarni, V. Y. and Sinha, P. K. Pruning of random forest
+classifiers: A survey and future directions. In ICDSE,
+2012.
+
+Duda, R. O., Hart, P. E., and Stork, D. G. Pattern Classification. John Wiley and Sons, 2nd edition, 2002.
+
+Kusner, M. J., Chen, W., Zhou, Q., Xu, Z. E., Weinberger,
+K. Q., and Chen, Y. Feature-cost sensitive learning with
+submodular trees of classifiers. In AAAI, 2014a.
+
+Han, S., Mao, H., and Dally, W. J. Deep compression:
+Compressing deep neural networks with pruning, trained
+quantization and huffman coding. In ICLR, 2016.
+
+Kusner, M. J., Tyree, S., Weinberger, K. Q., and Agrawal,
+K. Stochastic neighbor compression. In ICML, 2014b.
+http://mkusner.github.io/#code.
+
+Hsieh, C. J., Si, S., and Dhillon, I. Fast prediction for largescale kernel machines. In NIPS, 2014.
+
+Le, Q., Sarlós, T., and Smola, A. Fastfood-approximating
+kernel expansions in loglinear time. In ICML, 2013.
+
+Resource-efficient Machine Learning in 2 KB RAM for the Internet of Things
+
+LeCun, Y., Bottou, L., Bengio, Y., and Haffner, P. Gradientbased learning applied to document recognition. Proceedings of the IEEE, 86(11):2278–2324, 1998.
+
+Wang, J., Trapeznikov, K., and Saligrama, V. Efficient
+learning by directed acyclic graph for resource constrained prediction. In NIPS, 2015.
+
+Li, S. Z. Markov Random Field Modeling in Image Analysis. Springer-Verlag, 2001.
+
+Wang, W., Chen, C., Chen, W., Rai, P., and Carin, L. Deep
+distance metric learning with data summarization. In
+ECML PKDD, 2016.
+
+Li, Z., Yang, T., Zhang, L., and Jin, R. Fast and accurate
+refined nyström-based kernel svm. In AAAI, 2016.
+Meunier, F., Wood, A., Weiss, K., Huberty, K., Flannery,
+S., Moore, J., Hettenbach, C., and Lu, B. The internet
+of things is now connecting the real economy. Technical
+report, Morgan Stanley, 2014.
+
+Wu, J., Leng, C., Wang, Y., Hu, Q., and Cheng, J. Quantized convolutional neural networks for mobile devices.
+In CVPR, 2016.
+Xu, Z., Weinberger, K. Q., and Chapelle, O. The greedy
+miser: Learning under test-time budgets. In ICML, 2012.
+
+Murthy, S. K., Kasif, S., and Salzberg, S. A system for
+induction of oblique decision trees. JAIR, 2, 1994.
+
+Xu, Z. E., Kusner, M. J., Weinberger, K. Q., and Chen, M.
+Cost-sensitive tree of classifiers. In ICML, 2013.
+
+Nan, F., Wang, J., and Saligrama, V. Feature-budgeted random forest. In ICML, 2015. http://sites.bu.
+edu/data/code-4/.
+
+Yang, J., Li, Y., Tian, Y., Duan, L., and Gao, W. Groupsensitive multiple kernel learning for object categorization. In ICCV, 2009.
+
+Nan, F., Wang, J., and Saligrama, V. Pruning random
+forests for prediction on a budget. In NIPS, 2016.
+
+Yang, Z., Moczulski, M., Denil, M., Freitas, N., Smola,
+A. J., Song, L., and Wang, Z. Deep fried convnets. ICCV,
+2015.
+
+Norouzi, M., Collins, M., Johnson, M. A., Fleet, D. J., and
+Kohli, P. Efficient non-greedy optimization of decision
+trees. In NIPS, 2015.
+Pohlen, T. LibJungle - Decision Jungle Library. https:
+//bitbucket.org/geekStack/libjungle.
+Rastegari, M., Ordonez, V., Redmon, J., and Farhadi, A.
+Xnor-net: Imagenet classification using binary convolutional neural networks. In ECCV, 2016.
+Rokach, L. and Maimon, O. Data mining with decision
+trees: theory and applications. World scientific, 2014.
+Shankar, S., Robertson, D., Ioannou, Y., Criminisi, A., and
+Cipolla, R. Refining architectures of deep convolutional
+neural networks. In CVPR, 2016.
+Sherali, H. D., Hobeika, A. G., and Jeenanunta, C. An
+optimal constrained pruning strategy for decision trees.
+INFORMS Journal on Computing, 21(1), 2009.
+Shotton, J., Sharp, T., Kohli, P., Nowozin, S., Winn, J.,
+and Criminisi, A. Decision jungles: Compact and rich
+models for classification. In NIPS, 2013.
+Utgoff, P. E. Perceptron trees: A case study in hybrid concept representations. Connection Science, 1(4), 1989.
+Varma, M. and Zisserman, A. A statistical approach to
+texture classification from single images. IJCV, 62(1–
+2):61–81, 2005.
+Viola, P. and Jones, M. J. Robust real-time face detection.
+IJCV, 57(2), 2004.
+
+Zhang, Y. and Huei-chuen, H. Decision tree pruning via
+integer programming. Technical report, 2005.
 
 

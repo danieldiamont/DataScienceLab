@@ -1,912 +1,944 @@
-Iterative Machine Teaching
+Batched High-dimensional Bayesian Optimization
+via Structural Kernel Learning
 
-Weiyang Liu 1 Bo Dai 1 Ahmad Humayun 1 Charlene Tay 2 Chen Yu 2
-Linda B. Smith 2 James M. Rehg 1 Le Song 1
+Zi Wang * 1 Chengtao Li * 1 Stefanie Jegelka 1 Pushmeet Kohli 2
 
 Abstract
-In this paper, we consider the problem of machine teaching, the inverse problem of machine
-learning. Different from traditional machine
-teaching which views the learners as batch algorithms, we study a new paradigm where the
-learner uses an iterative algorithm and a teacher
-can feed examples sequentially and intelligently
-based on the current performance of the learner.
-We show that the teaching complexity in the iterative case is very different from that in the batch
-case. Instead of constructing a minimal training set for learners, our iterative machine teaching focuses on achieving fast convergence in the
-learner model. Depending on the level of information the teacher has from the learner model,
-we design teaching algorithms which can provably reduce the number of teaching examples and
-achieve faster convergence than learning without
-teachers. We also validate our theoretical findings with extensive experiments on different data
-distribution and real image datasets.
+Optimization of high-dimensional black-box
+functions is an extremely challenging problem.
+While Bayesian optimization has emerged as
+a popular approach for optimizing black-box
+functions, its applicability has been limited to
+low-dimensional problems due to its computational and statistical challenges arising from
+high-dimensional settings. In this paper, we propose to tackle these challenges by (1) assuming
+a latent additive structure in the function and inferring it properly for more efficient and effective BO, and (2) performing multiple evaluations
+in parallel to reduce the number of iterations required by the method. Our novel approach learns
+the latent structure with Gibbs sampling and constructs batched queries using determinantal point
+processes. Experimental validations on both synthetic and real-world functions demonstrate that
+the proposed method outperforms the existing
+state-of-the-art approaches.
 
 1. Introduction
-Machine teaching is the problem of constructing an optimal (usually minimal) dataset according to a target concept such that a student model can learn the target concept
-based on this dataset. Recently, there is a surge of interests
-in machine teaching which has found diverse applications in model compression (Bucila et al., 2006; Han et al.,
-2015; Ba & Caruana, 2014; Romero et al., 2014), transfer
-learning (Pan & Yang, 2010) and cyber-security problems (Alfeld et al., 2016; 2017; Mei & Zhu, 2015). Furthermore, machine teaching is also closely related to other subjects of interests, such as curriculum learning (Bengio et al.,
-2009) and knowledge distilation (Hinton et al., 2015).
-1
+Optimization is one of the fundamental pillars of modern
+machine learning. Considering that most modern machine
+learning methods involve the solution of some optimization
+problem, it is not surprising that many recent breakthroughs
+in this area have been on the back of more effective techniques for optimization. A case in point is deep learning,
+whose rise has been mirrored by the development of numerous techniques like batch normalization.
+While modern algorithms have been shown to be very
+*
+Equal contribution 1 Computer Science and Artificial Intelligence Laboratory, Massachusetts Institute of Technology, Massachusetts, USA 2 DeepMind, London, UK. Correspondence to: Zi Wang <ziw@csail.mit.edu>, Chengtao
+Li <ctli@mit.edu>, Stefanie Jegelka <stefje@csail.mit.edu>,
+Pushmeet Kohli <pushmeet@google.com>.
 
-Georgia Institute of Technology 2 Indiana University. Correspondence to: Weiyang Liu <wyliu@gatech.edu>, Le Song <lsong@cc.gatech.edu>.
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-Passive
-Learning
-
-Prov
-Dataset
-
-ide tr
-ainin
-g
-
-set
-
-Sample query
-
-Active
-Learning
-Oracle
-Machine
-Teaching
-Teacher
-Iterative
-Machine
-Teaching
-
-Sample labeled by oracle
-
-ation
-Learner
-e inform
-Provid ct only once
-t
-e
-ra
-s
-te
-g
-In
-ainin
-imal tr
-uct min
-Constr
-Provide information
-Interact iteratively
-
-Teacher
-
-Provide samples
-for this iteration
-
-Iterative
-Learner
-
-Figure 1. Comparison between iterative machine teaching and the
-other learning paradigms.
-
-In the traditional machine learning paradigm, a teacher will
-typically construct a batch set of examples, and provide
-them to a learning algorithm in one shot; then the learning
-algorithm will work on this batch dataset trying to learn the
-target concept. Thus, many research work under this topic try to construct the smallest such dataset, or characterize
-the size of of such dataset, called the teaching dimension of
-the student model (Zhu, 2013; 2015). There are also many
-seminal theory work on analyzing the teaching dimension
-of different models (Shinohara & Miyano, 1991; Goldman
-& Kearns, 1995; Doliwa et al., 2014; Liu et al., 2016).
-However, in many real world applications, the student model is typically updated via an iterative algorithm, and we get
-the opportunity to observe the performance of the student
-model as we feed examples to it. For instance,
-• In model compression where we want to transfer a target “teacher model” to a destination “student model”,
-we can constantly observe student model’s prediction
-on current training points. Intuitively, such observations
-will allow us to get a better estimate where the student
-model is and pick examples more intelligently to better
-guide the student model to convergence.
-• In cyber-security setting where an attack wants to mislead a recommendation system that learns online, the attacker can constantly generate fake clicks and observe
-the system’s response. Intuitively, such feedback will allow the attacker to figure out the state of the learning
-system, and design better strategy to mislead the system.
-From the aspects of both faster model compression and bet-
-
-Iterative Machine Teaching
-
-ter avoiding hacker attack, we seek to understand some fundamental questions, such as, what is the sequence of examples that teacher should feed to the student in each iteration
-in order to achieve fast convergence? And how many such
-examples or such sequential steps are needed?
-In this paper, we will focus on this new paradigm, called
-iterative machine teaching, which extends traditional machine teaching from batch setting to iterative setting. In this
-new setting, the teacher model can communicate with and
-influence the student model in multiple rounds, but the student model remains passive. More specifically, in each
-round, the teacher model can observe (potentially different levels of) information about the students to intelligently
-choose one example, and the student model runs a fixed
-iterative algorithm using this chosen example.
-Furthermore, the smallest number of examples (or rounds) the teacher needs to construct in order for the student to
-efficiently learn a target model is called the iterative teaching dimension of the student algorithm. Notice that in this
-new paradigm, we shift from describing the complexity of
-a model to the complexity of an algorithm. Therefore, for
-the same student model, such as logistic regression, the iterative teaching dimension for a teacher model can be different depending on the student’s learning algorithms, such
-as gradient descent versus conjugate gradient descent. In
-some sense, the teacher in this new setting is becoming
-active, but not the student. In Fig. 1, we summarize the
-differences of iterative machine teaching from traditional
-machine teaching, active learning and passive learning.
-Besides introducing the new paradigm, we also propose three iterative teaching algorithms, called omniscient
-teacher, surrogate teacher and imitation teacher, based on
-the level of information about the student that the teacher has access to. Furthermore we provide partial theoretical analysis for these algorithms under different example
-construction schemes. Our analysis shows that under suitable conditions, iterative teachers can always perform better than passive teacher, and achieve exponential improvements. Our analysis also identifies two crucial properties, namely teaching monotonicity and teacher capability,
-which play critical roles in achieving fast iterative teaching.
-To corroborate our theoretical findings, we also conduct extensive experiments on both synthetic data and real image
-data. In both cases, the experimental results verify our theoretical findings and the effectiveness of our proposed iterative teaching algorithms.
-
-2. Related Work
-Machine teaching. Machine teaching problem is to find
-an optimal training set given a student model and a target.
-(Zhu, 2015) proposes a general teaching framework. (Zhu,
-2013) considers Bayesian learner in exponential family and
-
-expresses the machine teaching as an optimization problem over teaching examples that balance the future loss of
-the learner and the effort of the teacher. (Liu et al., 2016)
-provides the teaching dimension of several linear learners.
-The framework has been applied to security (Mei & Zhu,
-2015), human computer interaction (Meek et al., 2016) and
-education (Khan et al., 2011). (Johns et al., 2015) further
-extends machine teaching to interactive settings. However,
-these work ignores the fact that a student model is typically
-learned by an iterative algorithm, and we usually care more
-about how fast the student can learn from the teacher.
-Interactive Machine Learning. (Cakmak & Thomaz,
-2014) consider the scenario of a human training an agent to
-perform a classification task by showing examples. They
-study how to improve human teacher by giving teaching
-guidance. (Singla et al., 2014) consider the crowdsourcing
-problem and propose a sequential teaching algorithm that
-can teach crowd worker to better classify the query. Both
-work consider a very different setting where the learner (i.e.
-human learner) is not iterative and does not have a particular optimization algorithm.
-Active learning. Active learning enables a learner to interactively query the oracle to obtain the desired outputs
-at new samples. Machine teaching is different from active
-learning in the sense that active learners explore the optimal parameters by itself rather than being guided by the
-teacher. Therefore they have different sample complexity
-(Balcan et al., 2010; Zhu, 2013).
-Curriculum learning. Curriculum learning (Bengio et al.,
-2009) is a general training strategy that encourages to input
-training examples from easy ones to difficult ones. Very
-interestingly, our iterative teacher model suggests similar
-training strategy in our experiments.
-
-3. Iterative Machine Teaching
-The proposed iterative machine teaching is a general concept, and the paper considers the following settings:
-Student’s Asset. In general, the asset of a student (learner) includes the initial parameter w0 , loss function, optimization algorithm, representation (feature), model, learning rate ηt over time (and initial η0 ) and the trackability of
-the parameter wt . The ideal case is that a teacher has access
-to all of them and can track the parameters and learning
-rate, while the worst case is that a teacher knows nothing.
-How practical the teaching is depends on how much the
-prior knowledge and trackability that a teacher has.
-Representation. The teacher represents an example as
-(x, y) while the student represents the same example as
-(e
-x, ye) (typically y = ye). The representation x ∈ X and x
-e∈
-Xe can be different but deterministically related. We assume
-there exists x
-e = G(x) for an unknown invertible mapping G.
-Model. The teacher uses a linear model y = hv, xi with pa-
-
-Iterative Machine Teaching
-
-rameter v ∗ (w∗ for student’s space) that is taught to the student. The student also uses a linear model ye=hw, x
-ei with
-parameter w, i.e., ye=hw, G(x)i=f (x) in general. w and v
-do not necessarily lie in the same space, but for omniscient
-teacher, they are equivalent and interchangeably used.
-Teaching protocol. In general, the teacher can only communicate with the student via examples. In this paper, the
-teacher provides one example xt in one iteration, where
-t denotes the t-th iteration. The goal of the teacher is to
-provide examples in each iteration such that the student parameter w converge to its optimum w∗ as fast as possible.
-Loss function. The teacher and student share the same
-loss function. We assume this is a convex loss function
-`(f (x), y), and the best model is usually found by minimizing the expected loss below:
-w∗ = arg min E(x,y) [`(hw, xi , y)] .
-w
-
-(1)
-
-where the sampling distribution (x, y) ∼ P(x, y). Without
-loss of generality, we only consider typical loss functions, such as square loss 12 (hw, xi − y)2 , logistic loss log(1 +
-exp(−y hw, xi)) and hinge loss max(1 − y hw, xi , 0).
-Algorithm. The student uses the stochastic gradient descent to optimize the model. The iterative update is
-wt+1 = wt − ηt
-
-∂`(hw, xi , y)
-.
-∂w
-
-(2)
-
-Without teacher’s guiding, the student can be viewed as being guided by a random teacher who randomly feed an example to the student in each iteration.
-
-4. Teaching by an Omniscient Teacher
-An omniscient teacher has access to the student’s feature
-space, model, loss function and optimization algorithm. In
-specific, omniscient teacher’s (x, y) and student’s (x̃, ỹ)
-share the same representation space, and teacher’s optimal
-model v ∗ is also the same as student’s optimal model w∗ .
-4.1. Intuition and teaching algorithm
-In order to gain intuition on how to make the student model
-converge faster, we will start with looking into the difference between the current student parameter and the teacher
-parameter w∗ during each iteration:
-
-2
- t+1
-
- t
-
-∂`(hw, xi , y)
-∗ 2
-∗
-w
-
-−w 
-− w 2 = w − ηt
-∂w
-2
-
-
- ∂`(
-wt , x , y) 2
- t
-2
-
-
-∗
-2
-= w − w 2 + ηt
-
-
-
-
-∂wt
-2
-|
-{z
-}
-T1 (x,y|wt ):Difficulty of an example (x, y)
-
-*
-wt − w∗ ,
-
-− 2ηt
-|
-
-(3)
-
-+
-
-∂`( wt , x , y)
-∂wt
-{z
-}
-
-
-
-
-
-T2 (x,y|wt ):Usefulness of an example (x, y)
-
-Based on the decomposition of the parameter error, the
-teacher aims to choose a particular example (x, y) such that
-
-kwt+1 − w∗ k22 is most reduced compared to kwt − w∗ k22
-from the last iteration. Thus the general strategy for the
-teacher is to choose an example (x, y), such that ηt2 T1 −
-2ηt T2 is minimized in the t-th iteration:
-argmin ηt2 T1 (x, y|wt ) − 2ηt T2 (x, y|wt ).
-
-x∈X ,y∈Y
-
-(4)
-
-The teaching algorithm of omniscient teacher is summarized in Alg.1. The smallest value of ηt2 T1 − 2ηt T2 is
-−kwt − w∗ k22 . If the teacher achieves this, it means that we
-have reached the teaching goal after this iteration. However, it usually cannot be done in just one iteration, because of
-the limitation of teacher’s capability to provide examples.
-T1 and T2 have some nice intuitive interpretations:
-Difficulty of an example. T1 quantifies the difficulty level
-of an example. This interpretation for different loss functions becomes especially clear when the data lives on the
-surface of a sphere, i.e., kxk = 1. For instance,
-• For linear regression, T1 = (hw, xi − y)2 . The larger the
-norm of gradient is, the more difficult the example is.
-1
-k22 .
-• For logistic regression, we have T1 = k 1+exp(yhw,xi)
-1
-We know that 1+exp(yhw,xi)
-is the probability of predicting the wrong label. The larger the number is, the more
-difficult the example is.
-• For support vector machines, we have T1 = 21 (sign(1 −
-y hw, xi) + 1). Different from above losses, the hinge
-loss has a threshold to identify the difficulty of examples.
-While the example is difficult enough, it will produce 1.
-Otherwise it is 0.
-Interestingly, the difficulty level is not related to the teacher
-w∗ , but is based on the current parameters of the learner
-wt . From another perspective, the difficulty level can also
-be interpreted as the information that an example carries.
-Essentially, a difficult example is usually more informative.
-In such sense, our difficulty level has similar interpretation
-to curriculum learning, but with different expression.
-Usefulness of an example. T2 quantifies the usefulness
-of an example. Concretely, T2 is the correlation between
-discrepancy wt − w∗ and the information (difficulty) of an
-example. If the information of the example has large correlation with the discrepancy, it means that this example is
-very useful in this teaching iteration.
-Trade-off. Eq.(4) aims to minimize the difficulty level T1
-and maximize the usefulness T2 . In other word, the teacher
-always prefers easy but useful examples. When the learning rate is large, T1 term plays a more important role. When
-learning rate is small, T2 term plays a more important role.
-This suggests that initially the teacher should choose easier
-examples to feed into the student model, and later on the
-teacher should choose examples to focus more on reducing the discrepancy between wt − w∗ . Such examples are
-very likely the difficult ones. Even if the learning rate is
-fixed, the gradient ∇w ` is usually large for a convex loss
-
-Iterative Machine Teaching
-
-function at the beginning, so reducing the difficulty level
-(choosing easy examples) is more important. While near
-the optimum, the gradient ∇w ` is usually small, so T2 becomes more important. It is also likely to choose difficult
-examples. It has nice connection with curriculum learning
-(easy example first and difficult later) and boosting (gradually focus on difficult examples).
-4.2. Teaching monotonicity and universal speedup
-Can the omniscient teacher always do better than a teacher
-who feed random examples to the student (in terms of convergence)? In this section, we identify generic conditions
-under which we can guarantee that the iterative teaching
-algorithm always perform better than random teacher.
-Definition 1 (Teaching Volume) For a specific loss function `, we first define a teaching volume function T V (w)
-with model parameter w as
-T V (w) =
-
-max {−ηt2 T1 (x, y|w) + 2ηt T2 (x, y|w)}
-
-x∈X ,y∈Y
-
-(5)
-
-Theorem 2 (Teaching Monotonicity) Given a training
-set X and a loss function `, if the inequality
-kw1 − w∗ k − T V (w1 ) ≤ kw2 − w∗ k − T V (w2 )
-2
-
-2
-
-(6)
-
-holds for any w1 , w2 that satisfy kw1 − w∗ k2 ≤ kw2 −
-w∗ k2 , then with the same parameter initialization and
-learning rate, the omniscient teacher can always converge
-not slower than random teacher.
-The teaching volume represents the teacher’s teaching effort in this iteration, so kwt −w∗ k2 −T V (wt ) characterizes
-the remaining teaching effort needed to achieve the teaching goal after iteration t. Theorem 2 says that for a loss
-function and a training set, if the remaining teaching effort is monotonically decreasing while the model parameter
-gets closer to the optimum, we can guarantee that the omniscient teacher can always converge not slower than random teacher. It is a sufficient condition for loss functions
-to achieve faster convergence than SGD. For example, the
-square loss satisfies the condition with certain training set:
-Proposition 3 The square loss satisfies the teaching monotonicity condition given the training set {x|kxk ≤ R}.
-4.3. Teaching capability and exponential speedup
-The theorem in previous subsection insures that under certain conditions the omniscient teacher can always lead to
-faster convergence for the student model, but can there
-be exponential speedup? To this end, we introduce further assumptions of the “richness” of teaching examples,
-which we call teaching capability. We start from the ideal
-case, i.e., the synthesis-based omniscient teacher with hyperspherical feature space, and then, extend to real cases
-with the restrictions on teacher’s knowledge domain, sampling scheme, and student information. We present specific
-teaching strategies in terms of teaching capability (strong
-to weak): synthesis, combination and (rescalable) pool.
-
-Synthesis-based teaching. In synthesis-based teaching,
-the teacher can provide any samples from
-X = {x ∈ Rd , kxk ≤ R}
-Y = R (Regression) or {−1, 1} (Classification).
-
-Theorem 4 (Exponential Synthesis-based Teaching)
-For a synthesis-based omniscient teacher and a student
-with fixed learning rate η 6= 0, if the loss function `(·, ·) satR
-isfies that for any w ∈ Rd , there exists γ 6= 0, |γ| ≤ kw−w
-∗k
-such that while x̂ = γ (w − w∗ ) and ŷ ∈ Y, we have
-0 < γ∇hw,x̂i ` (hw, x̂i , ŷ) ≤
-
-1
-,
-η
-
-then the student can learn an -approximation of w∗ with
-O(C1γ,η log 1 ) samples. We call such loss function `(·, ·)
-exponentially teachable in synthesis-based teaching.
-1
-The constant is C1γ,η = (log 1−ην(γ)
-)−1 in which ν(γ) :=
-minw,y γ∇hw,x̂i ` (hw, x̂i , y) > 0. ν(γ) is related to the
-convergence speed. Note that the sample complexity serves
-as the iterative teaching dimension corresponding to this
-particular teacher, student, algorithm and training data.
-
-The sample complexity in iterative teaching is deterministic, different from the high probability bounds of traditional sample complexity with random i.i.d.samples or actively
-required samples. This is because the teacher provides the
-samples deterministically without noise in every iteration.
-The radius R for X , which can be interpreted as the knowledge domain of the teacher, will affect the sample complexity by constraining the valid values of γ, and thus C1γ,η .
-For example, for absolute loss, if R is large, such that
-1
-R
-1
-1
-η ≤ kw0 −w∗ k , γ can be set to η and the ν(γ) will be η
-γ,η
-in this case. Therefore, we have C1 = 0, which means the
-student can learn with only one example (one iteration).
-γ,η
-R
-However, if η1 > kw0 −w
-> 0, and the stu∗ k , we have C1
-dent can converge exponentially. The similar phenomenon
-appears in the square loss, hinge loss, and logistic loss. Refer to Appendix A for details.
-The exponential synthesis-based teaching is closely related
-to Lipschitz smoothness and strong convexity of loss functions in the sense that the two regularities provide positive
-lower and upper bound for γ∇hw,xi ` (hw, xi , y).
-Proposition 5 The Lipschitz smooth and strongly convex
-loss functions are exponentially teachable in synthesisbased teaching.
-The exponential synthesis-based teachability is a weaker
-condition compared to the strong convexity and Lipschitz
-smoothness. We can show that besides the Lipschitz smooth and strongly convex loss, there are some other loss
-functions, which are not strongly convex, but still are exponentially teachable in synthesis-based scenario, e.g., the
-hinge loss and logistic loss. Proofs are in Appendix A.
-Combination-based teaching. In this scenario, the teacher
-
-Iterative Machine Teaching
-∗
-
-k
-x̂ = γkw−w
-x, ŷ = y, we have
-kxk
-
-Algorithm 1 The omniscient teacher
-1: Randomly initialize the student and teacher parameter w0 ;
-2: Set t = 1 and the maximal iteration number T ;
-3: while wt has not converged or t < T do
-4:
-Solve the optimization (e.g., pool-based teaching):
-t
-
-D
-E  2
-
- ∂`
-wt−1 , x , y 
-
-2
-
-ηt 
-
-
-∂wt−1
-x∈X ,y∈Y
-
-
-D
-E +
-*
-t−1
-∂`
-w
-,x ,y
-t−1
-∗
-− 2ηt w
-−w ,
-∂wt−1
-
-t
-
-0 < γ∇hw,x̂i ` (hw, x̂i , ŷ) <
-
-2V(X )
-,
-η
-
-then the student can learn an -approximation of w∗ with
-η,γ,V(X )
-O(C2
-log 1 ) samples. We say such loss function is
-exponentially teachable in rescalable pool-based teaching.
-
-(x , y ) = argmin
-
-5:
-
-Use the selected example (xt , y t ) to perform the update:
-t
-
-w =w
-
-t−1
-
-∂`
-− ηt
-
-
-E
-D
-wt−1 , xt , y t
-∂wt−1
-
-.
-
-6: t ← t + 1
-7: end while
-
-can provide examples from (αi ∈ R)
-m
+effective for convex optimization problems defined over
+continuous domains, the same cannot be stated for nonconvex optimization, which has generally been dominated
+by stochastic techniques. During the last decade, Bayesian
+optimization has emerged as a popular approach for optimizing black-box functions. However, its applicability is
+limited to low-dimensional problems because of computational and statistical challenges that arise from optimization
+in high-dimensional settings.
+In the past, these two problems have been addressed by
+assuming a simpler underlying structure of the black-box
+function. For instance, Djolonga et al. (2013) assume that
+the function being optimized has a low-dimensional effective subspace, and learn this subspace via low-rank matrix
+recovery. Similarly, Kandasamy et al. (2015) assume additive structure of the function where different constituent
+functions operate on disjoint low-dimensional subspaces.
+The subspace decomposition can be partially optimized by
+searching possible decompositions and choosing the one
+with the highest GP marginal likelihood (treating the decomposition as a hyper-parameter of the GP). Fully optimizing the decomposition is, however, intractable. Li et al.
+(2016) extended (Kandasamy et al., 2015) to functions with
+a projected-additive structure, and approximate the projective matrix via projection pursuit with the assumption that
+the projected subspaces have the same and known dimensions. The aforementioned approaches share the computational challenge of learning the groups of decomposed subspaces without assuming the dimensions of the subspaces
+are known. Both (Kandasamy et al., 2015) and subsequently (Li et al., 2016) adapt the decomposition by maximizing the GP marginal likelihood every certain number of
+iterations. However, such maximization is computationally
+intractable due to the combinatorial nature of the partitions
+of the feature space, which forces prior work to adopt randomized search heuristics.
+In this paper, we develop a new formulation of Bayesian
+optimization specialized for high dimensions. One of the
+key contributions of this work is a new formulation that
+interprets prior work on high-dimensional Bayesian optimization (HDBO) through the lens of structured kernels,
+and places a prior on the kernel structure. Thereby, our
+
+Batched High-dimensional Bayesian Optimization via Structural Kernel Learning
+
+formulation enables simultaneous learning of the decomposition of the function domain.
+Prior work on latent decomposition of the feature space
+considers the setting where exploration/evaluation is performed once at a time. This approach makes Bayesian
+optimization time-consuming for problems where a large
+number of function evaluations need to be made, which is
+the case for high dimensional problems. To overcome this
+restriction, we extend our approach to a batched version
+that allows multiple function evaluations to be performed
+in parallel (Desautels et al., 2014; González et al., 2016;
+Kathuria et al., 2016). Our second contribution is an approach to select the batch of evaluations for structured kernel learning-based HDBO.
+Other Related Work. In the past half century, a series
+of different acquisition functions was developed for sequential BO in relatively low dimensions (Kushner, 1964;
+Moc̆kus, 1974; Srinivas et al., 2012; Hennig & Schuler,
+2012; Hernández-Lobato et al., 2014; Kawaguchi et al.,
+2015; Wang et al., 2016a; Kawaguchi et al., 2016; Wang
+& Jegelka, 2017). More recent developments address
+high dimensional BO by making assumptions on the latent structure of the function to be optimized, such as lowdimensional structure (Wang et al., 2016b; Djolonga et al.,
+2013) or additive structure of the function (Li et al., 2016;
+Kandasamy et al., 2015). Duvenaud et al. (2013) explicitly
+search over kernel structures.
+While the aforementioned methods are sequential in nature, the growth of computing power has motivated settings
+where at once a batch of points is selected for observation (Contal et al., 2013; Desautels et al., 2014; González
+et al., 2016; Snoek et al., 2012; Wang et al., 2017). For
+example, the UCB-PE algorithm (Contal et al., 2013) exploits that the posterior variance of a Gaussian Process
+is independent of the function mean. It greedily selects
+points with the highest posterior variance, and is able to update the variances without observations in between selections. Similarly, B-UCB (Desautels et al., 2014) greedily
+chooses points with the highest UCB score computed via
+the out-dated function mean but up-to-date function variances. However, these methods may be too greedy in their
+selection, resulting in points that lie far from an optimum.
+More recently, Kathuria et al. (2016) tries to resolve this issue by sampling the batch via a diversity-promoting distribution for better randomized exploration, while Wang et al.
+(2017) quantifies the goodness of the batch with a submodular surrogate function that trades off quality and diversity.
+
+2. Background
+Let f : X → R be an unknown function and we aim to
+optimize it over a compact set X ⊆ RD . Within as few
+
+function evaluations as possible, we want to find
+f (x∗ ) = max f (x).
+x∈X
+
+Following (Kandasamy et al., 2015), we assume a latent decomposition of the feature dimensions [D] = {1, . . . , D}
+SM
+into disjoint subspaces, namely, m=1 Am = [D] and
+Ai ∩ Aj = ∅ for all i 6= j, i, j ∈ [D]. Further, f can
+be decomposed into the following additive form:
 X
-
-	
-X = x|kxk ≤ R, x =
-αi xi , xi ∈ D , D = {x1 , . . . , xm }
-i=1
+f (x) =
+fm (xAm ).
+m∈[M ]
 
-Y = R (Regression) or {−1, 1} (Classification)
+To make the problem tractable, we assume that each fm is
+drawn independently from GP(0, k (m) ) for all m ∈ [M ].
+The resulting f will also be a samplePfrom a GP: f ∼
+GP(µ, k), where the priors are µ(x) = m∈[M ] µm (xAm )
+P
+A
+(m) Am
+and k(x, x0 ) =
+(x , x0 m ). Let Dn =
+m∈[M ] k
+n
+{(xt , yt )}t=1 be the data we observed from f , where yt ∼
+N (f (xt ), σ). The log data likelihood for Dn is
+log p(Dn |{k (m) , Am }m∈[M ] )
+(2.1)
+1
+= − (y T (Kn + σ 2 I)−1 y + log |Kn + σ 2 I| + n log 2π)
+2
+hP
+i
+M
+(m) Am
+m
+where Kn =
+(xi , xA
+is the
+j )
+m=1 k
+i≤n,j≤n
 
-Corollary 6 For a combination-based omniscient teacher
-and a student with fixed learning rate η 6= 0 and initialization w0 , if the loss function is exponentially synthesis-based
-teachable and w0 − w∗ ∈ span (D), the student
- can learn
-an -approximation of w∗ with O C1γ,η log 1 samples.
-Although the knowledge pool of teacher is more restricted
-compared to the synthesis-based scenario, with teacher’s
-extra work to combine samples, the teacher can behave the
-same as the most knowledgable synthesis-based teacher.
+gram matrix associated with Dn , and y = [yt ]t≤n are the
+concatenated observed function values. Conditioned on the
+observations Dn , we can infer the posterior mean and covariance function of the function component f (m) to be
+Am
+µ(m)
+) = kn(m) (xAm )T (Kn + σ 2 I)−1 y,
+n (x
 
-The pool volume plays a vital role in pool-based teaching. It not only affects the existence of γ and {x̂, ŷ}
-to satisfy the conditions, but also changes the converη,γ,V(X )
-gence rate. While V(X ) increases, C2
-will decrease, yielding smaller sample complexity. With V(X ) <
-1, the rescalable pool-based teaching requires more samples than the synthesis-based teaching. As V(X ) increas	
-es to 1, the candidate pool becomes x ∈ Rd , kxk ≤ R
-η,γ,V(X )
-and C2
-approaches to C1γ,η . Then the convergence
-speed of rescalable pool-based teaching approaches to the
-synthesis/combination-based teaching.
+kn(m) (xAm , x0
+−
 
-5. Teaching by a less informative teacher
-To make the teacher model useful in practice, we further
-design two less informative teacher model that requires less
-and less information from the student.
-5.1. The surrogate teacher
-Suppose we can only query the function output from the
-learned hwt , xi, but we can not directly access wt . How
-can we choose the example? In this case we propose to
-make use of the the convexity of the loss function. That is
-*
+Am
 
-Rescalable pool-based teaching. This scenario is further
-restricted in both knowledge pool and the effort to prepare
-samples. The teacher can provide examples from X × Y:
-X = {x|kxk ≤ R, x = γxi , xi ∈ D, γ ∈ R}, D = {x1 , . . .}
-Y = R (Regression) or {−1, 1} (Classification)
+) = k (m) (xAm , x0
 
-In such scenario, we cannot get arbitrary direction rather
-than the samples from the candidate pool. Therefore, to
-achieve the exponential improvement, the candidate pool
-should contain rich enough directions. To characterize the
-richness in finite case, we define the pool volume as
-Definition 7 (Pool Volume) Given the training example
-pool X ∈ Rd , the volume of X is defined as
-V(X ) :=
+kn(m) (xAm )T (Kn
 
-min
++σ
 
-max
-
-w∈span(D) x∈X
-
-hw, xi
-.
-kwk2
-
-Obviously, for the candidate pool of the synthesis-based
-teacher, we have V(X ) = 1. In general, for finite candidate
-pool, the pool volume is 0 < V(X ) < 1.
-Theorem 8 For a rescalable pool-based omniscient teacher and a student with fixed learning rate η 6= 0 and initialization w0 , if for any w ∈ Rd , w 6⊥ w∗ and w0 − w∗ ∈
-span (D), there exists {x, y} ∈ X × Y and γ such that while
-
-+
-
-
-
-
-
-
-∂`( wt , x , y)
-x > `( wt , x , y) − `(hw∗ , xi , y).
-w −w ,
-∂wt
-(7)
-t
-
-∗
-
-Taking the pool-based teaching as an example, we can instead optimize the following surrogate loss function:
-
-
- ∂`(
-wt , x , y) 2
-
-
-(x , y ) = argmin
-
-
-
-
-∂wt
-{x,y}∈X
 2
 
- t 
-
-− 2ηt `( w , x , y) − `(hw∗ , xi , y)
-t
+Am
 
-t
+)
 
-ηt2
+A
+I)−1 kn(m) (x0 m ),
 
-
-by replacing
+(m)
 
-t
+Am
+m
+)]t≤n .
+where kn (xAm ) = [k (m) (xA
+t ,x
 
-w −
+We use regret to evaluate the BO algorithms, both in the
+sequential and the batch selection case. For the sequential
+selection, let r̃t = maxx∈X f (x) − f (xt ) denote the immediate regret at iteration t. We are interested
+in both the
+P
+averaged cumulative regret RT = T1 t r̃t and the simple
+regret rT = mint≤T r̃t for a total number of T iterations.
+For batch evaluations, r̃t = maxx∈X ,b∈[B] f (x) − f (xt,b )
+denotes the immediate regret obtained by the batch at iteration t. The P
+averaged cumulative regret of the batch setting
+is RT = T1 t r̃t , and the simple regret rT = mint≤T r̃t .
+We use the averaged cumulative regret in the bandit setting,
+where each evaluation of the function incurs a cost. If we
+simply want to optimize the function, we use the simple
+regret to capture the minimum gap between the best point
+found and the global optimum of the black-box function f .
+Note that the averaged cumulative regret upper bounds the
+simple regret.
 
-∂`(hwt ,xi,y)
-w∗ ,
-∂wt
+Batched High-dimensional Bayesian Optimization via Structural Kernel Learning
 
-(8)
+3. Learning Additive Kernel Structure
+We take a Bayesian view on the task of learning the latent
+structure of the GP kernel. The decomposition of the input
+space X will be learned simultaneously with optimization
+as more and more data is observed. Our generative model
+draws mixing proportions θ ∼ D IR(α). Each dimension
+j is assigned to one out of M groups via the decomposition assignment variable zj ∼ M ULTI(θ). The objective
+PM
+Am
+), where Am =
+function is then f (x) =
+m=1 fm (x
+{j : zj = m} is the set of support dimensions for function
+fm , and each fm is drawn from a Gaussian Process. Finally, given an input x, we observe y ∼ N (f (x), σ). Figure 1 illustrates the corresponding graphical model.
+{(xt , yt )}nt=1 ,
 
-
-with its lower
+Given the observed data Dn =
+we obtain a
+posterior distribution over possible decompositions z (and
+mixing proportions θ) that we will include later in the BO
+process:
+p(z, θ | Dn ; α) ∝ p(Dn | z)p(z | θ)p(θ; α).
+Marginalizing over θ yields the posterior distribution of the
+decomposition assignment
+Z
+p(z | Dn ; α) ∝ p(Dn | z) p(z | θ)p(θ; α) dθ
+P
+Γ( m αm ) Y Γ(|Am | + αm )
+P
+∝ p(Dn | z)
+Γ(D + m αm ) m
+Γ(αm )
+where p(Dn |z) is the data likelihood (2.1) for the additive
+GP given a fixed structure defined by z. We learn the posterior distribution for z via Gibbs sampling, choose the decomposition among the samples that achieves the highest
+data likelihood, and then proceed with BO. The Gibbs sampler repeatedly draws coordinate assignments zj according
+to
+p(zj = m | z¬j , Dn ; α) ∝ p(Dn | z)p(zj | z¬j )
+∝ p(Dn | z)(|Am | + αm ) ∝ eφm ,
+where
+1
+φm = − y T (Kn(zj =m) + σ 2 I)−1 y
+2
+1
+− log |Kn(zj =m) + σ 2 I| + log(|Am | + αm )
+2
+(z =m)
 
-bound. The advantage of this approach is that the teacher only need to query the learner for the function output
-hwt , xi to choose the example, without the need to access the learner parameter wt directly. Furthermore, after noticing that in this formulation, the teacher makes
-prediction via inner products, we find that the surrogate teacher can also be applied to the scenario where
-the teacher and the student use different feature spaces
-by further replacing (`(hwt , xi , y) − `(hw∗ , xi , y)) with
-(`(hwt , xi , y) − `(hv ∗ , x
-ei , y)). With this modification, we
-can provide examples without using information about w∗ .
-The performance of the surrogate teacher largely depends
-on the tightness of such convexity lower bound.
+and Kn j
+is the gram matrix associated with the observations Dn by setting zj = m. We can use the Gumbel
+trick to efficiently sample from this categorical distribution.
+Namely, we sample a vector of i.i.d standard Gumbel variables ωi of length M , and then choose the sampled decomposition assignment zj = arg maxi≤M φi + ωi .
+With a Dirichlet process, we could make the model nonparametric and the number M of possible groups in the
+decomposition infinite. Given that we have a fixed number
+of input dimension D, we set M = D in practice.
 
-Iterative Machine Teaching
+Figure 1. Graphical model for the structured Gaussian process; η
+is the hyperparameter of the GP kernel; z controls the decomposition for the input space.
 
-Algorithm 2 The imitation teacher
+η
+
+α
+
+θ
+
+z
+
+d
+
+f
+
+x
+
+y
+
+4. Diverse Batch Sampling
+In real-world applications where function evaluations
+translate into time-intensive experiments, the typical sequential exploration strategy – observe one function value,
+update the model, then select the next observation – is undesirable. Batched Bayesian Optimization (BBO) (Azimi
+et al., 2010; Contal et al., 2013; Kathuria et al., 2016) instead selects a batch of B observations to be made in parallel, then the model is updated with all simultaneously.
+Extending this scenario to high dimensions, two questions
+arise: (1) the acquisition function is expensive to optimize and (2), by itself, does not sufficiently account for
+exploration. The additive kernel structure improves efficiency for (1). For batch selection (2), we need an efficient
+strategy that enourages observations that are both informative and non-redundant. Recent work (Contal et al., 2013;
+Kathuria et al., 2016) selects a point that maximizes the acquisition function, and adds additional batch points via a
+diversity criterion. In high dimensions, this diverse selection becomes expensive. For example, if each dimension
+has a finite number of possible values1 , the cost of sampling
+batch points via a Determinantal Point Process (DPP), as
+proposed in (Kathuria et al., 2016), grows exponentially
+with the number of dimensions. The same obstacle arises
+with the approach by Contal et al. (2013), where points
+are selected greedily. Thus, naı̈ve adoptions of these approaches in our setting would result in intractable algorithms. Instead, we propose a general approach that explicitly takes advantage of the structured kernel to enable
+relevant, non-redundant high-dimensional batch selection.
+We describe our approach for a single decomposition sampled from the posterior; it extends to a distribution of decompositions by sampling a set of decompositions from the
+posterior and then sampling points for each decomposition
+individually. Given a decomposition z, we define a separate Determinantal Point Process (DPP) on each group of
+Am dimensions. A set S of points in the subspace R|Am |
+(m)
+is sampled with probability proportional to det(Kn (S)),
+1
+
+While we use this discrete categorical domain to illustrate the
+batch setting, our proposed method is general and is applicable to
+continuous box-constrained domains.
+
+Batched High-dimensional Bayesian Optimization via Structural Kernel Learning
+(m)
+
+where Kn is the posterior covariance matrix of the mth group given n observations, and K(S) is the submatrix
+of K with rows and columns indexed by S. Assuming the
+group sizes are upper-bounded by some constant, sampling
+from each such DPP individually implies an exponential
+speedup compared to using the full kernel.
+Sampling vs. Greedy Maximization The determinant
+(m)
+det(Kn (S)) measures diversity, and hence the DPP assigns higher probability to diverse subsets S. An alternative
+to sampling is to directly maximize the determinant. While
+this is NP-hard, a greedy strategy gives an approximate solution, and is used in (Kathuria et al., 2016), and in (Contal
+et al., 2013) as Pure Exploration (PE). We too test this strategy in the experiments. In the beginning, if the GP is not
+approximating the function well, then greedy may perform
+no better than a stochastic combination of coordinates, as
+we observe in Fig. 6.
+Sample Combination Now we have chosen a diverse
+(m)
+subset Xm = {xi }i∈[B−1] ⊂ R|Am | of size (B − 1)
+for each group Am . We need to combine these subspace
+points to obtain B − 1 final batch query points in RD .
+A simple way to combine samples from each group is to
+do it randomly without replacement, i.e., we sample one
+(m)
+xi from each Xm uniformly randomly without replacement, and combine the parts, one for each m ∈ [M ], to get
+one sample in RD . We repeat this procedure until we have
+(B − 1) points. This retains diversity across the batch of
+samples, since the samples are diverse within each group
+of features.
+Besides this random combination, we can also combine
+(m)
+samples greedily. We define a quality function ψt
+for each group m ∈ [M ] at time t, and combine samples to maximize this quality function. Concretely, for
+(m)
+the first point, we combine the maximizers x∗
+=
+(m) (m)
+arg maxx(m) ∈Xm ψt (x ) from each group. We re(m)
+move those used parts, Xm ← Xm \{x∗ }, and repeat the
+procedure until we have (B − 1) samples. In each iteration, the sample achieving the highest quality score gets
+selected, while diversity is retained.
+Both selection strategies can be combined with a wide
+range of existing quality and acquisition functions.
+Add-UCB-DPP-BBO We illustrate the above framework with GP-UCB (Srinivas et al., 2012) as both the acquisition and quality functions. The Upper Confidence
+(m)
+(m)
+Bound (ft )+ and Lower Confidence Bound (ft )−
+with parameter βt for group m at time t are
+(m) +
+
+(m)
+
+(m) −
+
+(m)
+
+(ft
+(ft
+
+1/2 (m)
+σt (x);
+1/2 (m)
+βt σt (x),
+
+) (x) = µt−1 (x) + βt
+
+) (x) = µt−1 (x) −
+
+(4.1)
+
+(m)
+
+(m)
+
+and combine the expected value µt−1 (x) of ft with the
+1/2 (m)
+uncertainty βt σt (x). We set both the acquisition func(m)
+(m)
+tion and quality function ψt to be (ft )+ for group m
+at time t.
+To ensure that we select points with high acquisition function values, we follow (Contal et al., 2013; Kathuria et al.,
+(m)
+2016) and define a relevance region Rt for each group
+m as
+(m)
+
+Rt
+
+= {x ∈ Xm |
+(m)
+
+q
+
+µt−1 (x) + 2
+
+(m) (m)
+
+(m) •
+
+βt+1 σt−1 (x) ≥ (yt
+
+)
+
+
+,
+
+(m)
+
+(m)
+
+where (yt )• = maxx(m) ∈Xm (ft )− (x(m) ). We then
+(m)
+use Rt as the ground set to sample with PE/DPP. The
+full algorithm is shown in the appendix.
+
+5. Empirical Results
+We empirically evaluate our approach in two parts: First,
+we verify the effectiveness of using our Gibbs sampling algorithm to learn the additive structure of the unknown function, and then we test our batch BO for
+high dimensional problems with the Gibbs sampler. Our
+code is available at https://github.com/zi-w/
+Structural-Kernel-Learning-for-HDBBO.
+5.1. Effectiveness of Decomposition Learning
+We first probe the effectiveness of using the Gibbs sampling method described in Section 3 to learn the decomposition of the input space. More details of the experiments
+including sensitivity analysis for α can be found in the appendix.
+Recovering Decompositions First, we sample test functions from a known additive Gaussian Process prior with
+zero-mean and isotropic Gaussian kernel with bandwidth
+= 0.1 and scale = 5 for each function component. For
+D = 2, 5, 10, 20, 50, 100 input dimensions, we randomly
+sample decomposition settings that have at least two groups
+in the decomposition and at most 3 dimensions in each
+group.
+Table 1. Empirical posterior of any two dimensions correctly being grouped together by Gibbs sampling.
+N
+D
+5
+10
+20
+50
+100
+
+50
+
+150
+
+250
+
+450
+
+0.81 ± 0.28
+0.21 ± 0.13
+0.06 ± 0.06
+0.02 ± 0.03
+0.01 ± 0.01
+
+0.91 ± 0.19
+0.54 ± 0.25
+0.11 ± 0.08
+0.02 ± 0.02
+0.01 ± 0.01
+
+1.00 ± 0.03
+0.68 ± 0.25
+0.20 ± 0.12
+0.03 ± 0.03
+0.01 ± 0.01
+
+1.00 ± 0.00
+0.93 ± 0.15
+0.71 ± 0.22
+0.06 ± 0.04
+0.02 ± 0.02
+
+We set the burn-in period to be 50 iterations, and the total
+number of iterations for Gibbs sampling to be 100. In Tables 1 and 2, we show two quantities that are closely related
+
+Batched High-dimensional Bayesian Optimization via Structural Kernel Learning
+
+D=2
+
+D=10
+
+D=20
+
+40
+
+0.8
+
+50
+
+100
+
+40
+
+80
+
+30
+
+60
+
+rt
+
+20
+
+rt
+
+rt
+
+0.4
+
+120
+
+30
+
+rt
+
+Known
+NP
+FP
+PL-1
+PL-2
+Gibbs
+
+0.6
+
+D=50
+
+60
+
+0.2
+20
+
+40
+
+10
+
+20
+
+10
+
+0
+-0.2
+
+0
+200
+
+(a)
+
 0
 
-1: Randomly initialize the student parameter w and the teacher
-parameter v 0 ; Randomly select a training sample (x0 , y 0 );
-2: Set t = 1 and the maximal iteration number T ;
-3: while wt has not converged or t < T do
-4:
-Perform the update:
+400
+
+200
+
 t
 
-v =v
+(b)
 
-5:
+D=2
 
-t−1
+0
 
-− ηv
+400
 
-D
+200
 
-v
+t
 
-t−1
+400
 
-t−1
+200 400 600
 
-,x
+t
 
-E
+(c)
+
+D=10
+
+(d)
+
+D=20
+
+t
+D=50
+
+1
+
+35
+
+60
+
+120
+
+0.8
+
+30
+
+50
+
+100
+
+40
+
+80
+
+Rt
+
+Rt
+
+Rt
+
+20
+
+0.4
+
+Rt
+
+25
+0.6
+
+30
+
+60
+
+20
+
+40
+
+15
+0.2
+
+10
+
+0
+
+5
+200
+
+(e)
+
+t
+
+10
+
+400
+
+200
+
+(f)
+
+20
+
+400
+
+200
+
+(g)
+
+t
+
+400
+
+200 400 600
+
+(h)
+
+t
+
+t
+
+Figure 2. The simple regrets (rt ) and the averaged cumulative regrets (Rt ) for setting input space decomposition with Known, NP, FP,
+PL-1, PL-2, and Gibbs on 2, 10, 20, 50 dimensional synthetic additive functions. Gibbs achieved comparable results to Known.
+Comparing PL-1 and PL-2 we can see that sampling more settings of decompositions did help to find a better decomposition. But a
+more principled way of learning the decomposition using Gibbs can achieve much better performance than PL-1 and PL-2.
+
+to the learned empirical posterior of the decompositions
+with different numbers of randomly sampled observed data
+points (N ). Table 1 shows the probability of two dimensions being correctly grouped together by Gibbs sampling
+in each iteration
+Pof Gibbs sampling after the
+P burn-in period,
+namely,
+( i<j≤D 1zig ≡zjg ∧zi ≡zj )/( i<j≤D 1zi ≡zj ).
+Table 2 reports the probability of two dimensions being correctly separated in each iteration of
+Gibbs
+sampling after the
+P
+P burn-in period, namely,
+( i<j≤D 1zig 6=zjg ∧zi 6=zj )/( i<j≤D 1zi 6=zj ).
+The results show that the more data we observe, the more
+accurate the learned decompositions are. They also suggest that the Gibbs sampling procedure can converge to the
+ground truth decomposition with enough data for relatively
+small numbers of dimensions. The higher the dimension,
+the more data we need to recover the true decomposition.
+Effectiveness of Learning Decompositions for Bayesian
+Optimization To verify the effectiveness of the learned
+decomposition for Bayesian optimization, we tested on
+2, 10, 20 and 50 dimensional functions sampled from a
+zero-mean Add-GP with randomly sampled decomposi-
+
+Table 2. Empirical posterior of any two dimensions correctly being separated by Gibbs sampling.
+N
+D
+2
+5
+10
+20
+50
+100
+
+50
+
+150
+
+250
+
+450
+
+0.30 ± 0.46
+0.87 ± 0.17
+0.88 ± 0.05
+0.94 ± 0.02
+0.98 ± 0.00
+0.99 ± 0.00
+
+0.30 ± 0.46
+0.80 ± 0.27
+0.89 ± 0.06
+0.94 ± 0.02
+0.98 ± 0.00
+0.99 ± 0.00
+
+0.90 ± 0.30
+0.60 ± 0.32
+0.89 ± 0.07
+0.94 ± 0.02
+0.98 ± 0.01
+0.99 ± 0.00
+
+1.00 ± 0.00
+0.50 ± 0.34
+0.94 ± 0.07
+0.97 ± 0.02
+0.98 ± 0.01
+0.99 ± 0.00
+
+tion settings (at least two groups, at most 3 dimensions
+in each group) and isotropic Gaussian kernel with bandwidth = 0.1 and scale = 5. Each experiment was repeated 50 times. An example of a 2-dimensional function component is shown in the appendix. For Add-GP(m)
+UCB, we used βt
+= |Am | log 2t for lower dimensions
+(m)
+(D = 2, 5, 10), and βt
+= |Am | log 2t/5 for higher dimensions (D = 20, 30, 50). We show parts of the results
+on averaged cumulative regret and simple regret in Fig. 2,
+and the rest in the appendix. We compare Add-GP-UCB
+with known additive structure (Known), no partitions (NP),
+fully partitioned with one dimension for each group (FP)
+
+Batched High-dimensional Bayesian Optimization via Structural Kernel Learning
+
+1. Empirically, Gibbs changes the decompositions
+across iterations, especially in the beginning. With
+fluctuating partitions, even exploitation leads to moving around, because the supposedly “good” points are
+influenced by the partition. The result is an implicit
+“exploration” effect that is absent with a fixed partition.
+2. Gibbs sometimes merges “true” parts into larger
+parts. The parameter βt in UCB depends on the size
+of the part, |Am |(log 2t)/5 (as in (Kandasamy et al.,
+2015)). Larger parts hence lead to larger βt and hence
+more exploration.
+Of course, more exploration is not always better, but
+Gibbs was able to find a good balance between exploration and exploitation, which leads to better performance.
+Our preliminary experiments indicate that one solution to
+ensure that the ground truth decomposition produces the
+best result is to tune βt . Hyperparameter selection (such as
+choosing βt ) for BO is, however, very challenging and an
+active topic of research (e.g. (Wang et al., 2016a)).
+
+rt Improvement
+
+60
+40
+20
+0
+
+-20
+
+(a) 10
+
+20
+
+30
+
+40
+
+50
+
+60
+40
+20
+0
+
+(c)
+
+10
+
+40
+20
+0
 
 D
-E
-t
-t−1
-t−1
-− w ,x
-x
-.
 
-Solve the optimization (e.g., pool-based teaching):
-t
+80
 
-t
+-20
 
-D
-E  2
+60
 
- ∂`
-wt , x , y 
+-20
 
+rt Improvement %
+
+Rt Improvement
+
+80
+
+20
+
+30
+
+40
+
+(b) 10
+
+20
+
+10
+
+20
+
+40
+
+50
+
+30
+
+40
+
+50
+
+60
+40
+20
+0
+-20
+
+50
+
+(d)
+
+D
+
+30
+
+D
+
+80
+
+D
+
+Figure 3. Improvement made by learning the decomposition with
+Gibbs over optimizing without partitions (NP). (a) averaged cumulative regret; (b) simple regret. (c) averaged cumulative regret
+normalized by function maximum; (d) simple regret normalized
+by function maximum. Using decompositions learned by Gibbs
+continues to outperform BO without Gibbs.
+
+alternatives including partial learning. Since the function
+we tested here is composed of the distance to two objects,
+there could be some underlying additive structure for this
+function in certain regions of the input space, e.g. when
+the two robots hands are relatively distant from each other
+so that one of the hands only impacts one of the objects.
+Hence, it is possible for Gibbs to learn a good underlying
+additive structure and perform effective BO with the structures it learned.
+
+10
+NP
+FP
+PL-1
+PL-2
+Gibbs
+
+9
+8
+7
+
+rt
+
+Overall, the results show that Gibbs outperforms both of
+the partial learning methods, and for higher dimensions,
+Gibbs is sometimes even better than Known. Interestingly, similar results can be found in Fig. 3 (c) of (Kandasamy et al., 2015), where different decompositions than
+the ground truth may give better simple regret. We conjecture that this is because Gibbs is able to explore more than
+Known, for two reasons:
+
+80
+
+Rt Improvement %
+
+and the following methods of learning the decomposition:
+Gibbs sampling (Gibbs), randomly sampling the same
+number of decompositions sampled by Gibbs and select
+the one with the highest data likelihood (PL-1), randomly
+sampling 5 decompositions and selecting the one with the
+highest data likelihood (PL-2). For the latter two learning
+methods are referred to as “partial learning” in (Kandasamy
+et al., 2015). The learning of the decomposition is done every 50 iterations. Fig. 3 shows the improvement of learning
+decompositions with Gibbs over optimizing without partitions (NP).
+
+6
+5
+
+Next, we test the decomposition learning algorithm on a
+real-world function, which returns the distance between a
+designated goal location and two objects being pushed by
+two robot hands, whose trajectory is determined by 14 parameters specifying the location, rotation, velocity, moving direction etc. This function is implemented with a
+physics engine, the Box2D simulator (Catto, 2011). We
+use add-GP-UCB with different ways of setting the additive structure to tune the parameters for the robot hand so
+as to push the object closer to the goal. The regrets are
+shown in Fig. 4. We observe that the performance of learning the decomposition with Gibbs dominates all existing
+
+4
+3
 2
-
-ηt 
-
-
-∂v t
-x∈X ,y∈Y
-
-
-D
-E
- +.
-*
-t
-∂`
-v ,x ,y
-t
-∗
-− 2ηt v − v ,
-∂v t
-
-(x , y ) = argmin
-
-6:
-
-Provide the selected example (xt , y t ) for the student to perform the update ;
-D
-E 
-w
-
-t+1
-
-t
-
-= w − ηt
-
-∂`
-
-wt , x , y
-∂w
-
-.
-
-7: t ← t + 1
-8: end while
-
-5.2. The imitation teacher
-When the teacher and the student have different feature spaces, this teaching setting will be much closer to practice
-than all the previous settings and also more challenging. To
-this end, we present an imitation teacher who learns to imitate the inner product output hwt , xi of the student model
-and simultaneously choose examples in teacher’s own feature space. The teacher can possibly use active learning to
-imitate the student’s hwt , xi. In this imitation, the student
-model stays unchanged and the teacher model could update
-itself via multiple queries to the student (input an example
-and see the inner product output of the student). We present
-a more simple and straightforward imitation teacher (Alg.
-2) which works in a way similar to stochastic mirror descent (Nemirovski et al., 2009; Hall & Willett, 2013). In
-specific, the teacher first learns to approximate the student’s hwt , xi with the following iterative update:
-
-Theoretical aspects of the teacher model. The theoretical
-study of the teacher model includes finding the conditions
-for the loss function and training data such that the teacher
-model is optimal, or achieves provable faster convergence
-rate, or provably converges faster than the random teacher.
-We desire these conditions to be sufficient and necessary,
-but sometimes sufficient conditions suffice in practice. For
-different student models, the theoretical analysis may be different and we merely consider stochastic gradient learner
-here. There are still lots of optimization algorithms that can
-be considered. Besides, our teacher models are not necessarily the best, so it is also important to come up with better
-teacher models with provable guarantees. Although our paper mainly focuses on the fixed learning rate, our results are
-still applicable for the dynamic learning rate. However, the
-teacher should be more powerful in synthesizing or choosing examples (R should be larger than fixed learning rate
-case). In human teaching, it actually makes sense because
-while teaching a student who learns knowledge with dynamic speed, the teacher should be more powerful so that
-the student consistently learn fast.
-Practical aspects of the teacher model. In practice, we
-usually want the teacher model to be less and less informative to the student model, scalable to large datasets, efficient to compute. How to make the teacher model scalable,
-efficient and less informative remains open challenges.
-
-7. Experiments
-7.1. Experimental details
-
-where ηv is the learning rate for the update. Then we use
-v t+1 to perform the example synthesis or selection in teacher’s own feature space. We summarize this simple yet effective imitation teacher model in Alg. 2.
-
-Performance metric. We use three metric to evaluate the
-convergence performance: objective value w.r.t. the training set, difference between wt and w∗ (kwt − w∗ k2 ), and
-the classification accuracy on testing set.
-Parameters and setup. Detailed experimental setup is given in Appendix B. We mostly evaluate the practical poolbased teaching (without rescaling). We evaluate the different teaching strategies in Appendix C, and give more experiments on spherical data (Appendix E) and infant egocentric visual data (Appendix F). For fairness, learning
-rates for all methods are the same.
-
-6. Discussion
-
-7.2. Teaching linear models on Gaussian data
-
-Optimality of the teacher model. For arbitary loss function, the optimal teacher model for a student model should
-find the training example sequence to achieve the fastest
-possible convergence. Exhaustively finding such example
-sequence is computational impossible. For example, there
-are nT possible training sequences (T is the iteration number) for n-size pool-based teaching. As a results, we need
-to make use of the properties of loss function to design the
-teacher model. The proposed teacher models are not necessarily optimal, but they are good enough under some conditions for loss function, student model and training data.
-
-This experiment explores the convergence of three typical
-linear models: ridge regression (RR), logistic regression
-(LR) and support vector machine (SVM) on Gaussian data.
-Note that SGD on selected set is to run SGD on the union
-of all samples selected by the omniscient teacher. For the
-scenario of different feature spaces, we use a random orthogonal projection matrix to generate the teacher’s feature
-space from student’s. All teachers use pool-based teaching
-strategy. For fair comparisons, we use the same random
-initialization and the same learning rate.
-Teaching in the same feature space. The results in Fig.
-
-v t+1 = v t − ηv
-
-
- t  
- t 
-v ,x − w ,x x
-
-(9)
-
-Iterative Machine Teaching
-1.4
-
-1
-0.8
-0.6
-0.4
-
-1
-
-Difference between w t and w*
-
-Batch gradient descent
-Stochastic gradient descent
-SGD on selected set
-Omniscient teacher
-Surrogate teacher
-
-0.5
-
-0.2
-0
-
-0
-
-200
-
-400
-
-600
-
-800
-
-Iteration Number
-
-0
-
-1000
-
-0
-
 100
 
 200
@@ -915,803 +947,468 @@ Iteration Number
 
 400
 
-Iteration Number
-
 500
 
-600
+t
 
-1
+Figure 4. Simple regret of tuning the 14 parameters for a robot
+pushing task. Learning decompositions with Gibbs is more effective than partial learning (PL-1, PL-2), no partitions (NP),
+or fully partitioned (FP). Learning decompositions with Gibbs
+helps BO to find a better point for this tuning task.
 
-0.6
+Batched High-dimensional Bayesian Optimization via Structural Kernel Learning
 
-0.5
+-8
 
-0.2
+50
+
+(a)
+0
+
+-0.6
+
+-0.8
+
+-1
+
+-1
+
+-1.2
+
+D=2
+
+log10 R t
+
+(c)
+
+-0.2
+-0.4
+
+0
+
+(f)
+
+-0.4
+
+D=50
+
+-0.2
+-0.3
+-0.4
+-0.5
+
+100
+
+t
+
+100
+
+t
+
+-0.1
+
+-0.2
+
+-0.8
+50
+
+50
+
+(d)
+
+t
+
+-0.6
+
+100
+
+t
+
+100
+
+D=20
+
+0
+
+-0.8
+50
+
+50
+
+t
+
+-0.6
+
+-1
+
+-0.4
+
+-0.8
+
+100
+
+D=10
+
+0
+
+-0.2
+
+(e)
+
+-1.2
+50
+
+(b)
+
+-0.8
+
+-0.2
+
+-0.6
+
+t
+
+-0.6
+
+-0.6
+
+-0.8
+
+100
+
+-0.4
+
+-0.4
+
+log10 R t
+
+Rand
+Batch-UCB-PE
+Batch-UCB-DPP
+Batch-UCB-PE-Fnc
+Batch-UCB-DPP-Fnc
+
+-0.4
+
+log10 R t
+
+-6
+
+D=50
+
+0
+
+-0.2
+
+log10 r t
+
+log10 r t
+
+log10 r t
+
+-4
+
+D=20
+
+0
+
+-0.2
+
+-2
+
+log10 R t
+
+D=10
+
+0
+
+log10 r t
+
+D=2
+
 0
 
 50
 
-100
+(g)
 
-1.6
-1.4
-1.2
-
-1
-0.8
-0.6
-
-1
-0.4
-
-0.8
-0.6
-0
-
-500
-
-1000
-
-1500
-
-2000
-
-Iteration Number
-
-0.2
-
-2500
-
-0
-
-500
-
-1000
-
-1500
-
-2000
-
-Iteration Number
-
-0.3
-0.25
-0.2
-0.15
-
-0
+t
 
 100
-
-200
-
-300
-
-400
-
-Iteration Number
-
-500
-
-600
-
-700
-
-0.1
-
-0.4
-0.3
-0.2
-
-300
-
-400
-
-200
-
-250
-
-300
-
-350
-
-400
-
-Batch gradient descent
-Stochastic gradient descent
-Surrogate teacher
-Imitation teacher
-
-0.55
-0.5
-0.45
-0.4
-0.35
-
-0.25
-0
-
-500
-
-1000
-
-0.2
-
-1500
-
-Iteration Number
-
-0.3
-
-1
-
-0.28
-
-0.9
-
-0.2
-
-0
-
-500
-
-1000
-
-1500
-
-Iteration Number
-
-500
-
-Iteration Number
-
-600
-
-700
-
-(e) Teaching support vector machine in the same feature space
-
-0.7
-0.6
-0.5
-0.4
-
-0.14
-
-0.3
-
-0.1
-
-0
-
-Batch gradient descent
-Stochastic gradient descent
-Surrogate teacher
-Imitation teacher
-
-0.8
-
-0.16
-0.12
-
-200
-
-150
-
-Iteration Number
-
-0.3
-
-0.1
-
-0.18
-
-100
-
-100
-
-0.6
-
-0.22
-
-0.04
-0
 
 50
 
-0.7
-
-0.24
-
-0.06
-
-0.05
-
-0
-
-0.65
-
-0.26
-
-0.12
-
-0.08
-
-0.1
-
-0
-
-0.14
-
-0
-
-400
-
-(d) Teaching logistic regression in different feature spaces
-
-Difference between w t and w*
-
-Objective Value
-
-Difference between w t and w*
-
-0.35
-
-350
-
-0.5
-
-0
-
-2500
-
-Batch gradient descent
-Stochastic gradient descent
-SGD on selected set
-Omniscient teacher
-Surrogate teacher
-
-0.16
-
-0.4
-
-300
-
-Objective Value
-
-0.18
-
-0.5
-
-250
-
-0.6
-
-(c) Teaching logistic regression in the same feature space
-
-0.45
-
-200
-
-Objective Value
-
-2
-1.8
-
-150
-
-Iteration Number
-
-0.7
-
-Difference between w t and w*
-
-Objective Value
-
-Difference between w t and w*
-
-1.2
-
-2.2
-
-1
-
-(b) Teaching ridge regression in different feature spaces
-
-Batch gradient descent
-Stochastic gradient descent
-SGD on selected set
-Omniscient teacher
-Surrogate teacher
-
-1.4
-
-2.4
-
-1.5
-
-0.4
-
-(a) Teaching ridge regression in the same feature space
-
-2.6
-
-Batch gradient descent
-Stochastic gradient descent
-Surrogate teacher
-Imitation teacher
-
-2
-
-0.8
-
-0
-
-700
-
-2.5
-
-1.2
-
-Objective Value
-
-1.5
-
-Objective Value
-
-Difference between w t and w*
-
-1.2
-
-0.2
-200
-
-400
-
-600
-
-Iteration Number
-
-800
-
-1000
-
-0
-
-200
-
-400
-
-600
-
-Iteration Number
-
-800
-
-1000
-
-(f) Teaching support vector machine in different feature spaces
-
-Figure 2. Convergence results on Gaussian distributed data.
-4
-3
-
-The second dimension
-
-2
-1
-0
--1
-
-Data points of the first class
-Data points of the second class
-Selected examples (iter. 1-200)
-Selected examples (iter. 401-600)
-Selected examples (iter. 801-1000)
-Selected examples (iter. 1201-1400)
-Optimal Classifier
-
--2
--3
--4
-
--4
-
--3
-
--2
-
--1
-0
-1
-2
-The first dimension
-
-3
-
-4
-
-Figure 3. The examples selected by omniscient teacher for logistic regression on 2D binary-class Gaussian data.
-
-2 show that the learner can converge much faster using the
-example provided by the teacher, showing the effectiveness
-of our teaching models. As expected, we find that the omniscient teacher consistently achieves faster convergence than
-the surrogate teacher who has no access to w. It is because
-the omniscient teacher always has more information about
-the learner. More interestingly, our guiding algorithms also
-consistently outperform SGD on the selected set, showing
-that the order of inputting training samples matters.
-Teaching in different feature spaces. It is a more practical scenario that teacher and student use different feature
-spaces. While the omniscient teacher model is no longer
-applicable here, we teach the student model using the sur-
-
-rogate teacher and the imitation teacher. While the feature spaces are totally different, it can be expected that
-there will be a mismatch gap between the teacher model
-parameter and the student model parameter. Even in such
-a challenging scenario, the experimental results show that
-our teacher model still outperforms the conventional SGD
-and batch GD in most cases. One can observe that the surrogate teacher performs poorly in the SVM, which may be
-caused by the tightness of the approximated lower bound
-of the T2 term. Compared to the surrogate teacher, the imitation teacher is more stable and consistently improves the
-convergence in all three linear models.
-7.3. Teaching Linear Classifiers on MNIST Dataset
-We further evaluate our teacher models on MNIST dataset.
-We use 24D random features to classify the digits (0/1, 3/5
-as examples). We generate the teacher’s features using a
-random projection matrix from the original 24D student’s features. Note that, omniscient teacher and surrogate
-teacher (same space) assume the teacher uses the student’s
-feature space, while surrogate teacher (different space) and
-imitation teacher assume the teacher uses its own space.
-From Fig. 4, one can observe that all these teacher model
-produces significant convergence speedup. We can see that
-the omniscient teacher converges fastest as expected. Interestingly, our imitation teacher achieves very similar con-
-
-Iterative Machine Teaching
-1
-0.75
-
-0.9
-0.85
-
-Batch gradient descent
-Stochastic gradient descent
-Omniscient Teachter
-Surrogate Teacher (same space)
-Surrogate Teacher (different space)
-Imitation Teacher
-
-0.8
-0.75
-0.7
-
-0
+(h)
 
 100
 
-200
+t
 
-300
+Figure 5. Scaled simple regrets (rt ) and scaled averaged cumulative regrets (Rt ) on synthetic functions with various dimensions when
+the ground truth decomposition is known. The batch sampling methods (Batch-UCB-PE, Batch-UCB-DPP, Batch-UCB-PE-Fnc
+and Batch-UCB-DPP-Fnc) perform comparably well and outperform random sampling (Rand) by a large gap.
 
-400
+5.2. Diverse Batch Sampling
+Next, we probe the effectiveness of batch BO in high dimensions. In particular, we compare variants of the AddUCB-DPP-BBO approach outlined in Section 4, and a
+baseline:
+• Rand: All batch points are chosen uniformly at random from X .
+• Batch-UCB-*: *∈ {PE, DPP}. All acquisition
+functions are UCB (Eq. 4.1). Exploration is done via
+PE or DPP with posterior covariance kernels for each
+group. Combination is via sampling without replacement.
+• *-Fnc: *∈ {Batch-UCB-PE, Batch-UCB-DPP}.
+All quality functions are also UCB’s, and combination
+is done by maximizing the quality functions.
+A direct application of existing batch selection methods is
+very inefficient in the high-dimensional settings where they
+differ more, algorithmically, from our approach that ex-
 
-Iteration Number
+ploits decompositions. Hence, we only compare to uniform
+sampling as a baseline.
+Effectiveness We tested on 2, 10, 20 and 50-dimensional
+functions sampled the same way as in Section 5.1; we assume the ground-truth decomposition of the feature space
+is known. Since Rand performs the worst, we show relative averaged cumulative regret and simple regret of all
+methods compared to Rand in Fig. 5. Results for absolute
+values of regrets are shown in the appendix. Each experiment was repeated for 20 times. For all experiments, we
+set βtm = |Am | log 2t and B = 10. All diverse batch sampling methods perform comparably well and far better than
+Rand, although there exist slight differences. While in
+lower dimensions (D ∈ {2, 10}), Batch-UCB-PE-Fnc
+performs among the best, in higher dimensions (D ∈
+{20, 50}), Batch-UCB-DPP-Fnc performs better than
+(or comparable to) all other variants. We will see a larger
+performance gap in later real-world experiments, showing
+that biasing the combination towards higher quality functions while retaining diversity across the batch of samples
+provides a better exploration-exploitation trade-off.
 
-500
+Batched High-dimensional Bayesian Optimization via Structural Kernel Learning
 
-Testing accuracy
+Rand
+Batch-UCB-PE
+Batch-UCB-DPP
+Batch-UCB-PE-Fnc
+Batch-UCB-DPP-Fnc
 
-Testing accuracy
+rt
 
-0.95
+8.5
 
-0.7
+B=10
 
-0.65
+Batch-UCB-PE
+Batch-UCB-DPP
+Batch-UCB-PE-Fnc
+Batch-UCB-DPP-Fnc
 
-0.6
+8
+7
 
-0.55
-0
+7
+rt
 
-600
+6
 
-300
+8
 
-400
+5
 
-Iteration Number
+6
+5
 
-500
+4
 
-0.5
-0.4
+4
+20
 
-Iteration 601-640 Iteration 1201-1240
+40
 
-(a) Omniscient Teacher
+60
 
-Iteration 1-40
+80
 
-Iteration 601-640 Iteration 1201-1240
-
-(b) Imitation Teacher
-
-Figure 6. Some selected training examples on MNIST.
-
-0.6
-
-0.55
-
-0.3
-
-0.5
-
-0.2
-
-0
-
-200
-
-400
-
-600
-
-800
-
-Iteration Number
-
-1000
-
-0.45
-0
-
-1200
-
-200
-
-(b) Objective Value
-
-400
-
-600
-
-800
-
-Iteration Number
-
-1000
-
-Figure 4. Teaching logistic regression on MNIST dataset. Left
-column: 0/1 classification. Right column: 3/5 classification
-2.4
-
-0.9
-0.8
-
-SGD
-Omniscient teacher
-Surrogate teacher (same)
-Surrogate teacher (CNN-9)
-Imitation teacher (CNN-9)
-Imitation teacher (CNN-12)
-
-2.2
-
-0.6
-0.5
-
-Joint learned FC (Backprop)
-SGD learned FC
-Omniscient teacher
-Surrogate teacher (same)
-Surrogate teacher (CNN-9)
-Imitation teacher (CNN-9)
-Imitation teacher (CNN-12)
-
-0.4
-0.3
-0.2
-
-Objective Value
-
-0.7
-Testing Accuracy
-
-Iteration 1-40
-
-0.65
-
-Objective Value
-
-Batch gradient descent
-Stochastic gradient descent
-Omniscient Teachter
-Surrogate Teacher (same space)
-Surrogate Teacher (different space)
-Imitation Teacher
-
-0.6
-
-Objective Value
-
-200
-
-0.7
-
-0.7
-
-0.1
+t
 
 100
 
-(a) Classification accuracy
+10
 
-2
-1.8
-1.6
-1.4
-1.2
+20
 
-0
+30
 
-500
+40
 
-1000
-1500
-2000
-Iteration Number
+50
 
-2500
+t
 
-0
+Figure 7. Simple regret when tuning the 14 parameters of a robot
+pushing task with batch size 5 and 10. Learning decompositions
+with Gibbs sampling and diverse batch sampling are employed
+simultaneously. In general, Batch-UCB-DPP-Fnc performs a
+bit better than the other four diverse batch sampling variants. The
+gap increases with batch size.
 
-500
+Moreover, their gain over existing methods increases as the
+dimensionality of the input grows. We believe that these
+results have the potential to enable the increased use of
+Bayesian optimization for challenging black-box optimization problems in machine learning that typically involve a
+large number of parameters.
 
-1000
-1500
-2000
-Iteration Number
+9.5
+9
 
-2500
+B=5
 
-Figure 5. Teaching fully connected layers of CNNs on CIFAR-10.
-Left: testing accuracy. Right: training objective value.
+rt
 
-vergence speedup to the omniscient teacher under the condition that the teacher does not know the student’s feature
-space. In Fig.6, we also show some examples of teacher’s
-selected digit images (0/1 as examples) and find that the
-teacher tends to select easy example at the beginning and
-gradually shift the focus to difficult examples. This also
-has the intrinsic connections with the curriculum learning.
-7.4. Teaching Fully Connected Layers in CNNs
-We extend our teacher models from binary classification
-to multi-class classification. The teacher models are used
-to teach the final fully connected (FC) layers in convolutional neural network on CIFAR-10. We first train three
-baseline CNNs (6/9/12 convolution layers, detailed configuration is in Appendix B) on CIFAR-10 without data augmentation and obtain the 83.5%, 86.1%, 87.2% accuracy.
-First, we applied the omniscient teacher and the surrogate
-teacher to the CNN-6 student using the optimal FC layer
-from the joint backprop training. It is essentially to teach
-the FC layer in the same feature space. Second, we applied the surrogate teacher and the imitation teacher to the
-CNN-6 student using the parameters of optimal FC layers
-from CNN-9 and CNN-12. It is to teach the FC layer in
-different feature spaces. More interestingly, this different
-feature space may not necessarily have an invertible one-
+For a real-data experiment, we tested the diverse batch sampling algorithms for BBO on the Walker function which
+returns the walking speed of a three-link planar bipedal
+walker implemented in Matlab (Westervelt et al., 2007).
+We tune 25 parameters that may influence the walking
+speed, including 3 sets of 8 parameters for the ODE solver
+and 1 parameter specifying the initial velocity of the stance
+leg. We discretize each dimension into 40 points, resulting
+in a function domain of |X | = 4025 . This size is very inefficient for existing batch sampling techniques. We learn the
+additive structure via Gibbs sampling and sample batches
+of size B = 5. To further improve efficiency, we limit
+the maximum size of each group to 2. The regrets for all
+methods are shown in Fig. 6. Again, all diverse batch sampling methods outperform Rand by a large gap. Moreover,
+Batch-UCB-DPP-Fnc is a bit better than other variants,
+suggesting that a selection by quality functions is useful.
 
-Figure 7. Selected training examples by the omniscient teacher on
-ego-centric data of infants. (The examples are visualized every
-100 iteration, with left-to-right and top-to-bottom ordering)
+8
 
-to-one mapping, but we could still observe convergence
-speedup using our teacher models. From Fig. 5, we can see
-that all the teacher models produces very fast convergence
-in terms of testing accuracy. Our teacher models can even
-produces better testing accuracy than the backprop-learned
-FC layer. For objective value, the omniscient teacher shows
-the largest convergence speedup, and the imitation teacher
-performs slightly worse but still much better than the SGD.
-7.5. Teaching on ego-centric visual data of infants
-Using our teaching model, we analyze cropped object instances obtained from ego-centric video of an infant playing with toys (Yurovsky et al., 2013). Full detailed settings
-and results are in Appendix F. The results in Fig. 7 demonstrate a strong qualitative agreement between the training
-examples selected by the omniscient teacher and the order
-of examples received by a child in a naturalistic play environment. In both cases, the learner experiences extended
-bouts of viewing the same object. In contrast, the standard
-SGD learner receives random inputs. Our convergence results demonstrate that the learner converges significantly
-faster when receiving similar inputs to the child. Previous works have documented the unique temporal structure
-of the image examples that a child receives during object
-play (Bambach et al., 2016; Pereira et al., 2014). We believe these are the first results demonstrating that similar
-orderings can be obtained via a machine teaching approach.
+Acknowledgements
 
-8. Concluding Remarks
-The paper proposes an iterative machine teaching framework. We elaborate the settings of the framework, and then
-study two important properties: teaching monotonicity and
-teaching capability. Based on the framework, we propose
-three teacher models for gradient learners, and give theoretical analysis for the learner to provably achieve fast convergence. Our theoretical findings are verified by experiments.
+7.5
+7
+6.5
+10
 
-Iterative Machine Teaching
+20
 
-Acknowledgement
-We would like to sincerely thank all the reviewers and
-Prof. Xiaojin Zhu for the valuable suggestions to improve the paper, Dan Yurovsky and Charlotte Wozniak for
-their help in collecting the dataset of children’s visual inputs during object learning, and Qian Shao for help with
-the annotations. This project was supported in part by
-NSF IIS-1218749, NIH BIGDATA 1R01GM108341, NSF CAREER IIS-1350983, NSF IIS-1639792 EAGER, ONR N00014-15-1-2340, NSF Awards (BCS-1524565, BCS1523982, and IIS-1320348) Nvidia and Intel. In addition,
-this work was partially supported by the Indiana University
-Areas of Emergent Research initiative in Learning: Brains,
-Machines, Children.
+30
+t
+
+40
+
+50
+
+60
+
+Figure 6. The simple regrets (rt ) of batch sampling methods on Walker data where B = 5. Four diverse batch
+sampling methods (Batch-UCB-PE, Batch-UCB-DPP,
+Batch-UCB-PE-Fnc
+and
+Batch-UCB-DPP-Fnc)
+outperform random sampling (Rand) by a large gap.
+Batch-UCB-DPP-Fnc performs the best among the four
+diverse batch sampling methods.
+
+Batch Sizes Finally, we show how the batch size B affects the performance of the proposed methods. We test
+the algorithms on the 14-dimensional Robot dataset with
+B ∈ {5, 10}. The regrets are shown in Fig. 4. With
+larger batches, the differences between the batch selection
+approaches become more pronounced. In both settings,
+Batch-UCB-DPP-Fnc performs a bit better than other
+variants, in particular with larger batch sizes.
+
+6. Conclusion
+In this paper, we propose two novel solutions for high dimensional BO: inferring latent structure, and combining it
+with batch Bayesian Optimization. The experimental results demonstrate that the proposed techniques are effective at optimizing high-dimensional black-box functions.
+
+We gratefully acknowledge support from NSF CAREER
+award 1553284, NSF grants 1420927 and 1523767, from
+ONR grant N00014-14-1-0486, and from ARO grant
+W911NF1410433. We thank MIT Supercloud and the
+Lincoln Laboratory Supercomputing Center for providing
+computational resources. Any opinions, findings, and conclusions or recommendations expressed in this material are
+those of the authors and do not necessarily reflect the views
+of our sponsors.
 
 References
-Alfeld, Scott, Zhu, Xiaojin, and Barford, Paul. Data poisoning attacks against autoregressive models. In AAAI,
-pp. 1452–1458, 2016.
-Alfeld, Scott, Zhu, Xiaojin, and Barford, Paul. Explicit
-defense actions against test-set attacks. In AAAI, 2017.
-Ba, Jimmy and Caruana, Rich. Do deep nets really need to
-be deep? In Advances in neural information processing
-systems, pp. 2654–2662, 2014.
-Balcan, Maria-Florina, Hanneke, Steve, and Vaughan, Jennifer Wortman. The true sample complexity of active
-learning. Machine learning, 80(2-3):111–139, 2010.
-Bambach, Sven, Crandall, David J, Smith, Linda B, and
-Yu, Chen. Active Viewing in Toddlers Facilitates Visual Object Learning: An Egocentric Vision Approach.
-Proceedings of the 38th Annual Meeting of the Cognitive
-Science Society, 2016.
-Bengio, Yoshua, Louradour, Jerome, Collobert, Ronan, and
-Weston, Jason. Curriculum learning. In ICML, 2009.
-Bucila, Cristian, Caruana, Rich, and Niculescu-Mizil,
-Alexandru. Model compression. In Proceedings of the
-12th ACM SIGKDD international conference on Knowledge discovery and data mining, pp. 535–541. ACM,
-2006.
-Cakmak, Maya and Thomaz, Andrea L. Eliciting good
-teaching from humans for machine learners. Artificial
-Intelligence, 217:198–215, 2014.
-Doliwa, Thorsten, Fan, Gaojian, Simon, Hans Ulrich,
-and Zilles, Sandra. Recursive teaching dimension, vcdimension and sample compression. Journal of Machine
-Learning Research, 15(1):3107–3131, 2014.
+Azimi, Javad, Fern, Alan, and Fern, Xiaoli Z. Batch
+Bayesian optimization via simulation matching. In
+Advances in Neural Information Processing Systems
+(NIPS), 2010.
+Catto, Erin. Box2D, a 2D physics engine for games.
+http://box2d.org, 2011.
+Contal, Emile, Buffoni, David, Robicquet, Alexandre, and
+Vayatis, Nicolas. Parallel Gaussian process optimization with upper confidence bound and pure exploration.
+In Joint European Conference on Machine Learning
+and Knowledge Discovery in Databases, pp. 225–240.
+Springer, 2013.
+Desautels, Thomas, Krause, Andreas, and Burdick, Joel W.
+Parallelizing exploration-exploitation tradeoffs in Gaus-
 
-Goldman, Sally A and Kearns, Michael J. On the complexity of teaching. Journal of Computer and System
-Sciences, 50(1):20–31, 1995.
-Hall, Eric C and Willett, Rebecca M. Online optimization in dynamic environments. arXiv preprint arXiv:1307.5944, 2013.
-Han, Song, Mao, Huizi, and Dally, William J. Deep compression: Compressing deep neural networks with pruning, trained quantization and huffman coding. arXiv
-preprint arXiv:1510.00149, 2015.
-Hinton, Geoffrey, Vinyals, Oriol, and Dean, Jeff. Distilling the knowledge in a neural network. arXiv preprint
-arXiv:1503.02531, 2015.
-Johns, Edward, Mac Aodha, Oisin, and Brostow, Gabriel J.
-Becoming the expert - interactive multi-class machine
-teaching. In CVPR, 2015.
-Khan, Faisal, Mutlu, Bilge, and Zhu, Xiaojin. How do humans teach: On curriculum learning and teaching dimension. In NIPS, 2011.
-Liu, Ji, Zhu, Xiaojin, and Ohannessian, H Gorune. The
-teaching dimension of linear learners. In ICML, 2016.
-Meek, Christopher, Simard, Patrice, and Zhu, Xiaojin.
-Analysis of a design pattern for teaching with features
-and labels. arXiv preprint arXiv:1611.05950, 2016.
-Mei, Shike and Zhu, Xiaojin. Using machine teaching to
-identify optimal training-set attacks on machine learners.
-In AAAI, 2015.
-Nemirovski, Arkadi, Juditsky, Anatoli, Lan, Guanghui, and
-Shapiro, Alexander. Robust stochastic approximation
-approach to stochastic programming. SIAM Journal on
-optimization, 19(4):1574–1609, 2009.
-Pan, Sinno Jialin and Yang, Qiang. A survey on transfer
-learning. IEEE Transactions on knowledge and data engineering, 22(10):1345–1359, 2010.
-Pereira, Alfredo F, Smith, Linda B, and Yu, Chen. A
-Bottom-up View of Toddler Word Learning. Psychonomic bulletin & review, 21(1):178–185, 2014.
-Romero, Adriana, Ballas, Nicolas, Kahou, Samira Ebrahimi, Chassang, Antoine, Gatta, Carlo, and Bengio,
-Yoshua. Fitnets: Hints for thin deep nets. arXiv preprint
-arXiv:1412.6550, 2014.
-Shinohara, Ayumi and Miyano, Satoru. Teachability in
-computational learning. New Generation Computing, 8
-(4):337–347, 1991.
+Batched High-dimensional Bayesian Optimization via Structural Kernel Learning
 
-Iterative Machine Teaching
+sian process bandit optimization. Journal of Machine
+Learning Research, 2014.
+Djolonga, Josip, Krause, Andreas, and Cevher, Volkan.
+High-dimensional Gaussian process bandits. In Advances in Neural Information Processing Systems
+(NIPS), 2013.
+Duvenaud, David, Lloyd, James Robert, Grosse, Roger,
+Tenenbaum, Joshua B., and Ghahramani, Zoubin. Structure discovery in nonparametric regression through compositional kernel search. In International Conference on
+Machine Learning (ICML), 2013.
 
-Singla, Adish, Bogunovic, Ilija, Bartok, Gabor, Karbasi,
-Amin, and Krause, Andreas. Near-optimally teaching
-the crowd to classify. In ICML, pp. 154–162, 2014.
-Yurovsky, Daniel, Smith, Linda B, and Yu, Chen. Statistical Word Learning at Scale: The Baby’s View is Better
-Developmental Science. Developmental Science, 16(6):
-959–966, 2013.
-Zhu, Xiaojin. Machine teaching for bayesian learners in
-the exponential family. In NIPS, 2013.
-Zhu, Xiaojin. Machine teaching: An inverse problem to
-machine learning and an approach toward optimal education. In AAAI, pp. 4083–4087, 2015.
+Moc̆kus, J. On Bayesian methods for seeking the extremum. In Optimization Techniques IFIP Technical
+Conference, 1974.
+Snoek, Jasper, Larochelle, Hugo, and Adams, Ryan P.
+Practical Bayesian optimization of machine learning algorithms. In Advances in Neural Information Processing
+Systems (NIPS), 2012.
+Srinivas, Niranjan, Krause, Andreas, Kakade, Sham M, and
+Seeger, Matthias W. Information-theoretic regret bounds
+for Gaussian process optimization in the bandit setting.
+IEEE Transactions on Information Theory, 2012.
+
+González, Javier, Dai, Zhenwen, Hennig, Philipp, and
+Lawrence, Neil D. Batch Bayesian optimization via local penalization. International Conference on Artificial
+Intelligence and Statistics (AISTATS), 2016.
+
+Wang, Zi and Jegelka, Stefanie. Max-value entropy search
+for efficient Bayesian optimization. In International
+Conference on Machine Learning (ICML), 2017.
+
+Hennig, Philipp and Schuler, Christian J. Entropy search
+for information-efficient global optimization. Journal of
+Machine Learning Research, 13:1809–1837, 2012.
+
+Wang, Zi, Zhou, Bolei, and Jegelka, Stefanie. Optimization as estimation with Gaussian processes in bandit settings. In International Conference on Artificial Intelligence and Statistics (AISTATS), 2016a.
+
+Hernández-Lobato, José Miguel, Hoffman, Matthew W,
+and Ghahramani, Zoubin. Predictive entropy search
+for efficient global optimization of black-box functions.
+In Advances in Neural Information Processing Systems
+(NIPS), 2014.
+Kandasamy, Kirthevasan, Schneider, Jeff, and Poczos,
+Barnabas. High dimensional Bayesian optimisation and
+bandits via additive models. In International Conference
+on Machine Learning (ICML), 2015.
+Kathuria, Tarun, Deshpande, Amit, and Kohli, Pushmeet.
+Batched Gaussian process bandit optimization via determinantal point processes. In Advances in Neural Information Processing Systems (NIPS), 2016.
+Kawaguchi, Kenji, Kaelbling, Leslie Pack, and LozanoPérez, Tomás. Bayesian optimization with exponential
+convergence. In Advances in Neural Information Processing Systems (NIPS), 2015.
+Kawaguchi, Kenji, Maruyama, Yu, and Zheng, Xiaoyu.
+Global continuous optimization with error bound and
+fast convergence. Journal of Artificial Intelligence Research, 56(1):153–195, 2016.
+Kushner, Harold J. A new method of locating the maximum point of an arbitrary multipeak curve in the presence of noise. Journal of Fluids Engineering, 86(1):97–
+106, 1964.
+Li, Chun-Liang, Kandasamy, Kirthevasan, Póczos,
+Barnabás, and Schneider, Jeff.
+High dimensional
+Bayesian optimization via restricted projection pursuit
+models. In International Conference on Artificial Intelligence and Statistics (AISTATS), 2016.
+
+Wang, Zi, Jegelka, Stefanie, Kaelbling, Leslie Pack, and
+Pérez, Tomás Lozano. Focused model-learning and planning for non-Gaussian continuous state-action systems.
+In International Conference on Robotics and Automation (ICRA), 2017.
+Wang, Ziyu, Hutter, Frank, Zoghi, Masrour, Matheson,
+David, and de Feitas, Nando. Bayesian optimization in a
+billion dimensions via random embeddings. Journal of
+Artificial Intelligence Research, 55:361–387, 2016b.
+Westervelt, Eric R, Grizzle, Jessy W, Chevallereau, Christine, Choi, Jun Ho, and Morris, Benjamin. Feedback
+control of dynamic bipedal robot locomotion, volume 28.
+CRC press, 2007.
 
 

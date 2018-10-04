@@ -1,1046 +1,940 @@
-Prediction and Control with Temporal Segment Models
+Follow the Moving Leader in Deep Learning
 
-Nikhil Mishra 1 Pieter Abbeel 1 2 Igor Mordatch 2
+Shuai Zheng 1 James T. Kwok 1
 
 Abstract
-We introduce a method for learning the dynamics
-of complex nonlinear systems based on deep generative models over temporal segments of states
-and actions. Unlike dynamics models that operate over individual discrete timesteps, we learn
-the distribution over future state trajectories conditioned on past state, past action, and planned
-future action trajectories, as well as a latent prior
-over action trajectories. Our approach is based
-on convolutional autoregressive models and variational autoencoders. It makes stable and accurate predictions over long horizons for complex,
-stochastic systems, effectively expressing uncertainty and modeling the effects of collisions, sensory noise, and action delays. The learned dynamics model and action prior can be used for
-end-to-end, fully differentiable trajectory optimization and model-based policy optimization,
-which we use to evaluate the performance and
-sample-efficiency of our method.
+Deep networks are highly nonlinear and difficult
+to optimize. During training, the parameter iterate may move from one local basin to another,
+or the data distribution may even change. Inspired by the close connection between stochastic optimization and online learning, we propose a variant of the follow the regularized
+leader (FTRL) algorithm called follow the moving leader (FTML). Unlike the FTRL family
+of algorithms, the recent samples are weighted
+more heavily in each iteration and so FTML can
+adapt more quickly to changes. We show that
+FTML enjoys the nice properties of RMSprop
+and Adam, while avoiding their pitfalls. Experimental results on a number of deep learning
+models and tasks demonstrate that FTML converges quickly, and outperforms other state-ofthe-art optimizers.
 
 1. Introduction
-The problem of learning dynamics – where an agent learns
-a model of how its actions will affect its state and that of
-its environment – is a key open problem in robotics and
-reinforcement learning. An agent equipped with a dynamics model can leverage model-predictive control or modelbased reinforcement learning (RL) to perform a wide variety of tasks, whose exact nature need not be known in
-advance, and without additional access to the environment.
-In contrast with model-free RL, which seeks to directly
-learn a policy (mapping from states to actions) in order to
-accomplish a specific task, learning dynamics has the advantage that dynamics models can be learned without taskspecific supervision. Since dynamics models are decoupled
-from any particular task, they can be reused across different
-1
-University of California, Berkeley 2 OpenAI. Correspondence
-to: Nikhil Mishra <nmishra@berkeley.edu>.
+Recently, deep learning has emerged as a powerful and
+popular class of machine learning algorithms. Well-known
+examples include the convolutional neural network (LeCun et al., 1998), long short term memory (Hochreiter
+& Schmidhuber, 1997), memory network (Weston et al.,
+2014), and deep Q-network (Mnih et al., 2015). These
+models have achieved remarkable performance on various
+difficult tasks such as image classification (He et al., 2016),
+speech recognition (Graves et al., 2013), natural language
+understanding (Bahdanau et al., 2015; Sukhbaatar et al.,
+2015), and game playing (Silver et al., 2016).
+Deep network is a highly nonlinear model with typically
+millions of parameters (Hinton et al., 2006). Thus, it is
+imperative to design scalable and effective solvers. How1
+Department of Computer Science and Engineering, Hong
+Kong University of Science and Technology, Clear Water
+Bay, Hong Kong. Correspondence to: Shuai Zheng <szhengac@cse.ust.hk>, James T. Kwok <jamesk@cse.ust.hk>.
 
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-tasks in the same environment. Additionally, learning differentiable dynamics models (such as those based on neural
-networks) enables the use of end-to-end backpropagationbased methods for policy and trajectory optimization that
-are much more efficient than model-free methods.
-Typical approaches to dynamics learning build a one-step
-model of the dynamics, predicting the next state as a function of the current state and the current action. However,
-when chained successively for many timesteps into the future, the predictions from a one-step model tend to diverge
-from the true dynamics, either due to the accumulation of
-small errors or deviation from the regime represented by
-the data the model was trained on. Any learned dynamics
-model is only valid under the distribution of states and actions represented by its training data, and one-step models
-make no attempt to deal with the fact that they cannot make
-accurate predictions far outside this distribution.
-When the true dynamics are stochastic, or the sensory measurements noisy or unreliable, these problems are only exacerbated. Moreover, the dynamics may be inherently difficult to learn: bifurcations such as collisions induce sharp
-changes in state that are hard to model with certainty when
-looking at a single timestep. There may also be hysteresis effects such as gear backlash in robots, or high-order
-dynamics in hydraulic robot actuators and human muscles
-that require looking at a history of past states.
-We present a novel approach to learning dynamics based on
-a deep generative model over temporal segments: we wish
-to model the distribution over possible future state trajectories conditioned on planned future actions and a history
-of past states and actions. By considering an entire segment of future states, our approach can model both uncertainty and complex interactions (like collisions) holistically
-over a segment, even if it makes small errors at individual
-timesteps. We also model a prior over action segments using a similar generative model, which can be used to ensure
-that the action distribution explored during planning is the
-same as the one the model was trained on. We show that
-that our method makes better predictions over long horizons than one-step models, is robust to stochastic dynamics and measurements, and can be used in a variety of control settings while only considering actions from the regime
-where the model is valid.
+ever, training deep networks is difficult as the optimization can suffer from pathological curvature and get stuck
+in local minima (Martens, 2010). Moreover, every critical point that is not a global minimum is a saddle point
+(Kawaguchi, 2016), which can significantly slow down
+training. Second-order information is useful in that it reflects local curvature of the error surface. However, a direct computation of the Hessian is computationally infeasible. Martens (2010) introduced Hessian-free optimization,
+a variant of truncated-Newton methods that relies on using the linear conjugate gradient to avoid computing the
+Hessian. Dauphin et al. (2014) proposed to use the absolute Hessian to escape from saddle points. However, these
+methods still require higher computational costs.
+Recent advances in deep learning optimization focus
+mainly on stochastic gradient descent (SGD) (Bottou,
+1998) and its variants (Sutskever et al., 2013). However,
+SGD requires careful stepsize tuning, which is difficult as
+different weights have vastly different gradients (in terms
+of both magnitude and direction). On the other hand, online learning (Zinkevich, 2003), which is closely related
+to stochastic optimization, has been extensively studied in
+the past decade. Well-known algorithms include follow the
+regularized leader (FTRL) (Kalai & Vempala, 2005), follow the proximally-regularized leader (FTPRL) (McMahan
+& Streeter, 2010) and their variants (Duchi & Singer, 2009;
+Duchi et al., 2011; Shalev-Shwartz, 2012; Xiao, 2010).
+In particular, adaptive gradient descent (Adagrad) (Duchi
+et al., 2011) uses an adaptive per-coordinate stepsize. On
+convex problems, it has been shown both theoretically and
+empirically that Adagrad is especially efficient on highdimensional data (Duchi et al., 2011; McMahan et al.,
+2013). When used on deep networks, Adagrad also demonstrates significantly better performance than SGD (Dean
+et al., 2012). However, in Adagrad, the variance estimate
+underlying the adaptive stepsize is based on accumulating
+all past (squared) gradients. This becomes infinitesimally
+small as training proceeds. In more recent algorithms,
+such as RMSprop (Tieleman & Hinton, 2012) and Adam
+(Kingma & Ba, 2015), the variance is estimated by an exponentially decaying average of the squared gradients.
+Another problem with the FTRL family of algorithms is
+that in each round, the learner has to solve an optimization
+problem that considers the sum of all previous gradients.
 
-Prediction and Control with Temporal Segment Models
+Follow the Moving Leader in Deep Learning
 
-2. Related Work
-A number of options are available for representation of
-learned dynamics models, including linear functions (Mordatch et al., 2016; Yip & Camarillo, 2014), Gaussian processes (Boedecker et al., 2014; Ko & Fox, 2009; Deisenroth & Rasmussen, 2011), predictive state representations
-(PSRs) (Littman et al., 2002; Rosencrantz et al., 2004), and
-deep neural networks (Punjani & Abbeel, 2015; Fragkiadaki et al., 2015; Agrawal et al., 2016). Linear functions
-are efficient to evaluate and solve controls for, but have
-limited expressive power. Gaussian processes (Williams &
-Rasmussen, 1996) provide uncertainty estimates, but scaling them to large datasets remains a challenge (Shen et al.;
-Lawrence et al., 2003). PSRs and variants make multi-step
-predictions, but suffer from the same scalability challenges
-as Gaussian processes. Our method combines the expressiveness and scalability of neural networks with the ability
-to provide sampling and uncertainty estimates, modeling
-entire segments to improve stability and robustness.
-An alternative is to learn dynamics models in an online
-fashion, constantly adapting the model based on an incoming stream of observed states and actions (Fu et al., 2016;
-Mordatch et al., 2016; Yip & Camarillo, 2014; Lenz et al.,
-2015). However, such approaches are slow to adapt to
-rapidly-changing dynamics modes (such as those arising
-when making or breaking contact) and may be problematic
-when applied on robots performing rapid motions.
+For highly nonconvex models such as the deep network,
+the parameter iterate may move from one local basin to another. Gradients that are due to samples in the distant past
+are less informative than those from the recent ones. In
+applications where the data distribution is changing (as in
+deep reinforcement learning), this may impede parameter
+adaptation to the environment.
+To alleviate this problem, we propose a FTPRL variant that
+reweighs the learning subproblems in each iteration. The
+proposed algorithm, which will be called follow the moving leader (FTML), shows strong connections with popular deep learning optimizers such as RMSprop and Adam.
+Experiments on various deep learning models demonstrate
+that FTML outperforms or at least has comparable convergence performance with state-of-the-art solvers.
+The rest of this paper is organized as follows. Section 2 first
+gives a brief review on FTRL and other solvers for deep
+learning. Section 3 presents the proposed FTML. Experimental results are shown in Section 4, and the last section
+gives some concluding remarks.
+qP
+d
+2
+Notation. For a vector x ∈ Rd , kxk =
+i=1 xi ,
+√
+diag(x) is a diagonal matrix with x on its diagonal, x
+is the element-wise square root of x, x2 denotes the
+Hadamard (elementwise) product x  x, and kxk2Q =
+xT Qx, where Q is a symmetric matrix. For any two vectors
+x and y, x/y, and hx, yi denote the elementwise division
+and dot product, respectively. For a matrix X, X 2 = XX,
+and diag(X) is a vector with the diagonal ofPX as its elt
+ements. For t vectors {x1 , . . . , xt }, x1:t = i=1 xi , and
+Pt
+2
+2
+x =
+i=1 xi . For t matrices {X1 , . . . , Xt }, X1:t =
+P1:tt
+i=1 Xi .
 
-Temporally-extended actions were shown to be effective
-in reinforcement learning, such as the options framework
-(Sutton et al., 1999b) or sequencing of sub-plans (Vezhnevets et al., 2016). Considering entire trajectories as opposed to single timesteps can also lead to simpler control policies. For example, there are effective and simple manually-designed control laws (Raibert, 1986), (Pratt
-et al., 2006) that formulate optimal actions as a function of
-the entire future trajectory rather than a single future state.
-
-3. Segment-Based Dynamics Model
-Suppose we have a non-linear dynamical system with states
-xt and actions ut . The conventional approach to learning
-dynamics is to learn a function xt+1 = f (xt , ut ) using an
-approximator such as a neural network (possibly recurrent).
-We consider a more general formulation of the problem,
-which is depicted in Figure 1: given segments (of length H)
-of past states X − = {xt−H , . . . , xt−1 } and actions U − =
-{ut−H , . . . , ut−1 }, we wish to predict the entire segment of
-future states X + = {xt , . . . , xt+H } that would result from
-taking actions U + = {ut , . . . , ut+H−1 }. Treating these
-four temporal segments as random variables, then we wish
-to learn the conditional distribution P (X + |X − , U − , U + ).
-We introduce dependency on past actions U − to support
-dynamics with delayed or filtered actions.
-
-Several approaches exist to improve the stability of models
-that make sequential predictions. Abbeel & Ng (2004) and
-Venkatraman et al. (2015) consider alternative loss functions that improve robustness over long prediction horizons. Bengio et al. (2015) and Venkatraman et al. (2016)
-also use simple curricula for a similar effect. While they all
-consider multi-step prediction losses, they only do so in the
-context of training models that are intrinsically one-step.
-Existing methods for video prediction (Finn & Levine,
-2016; Oh et al., 2015) look at a history of previous states
-and actions to predict the next frame; we take this a step
-further by modeling a distribution over an entire segment
-of future states that is also conditioned on future actions. In
-this work, we focus on demonstrating the benefits of a probabilistic segment-based approach; these methods could easily be incorporated with ours to learn dynamics from images, but we leave this to future work.
-Watter et al. (2015) and Johnson et al. (2016) use variational autoencoders to learn a low-dimensional latent-space
-representation of image observations. Finn et al. (2016)
-takes a similar approach, but without the variational aspect. These works utilized autoencoders as a means of dimensionality reduction (rather than for temporal coherence
-like we do) to enable the use of existing control algorithms
-based on locally-linear one-step dynamics models.
-
-t H
-
+aging (RDA) (Xiao, 2010) as well as its adaptive variant
+presented in (Duchi et al., 2011). Gradient descent style algorithms like online forward and backward splitting (FOBOS) (Duchi & Singer, 2009) and adaptive gradient descent (Adagrad) (Duchi et al., 2011) can also be expressed
+as special cases of the FTRL family (McMahan, 2011).
+At round t, FTRL generates the next iterate θt by solving
+the optimization problem:
+t 
+
 X
+αt
+hgi , θi + kθk2 ,
+θ∈Θ
+2
+i=1
 
-P(X+)
+θt = arg min
 
-U
+where gt is a subgradient of ft at θt−1 (usually, θ0 = 0),
+and αt is the regularization parameter at round t. Note that
+the regularization is centered at the origin. McMahan &
+Streeter (2010) generalizes this to FTPRL by centering regularization at each iterate θi−1 as in online gradient descent
+and online mirror descent (Cesa-Bianchi & Lugosi, 2006),
+θt = arg min
+θ∈Θ
 
-U+
-t
+t 
+X
+i=1
 
-t+H
+2.1. Follow the Regularized Leader and its Variants
+In online learning, the learner observes a sequence of functions fi ’s, which can be deterministic, stochastic, or even
+adversarially chosen. Let Θ ⊆ Rd be a convex compact
+set. At round t, the learner picks a predictor θt−1 ∈ Θ,
+and the adversary picks a loss ft . The learner then suffers
+a loss ft (θt−1 ). The goal of the learner is to minimize the
+cumulative loss suffered over the course of T rounds. In
+online convex learning, ft is assumed to be convex.
+Two popular online learning algorithms are the follow the regularized leader (FTRL) (Kalai & Vempala,
+2005; Shalev-Shwartz, 2012), and its variant follow
+the proximally-regularized leader (FTPRL) (McMahan
+&
+√
+Streeter, 2010). Both achieve the optimal O( T ) regret,
+where T is the number of rounds (Shalev-Shwartz, 2012).
+Other FTRL-like algorithms include regularized dual aver-
 
-Figure 1. An overview of the probabilistic model we wish to
-learn. Given observed past states and actions X − , U − (blue), and
-planned future actions U + (green), we wish to sample possible
-future state trajectories X + (red).
-
-With this in mind, we propose the use of a deep
-conditional variational autoencoder (Kingma &
-Welling, 2014): our encoder will learn the distribution Q(x) (Z|X + , X − , U − , U + ) over latent codes Z,
-and our decoder will learn to reconstruct X + from
-X − , U − , U + and a sample from Z, modeling the distribution P (x) (X + |X − , U − , U + , Z). Note that the random
-variable Z is a vector that describes an entire segment of
-states, X + . After training is complete, we can discard the
-
-Prediction and Control with Temporal Segment Models
-
-encoder, and the decoder will allow us to predict the future
-state trajectory Xˆ+ using X − , U −, U + , as desired, sampling latent codes from an enforced prior P (Z) = N (0, I).
-Empirically, we observe that having the encoder model
-Q(x) (Z|X + ) instead of Q(x) (Z|X + , X − , U − , U + ) gives
-equivalent performance, and so we take this approach in
-all of our experiments for simplicity.
-3.1. Model Architecture and Training
-In the previous section we discussed a conditional variational autoencoder whose generative path serves as a
-stochastic dynamics model. Here we will expand on some
-of the architectural details. A diagram of the entire training
-setup is shown in Figure 2. For more details of the architectures used in our experiments, see Appendix A.
-
-affected by the ones that occur before it) suggests that an
-autoregressive model with dilated convolutions is appropriate, similar to architectures previously used for modeling audio (van den Oord et al., 2016a) and image (van den
-Oord et al., 2016b) data. Like these works, we use layers
-with the following activation function:
-T
-T
-tanh(Wf,k ∗ s + Vf,k
-z)  σ(Wg,k ∗ s + Vg,k
-z)
+
+,
 
 (1)
 
-where ∗ denotes convolution,  denotes elementwise multiplication, σ(·) is the sigmoid function, s is the input to
-the layer, z is a latent code sampled from the output of
-the decoder, and W, V are network weights to be learned.
-We found that residual layers and skip connections between
-layers give slightly better performance but are not essential.
-We train the model parameters end-to-end, minimizing the
-l2 -loss between X + and its reconstruction Xˆ+ , along with
-2
-) from
-the KL-divergence of the latent code Z ∼ N (µZ , σZ
-N (0, I) similarly to Kingma & Welling (2014).
-
-4. Control with Segment-Based Models
-X
-
-U
-P(x)
-
-Once we have learned a dynamics model, we want to utilize
-it in order to accomplish different tasks, each of which can
-be expressed as reward function r(xt , ut ). Trajectory optimization and policy optimization are two settings where
-a dynamics model would commonly be used, and provide
-meaningful ways with which to evaluate a dynamics model.
-
-U+
-
-4.1. Trajectory Optimization
-
-X+
-
-In trajectory optimization, we wish to find a sequence of
-actions that can be applied to accomplish a particular instance of a task. Specifically, given a reward function r, we
-want to maximize the sum of rewards along the trajectory
-that results from applying the actions u1 , . . . , uT , beginning from an initial state x0 . This can be summarized by
-the following optimization problem:
-
-Z
-
-Q(x)
-2
-
-Z
-Z
-
-Figure 2. The dynamics model that we learn. The encoder Q(x)
-2
-parametrizes a diagonal Gaussian distribution Z ∼ N (µZ , σZ
-)
-over latent codes describing a state trajectory X + . The autoregressive decoder P (x) takes in segments of past states X − , past
-actions U − , and future actions U + , along with a sample from Z,
-and uses dilated causal convolutions to reconstruct X + .
-
-The encoder network Q(x) explicitly parametrizes a Gaussian distribution over latent codes Z with diagonal covariance. It consists of a stack of 1D-convolutional layers,
-whose output is flattened and projected into a single vec2
-tor containing a mean µZ and variance σZ
-. We then sam2
-ple z ∼ N (µZ , σZ ) in a differentiable manner using the
-reparametrization trick (Kingma & Welling, 2014).
-(x)
-
-The decoder network P
-seeks to model a distribution
-over a segment of states P (X + ) = P (xt , . . . , xt+H ). The
-causal nature of this segment (a particular timestep is only
-
-max E
-
-u1 ,...,uT
-
-X
-T
-
-
-r(xt , ut )
-
-t=1
+where Qi is a full or diagonal positive semidefinite matrix,
+and kθ − θi−1 kQi is the corresponding Mahalanobis distance between θ and θi−1 . When Qi is diagonal, each of
+its entries controls the learning rate in the corresponding
+dimension. When Θ = Rd , θt can be obtained in closedform (McMahan, 2011):
+θt = θt−1 − Q−1
+1:t gt .
 
 (2)
 
-with xt ∼ P (x) (xt |x0:t−1 , u1:t )
-where r(xt , ut ) is the reward received at time t, and X =
-{x1 , . . . , xT } is the sequence of states that would result
-from taking actions U = {u1 , . . . , uT } from initial state
-x0 , under dynamics model P (x) . The expectation is taken
-over state trajectories sampled from the model.
-4.2. Latent Action Priors
-If we attempt to solve the optimization problem as posed
-in (2), the solution will often attempt to apply action sequences outside the manifold where the dynamics model
+When
+Qt =
 
-Prediction and Control with Temporal Segment Models
+2. Related Work
 
-is valid: these actions come from a very different distribution than the action distribution of the training data. This
-can be problematic: the optimization may find actions that
-achieve high rewards under the model (by exploiting it in
-a regime where it is invalid) but that do not accomplish the
-goal when they are executed in the real environment.
-To mitigate this problem, we propose the use of another
-conditional variational autoencoder, this one over segments
-of actions. In particular, given sequences of past actions U − = {ut−H , . . . , ut−1 }, and future actions U + =
-{ut , . . . , ut+H }, we wish to model the the conditional distribution P (U + |U − ). The encoder learns Q(u) (Z|U + ) and
-the decoder learns P (u) (U + |Z, U − ). We condition on U −
-to support temporal coherence in the generated action sequence. Like the dynamics model introduced in Section
-3.1, the encoder uses 1D-convolutional layers, and the decoder is autoregressive, with dilated causal convolutions.
-The latent space that this autoencoder learns describes a
-prior over actions that can be used when planning with a
-dynamics model; hence we refer to this autoencoder over
-action sequences as a latent action prior.
-To incorporate a latent action prior, we divide an action
-sequence U = {u1 , . . . , uT } into segments U1 , . . . UK of
-length H (where K is determined such that T = HK, and
-U0 = 0). Then we can generate action sequences that are
-similar to the ones in our training set by sampling different
-latent codes z1 , . . . , zK and using the decoder to sample
-from P (u) (Uk |Uk−1 , zk ), ∀k = 1, . . . , K. The optimization problem posed in (2) can then be expressed as:
-max E
+1
+hgi , θi + kθ − θi−1 k2Qi
+2
 
-z1 ,...,zK
+1
+diag
+η
 
-X
-T
+q
 
-
-r(xt , ut )
+2 −
+g1:t
 
-t=1
-(x)
-
-with xt ∼ P
-
-ut ∼ P
-
-(u)
-
-(xt |x0:t−1 , u1:t )
+
+q
+2
+g1:t−1
+,
 
 (3)
 
-(ut |u1:t−1 , z1:K )
+where η > 0 is the stepsize, (2) becomes the update rule of
+Adagrad (Duchi et al., 2011)
+!
+η
+θt = θt−1 − diag p 2
+gt .
+(4)
+g1:t + 1
+Here,  > 0 (usually a very small number) is used to avoid
+division by zero, and 1 is the vector of all 1’s.
+In general, all these algorithms satisfy (McMahan &
+Streeter, 2010):
+ q
+
+1
+2 + 1
+Q1:t = diag
+g1:t
+.
+(5)
+η
+It can √
+be shown that this setting is optimal within a factor of 2 of the best possible regret bound for any nonincreasing per-coordinate learning rate schedule (McMahan & Streeter, 2010).
 
-X0
+Follow the Moving Leader in Deep Learning
 
-P(x)
+2.2. Adaptive Learning Rate in Deep Learning
+In training deep networks, different weights may have
+vastly different gradients (in terms of both magnitude and
+direction). Hence, using a per-coordinate learning rate as in
+Adagrad can significantly improve performance over standard SGD (Dean et al., 2012). However, a caveat is that
+Adagrad suffers from diminishing stepsize. As optimiza2
+tion proceeds, the accumulated squared gradient g1:t
+in (5)
+becomes larger and larger, making training difficult.
+To alleviate this problem, a number of algorithms have
+been proposed (Zeiler, 2012; Tieleman & Hinton, 2012;
+Kingma & Ba, 2015). Typically, they employ
+Pt an average of
+the past squared gradients (i.e., vt = i=1 αi,t gi2 , where
+αi,t ∈ [0, 1]), which is exponentially decaying. For example, RMSprop (Tieleman & Hinton, 2012) uses
+vi = βvi−1 + (1 − β)gi2 ,
 
-P(x)
+(6)
 
-U0
+Zeiler (2012) further argues that the parameter and update
+should have the same unit, and modifies (7) to the Adadelta
+update rule:
+√
+
+ut−1 + 1
+θt = θt−1 − diag
+gt ,
+√
+vt + 1
+Pt−1
+where ut−1 = i=0 αi,t−1 (4θi )2 , and 4θt = θt − θt−1
+with 4θ0 = 0.
+As v0 in (6) is often initialized to 0, the bias has to be
+corrected. Adam (Kingma & Ba, 2015) uses the variance estimate vt /(1 − β t ) (which corresponds to αi,t =
+(1 − β)β t−i /(1 − β t )).
+Another recent proposal is the equilibrated stochastic gradient descent (Dauphin et al., 2015). It uses the variance
+estimate vt = vt−1 + (Ht ζt )2 , where Ht is the Hessian and
+ζt ∼ N (0,p
+1). It is shown that (Ht ζt )2 is an unbiased estimator of diag(Ht2 ), which serves as the Jacobi preconditioner of the absolute Hessian. Computation of the Hessian can be avoided by using the R-operator (Schraudolph,
+2002), though it still costs roughly twice that of standard
+backpropagation.
+
+3. Follow the Moving Leader
+Recall that at round t, FTRL generates the next iterate θt as
+
+θ∈Θ
 
 t
+X
+i=1
 
-U2
-P(u)
+Pi (θ),
 
-P(u)
+3.1. Weighting the Components
+To alleviate this problem, one may consider only Pi ’s in
+a recent window. However, a large memory is needed for
+its implementation. A simpler alternative is by using an
+exponential moving average of the Pi ’s: Si = β1 Si−1 +
+(1 − β1 )Pi , where β1 ∈ [0, 1) and
+PtS0 = 0. This can be
+easily rewritten as St = (1 − β1 ) i=1 β1t−i Pi . Instead of
+minimizing (8), we have
+θt = arg min
+θ∈Θ
 
-z(1)
+where β is close to 1, and the corresponding αi,t is (1 −
+2
+β)β t−i . This vt can then be used to replace g1:t
+, and the
+update in (4) becomes
+
+
+η
+gt .
+(7)
+θt = θt−1 − diag √
+vt + 1
 
-z(2)
+θt = arg min
 
-t+H
+where Pi (θ) = hgi , θi + 21 kθ − θi−1 k2Qi . Note that all
+Pi ’s have the same weight. However, for highly nonconvex
+models such as the deep network, the parameter iterate may
+move from one local basin to another. Pi ’s that are due to
+samples in the distant past are less informative than those
+from the recent ones.
 
-t+2H
+(8)
 
-t+3H
+t
+X
 
-Figure 3. Trajectory optimization over latent codes (blue). The
-action sequences are generated using the latent codes and the latent action prior P (u) , and the state trajectory using the generated
-actions and the dynamics model P (x) .
+wi,t Pi (θ),
 
-in policy optimization, where the agent learns a policy that
-dictates optimal behavior in order to accomplish the task in
-the general case. In particular, a policy is a learned function
-(with parameters θ) that defines a conditional distribution
-over actions given states, denoted πθ (u|x). The value of a
-policy is defined as the expected sum of discounted rewards
-when acting under the policy, and can be expressed as:
-η(θ) = E
+(9)
 
-X
-∞
+i=1
 
-
-γ t · r(xt , ut )
+where the weights
+wi,t =
 
-(4)
+(1 − β1 )β1t−i
+1 − β1t
 
-t=1
+(10)
 
-where the actions u1 , . . . , uT and states x1 , . . . , xT are
-generated by the latent action prior and dynamics model
-(see Figure 3 for an illustration). Since the dynamics model
-is differentiable, the above optimization problem can be
-solved end-to-end with backpropagation. While it is still
-nonconvex, we are optimizing over fewer variables, and the
-possible action sequences that are explored will be from the
-same distribution as the model’s training data. Moreover,
-the gradients of the rewards with respect to the latent codes
-are likely to have stronger signal than those with respect to
-a single action. We used Adam (Kingma & Ba, 2015) with
-step size 0.01 to perform this optimization and found that
-it generally converged in around 100 iterations.
-4.3. Policy Optimization
-Trajectory optimization enables an agent to accomplish a
-single instance of a task, but more often, we are interested
-
-where the actions are sampled from πθ (ut |xt ), and γ is a
-discount factor. The goal of policy optimization is to maximize the value of the policy with respect to its parameters.
-The class of algorithms known as policy gradient methods (Sutton et al., 1999a; Peters & Schaal, 2006) attempt
-to solve this optimization problem without considering a
-dynamics model. They execute a policy πθ to get samples
-x1 , u1 , r1 , . . . , xT , uT , rT from the environment, and then
-update θ to get an improved policy, relying on likelihood
-ratio methods (Williams, 1992) to estimate the gradient ∂η
-∂θ
-because they cannot directly compute the derivatives of the
-rewards r(xt , ut ) with respect to the actions u1 , . . . , ut .
-Model-based policy optimization can be more efficient than
-traditional policy-gradient methods, because the gradient
-∂η
-∂θ can be computed directly by backpropagation through
-a differentiable model. However, its success hinges on the
-
-Prediction and Control with Temporal Segment Models
-
-accuracy of the dynamics model, as the optimization can
-exploit flaws in the model in the same way as discussed
-in Section 4.2. Heess et al. (2015) use a model-based approach where a one-step dynamics model is learned jointly
-with a policy in an online manner. To evaluate the robustness of our models, we experiment with learning policies
-offline, where the dynamics model is learned through unsupervised exploration of the environment, and no environment interaction is allowed beyond this exploration.
-Instead of a one-step policy of the form πθ (ut |xt ), we also
-explored using a segment-based policy πθ (Z|X − , U − ) that
-generates actions using latent action prior P (u) as follows:
-X − , U − = {xt−H , . . . , xt−1 }, {ut−H , . . . , ut−1 }
-sample Z ∼ πθ (Z|X − , U − )
-{ut , . . . , ut+H } = U + ∼ P (u) (U + |Z, U − )
-and then acts according to action ut . The resulting policy
-will learn to accomplish the task while only considering
-actions for which the dynamics model is valid. In terms
-of the options framework (Sutton et al., 1999b), we can
-think of this policy as considering a continuous spectrum of
-options, all of which are consistent with both past observed
-states and actions, and the data distribution under which the
-dynamics model makes good predictions.
-
-5. Experiments
-Our experiments investigate the following questions:
-(i) How well do segment-based models predict dynamics?
-(ii) How does prediction accuracy transfer to control applications? How does this scale with the difficulty of the task
-and stochasticity in the dynamics?
-(iii) How is this affected by the use of latent action priors?
-(iv) Is there any meaning or structure encoded by the latent
-space learned by the dynamics model?
-
-drical object around the arena.
-
-Figure 4. The environments we used in our experiments. From
-left to right: (i) the unmodified Reacher environment, (ii) a version with an obstacle, (iii) a version with an object to push. The
-blue marker is used to visualize the goal during experiments involving control but has no effect on the dynamics.
-
-To learn a dynamics model, the training data consists of a
-collection of trajectories x1 , u1 , . . . , xT , uT from the environment we wish to model. We used 500 trajectories in
-the basic environment, and 5000 in the other two. For all
-environments, the state representation consists of the joint
-angles, the joint velocities, and the end-effector position;
-when obstacles are present, their positions and velocities
-are also included. The actions are always the torques for
-the arm’s joints. In all experiments, the training set is comprised of trajectories of length T = 100 of the arm executing smooth random torques, and we used segments of
-length H = 10 and 8-dimensional latent spaces.
-While the segment length and dimensionality of the latent
-space could be varied, we found that these values were reasonable choices for these environments. As the segment
-length approaches 1, the model degenerates into a one-step
-model, and for longer segments, its performance plateaus
-because the states towards the end of the segment become
-independent of those at the beginning. Likewise, we observed that this latent-space dimensionality was a good
-trade-off between expressiveness and information density.
-5.2. Baselines
-
-5.1. Environments
-In order for a dynamics model to be versatile enough for
-use in control settings, the training data needs to contain a
-variety of actions that explore a diverse subset of the state
-space. Efficient exploration strategies are an open problem in reinforcement learning and are not the focus of this
-work. With this in mind, we base our experiments on a
-simulated 2-DOF arm moving in a plane (as implemented
-in the Reacher environment in OpenAI Gym), because performing random actions in this environment results in sufficient exploration. We consider the following environments
-throughout our experiments (illustrated in Figure 4):
-(i) The basic, unmodified Reacher environment.
-(ii) A version containing an obstacle that the arm can collide with: the obstacle cannot move, but its position is randomly chosen at the start of each episode.
-(iii) A version in which the arm can push a damped cylin-
-
-We compare our method against the following baselines:
-(i) A one-step model: a learned function xt+1 = f (xt , ut ),
-where f is a fully-connected neural network. It is trained
-using a one-step-prediction l2 -loss on tuples (xt , ut , xt+1 ).
-(ii) A one-step model that is rolled out several timesteps
-at training time. The model is still a learned function
-xt+1 = f (xt , ut ), but it is trained with a multi-step prediction loss, over a horizon of length 2H. While this does
-not increase the model’s expressive power, we expect it to
-be more robust to the accumulation of small errors (e.g.,
-Venkatraman et al. (2015); Abbeel & Ng (2004)).
-(iii) An LSTM model, which can store information about
-the past in a hidden state ht : xt+1 , ht+1 = f (xt , ut , ht ),
-and is trained with the same multi-step prediction loss (also
-over a horizon of 2H). We expect that the LSTM can learn
-fairly complex dynamics, but the hidden state dependencies
-can make trajectory and policy optimization more difficult.
-
-Prediction and Control with Temporal Segment Models
-
-5.3. Results
-5.3.1. DYNAMICS P REDICTION
-After learning a dynamics model, we evaluate it on a test
-set of held-out trajectories by computing the average loglikelihood of the test data under the model.
-For our method, we do this by obtaining samples from the
-model, fitting a Gaussian to the samples, and determining the log-likelihood of the true trajectory under the fitted
-Gaussian. Since the baseline methods do not express uncertainty, but are trained using l2 -loss, we interpret their predictions as the mean of a Gaussian distribution whose variance is constant across all state dimensions and timesteps
-(since minimizing l2 -loss is equivalent to maximizing this
-log-likelihood). We then fit the value of the variance constant to maximize the log-likelihood on the test set.
-Figure 5 compares our method to the baselines in each
-environment. The values reported are log-likelihoods per
-timestep, averaged over a test set of 1000 trajectories. Our
-model and the LSTM are competitive in the basic environment (and both substantially better than the one-step models), but the LSTM’s performance degrades on more challenging environments with collisions.
-
-(ii) Pushing Task: the arm must push a cylindrical object to
-the desired position. Like in the reaching task, the reward
-function is the negative distance between the object and the
-target, again minus a penalty on large torques.
-The trajectory-optimization results are summarized in Figure 6. For each task and dynamics model, we sampled 100
-target positions uniformly at random, solved the optimization problem as described in (2) or (3), and then executed
-the action sequences in the environment in open loop.
-Under each model, the optimization finds actions that
-achieve similar model-predicted rewards, but the baselines
-suffer from large discrepancies between model prediction
-and the true dynamics. Qualitatively, we notice that, on the
-pushing task, the optimization exploits the LSTM and onestep models to predict unrealistic state trajectories, such as
-the object moving without being touched or the arm passing
-through the object instead of colliding with it. Our model
-consistently performs better, and, with a latent action prior,
-the true execution closely matches the model’s prediction.
-When it makes inaccurate predictions, it respects physical invariants, such as objects staying still unless they are
-touched, or not penetrating each other when they collide.
-Negative Reward in Environment
-
-32.16
-28.44
-
-Ours
-LSTM
-One Step
-One Step, rolled out
-
-26.55
-
-18.49
-
-19.93
-
-19.65 19.01
-16.06
-12.15
-7.23
-
-7.38
-
-8.15
-
-8.69
-
-7.89
-
-17.95
-
-16.42
-13.02 13.98
-
-11.96 11.36 12.55
-
-Reaching
-
-Pushing
-
-Ours, with latent prior
-Ours, without latent prior
-LSTM
-Basic
-
-7.91
-
-Pushing Object
-Environment
-
-Discrepancy between Model and Environment
-
-With Obstacle
-
-Figure 5. Prediction quality of our method compared to several
-baselines in a range of environments. The reported values are the
-average log-likelihood per timestep on a test set (higher is better).
-Our method significantly outperforms the baseline methods, even
-in environments with complex dynamics such as collisions.
-
-5.3.2. C ONTROL1
-Next, we compare our method to the baselines on trajectory and policy optimization. Of interest is both the actual
-reward achieved in the environment, and the difference between the true reward and the expected reward under the
-model. If a control algorithm exploits the model to predict
-unrealistic behavior, then the latter will be large.
-We consider two tasks:
-(i) Reaching Task: the arm must move its end effector to a
-desired position. The reward function is the negative distance between the end effector and the target position, minus a quadratic penalty on applying large torques.
+are normalized to sum to 1. The denominator 1 − β1t plays
+a similar role as bias correction in Adam. When β1 = 0,
+wi,t = 0 for i < t, and wt,t = 1. Thus, (9) reduces
+to minθ∈Θ Pt (θ). When β1 → 1, the following Lemma
+shows that all Pi ’s are weighted equally, and (8) is recovered.
+Lemma 1. limβ1 →1 wi,t = 1/t.
+Note that P
+the Hessian of the objective in (8) is Q1:t . This
+t
+becomes i=1 wi,t Qi in (9). Recall that Q1:t depends on
+the accumulated past gradients in (5), which is then refined
+by an exponential moving average in (6). As in Adam, we
+define vi = β2 vi−1 + (1 − β2 )gi2 , where β2 ∈ [0, 1) and
+v0 = 0, and then correct its bias by dividing by 1 − β2t .
+Thus, (5) is changed to
+ r
+
+t
+X
 1
-Videos of our experimental results can be seen here:
-https://sites.google.com/site/temporalsegmentmodels/.
+vt
+wi,t Qi = diag
+,
+(11)
++
+
+1
+t
+ηt
+1 − β2t
+i=1
+where ηt and t are the stepsize and  value
+Ptat time t, respectively.
+When
+β
+=
+0,
+(11)
+reduces
+to
+2
+i=1 wi,t Qi =
+ p
+
+1
+2
+diag ηt ( gt + t 1) . When β2 → 1, all gi2 ’s are
+Pt
+weighted
+and 
+(11) reduces to
+i=1 wi,t Qi =
+ equally
+q
+√
+2
+g
+1:t
+diag η1t
+. Using ηt = η/ t and t =
+t + t 1
+√
+/ t, this is further reduced to (5). The following shows
+that Qt in (11) has a closed-form expression.
+q
+
+1−β t
+vt
+Proposition 1. Define dt = ηt 1
++
+
+1
+. Then,
+t
+1−β2t
+
+
+dt − β1 dt−1
+Qt = diag
+.
+(12)
+1 − β1
 
-One Step
-One Step, rolled out
+Follow the Moving Leader in Deep Learning
 
-11.71 11.47
-8.44
-0.21
+Algorithm 1 Follow the Moving Leader (FTML).
+1: Input: ηt > 0, β1 , β2 ∈ [0, 1), t > 0.
+2: initialize θ0 ∈ Θ; d0 ← 0; v0 ← 0; z0 ← 0;
+3: for t = 1, 2, . . . , T do
+4:
+fetch function ft ;
+5:
+gt ← ∂θ ft (θt−1 );
+6:
+vt ← β2 vt−1
++ (1 − β2 )gt2 ;
+q
+t
+1−β
+vt
++ t 1 ;
+7:
+dt ← ηt 1
+1−β t
+2
 
-1.01
+8:
+9:
 
-1.65
-Reaching
+σt ← dt − β1 dt−1 ;
+zt ← β1 zt−1 + (1 − β1 )gt − σt θt−1 ;
+diag(dt /(1−β1t ))
 
-2.27
+10:
+θ t ← ΠΘ
+11: end for
+12: Output: θT .
 
-4.30
-1.58
+(−zt /dt );
 
-0.13
-Pushing
+Substituting this back into (9), θt is then equal to
+t
+X
 
-Figure 6. Trajectory optimization on the reaching and pushing
-tasks. The top plot reports the negative reward from open-loop execution of the returned action sequences (lower is better, averaged
-over 100 trials), and the bottom shows the difference between true
-reward and model-predicted reward. Our model, with a latent action prior, achieves both the best in-environment performance and
-the smallest discrepancy between environment and model.
+
+
+1
+wi,t hgi , θi + kθ − θi−1 k2  σi  , (13)
+diag 1−β
+θ∈Θ
+2
+1
+i=1
 
-Figure 7 depicts the results from policy-optimization (Section 4.3) in the form of learning curves for each task and
-dynamics model. See Appendix A for model architectures
-and hyperparameters. For comparison, we also plot the
-performance of a traditional policy gradient method. Although this method and ours eventually achieve similar performance, ours does so much more efficiently, learning the
-policy offline with fewer samples from the model than the
-traditional method needed from the environment.
+arg min
 
-Prediction and Control with Temporal Segment Models
-Sensory Noise
+where σi ≡ di − β1 di−1 . Note that some entries of σi may
+be negative, and kθ − θi−1 k2diag(σi /(1−β1 )) is then not a regularizer in the usual sense. Instead, the negative entries of
+σi encourage the corresponding entries of θ to move away
+from those of θi−1 . Nevertheless,
+from the definitions of
+Pt
+dt , σt and (11), we have i=1 wi,t diag(σi /(1 − β1 )) =
+Pt
+t
+i=1 wi,t Qi = diag(dt /(1 − β1 )), and thus the following:
+Pt
+Lemma 2.
+i=1 wi,t diag(σi /(1 − β1 ))  0.
+Hence, the objective in (13) is still strongly convex. Moreover, the following Proposition shows that θt in (13) has a
+simple closed-form solution.
+Proposition 2. In (13),
+diag(dt /(1−β1t ))
 
-Reaching Task
+θt = ΠΘ
+
+(−zt /dt ),
+
+where zt = β1 zt−1 + (1 − β1 )gt − σt θt−1 , and ΠA
+Θ (x) ≡
+arg minu∈Θ 21 ku−xk2A is the projection onto Θ for a given
+positive semidefinite matrix A.
+The proposed procedure, which will be called follow the
+moving leader (FTML), is shown in Algorithm 1. Note
+that though {P1 , . . . , Pt } are considered in each round, the
+update depends only the current gradient gt and parameter
+θt−1 . It can be easily seen that FTML is easy to implement,
+memory-efficient and has low per-iteration complexity.
+3.2. Relationships with Adagrad, RMSprop and Adam
+3.2.1. R ELATIONSHIP WITH A DAGRAD
+The following Propositions show that we can recover Adagrad in two extreme cases: (i) β1 = 0 with decreasing stepsize; and (ii) β1 → 1 with increasing stepsize.
+
+√
+Proposition
+√ 3. With β1 = 0, β2 → 1, ηt = η/ t, and
+t = / t, θt in (13) reduces to:
+! !
+√ 2
+η
+diag(( g1:t
++1)/η)
+ΠΘ
+θt−1 − diag p 2
+gt ,
+g1:t + 1
+which recovers Adagrad in (4).
+√
+Proposition
+√ 4. With β1 → 1, β2 → 1, ηt = η t, dand
+t = / t, we recover (1) with Qi in (3). If Θ = R , it
+generates identical updates as Adagrad in (4).
+3.2.2. R ELATIONSHIP WITH RMS PROP
+When Θ = Rd , McMahan (2011) showed that (1) and (2)
+generate the same updates. The following Theorem shows
+that FTML also has a similar gradient descent update.
+Theorem 1. With Θ = Rd , FTML generates the same updates as:
+!
+ηt
+1 − β1
+p
+gt . (14)
+θt = θt−1 − diag
+1 − β1t vt /(1 − β2t ) + t 1
+When β1 = 0 and bias correction for the variance is not
+used, (14) reduces to RMSprop in (7). However, recall
+from Section 3.1 that when β1 = 0, we have wi,t = 0
+for i < t, and wt,t = 1. Hence, only the current loss
+component Pt is taken into account, and this may be sensitive to the noise in Pt . Moreover, as demonstrated in
+Adam, bias correction of the variance can be very important.
+→ 1, the variance estimate of RMSprop,
+Pt When β2 t−i
+2
+(1
+−
+β
+)β
+2 2 gi , becomes zero and blows up the stepi=1
+size, leading to divergence. In contrast, FTML’s Qi in (12)
+recovers that of Adagrad in this case (Proposition 4). In
+practice, a smaller β2 has to be used for RMSprop. However, a larger β2 enables the algorithm to be more robust to
+the gradient noise in general.
+3.2.3. R ELATIONSHIP WITH A DAM
+At iteration t, instead of centering regularization at each
+θi−1 in (13), consider centering all the proximal regularization terms at the last iterate θt−1 . θt then becomes:
+
+
+t
+X
+1
+2 
+
+arg min
+wi,t hgi , θi + kθ − θt−1 k
+. (15)
+σi
+diag 1−β
+θ∈Θ
+2
+1
+i=1
+Compared with (13), the regularization in (15) is more aggressive as it encourages θt to be close only to the last iterate θt−1 . The following Proposition shows that (15) generates the same updates as Adam.
+Proposition 5. In (15),
+!
+t
+X
+At
+−1
+θt = ΠΘ θt−1 − At
+wi,t gi ,
+(16)
+i=1
+
+p
+where At = diag(( vt /(1 − β2t ) + t 1)/ηt ).
+
+Follow the Moving Leader in Deep Learning
+
+Pt
+As in Adam,
+i=1 wi,t gi in (16) can be obtained as
+mt /(1−β1t ), where mt is computed as an exponential moving average of gt ’s: mt = β1 mt−1 + (1 − β1 )gt .
+Note that the θt updates of Adagrad (4), RMSprop (7), and
+FTML (14) depend only on the current gradient
+Ptgt . On the
+other hand, the Adam update in (16) involves i=1 wi,t gi ,
+which contains all the past gradients (evaluated at past parameter estimates θi−1 ’s). This is similar to the use of momentum, which is sometimes helpful in escaping from local
+minimum. However, when the data distribution is changing
+(as in deep reinforcement learning), the past gradients may
+not be very informative, and can even impede parameter
+adaptation to the environment. Recently, it is also reported
+that the use of momentum can make training unstable when
+the loss is nonstationary (Arjovsky et al., 2017). Indeed,
+Theorem 4.1 in (Kingma & Ba, 2015) shows that Adam
+has low regret
+Pt only when β1 is decreasing w.r.t. t. When
+β1 → 0, i=1 wi,t gi → gt and so only the current gradient
+is used.
+Remark 1. (Summary) RMSprop and Adam are improvements over Adagrad in training deep networks. However,
+RMSprop uses β1 = 0 (and thus relies only on the current
+sample), does not correct the bias of the variance estimate,
+but centers the regularization at the current iterates θi−1 ’s.
+On the other hand, Adam uses β1 > 0, bias-corrected variance, but centers all regularization terms at the last iterate
+θt−1 . The proposed FTML combines the nice properties of
+the two.
+
+4. Experiments
+In this section, experiments are performed on a number of deep learning models, including convolutional neural networks (Section 4.1), deep residual networks (Section 4.2), memory networks (Section 4.3), neural conversational model (Section 4.4), deep Q-network (Section 4.5),
+and long short-term memory (LSTM) (Section 4.6). A
+summary of the empirical performance of the various deep
+learning optimizers is presented in Section 4.7.
+The following state-of-the-art optimizers for deep learning models will be compared: (i) Adam (Kingma &
+Ba, 2015); (ii) RMSprop (Tieleman & Hinton, 2012);
+(iii) Adadelta (Zeiler, 2012); and (iv) Nesterov accelerated gradient (NAG) (Sutskever et al., 2013). For
+FTML, we set β1 = 0.6, β2 = 0.999, and a constant t =  = 10−8 for all t. For FTML, Adam,
+RMSprop, and NAG, η is selected by monitoring performance on the training set (note that Adadelta does
+not need to set η). The learning rate is chosen from
+{0.5, 0.25, 0.1, . . . , 0.00005, 0.000025, 0.00001}. Significantly underperforming learning rates are removed after
+running the model for 5 − 20 epochs. We then pick the rate
+that leads to the smallest final training loss.
+
+4.1. Convolutional Neural Networks
+In the section, we perform experiments with the convolutional neural network (CNN) (LeCun et al., 1998). We use
+the example models on the MNIST and CIFAR-10 data sets
+from the Keras library1 . For MNIST, the CNN has two alternating stages of 3 × 3 convolution filters (using ReLU
+activation), followed by a 2 × 2 max-pooling layer and a
+dropout layer (with a dropout rate of 0.25). Finally, there is
+a fully-connected layer with ReLU activation and a dropout
+rate of 0.5. For CIFAR-10, the CNN has four alternating
+stages of 3 × 3 convolution filters (using ReLU activation).
+Every two convolutional layers is followed by a 2 × 2 maxpooling layer and a dropout layer (with a dropout rate of
+0.25). The last stage has a fully-connected layer with ReLU
+activation and a dropout rate of 0.5. Features in both data
+sets are normalized to [0, 1]. Minibatches of sizes 128 and
+32 are used for MNIST and CIFAR-10, respectively.
+As the iteration complexities of the various algorithms are
+comparable and the total cost is dominated by backpropagation, we report convergence of the training cross entropy
+loss versus the number of epochs. This setup is also used
+in (Zeiler, 2012; Kingma & Ba, 2015).
+Figure 1 shows the convergence results. As can be seen,
+FTML performs best on both data sets. Adam has comparable performance with FTML on MNIST, but does not
+perform as well on CIFAR-10. The other methods are much
+inferior. In particular, RMSprop is slow on both MNIST and
+CIFAR-10, and Adadelta tends to diverge on CIFAR-10.
+4.2. Deep Residual Networks
+Recently, substantially deeper networks have been popularly used, particularly in computer vision. For example, a 152-layer deep residual network (He et al., 2016)
+achieves state-of-the-art performance on ImageNet classification, and won the first place on the ILSVRC 2015 classification task.
+In this section, we perform experiments with a 110-layer
+deep residual network on the CIFAR-10 and CIFAR-100
+data sets. The code is based on its Torch implementation2 . We leave the architecture and related settings intact,
+and use the same learning rate schedule. The default optimizer in the Torch code is NAG. Here, we also experiment
+with Adadelta, RMSprop, Adam and the proposed FTML.
+A minibatch size of 32 is used.
+Convergence of the training cross entropy loss is shown
+in Figure 2. As can been seen, all optimizers, except
+Adadelta, are very competitive and have comparable per1
+
+https://github.com/fchollet/keras.
+https://github.com/facebook/fb.resnet.
+torch.
+2
+
+Follow the Moving Leader in Deep Learning
+
+(a) MNIST.
+
+(a) CIFAR-10.
+
+(b) CIFAR-10.
+
+(b) CIFAR-100.
+
+Figure 1. Results on convolutional neural network.
+
+Figure 2. Results on deep residual network.
+
+formance on these two data sets. NAG shows slower initial
+convergence, while FTML converges slightly faster than
+the others on the CIFAR-10 data set.
+4.3. Memory Networks
+Recently, there has been a lot of attention on combining inference, attention and memory for various machine learning tasks. In particular, the memory network (Weston et al.,
+2014; Sukhbaatar et al., 2015) has been popularly used for
+natural language understanding.
+In this section, we use the example model of the end-toend memory network (with LSTM) from the Keras library.
+We consider the question answering task (Sukhbaatar et al.,
+2015; Weston et al., 2016), and perform experiments on the
+“single supporting fact” task in the bAbI data set (Weston
+et al., 2016). This task consists of questions in which a
+previously given single sentence provides the answer. An
+
+example is shown below. We use a single supporting memory, and a minibatch size of 32.
+Single Supporting Fact:
+Mary moved to the bathroom.
+John went to the hallway.
+Where is Mary? A: bathroom
+Convergence of the training cross entropy loss is shown
+in Figure 3. As can be seen, FTML and RMSprop perform best on this data set. Adam is slower, while NAG and
+Adadelta perform poorly.
+4.4. Neural Conversational Model
+The neural conversational model (Vinyals & Le, 2015) is
+a sequence-to-sequence model (Sutskever et al., 2014) that
+is capable of predicting the next sequence given the last or
+previous sequences in a conversation. A LSTM layer en-
+
+Follow the Moving Leader in Deep Learning
+
+Figure 3. Results on memory network.
+
+Figure 4. Results on neural conversational model.
+
+codes the input sentence to a thought vector, and a second
+LSTM layer decodes the thought vector to the response. It
+has been shown that this model can often produce fluent
+and natural conversations.
+
+Sprop and FTML are comparable and yield higher scores
+than Adam. On Asterix, FTML outperforms all the others. In particular, the DQN trained with RMSprop fails to
+learn the task, and its score begins to drop after about 100
+epochs. A similar problem has also been observed in (Hasselt et al., 2016). Experience replay (Mnih et al., 2015)
+has been commonly used in deep reinforcement learning
+to smooth over changes in the data distribution, and avoid
+oscillations or divergence of the parameters. However, results here show that Adam still has inferior performance
+because of its use of all past gradients, many of these are
+not informative when the data distribution has changed.
+
+In this experiment, we use the publicly available Torch implementation3 with a constant stepsize, and its default data
+set Cornell Movie-Dialogs Corpus (with 50, 000 samples)
+(Danescu-Niculescu-Mizil & Lee, 2011). The number of
+hidden units is set to 1000, and the minibatch size is 10.
+Convergence of the training cross entropy loss is shown in
+Figure 4. Adadelta is not reported here, since it performs
+poorly (as in previous experiments). As can be seen, FTML
+outperforms Adam and RMSprop. In particular, RMSprop
+is much inferior. NAG is slower than FTML and Adam in
+the first 21 epochs, but becomes faster towards the end of
+training.
+4.5. Deep Q-Network
+In this section, we use the Deep Q-network (DQN) (Mnih
+et al., 2015) for deep reinforcement learning. Experiments
+are performed on two computer games on the Atari 2600
+platform: Breakout and Asterix. We use the publicly available Torch implementation with the default network setup4 ,
+and a minibatch size of 32. We only compare FTML
+with RMSprop and Adam for optimization, as NAG and
+Adadelta are rarely used in training the DQN. As in (Mnih
+et al., 2015), we use  = 10−2 for all methods, and performance evaluation is based on the average score per episode.
+The higher the score, the better the performance.
+Convergence is shown in Figure 5. On Breakout, RM3
+
+https://github.com/macournoyer/
+neuralconvo.
 4
-
-4
-
-6
-
-6
-
-8
-
-8
-
-10
-
-10
-
-12
-
-12
-
-14
-
-14
-0
-
-5000
-
-10000
-
-15000
-
-20000
-
-0
-
-5000
-
-Episode #
-
-LSTM
-Likelihood Ratio Policy Gradient
-One Step
-
-10000
-
-15000
-
-20000
-
-Episode #
-
-LSTM
-One Step
-One Step, rolled out
-
-One Step, rolled out
-Ours, with prior
-Ours, without prior
-
-Pushing Task
-
-Ours, with prior
-Ours, without prior
-Delayed Actions
-
-4
-
-6
-
-6
-8
-
-8
-
-10
-
-10
-
-12
-
-12
-14
-
-14
-0
-
-5000
-
-10000
-
-15000
-
-20000
-
-Episode #
-
-Figure 7. Learning curves of policy optimization on the reaching
-and pushing tasks (top and bottom, respectively). The quantities
-plotted are the true performance in the environment (100-episode
-average reward). Not only does our dynamics model, with an
-action prior, consistently perform the best, it is considerably faster
-than a model-free policy gradient method.
-
-0
-
-5000
-
-10000
-
-15000
-
-20000
-
-Episode #
-
-Figure 8. Our dynamics model, both with and without a latent
-action prior, can gracefully deal with noisy state observations and
-delayed actions, as depicted by these learning curves from the
-reaching task. Although the average rewards are slightly lower
-than in the absence of noise or delays, policies trained with the
-baseline models generally fail to perform the task.
-
-5.3.3. S ENSORY N OISE AND D ELAYED ACTIONS
-To explore the effects of stochastic dynamics and delayed actions, we consider two more modifications of the
-Reacher environment, one in which there is considerable
-Gaussian noise in the state observations (σ = 0.25 on data
-in the range [−1, +1]), and one in which actions are delayed: they do not take effect for τ = 5 timesteps after
-they are applied. These challenges commonly arise in realworld robotics applications (Atkeson et al., 2016), and so it
-is important to be able to learn a useful dynamics model
-in either setting. For both the noisy-state and delayedaction environments, we learn a dynamics model with each
-method, and then use it to learn a policy for the reaching
-task. Figure 8 displays the resulting learning curves. Our
-dynamics model performs much better than the baselines,
-both with and without an action prior. Notably, using the
-LSTM model results in a substantially worse policy than
-ours even though its prediction accuracy is only slightly
-lower. Because our model operates over segments, it implicitly learns to filter noisy observations. This removes
-the need to explicitly apply and tune a filtering process, as
-is traditionally done.
-
-5.3.4. A NALYSIS OF L ATENT S PACE
-Variational autoencoders are known for learning lossy latent codes that preserve high-level semantics of the data,
-leaving the decoder to determine the low-level details. As
-a result, we are curious to see whether our dynamics model
-learns a latent space that possesses similar properties.
-Applied to dynamics data, one might expect a latent code to
-provide an overall description of what happens in the state
-trajectory X + it encodes. Alternatively, per the argument
-made by Chen et al. (2016), it is also conceivable that the
-decoder would ignore the latent code entirely, because the
-segments X − , U − , U + provide better information than Z
-about X + . However, we observe that our model does learn
-a meaningful latent space: one that encodes uncertainty
-about the future. A particular latent code corresponds to
-a particular future within the space of possible ones consistent with the given X − , U − , U + .
-When the dynamics are simple and deterministic (such as
-in the original Reacher environment), the model does express certainty by ignoring the latent code. With stochas-
-
-Prediction and Control with Temporal Segment Models
-
-ticity (such as in the previous section), it provides a spread
-of reasonable state trajectories. Interestingly, when the dynamics are deterministic but complex, the model also uses
-the latent codes to express uncertainty. This can occur regarding the orientations and velocities of objects immediately following a collision, as illustrated in Figure 9.
-
-Sample of Actions from Training Data
-
-0
-
-20
-
-40
-
-60
-
-80
-
-100
-
-Timestep
-
-Optimize latent codes (with action prior)
-
-Optimize actions directly (without prior)
-
-0
-
-0
-
-10
-
-20
-
-30
-
-40
-
-50
-
-60
-
-10
-
-20
-
-Timestep
-
-30
-
-40
-
-50
-
-60
-
-Timestep
-
-Figure 10. The qualitative effects of using a latent action prior,
-as seen during trajectory optimization. The top plot shows an
-example of action sequences from the training data. When we
-optimize over latent codes, the actions look similar (bottom left),
-but when we directly optimize over actions, the resulting sequence
-looks unlike anything the model has seen before.
-
-6. Conclusion and Future Work
-
-Figure 9. An episode from the pushing environment. The arm
-is about to swing counterclockwise and push the brown object;
-the red path indicates the observed motion of the object. The blue
-paths are samples from our model, given the same action sequence
-and initial state. It correctly predicts collisions between arm and
-object, and between object and wall, but expresses some uncertainty in the deflection angles and how far the object travels after
-bouncing off the wall.
-
-5.3.5. E FFECT OF L ATENT ACTION P RIOR
-Our earlier experiments demonstrated the benefits of a latent action prior: by only considering actions for which
-the dynamics model is valid, the discrepancy between the
-model and the true dynamics is minimized, resulting in
-higher rewards achieved in the actual environment.
-In this section, we qualitatively examine how the actions
-returned by control algorithms differ as a consequence of
-the latent action prior. An example is illustrated in Figure
-10. In the training data, the actions that the agent takes are
-smooth, random torques, and we observe that when we use
-an action prior, solutions from trajectory optimization look
-similar. We contrast this with the solutions from optimizing
-directly over actions, which are sharp and discontinuous,
-unlike anything the dynamics model has seen before. This
-lets us infer that the baselines perform poorly on the pushing task (as shown in Figure 6) because of large discrepancies between the model prediction and the true execution.
-
-We presented a novel approach to dynamics learning based
-on temporal segments, using a variational autoencoder to
-learn the distribution over future state trajectories conditioned on past states, past actions, and planned future actions. We also introduced the latent action prior, a variational autoencoder that models a prior over action segments, and showed how it can be used to perform control using actions from the same distribution as a dynamics
-model’s training data. Finally, through experiments involving trajectory optimization and model-based policy optimization, we showed that the resulting method can model
-complex phenomena such as collisions, is robust to sensory noise and action delays, and learns a meaningful latent
-space that expresses uncertainty about the future.
-The most prominent direction for future work that we plan
-to explore, is the data collection procedure. In our experiments, correlated random actions resulted in sufficient
-exploration for the tasks we considered and allowed us
-to demonstrate the benefits of a segment-based approach.
-However, incorporating a more sophisticated exploration
-strategy to gather data (in an iterative procedure, potentially
-using the model’s predictions to guide exploration) would
-allow us to tackle a more diverse set of environments, both
-simulated and real-world. The action prior and segmentbased policy could be used as a starting point for hierarchical reinforcement-learning algorithms. Leveraging existing
-work on few-shot learning could help finetune a dynamics
-model during the policy learning process. Such approaches
-could yield significant advances in reinforcement learning,
-improving both sample efficiency and knowledge transfer
-between related tasks.
-
-Prediction and Control with Temporal Segment Models
-
-Acknowledgements
-Work done at Berkeley was supported in part by an ONR
-PECASE award.
+https://github.com/Kaixhin/Atari.
+
+4.6. Long Short-Term Memory (LSTM)
+To illustrate the problem of Adam in Section 4.5 more
+clearly, we perform the following timeseries prediction experiment with the LSTM. We construct a synthetic timeseries of length 1000. This is divided into 20 segments,
+each of length 50. At each time point, the sample is 10dimensional. In segment i, samples are generated from a
+normal distribution with mean ([i, i, . . . , i] + ζi ) ∈ R10
+and identity covariance matrix, where the components of ζi
+are independent standard normal random variables. Noise
+from the standard normal distribution is added to corrupt
+the data. The task is to predict the data sample at the next
+time point t.
+We use a one-layer LSTM implemented in (Léonard et al.,
+2015). 100 hidden units are used. We truncate backpropagation through time (BPTT) to 5 timesteps, and input
+5 samples to the LSTM in each iteration. Thus, the data distribution changes every 10 iterations, as a different normal
+distribution is then used for data generation. Performance
+evaluation is based on the squared loss ft (θt−1 ) at time t.
+Convergence of the loss is shown in Figure 6(a). As can be
+
+Follow the Moving Leader in Deep Learning
+
+(a) Breakout.
+
+(a) Changing data distribution.
+
+(b) Asterix.
+
+(b) Data distribution is stationary.
+
+Figure 5. Results on deep Q-network.
+
+Figure 6. Results on timeseries data using LSTM.
+
+seen, Adam has difficulty in adapting to the data. In contrast, FTML and RMSprop can adapt more quickly, yielding better and more stable performance.
+As a baseline, we consider the case where the data distribution does not change (the means of all the segments are
+fixed to the vector of ones) Figure 6(b) shows the results.
+As can be seen, Adam now performs comparably to FTML
+and RMSprop.
+4.7. Summary of Results
+The main problem with RMSprop is that its performance
+is not stable. Sometimes, it performs well, but sometimes
+it can have significantly inferior performance (e.g., as can
+be seen from Figures 1, 4 and 5(b)). The performance of
+Adam is more stable, though it often lags behind the best
+optimizer (e.g., Figures 1(b), 3, and 4). It is particularly
+problematic when learning in a changing environment (Fig-
+
+ures 5 and 6(a)). In contrast, the proposed FTML shows
+stable performance on various models and tasks. It converges quickly, and is always the best (or at least among
+the best) in all our experiments.
+
+5. Conclusion
+In this paper, we proposed a FTPRL variant called FTML,
+in which the recent samples are weighted more heavily in
+each iteration. Hence, it is able to adapt more quickly when
+the parameter moves to another local basin, or when the
+data distribution changes. FTML is closely related to RMSprop and Adam. In particular, it enjoys their nice properties, but avoids their pitfalls. Experimental results on a
+number of deep learning models and tasks demonstrate that
+FTML converges quickly, and is always the best (or among
+the best) of the various optimizers.
+
+Follow the Moving Leader in Deep Learning
+
+Acknowledgments
+This research was supported in part by ITF/391/15FX.
 
 References
-Abbeel, Pieter and Ng, Andrew Y. Learning first-order
-markov models for control. In Advances in Neural Information Processing Systems (NIPS), 2004.
-Agrawal, Pulkit, Nair, Ashvin, Abbeel, Pieter, Malik, Jitendra, and Levine, Sergey. Learning to poke by poking:
-Experiential learning of intuitive physics. In Advances
-in Neural Information Processing Systems (NIPS), 2016.
-Atkeson, Christopher G, Babu, BPW, Banerjee, N, Berenson, D, Bove, CP, Cui, X, DeDonato, M, Du, R, Feng, S,
-Franklin, P, et al. What happened at the darpa robotics
-challenge, and why. submitted to the DRC Finals Special
-Issue of the Journal of Field Robotics, 2016.
-Bengio, Samy, Vinyals, Oriol, Jaitly, Navdeep, and
-Shazeer, Noam. Scheduled sampling for sequence prediction with recurrent neural networks. In Advances in
-Neural Information Processing Systems (NIPS), 2015.
-Boedecker, Joschka, Springenberg, Jost Tobias, Wlfing,
-Jan, and Riedmiller, Martin. Approximate real-time optimal control based on sparse gaussian process models.
-In Adaptive Dynamic Programming and Reinforcement
-Learning (ADPRL), 2014.
-Chen, Xi, Kingma, Diederik P, Salimans, Tim, Duan, Yan,
-Dhariwal, Prafulla, Schulman, John, Sutskever, Ilya, and
-Abbeel, Pieter. Variational lossy autoencoder. arXiv
-preprint arXiv:1611.02731, 2016.
-Deisenroth, Marc Peter and Rasmussen, Carl Edward.
-Pilco: A model-based and data-efficient approach to policy search. In International Conference on Machine
-Learning (ICML), 2011.
-Finn, Chelsea and Levine, Sergey. Deep visual foresight for planning robot motion.
-arXiv preprint
-arXiv:1610.00696, 2016.
-Finn, Chelsea, Tan, Xin Yu, Duan, Yan, Darrell, Trevor,
-Levine, Sergey, and Abbeel, Pieter. Deep spatial autoencoders for visuomotor learning. In International Conference on Robotics and Automation (ICRA), 2016.
-Fragkiadaki, Katerina, Agrawal, Pulkit, Levine, Sergey,
-and Malik, Jitendra. Learning visual predictive models
-of physics for playing billiards. In International Conference on Learning Representations (ICLR), 2015.
+Arjovsky, M., Chintala, S., and Bottou, L. Wasserstein
+GAN. Preprint arXiv:1701.07875, 2017.
+Bahdanau, D., Cho, K., and Bengio, Y. Neural machine
+translation by jointly learning to align and translate. In
+Proceedings of the International Conference for Learning Representations, 2015.
+Bottou, L. Online learning and stochastic approximations.
+In On-line Learning in Neural Networks, pp. 9–142.
+Cambridge University Press, 1998.
+Cesa-Bianchi, N. and Lugosi, G. Prediction, Learning, and
+Games. Cambridge University Press, 2006.
+Danescu-Niculescu-Mizil, C. and Lee, L. Chameleons in
+imagined conversations: A new approach to understanding coordination of linguistic style in dialogs. In Proceedings of the Workshop on Cognitive Modeling and
+Computational Linguistics, pp. 76–87, 2011.
+Dauphin, Y., de Vries, H., and Bengio, Y. Equilibrated
+adaptive learning rates for non-convex optimization. In
+Advances in Neural Information Processing Systems, pp.
+1504–1512, 2015.
+Dauphin, Y. N., Pascanu, R., Gulcehre, C., Cho, K., Ganguli, S., and Bengio, Y. Identifying and attacking the
+saddle point problem in high-dimensional non-convex
+optimization. In Advances in Neural Information Processing Systems, pp. 2933–2941, 2014.
+Dean, J., Corrado, G.S., Monga, R., Chen, K., Devin, M.,
+Le, Q.V., and Ng, A. Large scale distributed deep networks. In Advances in Neural Information Processing
+Systems, pp. 1223–1231, 2012.
+Duchi, J. and Singer, Y. Efficient online and batch learning
+using forward backward splitting. Journal of Machine
+Learning Research, 10(12):2899–2934, 2009.
+Duchi, J., Hazan, E., and Singer, Y. Adaptive subgradient methods for online learning and stochastic optimization. Journal of Machine Learning Research, 12
+(7):2121–2159, 2011.
+Graves, A., Mohamed, A., and Hinton, G. Speech recognition with deep recurrent neural networks. In Proceedings
+of the International Conference on Acoustics, Speech
+and Signal Processing, pp. 6645–6649, 2013.
 
-Fu, Justin, Levine, Sergey, and Abbeel, Pieter. One-shot
-learning of manipulation skills with online dynamics
-adaptation and neural network priors. In International
-Conference on Intelligent Robots and Systems (IROS),
+Hasselt, H. V., Guez, A., and Silver, D. Deep reinforcement learning with double Q-learning. In Proceedings
+of the AAAI Conference on Artificial Intelligence, pp.
+2094–2100, 2016.
+He, K., Zhang, X., Ren, S., and Sun, J. Deep residual
+learning for image recognition. In Proceedings of the
+International Conference on Computer Vision and Pattern Recognition, pp. 770–778, 2016.
+Hinton, G. E., Osindero, S., and Teh, Y. A fast learning
+algorithm for deep belief nets. Neural Computation, 18
+(7):1527–1554, 2006.
+Hochreiter, S. and Schmidhuber, J. Long short-term memory. Neural computation, 9(8):1735–1780, 1997.
+Kalai, A. and Vempala, S. Efficient algorithms for online
+decision problems. Journal of Computer and System Sciences, 71(3):291–307, 2005.
+Kawaguchi, K. Deep learning without poor local minima.
+In Advances In Neural Information Processing Systems,
+pp. 586–594, 2016.
+Kingma, D. and Ba, J. Adam: A method for stochastic
+optimization. In Proceedings of the International Conference for Learning Representations, 2015.
+LeCun, Y., Bottou, L., Bengio, Y., and Haffner, P. Gradientbased learning applied to document recognition. Proceedings of the IEEE, 86(11):2278–2324, 1998.
+Léonard, N., Waghmare, S., and Wang, Y. RNN: Recurrent
+library for Torch. Preprint arXiv:1511.07889, 2015.
+Martens, J. Deep learning via Hessian-free optimization. In
+Proceedings of the International Conference on Machine
+Learning, pp. 735–742, 2010.
+McMahan, H. Follow-the-regularized-leader and mirror
+descent: Equivalence theorems and L1 regularization. In
+International Conference on Artificial Intelligence and
+Statistics, pp. 525–533, 2011.
+McMahan, H. B. and Streeter, M. Adaptive bound optimization for online convex optimization. In Proceedings
+of the Annual Conference on Computational Learning
+Theory, pp. 244, 2010.
+McMahan, H. B., Holt, G., Sculley, D., Young, M., Ebner,
+D., Grady, J., Nie, L., Phillips, T., Davydov, E., Golovin,
+D., Chikkerur, S., Liu, D., Wattenberg, M., Hrafnkelsson, A. M., Boulos, T., and Kubica, J. Ad click prediction: A view from the trenches. In Proceedings of the
+International Conference on Knowledge Discovery and
+Data Mining, pp. 1222–1230, 2013.
+
+Follow the Moving Leader in Deep Learning
+
+Mnih, V., Kavukcuoglu, K., Silver, D., Rusu, A. A., Veness, J., Bellemare, M. G., Graves, A., Riedmiller, M.,
+Fidjeland, A. K., Ostrovski, G., Petersen, S., Beattie, C.,
+Sadik, A., Antonoglou, I., King, H., Kumaran, D., Wierstra, D., Legg, S., and Hassabis, D. Human-level control through deep reinforcement learning. Nature, 518
+(7540):529–533, 2015.
+Schraudolph, N. N. Fast curvature matrix-vector products
+for second-order gradient descent. Neural Computation,
+14(7):1723–1738, 2002.
+Shalev-Shwartz, S. Online learning and online convex optimization. Foundations and Trends in Machine Learning,
+4(2):107–194, 2012.
+Silver, D., Huang, A., Maddison, C. J., Guez, A., Sifre,
+L., Van D. D., George, Schrittwieser, J., Antonoglou, I.,
+Panneershelvam, V., Lanctot, M., Dieleman, S., Grewe,
+D., Nham, J., Kalchbrenner, N., Sutskever, I., Lillicrap,
+T., Leach, M., Kavukcuoglu, K., Graepel, T., and Hassabis, D. Mastering the game of Go with deep neural
+networks and tree search. Nature, 529(7587):484–489,
 2016.
-Heess, Nicolas, Wayne, Gregory, Silver, David, Lillicrap,
-Tim, Erez, Tom, and Tassa, Yuval. Learning continuous control policies by stochastic value gradients.
-In Advances in Neural Information Processing Systems
-(NIPS), 2015.
-Johnson, Matthew, Duvenaud, David K, Wiltschko, Alex,
-Adams, Ryan P, and Datta, Sandeep R. Composing
-graphical models with neural networks for structured
-representations and fast inference. In Advances in Neural Information Processing Systems (NIPS), 2016.
-Kingma, Diederik and Ba, Jimmy. Adam: A method for
-stochastic optimization. In International Conference on
-Learning Representations (ICLR), 2015.
-Kingma, Diederik P and Welling, Max. Auto-encoding
-variational bayes. In International Conference on Learning Representations (ICLR), 2014.
-Ko, Jonathan and Fox, Dieter. Gp-bayesfilters: Bayesian
-filtering using gaussian process prediction and observation models.
-Auton. Robots, 27(1):75–90,
-2009. URL http://dblp.uni-trier.de/db/
-journals/arobots/arobots27.html#KoF09.
-Lawrence, Neil, Seeger, Matthias, Herbrich, Ralf, et al.
-Fast sparse gaussian process methods: The informative
-vector machine. Advances in Neural Information Processing Systems (NIPS), 2003.
-Lenz, Ian, Knepper, Ross, and Saxena, Ashutosh.
-Deepmpc: Learning deep latent features for model predictive control. In Robotics: Science and Systems (RSS),
-2015.
-Littman, Michael L, Sutton, Richard S, Singh, Satinder,
-et al. Predictive representations of state. Advances in
-Neural Information Processing Systems (NIPS), 2002.
-Mordatch, Igor, Mishra, Nikhil, Eppner, Clemens, and
-Abbeel, Pieter. Combining model-based policy search
-with online model learning for control of physical humanoids. In International Conference on Robotics and
-Automation (ICRA), 2016.
-Oh, Junhyuk, Guo, Xiaoxiao, Lee, Honglak, Lewis,
-Richard L, and Singh, Satinder. Action-conditional
-video prediction using deep networks in atari games.
-In Advances in Neural Information Processing Systems
-(NIPS), 2015.
+Sukhbaatar, S., Szlam, A., Weston, J., and Fergus, R. Endto-end memory networks. In Advances in Neural Information Processing Systems, pp. 2440–2448, 2015.
+Sutskever, I., Martens, J., Dahl, G., and Hinton, G. On
+the importance of initialization and momentum in deep
+learning. In Proceedings of the International Conference
+on Machine Learning, pp. 1139–1147, 2013.
+Sutskever, I., Vinyals, O., and Le, Q. V. Sequence to sequence learning with neural networks. In Advances in
+Neural Information Processing Systems, pp. 3104–3112,
+2014.
+Tieleman, T. and Hinton, G. Lecture 6.5 - RMSProp,
+COURSERA: Neural networks for machine learning,
+2012.
+Vinyals, O. and Le, Q. A neural conversational model.
+Preprint arXiv:1506.05869, 2015.
+Weston, J., Chopra, S., and Bordes, A. Memory networks.
+Preprint arXiv:1410.3916, 2014.
+Weston, J., Bordes, A., Chopra, S., Rush, A. M., van
+Merriënboer, B., Joulin, A., and Mikolov, T. Towards
+AI-complete question answering: A set of prerequisite
+toy tasks. In Proceedings of the International Conference for Learning Representations, 2016.
+Xiao, L. Dual averaging methods for regularized stochastic
+learning and online optimization. Journal of Machine
+Learning Research, 11(10):2543–2596, 2010.
 
-Prediction and Control with Temporal Segment Models
-
-Peters, Jan and Schaal, Stefan. Policy gradient methods
-for robotics. In International Conference on Intelligent
-Robots and Systems (IROS), 2006.
-Pratt, Jerry, Carff, John, Drakunov, Sergey, and
-Goswami, Ambarish.
-Capture point: A step toward humanoid push recovery.
-In Proceedings
-of the Sixth IEEE-RAS International Conference on
-Humanoid Robots (Humanoids 2006), pp. 200–207.
-IEEE, 2006. URL http://www.ambarish.com/
-paper/Pratt_Goswami_Humanoids2006.pdf.
-Punjani, Ali and Abbeel, Pieter. Deep learning helicopter dynamics models. In International Conference
-on Robotics and Automation (ICRA), 2015.
-Raibert, M.H. Legged Robots that Balance. Artificial
-Intelligence. MIT Press, 1986. ISBN 9780262181174.
-URL
-https://books.google.com/books?
-id=EXRiBnQ37RwC.
-Rosencrantz, Matthew, Gordon, Geoff, and Thrun, Sebastian. Learning low dimensional predictive representations. In International Conference on Machine Learning
-(ICML), 2004.
-Shen, Yirong, Ng, Andrew, and Seeger, Matthias. Fast
-gaussian process regression using kd-trees. Advances in
-Neural Information Processing Systems (NIPS).
-Sutton, Richard S, McAllester, David A, Singh, Satinder P, Mansour, Yishay, et al. Policy gradient methods
-for reinforcement learning with function approximation.
-In Advances in Neural Information Processing Systems
-(NIPS), 1999a.
-Sutton, Richard S., Precup, Doina, and Singh, Satinder.
-Between mdps and semi-mdps: A framework for temporal abstraction in reinforcement learning. Artificial
-Intelligence, 112(1):181 – 211, 1999b. ISSN 0004-3702.
-doi: http://dx.doi.org/10.1016/S0004-3702(99)00052-1.
-URL
-http://www.sciencedirect.com/
-science/article/pii/S0004370299000521.
-van den Oord, Aäron, Dieleman, Sander, Zen, Heiga, Simonyan, Karen, Vinyals, Oriol, Graves, Alex, Kalchbrenner, Nal, Senior, Andrew W., and Kavukcuoglu, Koray. Wavenet: A generative model for raw audio. CoRR,
-abs/1609.03499, 2016a. URL http://arxiv.org/
-abs/1609.03499.
-van den Oord, Aaron, Kalchbrenner, Nal, Espeholt, Lasse,
-Vinyals, Oriol, Graves, Alex, et al. Conditional image
-generation with pixelcnn decoders. In Advances in Neural Information Processing Systems (NIPS), 2016b.
-Venkatraman, Arun, Hebert, Martial, and Bagnell, J Andrew. Improving multi-step prediction of learned time
-series models. In AAAI, pp. 3024–3030, 2015.
-
-Venkatraman, Arun, Capobianco, Roberto, Pinto, Lerrel,
-Hebert, Martial, Nardi, Daniele, and Bagnell, J Andrew. Improved learning of dynamics models for control.
-In International Symposium on Experimental Robotics
-(ISER), 2016.
-Vezhnevets, Alexander (Sasha), Mnih, Volodymyr, Agapiou, John, Osindero, Simon, Graves, Alex, Vinyals,
-Oriol, and Kavukcuoglu, Koray. Strategic attentive
-writer for learning macro-actions. In Advances in Neural
-Information Processing Systems (NIPS), 2016.
-Watter, Manuel, Springenberg, Jost, Boedecker, Joschka,
-and Riedmiller, Martin. Embed to control: A locally linear latent dynamics model for control from raw images.
-In Advances in Neural Information Processing Systems
-(NIPS), 2015.
-Williams, Christopher KI and Rasmussen, Carl Edward.
-Gaussian processes for regression. Advances in neural
-information processing systems, pp. 514–520, 1996.
-Williams, Ronald J. Simple statistical gradient-following
-algorithms for connectionist reinforcement learning.
-Machine learning, 8(3-4):229–256, 1992.
-Yip, Michael C. and Camarillo, David B. Model-Less
-Feedback Control of Continuum Manipulators in Constrained Environments. IEEE Transactions on Robotics,
-30(4):880–889, August 2014. ISSN 1552-3098, 19410468. doi: 10.1109/TRO.2014.2309194. 00005.
+Zeiler, M. D. ADADELTA: An adaptive learning rate
+method. Preprint arXiv:1212.5701, 2012.
+Zinkevich, M. Online convex programming and generalized infinitesimal gradient ascent. In Proceedings of
+the International Conference on Machine Learning, pp.
+928–936, 2003.
 
 

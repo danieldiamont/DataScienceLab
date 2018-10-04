@@ -1,1176 +1,1174 @@
-Convolutional Sequence to Sequence Learning
-Jonas Gehring 1 Michael Auli 1 David Grangier 1 Denis Yarats 1 Yann N. Dauphin 1
+Leveraging Union of Subspace Structure to Improve Constrained Clustering
+
+John Lipor 1 Laura Balzano 1
 
 Abstract
-The prevalent approach to sequence to sequence
-learning maps an input sequence to a variable length
-output sequence via recurrent neural networks.
-We introduce an architecture based entirely on
-convolutional neural networks. Compared to recurrent
-models, computations over all elements can be fully
-parallelized during training to better exploit the GPU
-hardware and optimization is easier since the number
-of non-linearities is fixed and independent of the
-input length. Our use of gated linear units eases
-gradient propagation and we equip each decoder layer
-with a separate attention module. We outperform the
-accuracy of the deep LSTM setup of Wu et al. (2016)
-on both WMT’14 English-German and WMT’14
-English-French translation at an order of magnitude
-faster speed, both on GPU and CPU.?
+Many clustering problems in computer vision and
+other contexts are also classification problems,
+where each cluster shares a meaningful label. Subspace clustering algorithms in particular are often
+applied to problems that fit this description, for
+example with face images or handwritten digits.
+While it is straightforward to request human input on these datasets, our goal is to reduce this
+input as much as possible. We present a pairwiseconstrained clustering algorithm that actively selects queries based on the union-of-subspaces
+model. The central step of the algorithm is in
+querying points of minimum margin between estimated subspaces; analogous to classifier margin,
+these lie near the decision boundary. We prove
+that points lying near the intersection of subspaces
+are points with low margin. Our procedure can be
+used after any subspace clustering algorithm that
+outputs an affinity matrix. We demonstrate on several datasets that our algorithm drives the clustering error down considerably faster than the stateof-the-art active query algorithms on datasets with
+subspace structure and is competitive on other
+datasets.
 
 1. Introduction
-Sequence to sequence learning has been successful in many tasks
-such as machine translation, speech recognition (Sutskever et al.,
-2014; Chorowski et al., 2015) and text summarization (Rush
-et al., 2015; Nallapati et al., 2016; Shen et al., 2016) amongst
-others. The dominant approach to date encodes the input
-sequence with a series of bi-directional recurrent neural networks
-(RNN) and generates a variable length output with another set
-of decoder RNNs, both of which interface via a soft-attention
-mechanism (Bahdanau et al., 2014; Luong et al., 2015). In
-machine translation, this architecture has been demonstrated to
-outperform traditional phrase-based models by large margins
-(Sennrich et al., 2016b; Zhou et al., 2016; Wu et al., 2016;§2).
-Convolutional neural networks are less common for sequence
-modeling, despite several advantages (Waibel et al., 1989; LeCun
-& Bengio, 1995). Compared to recurrent layers, convolutions
-create representations for fixed size contexts, however, the
-effective context size of the network can easily be made larger
+The union of subspaces (UoS) model, in which data vectors
+lie near one of several subspaces, has been used actively in
+the computer vision community on datasets ranging from
+images of objects under various lighting conditions (Basri
+& Jacobs, 2003) to visual surveillance tasks (Oliver et al.,
+2000). The recent textbook (Vidal et al., 2016) includes a
+number of useful applications for this model, including lossy
+image compression, clustering of face images under different lighting conditions, and video segmentation. Subspace
+clustering algorithms utilize the UoS model to cluster data
 1
 
-Facebook AI Research. Correspondence to: Jonas Gehring
-<jgehring@fb.com>, Michael Auli<michaelauli@fb.com>.
-Proceedings of the 34 th International Conference on Machine Learning,
-Sydney, Australia, PMLR 70, 2017. Copyright 2017 by the author(s).
-?
-The source code and models are available at https:
-//github.com/facebookresearch/fairseq.
+Department of Electrical and Computer Engineering, University Michigan, Ann Arbor, MI, USA. Correspondence to: John
+Lipor <lipor@umich.edu>.
+Proceedings of the 34 th International Conference on Machine
+Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017 by
+the author(s).
 
-by stacking several layers on top of each other. This allows
-to precisely control the maximum length of dependencies to
-be modeled. Convolutional networks do not depend on the
-computations of the previous time step and therefore allow
-parallelization over every element in a sequence. This contrasts
-with RNNs which maintain a hidden state of the entire past that
-prevents parallel computation within a sequence.
-Multi-layer convolutional neural networks create hierarchical
-representations over the input sequence in which nearby input
-elements interact at lower layers while distant elements interact
-at higher layers. Hierarchical structure provides a shorter path
-to capture long-range dependencies compared to the chain
-structure modeled by recurrent networks, e.g. we can obtain
-a feature representation capturing relationships within a window
-of n words by applying only O( nk ) convolutional operations
-for kernels of width k, compared to a linear number O(n) for
-recurrent neural networks. Inputs to a convolutional network
-are fed through a constant number of kernels and non-linearities,
-whereas recurrent networks apply up to n operations and
-non-linearities to the first word and only a single set of operations
-to the last word. Fixing the number of non-linearities applied
-to the inputs also eases learning.
-Recent work has applied convolutional neural networks to sequence modeling such as Bradbury et al. (2016) who introduce
-recurrent pooling between a succession of convolutional layers or
-Kalchbrenner et al. (2016) who tackle neural translation without
-attention. However, none of these approaches has been demonstrated improvements over state of the art results on large benchmark datasets. Gated convolutions have been previously explored
-for machine translation by Meng et al. (2015) but their evaluation
-was restricted to a small dataset and the model was used in tandem
-with a traditional count-based model. Architectures which are
-partially convolutional have shown strong performance on larger
-tasks but their decoder is still recurrent (Gehring et al., 2016).
-In this paper we propose an architecture for sequence to sequence
-modeling that is entirely convolutional. Our model is equipped
-with gated linear units (Dauphin et al., 2016) and residual
-connections (He et al., 2015a). We also use attention in every
-decoder layer and demonstrate that each attention layer only
-adds a negligible amount of overhead. The combination of these
-choices enables us to tackle large scale problems (§3).
-We evaluate our approach on several large datasets for machine
-translation as well as summarization and compare to the current
+vectors and estimate the underlying subspaces, achieving excellent performance on a variety of real datasets. However,
+as we will show in Section 4, even oracle UoS classifiers
+do not achieve perfect clustering on these datasets. While
+current algorithms for subspace clustering are unsupervised,
+in many cases a human could provide relevant information
+in the form of pairwise constraints between points, e.g., answering whether two images are of the same person or
+whether two objects are the same.
+The incorporation of pairwise constraints into clustering algorithms is known as pairwise-constrained clustering (PCC).
+PCC algorithms use supervision in the form of must-link
+and cannot-link constraints by ensuring that points with
+must-link constraints are clustered together and points with
+cannot-link constraints are clustered apart. In (Davidson
+et al., 2006), the authors investigate the phenomenon that
+incorporating poorly-chosen constraints can lead to an increase in clustering error, rather than a decrease as one
+would expect from additional label information. This is
+because points constrained to be in the same cluster that
+are otherwise dissimilar can confound the constrained clustering algorithm. For this reason, researchers have turned
+to active query selection methods, in which constraints are
+intelligently selected based on a number of heuristics. These
+algorithms perform well across a number of datasets but do
+not take advantage of any known structure in the data. In the
+case where data lie on a union of subspaces, one would hope
+that knowledge of the underlying geometry could give hints
+as to which points are likely to be clustered incorrectly.
+
+	N
+Let X = xi ∈ RD i=1 be a set of data points lying near
+a union of K linear subspaces of the ambient space. We
+K
+denote the subspaces by {Sk }k=1 , each having dimension
+dk . An example union of subspaces is shown in Fig. 1,
+where d1 = 2, d2 = d3 = 1. The goal of subspace clustering algorithms has traditionally been to cluster the points
+in X according to their nearest subspace without any supervised input. We turn this around and ask whether this
+model is useful for active clustering, where we request a
+very small number of intelligently selected labels. A key observation when considering data well-modeled by a union of
+subspaces is that uncertain points will be ones lying equally
+distant to multiple subspaces. Using a novel definition of
+margin tailored for the union of subspaces model, we incorporate this observation into an active subspace clustering
 
-Convolutional Sequence to Sequence Learning
+Leveraging Union of Subspace Structure to Improve Constrained Clustering
+S2
 
-best architectures reported in the literature. On WMT’16
-English-Romanian translation we achieve a new state of the
-art, outperforming the previous best result by 1.9 BLEU. On
-WMT’14 English-German we outperform the strong LSTM
-setup of Wu et al. (2016) by 0.5 BLEU and on WMT’14
-English-French we outperform the likelihood trained system
-of Wu et al. (2016) by 1.6 BLEU. Furthermore, our model can
-translate unseen sentences at an order of magnitude faster speed
-than Wu et al. (2016) on GPU and CPU hardware (§4,§5).
+S3
 
-2. Recurrent Sequence to Sequence Learning
-Sequence to sequence modeling has been synonymous with
-recurrent neural network based encoder-decoder architectures
-(Sutskever et al., 2014; Bahdanau et al., 2014). The encoder
-RNN processes an input sequence x = (x1,...,xm) of m
-elements and returns state representations z = (z1....,zm).
-The decoder RNN takes z and generates the output sequence
-y =(y1,...,yn) left to right, one element at a time. To generate
-output yi+1, the decoder computes a new hidden state hi+1
-based on the previous state hi, an embedding gi of the previous
-target language word yi, as well as a conditional input ci derived
-from the encoder output z. Based on this generic formulation,
-various encoder-decoder architectures have been proposed, which
-differ mainly in the conditional input and the type of RNN.
-Models without attention consider only the final encoder state zm
-by setting ci =zm for all i (Cho et al., 2014), or simply initialize
-the first decoder state with zm (Sutskever et al., 2014), in which
-case ci is not used. Architectures with attention (Bahdanau et al.,
-2014; Luong et al., 2015) compute ci as a weighted sum of
-(z1....,zm) at each time step. The weights of the sum are referred
-to as attention scores and allow the network to focus on different
-parts of the input sequence as it generates the output sequences.
-Attention scores are computed by essentially comparing each
-encoder state zj to a combination of the previous decoder state
-hi and the last prediction yi; the result is normalized to be a
-distribution over input elements.
-Popular choices for recurrent networks in encoder-decoder models are long short term memory networks (LSTM; Hochreiter &
-Schmidhuber, 1997) and gated recurrent units (GRU; Cho et al.,
-2014). Both extend Elman RNNs (Elman, 1990) with a gating
-mechanism that allows the memorization of information from
-previous time steps in order to model long-term dependencies.
-Most recent approaches also rely on bi-directional encoders to
-build representations of both past and future contexts (Bahdanau
-et al., 2014; Zhou et al., 2016; Wu et al., 2016). Models with
-many layers often rely on shortcut or residual connections (He
-et al., 2015a; Zhou et al., 2016; Wu et al., 2016).
+S1
 
-intermediate encoder states z and decoder states h we use
-convolutional neural networks (CNN).
-3.1. Position Embeddings
-First, we embed input elements x=(x1,...,xm) in distributional
-space as w = (w1,...,wm), where wj 2 Rf is a column in an
-embedding matrix D 2 RV ⇥f . We also equip our model with
-a sense of order by embedding the absolute position of input
-elements p=(p1,...,pm) where pj 2Rf . Both are combined to
-obtain input element representations e=(w1 +p1,...,wm +pm).
-We proceed similarly for output elements that were already
-generated by the decoder network to yield output element
-representations that are being fed back into the decoder network
-g =(g1,...,gn). Position embeddings are useful in our architecture since they give our model a sense of which portion of the
-sequence in the input or output it is currently dealing with (§5.4).
-3.2. Convolutional Block Structure
-Both encoder and decoder networks share a simple block
-structure that computes intermediate states based on a fixed
-number of input elements. We denote the output of the l-th block
-l
-as hl =(hl1,...,hln) for the decoder network, and zl =(z1l ,...,zm
-)
-for the encoder network; we refer to blocks and layers interchangeably. Each block contains a one dimensional convolution
-followed by a non-linearity. For a decoder network with a
-single block and kernel width k, each resulting state hi1 contains
-information over k input elements. Stacking several blocks
-on top of each other increases the number of input elements
-represented in a state. For instance, stacking 6 blocks with k =5
-results in an input field of 25 elements, i.e. each output depends
-on 25 inputs. Non-linearities allow the networks to exploit the
-full input field, or to focus on fewer elements if needed.
-Each convolution kernel is parameterized as W 2 R2d⇥kd,
-bw 2R2d and takes as input X 2Rk⇥d which is a concatenation
-of k input elements embedded in d dimensions and maps
-them to a single output element Y 2 R2d that has twice the
-dimensionality of the input elements; subsequent layers operate
-over the k output elements of the previous layer. We choose
-gated linear units (GLU; Dauphin et al., 2016) as non-linearity
-which implement a simple gating mechanism over the output
-of the convolution Y =[A B]2R2d:
-v([A B])=A⌦ (B)
+Figure 1. Example union of K = 3 subspaces of dimensions d1 =
+2, d2 = 1, and d3 = 1.
 
-3. A Convolutional Architecture
+algorithm.
+Our contributions are as follows. We introduce a novel algorithm for pairwise constrained clustering that leverages
+UoS structure in the data. A key step in our algorithm is
+choosing points of minimum margin, i.e., those lying near
+a decision boundary between subspaces. We define a notion of margin for the UoS model and provide theoretical
+insight as to why points of minimum margin are likely to be
+misclustered by unsupervised algorithms. We show through
+extensive experimental results that when the data lie near
+a union of subspaces, our method drastically outperforms
+existing PCC algorithms, requiring far fewer queries to
+achieve perfect clustering. Our datasets range in dimension
+from 256-2016, number of data points from 320-9298, and
+number of subspaces from 5-100. On ten MNIST digits
+with a modest number of queries, we get 5% classification
+error with only 500 pairwise queries compared to about 20%
+error for current state-of-the-art PCC algorithms and 35%
+for unsupervised algorithms. We also achieve 0% classification error on the full Yale, COIL, and USPS datasets
+with a small fraction of the number of queries needed by
+competing algorithms. In datasets where we do not expect
+subspace structure, our algorithm still achieves competitive
+performance. Further, our algorithm is agnostic to the input subspace clustering algorithm and can therefore take
+advantage of any future algorithmic advances for subspace
+clustering.
 
-where A,B 2 Rd are the inputs to the non-linearity, ⌦ is the
-point-wise multiplication and the output v([A B])2Rd is half
-the size of Y . The gates (B) control which inputs A of the
-current context are relevant. A similar non-linearity has been
-introduced in Oord et al. (2016b) who apply tanh to A but
-Dauphin et al. (2016) shows that GLUs perform better in the
-context of language modelling.
+2. Related Work
+A survey of recently developed subspace clustering algorithms can be found in (Vidal, 2011) and the textbook (Vidal et al., 2016). In these and more recent work, clustering algorithms that employ spectral methods achieve
+the best performance on most datasets. Notable examples of such algorithms include Sparse Subspace Clustering
+(SSC) (Elhamifar & Vidal, 2013) and its extensions (You
+et al., 2016b;a), Low-Rank Representation (LRR) (Liu et al.,
+2010), Thresholded Subspace Clustering (TSC) (Heckel &
+Bölcskei, 2015), and Greedy Subspace Clustering (GSC)
 
-Next we introduce a fully convolutional architecture for sequence
-to sequence modeling. Instead of relying on RNNs to compute
+(Park et al., 2014). Many recent algorithms exist with both
+strong theoretical guarantees and empirical performance,
+and a full review of all approaches is beyond the scope
+of this work. However, the core element of all recent algorithms lies in the formation of the affinity matrix, after
+which spectral clustering is performed to obtain label estimates. In SSC, the affinity matrix is formed via a series
+of `1 -penalized regressions. LRR uses a similar cost function but penalizes the nuclear norm instead of the `1 . TSC
+thresholds the spherical distance between points, and GSC
+works by successively (greedily) building subspaces from
+points likely to lie in the same subspace. Of these methods,
+variants of SSC achieve the best overall performance on
+benchmark datasets and has the strongest theoretical guarantees, which were introduced in (Elhamifar & Vidal, 2013)
+and strengthened in numerous recent works (Soltanolkotabi
+& Candes, 2012; 2014; Wang & Xu, 2013; Wang et al.,
+2016). While the development of efficient algorithms with
+stronger guarantees has received a great deal of attention,
+very little attention has been paid to the question of what to
+do about data that cannot be correctly clustered. Thus, when
+reducing clustering error to zero (or near zero) is a priority,
+users must look beyond unsupervised subspace clustering
+algorithms to alternative methods. One such method is
+to request some supervised input in the form of pairwise
+constraints, leading to the study of pairwise-constrained
+clustering (PCC).
+PCC algorithms work by incorporating must-link and
+cannot-link constraints between points, where points with
+must-link constraints are forced (or encouraged in the case
+of spectral clustering) to be clustered together, and points
+with cannot-link constraints are forced to be in separate
+clusters. In many cases, these constraints can be provided
+by a human labeler. For example, in (Biswas & Jacobs,
+2014), the authors perform experiments where comparisons
+between human faces are provided by users of Amazon
+Mechanical Turk with an error rate of 1.2%. Similarly, for
+subspace clustering datasets such as Yale B and MNIST, a
+human could easily answer questions such as, “Are these
+two faces the same person?” and “Are these two images
+the same number?” An early example of PCC is found
+in (Wagstaff et al., 2001), where the authors modify the
+K-means cost function to incorporate such constraints. In
+(Basu et al., 2004), the authors utilize active methods to initialize K-means in an intelligent “E XPLORE” phase, during
+which neighborhoods of must-linked points are built up. After this phase, new points are queried against representatives
+from each neighborhood until a must-link is obtained. A
+similar explore phase is used in (Mallapragada et al., 2008),
+after which a min-max approach is used to select the most
+uncertain sample. Early work on constrained spectral clustering appears in (Xu et al., 2005; Wang & Davidson, 2010),
+in which spectral clustering is improved by examining the
 
-To enable deep convolutional networks, we add residual
-connections from the input of each convolution to the output
+Leveraging Union of Subspace Structure to Improve Constrained Clustering
 
-Convolutional Sequence to Sequence Learning
+eigenvectors of the affinity matrix in order to determine the
+most informative points. However, these methods are limited to the case of two clusters and therefore impractical in
+many cases.
+More recently, the authors in (Xiong et al., 2016; Biswas
+& Jacobs, 2014) improve constrained clustering by modeling which points will be most informative given the current clustering, with state-of-the-art results achieved on numerous datasets by the algorithm in (Xiong et al., 2016),
+referred to as Uncertainty Reducing Active Spectral Clustering (URASC). URASC works by maintaining a set of
+certain sets, whereby points in the same certain set are mustlinked and points in different certain sets are cannot-linked.
+A test point xT is selected via an uncertainty-reduction
+model motivated by matrix perturbation theory, after which
+queries are presented in an intelligent manner until xT is
+either matched with an existing certain set or placed in its
+own new certain set. In practice (Xiong, 2016), the certain
+sets are initialized using the E XPLORE algorithm of (Basu
+et al., 2004).
+While we are certainly not the first to consider actively selecting labels to improve clustering performance, to the best
+of our knowledge we are the first to do so with structured
+clusters. Structure within and between data clusters is often
+leveraged for unsupervised clustering (Wright et al., 2009),
+and that structure is also leveraged for adaptive sampling of
+the structured signals themselves (e.g., see previous work
+on sparse (Haupt et al., 2011; Indyk et al., 2011), structured
+sparse (Soni & Haupt, 2014), and low rank signals (Krishnamurthy & Singh, 2013)). This paper emphasizes the power
+of that structure for reducing the number of required labels
+in an active learning algorithm as opposed to reducing the
+number of samples of the signal itself, and points to exciting open questions regarding the tradeoff between signal
+measurements and query requirements in semi-supervised
+clustering.
 
-of the block (He et al., 2015a).
-hli =v(W l [hli
+3. UoS-Based Pairwise-Constrained
+Clustering
+
+	N
+Recall that X = xi ∈ RD i=1 is a set of data points lying
+K
+on a union of K subspaces {Sk }k=1 , each having dimension
+d. In this work, we assume all subspaces have the same
+dimension, but it is possible to extend our algorithm to deal
+with non-uniform dimensions. The goal is to cluster the data
+points according to this generative model, i.e., assigning
+each data point to its (unknown) subspace. In this section
+we describe our algorithm, which actively selects pairwise
+constraints in order to improve clustering accuracy. The key
+step is choosing an informative query test point, which we
+do using a novel notion of minimum subspace margin.
+Denote the true clustering of a point x ∈ X by C(x). Let
+
+the output of a clustering algorithm (such as SSC) be an
+affinity/similarity matrix A and a set of label estimates
+n
+oN
+. These are the inputs to our algorithm. The
+Ĉ(xi )
+i=1
+high-level operation of our algorithm is as follows. To initialize, we build a set of certain sets Z using an E XPLORE-like
+algorithm similar to that of (Basu et al., 2004). Certain sets
+are in some sense equivalent to labels in that points within
+a certain set belong to the same cluster and points across
+certain sets belong to different clusters. Following this, the
+following steps are repeated until a maximum number of
+queries has been made:
+1. Spectral Clustering: Obtain label estimates via spectral clustering.
+2. PCA on each cluster: Obtain a low-dimensional subspace estimate from points currently sharing the same
+estimated cluster label.
+3. Select Test Point: Obtain a test point xT using subspace margin with respect to the just estimated subspaces.
+4. Assign xT to Certain Set: Query the human to compare the test point with representatives from certain
+sets until a must-link is found or all certain sets have
+been queried, in which case the test point becomes its
+own certain set.
+5. Impute Label Information: Certain sets are used to
+impute must-link and cannot-link values in the affinity
+matrix.
+We refer to our algorithm as SUPERPAC (SUbsPace clustERing with Pairwise Active Constraints). A diagram of the
+algorithm is given in Fig. 2, and we outline each of these
+steps below and provide pseudocode in Algorithm 1.
+3.1. Sample Selection via Margin
+Min-margin points have been studied extensively in active
+learning; intuitively, these are points that lie near the decision boundary of the current classifier. In (Settles, 2012),
+the author notes that actively querying points of minimum
+margin (as opposed to maximum entropy or minimum confidence) is an appropriate choice for reducing classification error. In (Wang & Singh, 2016), the authors present a
+margin-based binary classification algorithm that achieves
+an optimal rate of convergence (within a logarithmic factor).
+In this section, we define a novel notion of margin for
+the UoS model and provide theoretical insight as to
+why points of minimum margin are likely to be misclustered. For a subspace Sk with orthonormal basis Uk , let the distance of a point to that subspace
+be
+
+dist(x, Sk ) = miny∈Sk kx − yk2 = x − Uk UkT x2 . Let
+k ∗ = arg mink∈[K] dist(x, Sk ) be the index of the closest
+subspace, where [K] = {1, 2, · · · , K}. Then the subspace
+
+Leveraging Union of Subspace Structure to Improve Constrained Clustering
+Form Unsupervised
+Affinity Matrix
+
+Run PCA on
+Individual Clusters
+
+Spectral
+Clustering
+
+Select Test Point
+
+0.8
+0.6
+
+xT = argminx ^
+μ(x)
 
 1
-l 1
-l 1
-l
-k/2 ,...,hi+k/2 ]+bw )+hi
 
-For encoder networks we ensure that the output of the
-convolutional layers matches the input length by padding the
-input at each layer. However, for decoder networks we have to
-take care that no future information is available to the decoder
-(Oord et al., 2016a). Specifically, we pad the input by k 1
-elements on both the left and right side by zero vectors, and then
-remove k elements from the end of the convolution output.
-We also add linear mappings to project between the embedding
-size f and the convolution outputs that are of size 2d. We
-apply such a transform to w when feeding embeddings to the
-encoder network, to the encoder output zju, to the final layer of
-the decoder just before the softmax hL, and to all decoder layers
-hl before computing attention scores (1).
-Finally, we compute a distribution over the T possible next target
-elements yi+1 by transforming the top decoder output hL
-i via
-a linear layer with weights Wo and bias bo:
-T
-p(yi+1|y1,...,yi,x)=softmax(WohL
-i +bo )2R
+0.4
+0.2
 
-3.3. Multi-step Attention
-We introduce a separate attention mechanism for each decoder
-layer. To compute the attention, we combine the current decoder
-state hli with an embedding of the previous target element gi:
-dli =Wdl hli +bld +gi
+A
+
+0.5
+0
+0
+
+-0.2
+-0.4
+-0.5
+-0.6
+-0.8
+
+Impute Label Information
+
+Assign xT to Certain Set (actively query human)
+No
+No
+
+xT
+
+Yes
+
+Z1
+Z2
+Z3
+
+Figure 2. Diagram of SUPERPAC algorithm for pairwise constrained clustering.
+0.8
+
+Then
+
+0.6
+
+p
+(1 + ε) σ 2 (D − d)
+p
+≤ µ(y)
+1−
+(1 − ε) σ 2 (D − d) + dist(x, S2 )2
+
+0.4
+
+0.2
+
+0
+
+and
+-0.2
+
+p
+(1 − ε) σ 2 (D − d)
+p
+µ(y) ≤ 1 −
+,
+(1 + ε) σ 2 (D − d) + dist(x, S2 )2
+
+-0.4
+
+-0.6
+
+-0.8
+-1
+
+-0.8
+
+-0.6
+
+-0.4
+
+-0.2
+
+0
+
+0.2
+
+0.4
+
+0.6
+
+0.8
+
+1
+
+Figure 3. Illustration of subspace margin. The blue and red lines
+are the generative subspaces, with corresponding disjoint decision
+regions. The yellow-green color shows the region within some
+margin of the decision boundary, given by the dotted lines.
+
+margin of a point x ∈ X is the ratio of closest and second
+closest subspaces, defined as
+µ̂(x) = 1 −
+
+max
+
+j6=k∗ ,j∈[K]
+
+dist(x, Sk∗ )
+.
+dist(x, Sj )
 
 (1)
 
-For decoder layer l the attention alij of state i and source element
-j is computed as a dot-product between the decoder state
-summary dli and each output zju of the last encoder block u:
-exp dli ·zju
-alij = Pm
-l u
-t=1 exp di ·zt
+The point of minimum margin is then defined as
+arg minx∈X µ̂(x). Note that the fraction is a value in [0, 1],
+where the a value of 0 implies that the point x is equidistant
+to its two closest subspaces. This notion is illustrated in
+Figure 3, where the yellow-green color shows the region
+within some margin of the decision boundary.
+In the following theorem, we show that points lying near
+the intersection of subspaces are included among those of
+minimum margin with high probability. This method of
+point selection is then motivated by the fact that the difficult
+points to cluster are those lying near the intersection of
+subspaces [12]. Further, theory for SSC ([11],[15]) shows
+that problematic points are those having large inner product
+with some or all directions in other subspaces. Subspace
+margin captures exactly this phenomenon.
+Theorem 1. Consider two d-dimensional subspaces S1 and
+S2 . Let y = x + n, where x ∈ S1 and n ∼ N (0, σ 2 ID ).
+Define
+dist(y, S1 )
+µ(y) = 1 −
+.
+dist(y, S2 )
 
-The conditional input cli to the current decoder layer is a
-weighted sum of the encoder outputs as well as the input element
-embeddings ej (Figure 1, center right):
-cli =
+with probability at least 1 − 4e−cε
+absolute constant.
 
-m
-X
-alij (zju +ej )
+2
 
+(D−d)
+
+, where c is an
+
+The proof is given in the supplementary material. Note that
+if dist(y, S1 ) ≤ dist(y, S2 ), then µ(y) = µ̂(y). In this case,
+Thm. 1 states that under the given noise model, points with
+small residual to the incorrect subspace (i.e., points near the
+intersection of subspaces) will have small margin. These are
+exactly the points for which supervised label information
+will be most beneficial.
+The statement of Thm. 1 allows us to quantify exactly how
+near a point must be to the intersection of two subspaces to
+be considered a point of minimum margin. Let φ1 ≤ φ2 ≤
+· · · ≤ φd be the d principal angles1 between S1 and S2 . If
+Pd
+the subspaces are very far apart, d1 i=1 sin2 (φi ) is near
+P
+d
+1, and if they are very close d1 i=1 sin2 (φi ) is near zero.
+Note that, for any x ∈ S1 ,
+sin2 (φ1 ) ≤ dist(x, S2 )2 ≤ sin2 (φd ) ;
+that is, there are bounds on dist(x, S2 ) depending on the
+relationship of the two subspaces. We also know that if x is
+drawn using isotropic Gaussian weights from a basis for S1 ,
+then
+d
+
+ 1X
+E dist(x, S2 )2 =
+sin2 (φi ) .
+d i=1
+Given this, we might imagine that margin of the noisy points
+is a useful indicator of points near the intersection in a scePd
+nario where sin2 (φ1 ) is small but d1 i=1 sin2 (φi ) is not,
+1
+
+See (Golub & Loan, 2012) for a definition of principal angles.
+
+Leveraging Union of Subspace Structure to Improve Constrained Clustering
+
+e.g., when the subspaces have an intersection but are distant
+in other directions. With this in mind we state the following
+corollary, whose proof can be found in the supplementary
+material.
+Corollary 1. Suppose x1 ∈ S1 is such that
+d
+
+1X 2
+sin (φi )
+d i=1
+
+dist(x1 , S2 )2 = sin2 (φ1 ) + δ
+
+!
 (2)
 
-j=1
+for some small δ ≥ 0; that is, x1 is close to the intersection
+of S1 and S2 . Let x2 be a random point in S1 generated as
+x2 = U1 w where U1 is a basis for S1 and w ∼ N (0, d1 Id ).
+We observe yi = xi + ni , where ni ∼ N (0, σ 2 ), i = 1, 2.
+If there exists τ > 1 such that
+δ<
 
-This is slightly different to recurrent approaches which compute
-both the attention and the weighted sum over zju only. We
-found adding ej to be beneficial and it resembles key-value
-memory networks where the keys are the zju and the values are
-the zju +ej (Miller et al., 2016). Encoder outputs zju represent
-potentially large input contexts and ej provides point information
-about a specific input element that is useful when making a
+5 1
+−
+7 τ
 
-Figure 1. Illustration of batching during training. The English source
-sentence is encoded (top) and we compute all attention values for the
-four German target words (center) simultaneously. Our attentions are
-just dot products between decoder context representations (bottom left)
-and encoder representations. We add the conditional inputs computed
-by the attention (center right) to the decoder states which then predict
-the target words (bottom right). The sigmoid and multiplicative boxes
-illustrate Gated Linear Units.
+and
+τ
 
-prediction. Once cli has been computed, it is simply added to
-the output of the corresponding decoder layer hli.
-This can be seen as attention with multiple ’hops’ (Sukhbaatar
-et al., 2015) compared to single step attention (Bahdanau et al.,
-2014; Luong et al., 2015; Zhou et al., 2016; Wu et al., 2016).
-In particular, the attention of the first layer determines a useful source context which is then fed to the second layer that
-takes this information into account when computing attention etc.
-The decoder also has immediate access to the attention history
-of the k 1 previous time steps because the conditional inputs
-cli 1k ,...,cli 1 are part of hli 1k ,...,hli 1 which are input to hli. This
-makes it easier for the model to take into account which previous
-inputs have been attended to already compared to recurrent nets
-where this information is in the recurrent state and needs to survive several non-linearities. Overall, our attention mechanism considers which words we previously attended to (Yang et al., 2016)
-and performs multiple attention ’hops’ per time step. In Appendix
-§C, we plot attention scores for a deep decoder and show that at
-different layers, different portions of the source are attended to.
+
+
+d
+1
+1X 2
+sin2 (φ1 ) + σ 2 (D − d) <
+sin (φi ) ,
+6
+d i=1
 
-Convolutional Sequence to Sequence Learning
+(3)
 
-Our convolutional architecture also allows to batch the attention
-computation across all elements of a sequence compared to
-RNNs (Figure 1, middle). We batch the computations of each
-decoder layer individually.
-3.4. Normalization Strategy
-We stabilize learning through careful weight initialization (§3.5)
-and by scaling parts of the network to ensure that the variance
-throughout the network does not change dramatically. In particular, we scale the output of residual blocks as well as the attention
-to preserve the variance of activations. We multiply
-the sum
-p
-of the input and output of a residual block by 0.5 to halve the
-variance of the sum. This assumes that both summands have the
-same variance which is not always true but effective in practice.
-The conditional input cli generated by the attention is a weighted
-sum of m vectors (2) p
-and we counteract a change in variance
-through scaling by m 1/m; we multiply by m to scale up
-the inputs to their original size, assuming the attention scores
-are uniformly distributed. This is generally not the case but we
-found it to work well in practice.
-For convolutional decoders with multiple attention, we scale
-the gradients for the encoder layers by the number of attention
-mechanisms we use; we exclude source word embeddings. We
-found this to stabilize learning since the encoder received too
-much gradient otherwise.
-3.5. Initialization
-Normalizing activations when adding the output of different
-layers, e.g. residual connections, requires careful weight initialization. The motivation for our initialization is the same as for the
-normalization: maintain the variance of activations throughout
-the forward and backward passes. All embeddings are initialized
-from a normal distribution with mean 0 and standard deviation
-0.1. For layers whose output is not directly
-p fed to a gated linear
-unit, we initialize weights from N (0, 1/nl ) where nl is the
-number of input connections to each neuron. This ensures that
-the variance of a normally distributed input is retained.
-For layers which are followed by a GLU activation, we propose
-a weight initialization scheme by adapting the derivations in (He
-et al., 2015b; Glorot & Bengio, 2010; Appendix A). If the GLU
-inputs are distributed with mean 0 and have sufficiently small
-variance, then we can approximate the output variance with 1/4
-of the input variance (Appendix A.1). Hence, we initialize the
-weights so that the input to the GLU activations have 4 times
-the variance of the layer input.
-p This is achieved by drawing their
-initial values from N (0, 4/nl ). Biases are uniformly set to
-zero when the network is constructed.
+that is, the average angle is sufficiently larger than the
+smallest angle, then
+2
 
-We apply dropout to the input of some layers so that inputs
-are retained with a probability of p. This can be seen as
-multiplication with a Bernoulli random variable taking value 1/p
-with probability p and 0 otherwise (Srivastava et al., 2014). The
+P {µ(y1 ) < µ(y2 )} ≥ 1 − e−c( 100 )
+7
 
-application of dropout will then cause the variance to be scaled
-by 1/p. We aim to restore the incoming variance by initializing
-the respective
-layers with larger weights. Specifically, we use
-p
-N (0,p4p/nl ) for layers whose output is subject to a GLU and
-N (0, p/nl ) otherwise (Appendix A.3).
+ds
 
-4. Experimental Setup
-4.1. Datasets
+2
 
-WMT’16 English-Romanian. We use the same data and
-pre-processing as Sennrich et al. (2016b) but remove sentences
-with more than 175 words. This results in 2.8M sentence pairs
-for training and we evaluate on newstest2016.1 We experiment
-with word-based models using a source vocabulary of 200K
-types and a target vocabulary of 80K types. We also consider
-a joint source and target byte-pair encoding (BPE) with 40K
-types (Sennrich et al., 2016a;b).
-WMT’14 English-German. We use the same setup as Luong
-et al. (2015) which comprises 4.5M sentence pairs for training
-and we test on newstest2014.2 As vocabulary we use 40K
-sub-word types based on BPE.
-WMT’14 English-French. We use the full training set of 36M
-sentence pairs, and remove sentences longer than 175 words
-as well as pairs with a source/target length ratio exceeding 1.5.
-This results in 35.5M sentence-pairs for training. Results are
-reported on newstest2014. We use a source and target vocabulary
-with 40K BPE types.
-In all setups a small subset of the training data serves as validation
-set (about 0.5-1%) for early stopping and learning rate annealing.
-Abstractive summarization. We train on the Gigaword corpus
-(Graff et al., 2003) and pre-process it identically to Rush et al.
-(2015) resulting in 3.8M training examples and 190K for validation. We evaluate on the DUC-2004 test data comprising
-500 article-title pairs (Over et al., 2007) and report recall-based
-ROUGE (Lin, 2004). We also evaluate on the Gigaword test set
-of Rush et al. (2015) and report F1 ROUGE similar to prior work.
-Similar to Shen et al. (2016) we use a source and target vocabulary
-of 30K words and require outputs to be at least 14 words long.
-4.2. Model Parameters and Optimization
-We use 512 hidden units for both encoders and decoders, unless
-otherwise stated. All embeddings, including the output produced
-by the decoder before the final linear layer, have dimensionality
-512; we use the same dimensionalities for linear layers mapping
-between the hidden and embedding sizes (§3.2).
+− 4e−c( 50 )
 1
 
-We followed the pre-processing of https://github.
-com/rsennrich/wmt16-scripts/blob/80e21e5/
-sample/preprocess.sh and added the back-translated data
-from
-http://data.statmt.org/rsennrich/wmt16_
-backtranslations/en-ro.
-2
-http://nlp.stanford.edu/projects/nmt
+(D−d)
 
-Convolutional Sequence to Sequence Learning
+where µ(y) is defined as in Thm. 1, c is an absolute constant,
+Pd
+and s = d1 i=1 sin2 (φi ).
+We make some remarks first to connect our results to other
+subspace distances that are often used. Perhaps the most
+intuitive form of subspace distance between that spanned by
+U1 and U2 is d1 k(I − U1 U1 )T U2 k2F ; if the two subspaces
+are the same, the projection onto the orthogonal complement is zero; if they are orthogonal, we get the norm of U2
+alone, giving a distance of 1. This is equal to the more visually symmetric 1 − d1 kU1T U2 k2F , another common distance.
+Further we note that, by the definition of principal angles
+(Golub & Loan, 2012),
+1
+1
+1 − kU1T U2 k2F = 1 −
+d
+d
 
-We train our convolutional models with Nesterov’s accelerated
-gradient method (Sutskever et al., 2013) using a momentum value
-of 0.99 and renormalize gradients if their norm exceeds 0.1 (Pascanu et al., 2013). We use a learning rate of 0.25 and once the validation perplexity stops improving, we reduce the learning rate by
-an order of magnitude after each epoch until it falls below 10 4.
-Unless otherwise stated, we use mini-batches of 64 sentences.
-We restrict the maximum number of words in a mini-batch
-to make sure that batches with long sentences still fit in GPU
-memory. If the threshold is exceeded, we simply split the batch
-until the threshold is met and process the parts separatedly.
-Gradients are normalized by the number of non-padding tokens
-per mini-batch. We also use weight normalization for all layers
-except for lookup tables (Salimans & Kingma, 2016).
-Besides dropout on the embeddings and the decoder output,
-we also apply dropout to the input of the convolutional blocks
-(Srivastava et al., 2014). All models are implemented in Torch
-(Collobert et al., 2011) and trained on a single Nvidia M40
-GPU except for WMT’14 English-French for which we use a
-multi-GPU setup on a single machine. We train on up to eight
-GPUs synchronously by maintaining copies of the model on each
-card and split the batch so that each worker computes 1/8-th of
-the gradients; at the end we sum the gradients via Nvidia NCCL.
-4.3. Evaluation
-We report average results over three runs of each model, where
-each differs only in the initial random seed. Translations are generated by a beam search and we normalize log-likelihood scores
-by sentence length. We use a beam of width 5. We divide the loglikelihoods of the final hypothesis in beam search by their length
-|y|. For WMT’14 English-German we tune a length normalization constant on a separate development set (newstest2015) and
-we normalize log-likelihoods by |y|↵ (Wu et al., 2016). On other
-datasets we did not find any benefit with length normalization.
-For word-based models, we replace unknown words after generation by looking up the source word with the maximum attention
-score in a pre-computed dictionary (Jean et al., 2015). If the dictionary contains no translation, then we simply copy the source word.
-Dictionaries were extracted from the word aligned training data
-that we obtained with fast align (Dyer et al., 2013). In our
-multi-step attention (§3.3) we simply average the attention scores
-over all layers. Finally, we compute case-sensitive tokenized
-BLEU, except for WMT’16 English-Romanian where we use
-detokenized BLEU to be comparable with Sennrich et al. (2016b).
+d
+X
+i=1
 
-5. Results
-5.1. Recurrent vs. Convolutional Models
-We first evaluate our convolutional model on three translation
-tasks. On WMT’16 English-Romanian translation we compare
-to Sennrich et al. (2016b) which is the winning entry on this
-
-language pair at WMT’16 (Bojar et al., 2016). Their model
-implements the attention-based sequence to sequence architecture
-of Bahdanau et al. (2014) and uses GRU cells both in the encoder
-and decoder. We test both word-based and BPE vocabularies (§4).
-Table 1 shows that our fully convolutional sequence to sequence
-model (ConvS2S) outperforms the WMT’16 winning entry for
-English-Romanian by 1.9 BLEU with a BPE encoding and by 1.3
-BLEU with a word factored vocabulary. This instance of our architecture has 20 layes in the encoder and 20 layers in the decoder,
-both using kernels of width 3 and hidden size 512 throughout.
-Training took between 6 and 7.5 days on a single GPU.
-On WMT’14 English to German translation we compare to the
-following prior work: Luong et al. (2015) is based on a four layer
-LSTM attention model, ByteNet (Kalchbrenner et al., 2016) propose a convolutional model based on characters without attention,
-with 30 layers in the encoder and 30 layers in the decoder, GNMT
-(Wu et al., 2016) represents the state of the art on this dataset and
-they use eight encoder LSTMs as well as eight decoder LSTMs,
-we quote their result for a word-based model, such as ours, as
-well as a word-piece model (Schuster & Nakajima, 2012).3
-The results (Table 1) show that our convolutional model
-outpeforms GNMT by 0.5 BLEU. Our encoder has 15 layers
-and the decoder has 15 layers, both with 512 hidden units in the
-first ten layers and 768 units in the subsequent three layers, all
-using kernel width 3. The final two layers have 2048 units which
-are just linear mappings with a single input. We trained this
-model on a single GPU over a period of 18.5 days with a batch
-size of 48. LSTM sparse mixtures have shown strong accuracy
-at 26.03 BLEU for a single run (Shazeer et al., 2016) which
-compares to 25.39 BLEU for our best run. This mixture sums
-the output of four experts, not unlike an ensemble which sums
-the output of multiple networks. ConvS2S also benefits from
-ensembling (§5.2), therefore mixtures are a promising direction.
-Finally, we train on the much larger WMT’14 English-French
-task where we compare to the state of the art result of GNMT
-(Wu et al., 2016). Our model is trained with a simple token-level
-likelihood objective and we improve over GNMT in the same
-setting by 1.6 BLEU on average. We also outperform their
-reinforcement (RL) models by 0.5 BLEU. Reinforcement
-learning is equally applicable to our architecture and we believe
-that it would further improve our results.
-The ConvS2S model for this experiment uses 15 layers in the encoder and 15 layers in the decoder, both with 512 hidden units in
-the first five layers, 768 units in the subsequent four layers, 1024
-units in the next 3 layers, all using kernel width 3; the final two
-layers have 2048 units and 4096 units each but the they are linear
-mappings with kernel width 1. This model has an effective context size of only 25 words, beyond which it cannot access any information on the target size. Our results are based on training with
-3
-
-We did not use the exact same vocabulary size because word pieces
-and BPE estimate the vocabulary differently.
-
-Convolutional Sequence to Sequence Learning
-
-WMT’16 English-Romanian
-Sennrich et al. (2016b) GRU (BPE 90K)
-ConvS2S (Word 80K)
-ConvS2S (BPE 40K)
-WMT’14 English-German
-
-BLEU
-28.1
-29.45
-30.02
-BLEU
-
-Luong et al. (2015) LSTM (Word 50K)
-Kalchbrenner et al. (2016) ByteNet (Char)
-Wu et al. (2016) GNMT (Word 80K)
-Wu et al. (2016) GNMT (Word pieces)
-
-20.9
-23.75
-23.12
-24.61
-
-ConvS2S (BPE 40K)
-
-25.16
-
-WMT’14 English-French
-
-BLEU
-
-Wu et al. (2016) GNMT (Word 80K)
-Wu et al. (2016) GNMT (Word pieces)
-Wu et al. (2016) GNMT (Word pieces) + RL
-
-37.90
-38.95
-39.92
-
-ConvS2S (BPE 40K)
-
-40.51
-
-Table 1. Accuracy on WMT tasks comapred to previous work. ConvS2S
-and GNMT results are averaged over several runs.
-
-8 GPUs for about 37 days and batch size 32 on each worker.4 The
-same configuration as for WMT’14 English-German achieves
-39.41 BLEU in two weeks on this dataset in an eight GPU setup.
-Zhou et al. (2016) report a non-averaged result of 39.2 BLEU.
-More recently, Ha et al. (2016) showed that one can generate
-weights with one LSTM for another LSTM. This approach
-achieves 40.03 BLEU but the result is not averaged. Shazeer et al.
-(2016) compares at 40.56 BLEU to our best single run of 40.70
-BLEU.
-The translations produced by our models often match the length
-of the references for the large WMT’14 English-French task,
-or are very close for small to medium data sets such as WMT’14
-English-German or WMT’16 English-Romanian.
-5.2. Ensemble Results
-Next, we ensemble eight likelihood-trained models for both
-WMT’14 English-German and WMT’14 English-French and
-compare to previous work which also reported ensemble results.
-Table 2 shows that we outperform the best current ensembles
-on both datasets. For WMT’14 English-French we also show
-results when ensembling 10 models.
-4
-
-This is half of the GPU time consumed by a basic model of Wu
-et al. (2016) who use 96 GPUs for 6 days. We expect the time to train
-our model to decrease substantially in a multi-machine setup.
-
-WMT’14 English-German
-
-BLEU
-
-Wu et al. (2016) GNMT
-Wu et al. (2016) GNMT + RL
-
-26.20
-26.30
-
-ConvS2S
-
-26.43
-
-WMT’14 English-French
-
-BLEU
-
-Zhou et al. (2016)
-Wu et al. (2016) GNMT
-Wu et al. (2016) GNMT + RL
-
-40.4
-40.35
-41.16
-
-ConvS2S
-ConvS2S (10 models)
-
-41.44
-41.62
-
-Table 2. Accuracy of ensembles with eight models. We show both
-likelihood and Reinforce (RL) results for GNMT; Zhou et al. (2016)
-and ConvS2S use simple likelihood training.
-
-5.3. Generation Speed
-Next, we evaluate the inference speed on the development set
-of the WMT’14 English-French task which is the concatenation
-of newstest2012 and newstest2013; it comprises 6003 sentences.
-We measure generation speed both on GPU and CPU hardware.
-Specifically, we measure GPU speed on three generations
-of Nvidia cards: a GTX-1080ti, an M40 as well as an older
-K40 card. CPU timings are measured on one host with 48
-hyper-threaded cores (Intel Xeon E5-2680 @ 2.50GHz) with 40
-workers. In all settings, we batch up to 128 sentences, composing
-batches with sentences of equal length. Note that the majority of
-batches is smaller because of the small size of the development
-set. We experiment with beams of size 5 as well as greedy
-search, i.e beam of size 1. To make generation fast, we do not
-recompute convolution states that have not changed compared
-to the previous time step but rather copy (shift) these activations.
-We compare to results reported in Wu et al. (2016) who use
-Nvidia K80 GPUs which are essentially two K40s. We did not
-have such a GPU available and therefore run experiments on an
-older K40 card which is inferior to a K80, in addition to the newer
-M40 and GTX-1080ti cards. The results (Table 3) show that our
-model can generate translations on a K40 GPU at 9.3 times the
-speed and 2.25 higher BLEU; on an M40 the speed-up is up to
-13.7 times and on a GTX-1080ti card the speed is 21.3 times faster.
-A larger beam of size 5 decreases speed but gives better BLEU.
-On CPU, our model is up to 9.3 times faster, however, the
-GNMT CPU results were obtained with an 88 core machine
-whereas our results were obtained with just over half the number
-of cores. On a per CPU core basis, our model is 17 times faster
-at a better BLEU. Finally, our CPU speed is 2.7 times higher
-than GNMT on a custom TPU chip which shows that high speed
-can be achieved on commodity hardware. We do no report TPU
-figures as we do not have access to this hardware.
-
-Convolutional Sequence to Sequence Learning
-
-BLEU
-
-Time (s)
-
-GNMT GPU (K80)
-GNMT CPU 88 cores
-GNMT TPU
-
-31.20
-31.20
-31.21
-
-3,028
-1,322
-384
-
-ConvS2S GPU (K40) b=1
-ConvS2S GPU (M40) b=1
-ConvS2S GPU (GTX-1080ti) b=1
-ConvS2S CPU 48 cores b=1
-
-33.45
-33.45
-33.45
-33.45
-
-327
-221
-142
-142
-
-ConvS2S GPU (K40) b=5
-ConvS2S CPU 48 cores b=5
-ConvS2S GPU (M40) b=5
-ConvS2S GPU (GTX-1080ti) b=5
-
-34.10
-34.10
-34.10
-34.10
-
-587
-482
-406
-256
-
-Table 3. CPU and GPU generation speed in seconds on the development
-set of WMT’14 English-French. We show results for different beam
-sizes b. GNMT figures are taken from Wu et al. (2016). CPU speeds
-are not directly comparable because Wu et al. (2016) use a 88 core
-machine versus our 48 core setup.
-
-ConvS2S
--source position
--target position
--source & target position
-
-PPL
-
-BLEU
-
-6.64
-6.69
-6.63
-6.68
-
-21.7
-21.3
-21.5
-21.2
-
-Table 4. Effect of removing position embeddings from our model in
-terms of validation perplexity (valid PPL) and BLEU.
-
-Attn Layers
-
-PPL
-
-BLEU
-
-1,2,3,4,5
-1,2,3,4
-1,2,3
-1,2
-1,3,5
-
-6.65
-6.70
-6.95
-6.92
-6.97
-
-21.63
-21.54
-21.36
-21.47
-21.10
+cos2 (φi ) =
 
 1
-2
-3
+d
+
+d
+X
+
+sin2 (φi ) .
+
+i=1
+
+From Equation (2), we see that the size of δ determines
+how close x1 ∈ S1 is to S2 ; if δ = 0, x1 is as close to S2
+as possible. For example, if φ1 = 0, the two subspaces
+intersect, and δ = 0 implies that x1 ∈ S1 ∩ S2 . Equation
+(3) captures the gap between average principal angle and
+the smallest principal angle. We conclude that if this gap
+is large enough and δ is small enough so that x1 is close to
+S2 , then the observed y1 will have smaller margin than the
+average point in S1 , even when observed with noise.
+
+Algorithm 1 SUPERPAC
+Input: X = {x1 , x2 , . . . , xN }: data, K: number of
+clusters, d: subspace dimension, A: affinity matrix, maxQueries: maximum number of pairwise comparisons
+Estimate Labels: Ĉ ← S PECTRAL C LUSTERING(A,K)
+Initialize Certain Sets: Initialize Z = {Z1 , · · · , Znc }
+and numQueries via U O S-E XPLORE in supplementary
+material.
+while numQueries < maxQueries do
+PCA on Each Cluster: Solve
+X
+Sk = min
+kxi − U U 0 xi k2 .
+U ∈RD×d
+
+i:Ĉ(xi )=k
+
+Obtain Test Point: select xT ← arg minx∈X µ̂(x)
+Assign xT to Certain Set:
+Sort {Z1 , · · · , Znc } in order of most likely mustlink (via subspace residual for xT ), query xT against
+representatives from Zk until must-link constraint is
+found or k = nc . If no must-link constraint is found,
+set Z ← {Z1 , · · · , Znc , {xT }} and increment nc .
+Impute Constraints: Set Aij = Aji = 1 for (xi , xj )
+in the same certain set and Aij = Aji = 0 for (xi , xj )
+in different certain sets (do not impute for points absent
+from certain sets).
+Estimate Labels: Ĉ ← S PECTRAL C LUSTER ING (A,K)
+end while
+For another perspective, consider that in the noiseless case,
+for x1 , x2 ∈ S1 , the condition dist(x1 , S2 ) < dist(x2 , S2 )
+is enough to guarantee that x1 lies nearer to S2 . Under the
+given additive noise model (yi = xi + ni for i = 1, 2) the
+gap between dist(x1 , S2 ) and dist(x2 , S2 ) must be larger
+by some factor depending on the noise level. After two
+applications of Thm. 1 and rearranging terms, we have that
+µ(y1 ) < µ(y2 ) with high probability if
+βdist(x2 , S2 )2 − dist(x1 , S2 )2 > (1 − β)σ 2 (D − d). (4)
 4
-5
 
-7.15
-7.09
-7.11
-7.19
-7.66
+where β = ((1 − ε)/(1 + ε)) , a value near 1 for small
+ε. Equation (4) shows that the gap dist(x2 , S2 )2 −
+dist(x1 , S2 )2 must grow (approximately linearly) with the
+noise level σ 2 . The relationship of this gap to the subspace
+distances is quantified by Corollary 1; plugging sin2 (φ1 )
+from Equation (2) into Equation (3) and rearranging yields
+a statement of the form in Equation (4).
+3.2. Pairwise Constrained Clustering with SUPERPAC
+We now describe SUPERPAC in more detail, our algorithm
+for PCC when data lie near a union of subspaces, given in
+Algorithm 1. The algorithm begins by initializing a set of
+disjoint certain sets, an optional process described in the
 
-21.26
-21.30
-21.19
-21.31
-20.24
+Leveraging Union of Subspace Structure to Improve Constrained Clustering
 
-Table 5. Multi-step attention in all five decoder layers or fewer layers
-in terms of validation perplexity (PPL) and test BLEU.
+missclassification %
 
-indicates that the models can learn relative position information
-within the contexts visible to the encoder and decoder networks
-which can observe up to 27 and 25 words respectively.
-Recurrent models typically do not use explicit position
-embeddings since they can learn where they are in the sequence
-through the recurrent hidden state computation. In our setting,
-the use of position embeddings requires only a simple addition
-to the input word embeddings which is a negligible overhead.
+Yale, K = 5
 
-5.4. Position Embeddings
+Yale, K = 10
 
-5.5. Multi-step Attention
+8
 
-In the following sections, we analyze the design choices in our
-architecture. The remaining results in this paper are based on
-the WMT’14 English-German task with 13 encoder layers at
-kernel size 3 and 5 decoder layers at kernel size 5. We use a
-target vocabulary of 160K words as well as vocabulary selection
-(Mi et al., 2016; L’Hostis et al., 2016) to decrease the size of
-the output layer which speeds up training and testing. The
-average vocabulary size for each training batch is about 20K target
-words. All figures are averaged over three runs (§4) and BLEU
-is reported on newstest2014 before unknown word replacement.
+SUPERPAC
+URASC-N
+Random
+Oracle UoS
 
-The multiple attention mechanism (§3.3) computes a separate
-source context vector for each decoder layer. The computation
-also takes into account contexts computed for preceding decoder
-layers of the current time step as well as previous time steps
-that are within the receptive field of the decoder. How does
-multiple attention compare to attention in fewer layers or even
-only in a single layer as is usual? Table 5 shows that attention in
-all decoder layers achieves the best validation perplexity (PPL).
-Furthermore, removing more and more attention layers decreases
-accuracy, both in terms of BLEU as well as PPL.
+30
 
-We start with an experiment that removes the position embeddings from the encoder and decoder (§3.1). These embeddings
-allow our model to identify which portion of the source and
-target sequence it is dealing with but also impose a restriction
-on the maximum sentence length. Table 4 shows that position
-embeddings are helpful but that our model still performs well
-without them. Removing the source position embeddings results
-in a larger accuracy decrease than target position embeddings.
-However, removing both source and target positions decreases
-accuracy only by 0.5 BLEU. We also find that the length of the
-outputs of models without position embeddings closely matches
-the output length of models with position information. This
-
-The computational overhead for attention is very small compared
-to the rest of the network. Training with attention in all five
-decoder layers processes 3624 target words per second on
-average on a single GPU, compared to 3772 words per second
-for a single attention module. This corresponds to 1% overhead
-per attention module and demonstrates that attention is not
-the bottleneck in neural machine translation, even though it
-is quadratic in the sequence length (cf. Kalchbrenner et al.,
-2016). Part of the reason for the low impact on speed is that
-we batch the computation of an attention module over all target
-words. However, for RNNs batching of the attention may be less
-effective because of the dependence on the previous time step.
-
-Convolutional Sequence to Sequence Learning
-
-RG-1 (R)
-RNN MLE (Shen et al., 2016)
-RNN MRT (Shen et al., 2016)
-WFE (Suzuki & Nagata, 2017)
-ConvS2S
-
-DUC-2004
-RG-2 (R) RG-L (R)
-
-24.92
-30.41
-32.28
-30.44
-
-8.60
-10.87
-10.54
-10.84
-
-22.25
-26.79
-27.80
-26.90
-
-RG-1 (F)
-32.67
-36.54
-36.30
-35.88
-
-Gigaword
-RG-2 (F) RG-L (F)
-15.23
-16.59
-17.31
-17.48
-
-30.56
-33.44
-33.88
-33.29
-
-Table 6. Accuracy on two summarization tasks in terms of Rouge-1 (RG-1), Rouge-2 (RG-2), and Rouge-L (RG-L).
-
-narrow kernels and many layers perform better than wider kernels.
-These networks can also be faster since the amount of work to
-compute a kernel operating over 3 input elements is less than half
-compared to kernels over 7 elements. We see a similar picture for
-decoder networks with large kernel sizes (Table 8). Dauphin et al.
-(2016) shows that context sizes of 20 words are often sufficient
-to achieve very good accuracy on language modeling for English.
-
-22
-21.5
-
-BLEU
-
-21
-20.5
+10
 20
 
-5.7. Summarization
-19.5
-19
+6
 
-Encoder
-Decoder
-1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25
-Layers
+20
 
-Figure 2. Encoder and decoder with different number of layers.
+15
 
-Kernel width
-3
+4
+
 5
-7
 
-Encoder layers
+10
+
+2
+0
+0
+
+MNIST, K = 10
+
+MNIST, K = 5
+25
+
+10
+
 5
+500
+
+0
+1000 0
+
+1000
+
+0
+2000 0
+
+500
+
+0
+1000 0
+
+1000
+
+2000
+
+3000
+
+number of pairwise comparisons
+
+Figure 4. Misclassification rate for Yale B and MNIST datasets with many pairwise comparisons. Left-to-right: Yale B K = 5 (input
+from SSC), Yale B K = 10 (input from SSC), MNIST K = 5 (input from TSC), MNIST K = 10 (input from TSC).
+
+supplementary material due to space constraints. Next our
+algorithm assigns the points most likely to be misclassified
+to certain sets by presenting a series of pairwise comparisons. Finally, we impute values onto the affinity matrix for
+all points in the certain sets and perform spectral clustering.
+The process is then repeated until the maximum number of
+pairwise comparisons has been reached.
+Let xT be the test point chosen as the min-margin point.
+Our goal is to assign xT to a certain set using as the fewest
+number of queries possible. For each certain set Zk , the
+representative xk is chosen as the maximum-margin point
+within the set. Next, for each k, we let Uk be the ddimensional PCA
+n estimate of the matrix
+o whose columns
+are the points x ∈ X : Ĉ(x) = Ĉ(xk ) . We then query
+our test point
+xT against the
+
+ representatives xk in order of
+residual xT − Uk UkT xT 2 (smallest first). If a must-link
+constraint is found, we place xT in the corresponding certain set. Otherwise, we place xT in its own certain set and
+update the number of certain sets. Pseudocode for the complete algorithm is given in Algorithm 1. As a technical note,
+we first normalize the input affinity matrix A so that the
+maximum value is 2. For must-link constraints, we impute
+a value of 1 in the affinity matrix, while for cannot-link
+constraints we impute a 0. The approach of imputing values
+in the affinity matrix is common in the literature but does
+not strictly enforce the constraints. Further, we found in
+our experiments that imputing the maximum value in the
+affinity matrix resulted in unstable results. Thus, users must
+be careful to not only choose the correct constraints as noted
+in (Basu et al., 2004), but to incorporate these constraints in
+a way that allows for robust clustering.
+SUPERPAC can be thought of as an extension of ideas from
+PCC literature (Basu et al., 2004; Biswas & Jacobs, 2014;
+Xiong et al., 2016) to leverage prior knowledge about the
+underlying geometry of the data. For datasets such as Yale B
+and MNIST, the strong subspace structure makes Euclidean
+distance a poor proxy for similarity between points in the
+same cluster, leading to the superior performance of our
+algorithm demonstrated in the following sections. This
+
+structure does not exist in all datasets, in which case we
+do not expect our algorithm to outperform current PCC
+algorithms. The reader will note we made a choice to order
+the certain sets according to the UoS model; this is similar
+to the choice in (Xiong et al., 2016) to query according to
+similarity, where our notion of similarity here is based on
+subspace distances. We found this resulted in significant
+performance benefits, matching our intuition that points are
+clustered based on their nearest subspace. In contrast to
+(Biswas & Jacobs, 2014; Xiong et al., 2016), where the test
+point is chosen according to a global improvement metric,
+we choose test points according to their classification margin.
+In our experiments, we found subspace margin to be a strong
+indicator of which points are misclassified, meaning that our
+algorithm rapidly corrects the errors that occur as a result of
+unsupervised subspace clustering.
+Finally, note that the use of certain sets relies on the assumption that the pairwise queries are answered correctly—an
+assumption that is common in the literature (Basu et al.,
+2004; Mallapragada et al., 2008; Xiong et al., 2016). However, in (Xiong et al., 2016), the authors demonstrate that
+an algorithm based on certain sets still yields significant improvements under a small error rate. The study of robustly
+incorporating noisy pairwise comparisons is an interesting
+topic for further study.
+
+4. Experimental Results
+We compare the performance of our method and the nonparametric version of the URASC algorithm (URASC-N)2
+over a variety of datasets. Note that while numerous PCC
+algorithms exist, URASC achieves both the best empirical results and computational complexity on a variety of
+datasets. We also compared with the methods from (Basu
+et al., 2004) and (Biswas & Jacobs, 2014) but found both
+to perform significanly worse than URASC on all datasets
+considered, with a far greater computational cost in the case
+2
+
+In our experiments, the parametric version of URASC was
+found to be numerically unstable and did not have significantly
+different performance from URASC-N in the best cases.
+
+Leveraging Union of Subspace Structure to Improve Constrained Clustering
+
+missclassification %
+
+Yale, K = 38
+
+Dataset
+Yale
+MNIST
+COIL-20
+COIL-100
+USPS
+
+25
+20
+15
+10
+5
+0
+
+SUPERPAC
+URASC-N
+Random
+Oracle UoS
+1000
+
+N
+320-2432
+500-1000
+1440
+7200
+9298
+
+K
+5,10,38
+5,10
+20
+100
+10
+
+D
+2016
+784
+1024
+1024
+256
+
+d
 9
-13
-20.61
-20.80
-20.81
-
-21.17
-21.02
-21.30
-
-21.63
-21.42
-21.09
-
-Table 7. Encoder with different kernel width in terms of BLEU.
-
-Kernel width
 3
-5
-7
+9
+9
+15
 
-Decoder layers
+Table 1. Datasets used for experiments with relevant parameters;
+N : total number of samples, K: number of clusters, D: ambient
+dimension, d: estimated subspace dimension.
+2000
+
+3000
+
+number of pairwise comparisons
+Figure 5. Misclassification rate versus number of pairwise comparisons for extended Yale face database B with K = 38 subjects.
+Input affinity matrix is taken from SSC-OMP.
+
+of (Biswas & Jacobs, 2014). We use a maximum query
+budget of 2K for U O S-E XPLORE and E XPLORE. For completeness, we also compare to random constraints, in which
+queries are chosen uniformly at random from the set of
+unqueried pairs.
+Finally, we compare against the oracle PCA classifier, which
+we now define. Let Uk be the d-dimensional PCA estimate
+of the points whose true label C(x)
+ = k. Then
+ the oracle
+label is Ĉo (x) = arg mink∈[K] x − Uk UkT x2 . This allows us to quantitatively capture the idea that, because the
+true classes are not perfectly low-rank, some points would
+not be clustered with the low-rank approximation of their
+own true cluster. In our experiments, we also compared
+with oracle robust PCA (Candes et al., 2011) implemented
+via the augmented Lagrange multiplier method (Lin et al.,
+2011) but did not find any improvement in classification
+error.
+Datasets We consider five datasets commonly used as
+benchmarks in the subspace clustering literature3 , with a
+summary of the datasets and their relevant parameters are
+given in Table 1. The Yale B dataset consists of 64 images
+of size 192 × 168 of each of 38 different subjects under
+a variety of lighting conditions. For values of K less than
+38, we follow the methodology of (Zhang et al., 2012) and
+perform clustering on 100 randomly selected subsets of size
+K. We choose d = 9 as is common in the literature (Elhamifar & Vidal, 2013; Heckel & Bölcskei, 2015). The MNIST
+handwritten digit database test dataset consists of 10,000
+centered 28 × 28 pixel images of handwritten digits 0-9.
+We follow a similar methodology to the previous section
+and select 100 random subsets of size K, using subspace
+dimension d = 3 as in (Heckel & Bölcskei, 2015). The
+COIL-20 dataset (Nene et al., 1996b) consists of 72 images
 3
+
+The validity of the UoS assumption for two of these datasets
+is investigated in (Elhamifar & Vidal, 2013; Heckel & Bölcskei,
+2015).
+
+of size 32 × 32 of each of 20 objects. The COIL-100 dataset
+(Nene et al., 1996a) contains 100 objects (distinct from the
+COIL-20 objects) of the same size and with the same number of images of each object. For both datasets, we use
+subspace dimension d = 9. Finally, we apply our algorithm
+to the USPS dataset provided by (Cai et al., 2011), which
+contains 9,298 total images of handwritten digits 0-9 of size
+16 × 16 with roughly even label distribution. We again use
+subspace dimension d = 9.
+Input Subspace Clustering Algorithms A major
+strength of our algorithm is that it is agnostic to the initial
+subspace clustering algorithm used to generate the input
+affinity matrix. To demonstrate this fact, we apply our
+algorithm with an input affinity matrix obtained from a
+variety of subspace clustering methods, summarized in
+Table 1. Note that some recent algorithms are not included
+in the simulations here. However, the simulations show
+that our algorithm works well with any initial clustering,
+and hence we expect similar results as new algorithms are
+developed.
+Experimental Results Fig. 4 shows the clustering error
+versus the number of pairwise comparisons for the Yale and
+MNIST datasets. The input affinity matrix is obtained by
+running SSC for the Yale datset and by running TSC for
+the MNIST dataset. The figure clearly demonstrates the
+benefits of leveraging UoS structure in constrained clustering—in all cases, SUPERPAC requires roughly half the
+number of queries needed by URASC to achieve perfect
+clustering. For the Yale dataset with K = 5, roughly 2Kd
+queries are required to surpass oracle performance, and for
+K = 10 roughly 3Kd queries are required. Note that for the
+Yale dataset, the clustering error increases using URASC.
+This is due to the previously mentioned fact that imputing
+the wrong constraints can lead to worse clustering performance. For sufficiently many queries, the error decreases
+as expected. Fig. 5 shows the misclassification rate versus
+number of points for all K = 38 subjects of the Yale databse,
+with the input affinity matrix taken from SSC-OMP (You
+et al., 2016b). We space out the markers for clearer plots.
+In this case, URASC performs roughly the same as random
+query selection, while SUPERPAC performs significantly
+
+Leveraging Union of Subspace Structure to Improve Constrained Clustering
+
+missclassification %
+
+COIL-20
+
+COIL-100
+
+COIL-20 Smoothing
+15
+
+15
+
+SUPERPAC
+URASC-N
+Random
+SUPERPAC-S
+Oracle UoS
+
+30
+25
+
+10
+
+10
+
+20
+15
+
 5
-7
-21.10
-21.09
-21.40
 
-21.71
-21.63
-21.31
+5
 
-21.62
-21.24
-21.33
+10
+5
 
-Table 8. Decoder with different kernel width in terms of BLEU.
+0
+0
 
-5.6. Kernel size and Depth
-Figure 2 shows accuracy when we change the number of layers
-in the encoder or decoder. The kernel width for layers in the
-encoder is 3 and for the decoder it is 5. Deeper architectures are
-particularly beneficial for the encoder but less so for the decoder.
-Decoder setups with two layers already perform well whereas
-for the encoder accuracy keeps increasing steadily with more
-layers until up to 9 layers when accuracy starts to plateau.
-Aside from increasing the depth of the networks, we can also
-change the kernel width. Table 7 shows that encoders with
+200
 
-Finally, we evaluate our model on abstractive sentence
-summarization which takes a long sentence as input and outputs
-a shortened version. The current best models on this task are
-recurrent neural networks which either optimize the evaluation
-metric (Shen et al., 2016) or address specific problems of summarization such as avoiding repeated generations (Suzuki & Nagata,
-2017). We use standard likelhood training for our model and
-a simple model with six layers in the encoder and decoder each,
-hidden size 256, batch size 128, and we trained on a single GPU
-in one night. Table 6 shows that our likelhood trained model outperforms the likelihood trained model (RNN MLE) of Shen et al.
-(2016) and is not far behind the best models on this task which
-benefit from task-specific optimization and model structure.
+400
 
-6. Conclusion and Future Work
-We introduce the first fully convolutional model for sequence
-to sequence learning that outperforms strong recurrent models
-on very large benchmark datasets at an order of magnitude
-faster speed. Compared to recurrent networks, our convolutional
-approach allows to discover compositional structure in the sequences more easily since representations are built hierarchically.
-Our model relies on gating and performs multiple attention steps.
-We achieve a new state of the art on several public translation
-benchmark data sets. On the WMT’16 English-Romanian
-task we outperform the previous best result by 1.9 BLEU, on
-WMT’14 English-French translation we improve over the LSTM
-model of Wu et al. (2016) by 1.6 BLEU in a comparable setting,
-and on WMT’14 English-German translation we ouperform the
-same model by 0.5 BLEU. In future work, we would like to
-apply convolutional architectures to other sequence to sequence
-learning problems which may benefit from learning hierarchical
-representations as well.
+600
 
-Convolutional Sequence to Sequence Learning
+0
+
+2000
+
+4000
+
+0
+0
+
+50
+
+100
+
+150
+
+number of pairwise comparisons
+
+USPS
+
+50
+
+SUPERPAC
+URASC-N
+Random
+Oracle UoS
+
+40
+30
+20
+10
+0
+
+500
+
+1000
+
+1500
+
+2000
+
+number of pairwise comparisons
+Figure 7. Misclassification rate versus number of pairwise comparisons for USPS dataset with K = 10 digits, 9,298 total samples.
+Input affinity matrix is taken from EnSC. URASC did not complete
+after 48 hours of run time.
+
+missclassification %
+
+missclassification %
+
+Figure 6. Misclassification rate versus number of pairwise comparisons for COIL-20 (K = 20) and COIL-100 (K = 100)) databases.
+Input affinity matrix is taken from EnSC. Rightmost plot shows proposed smoothing heuristic.
+
+50
+
+Sonar
+SUPERPAC
+URASC-N
+Random
+
+40
+30
+20
+10
+0
+0
+
+100
+
+200
+
+300
+
+number of pairwise comparisons
+Figure 8. Misclassification rate for Sonar dataset from (Xiong et al.,
+2016), where there is not reason to believe the clusters have subspace structure. We are still very competitive with state-of-the-art.
+
+better.
+
+5. Conclusion
+
+Fig. 6 demonstrates the continued superiority of our algorithm in the case where UoS structure exists. In the case
+of COIL-20, the clustering is sometimes unstable, alternating between roughly 0% and 7% clustering error for both
+active algorithms. This further demonstrates the observed
+phenomenon that spectral clustering is sensitive to small
+perturbations. To avoid this issue, we kept track of the
+K-subspaces cost function (see (Bradley & Mangasarian,
+2000)) and ensured the cost decreased at every iteration. We
+refer to this added heuristic as SUPERPAC-S in the figure.
+The incorporation of this heuristic into our algorithm is a
+topic for further study.
+
+We have presented a method of selecting and incorporating
+pairwise constraints into subspace clustering that considers
+the underlying geometric structure of the problem. The
+union of subspaces model is often used in computer vision
+applications where it is possible to request input from human labelers in the form of pairwise constraints. We showed
+that labeling is often necessary for subspace classifiers to
+achieve a clustering error near zero; additionally, these constraints can be chosen intelligently to improve the clustering
+procedure overall and allow for perfect clustering with a
+modest number of requests for human input.
+
+Fig. 7 shows the resulting error on the USPS dataset, again
+indicating the superiority of our method. Note that N is
+large for this dataset, making spectral clustering computationally burdensome. Further, the computational complexity
+of URASC is dependent on N . As a result, URASC did not
+complete 2000 queries in 48 hours of run time when using
+10 cores, so we compare to the result after completing only
+1000 queries. Finally, in Fig. 8, we demonstrate that even
+on data without natural subspace structure, SUPERPAC
+performs competitively with URASC.
+
+Developing techniques for handling noisy query responses
+will allow extension to undersampled or compressed data.
+One may assume that compressed data would be harder to
+distinguish, leading to noisier query responses. Finally, we
+saw that for datasets with different types of cluster structure, the structure assumptions of each algorithm had direct
+impact on performance; in the future we plan to additionally develop techniques for learning from unlabeled data
+whether the union of subspace model or a standard clustering approach is more appropriate.
+
+Leveraging Union of Subspace Structure to Improve Constrained Clustering
 
 Acknowledgements
-We thank Benjamin Graham for providing a fast 1-D convolution,
-and Ronan Collobert as well as Yann LeCun for helpful
-discussions related to this work.
-
-Glorot, Xavier and Bengio, Yoshua. Understanding the difficulty
-of training deep feedforward neural networks. The handbook
-of brain theory and neural networks, 2010.
+This work was supported by NSF F031543-071159-GRFP
+and US ARO Grant W911NF1410634.
 
 References
+Basri, R. and Jacobs, D. Lambertian reflectance and linear
+subspaces. IEEE TPAMI, 25(2):218–233, February 2003.
+Basu, Sugato, Banerjee, Arindam, and Mooney, Raymond J.
+Active semi-supervision for pairwise constrained clustering. In Proc. SIAM Int. Conf. on Data Mining, 2004.
+Biswas, Arjit and Jacobs, David. Active image clustering
+with pairwise constraints from humans. International
+Journal on Computer Vision, 108:133–147, 2014.
+Bradley, Paul S. and Mangasarian, Olvi L. k-Plane clustering. Journal of Global Optimization, 16:23–32, 2000.
+Cai, Deng, He, Xiaofei, Han, Jiawei, and Huang, Thomas S.
+Graph regularized non-negative matrix factorization for
+data representation. IEEE Transactions on Pattern Analysis and Machine Intelligence, 33(8):1548–1560, 2011.
+Candes, Emmanuel J., Li, Xiadong, Ma, Yi, and Wright,
+John. Robust principal component analysis? Journal of
+the ACM, 58(3), May 2011.
+Davidson, Ian, Wagstaff, Kiri L., and Basu, Sugato. Measuring constraint-set utility for partitional clustering algorithms. In Proc. European Conf. on Machine Learning
+and Prinicpals and Practice of Knowledge Discovery in
+Databases, 2006.
+Elhamifar, Ehsan and Vidal, Renee. Sparse subspace clustering: Algorithm, theory, and applications. IEEE Trans.
+on Pattern Analysis and Machine Intelligence, 35:2765–
+2781, November 2013.
+Golub, Gene and Loan, Charles Van. Matrix Computations.
+Johns Hopkins University Press, 2012.
+Haupt, Jarvis, Castro, Rui M, and Nowak, Robert. Distilled
+sensing: Adaptive sampling for sparse detection and estimation. IEEE Transactions on Information Theory, 57
+(9):6222–6235, 2011.
+Heckel, Reinhard and Bölcskei, Helmut. Robust subspace
+clustering via thresholding. IEEE Trans. Inf. Theory, 24
+(11):6320–6342, 2015.
+Indyk, Piotr, Price, Eric, and Woodruff, David P. On the
+power of adaptivity in sparse recovery. In Foundations
+of Computer Science (FOCS), 2011 IEEE 52nd Annual
+Symposium on, pp. 285–294. IEEE, 2011.
 
-Graff, David, Kong, Junbo, Chen, Ke, and Maeda, Kazuaki.
-English gigaword. Linguistic Data Consortium, Philadelphia,
-2003.
+Krishnamurthy, Akshay and Singh, Aarti. Low-rank matrix
+and tensor completion via adaptive sampling. In Advances
+in Neural Information Processing Systems, pp. 836–844,
+2013.
+Lin, Zhouchen, Chen, Minming, Wu, Leqin, and Ma, Yi.
+Linearized alternating direction method with adaptive
+penalty for low-rank representation. In Advances in Neural Information Processing Systems, 2011.
+Liu, Guangcan, Lin, Zhouchen, and Yu, Yong. Robust
+subspace segmentation by low-rank representation. In
+Proceedings of the 27th international conference on machine learning (ICML-10), pp. 663–670, 2010.
+Mallapragada, Pavan Kumar, Jin, Rong, and Jain, Anil K.
+Active query selection for semi-supervised clustering. In
+Proc. Int. Conf. on Pattern Recognition, 2008.
+Nene, S. A., Nayar, S. K., and Murase, H. Columbia object
+image library (COIL-100). Technical report, Columbia
+University, 1996a.
+Nene, S. A., Nayar, S. K., and Murase, H. Columbia object
+image library (COIL-20). Technical report, Columbia
+University, 1996b.
+Oliver, N.M., Rosario, B., and Pentland, A.P. A bayesian
+computer vision system for modeling human interactions.
+IEEE Transactions on Pattern Analysis and Machine Intelligence, 22(8):831–843, 2000.
+Park, Dohyung, Caramanis, Constantine, and Sanghavi, Sujay. Greedy subspace clustering. In Advances in Neural
+Information Processing Systems, pp. 2753–2761, 2014.
+Settles, Burr. Active Learning. Morgan & Claypool, 2012.
+Soltanolkotabi, Mahdi and Candes, Emmanuel J. A Geometric Analysis of Subspace Clustering with Outliers. The
+Annals of Statistics, 40(4):2195–2238, 2012.
+Soltanolkotabi, Mahdi and Candes, Emmanuel J. Robust
+Subspace Clustering. The Annals of Statistics, 42(2):
+669–699, 2014.
+Soni, Akshay and Haupt, Jarvis. On the fundamental limits
+of recovering tree sparse vectors from noisy linear measurements. IEEE Transactions on Information Theory,
+60(1):133–149, 2014.
+Vidal, Rene, Sastry, S. Shankar, and Ma, Yi. Generalized
+Principal Component Analysis. Springer-Verlag, 2016.
+Vidal, Renee. Subspace clustering. IEEE Signal Processing
+Magazine, 28:52–68, March 2011.
 
-Ba, Jimmy Lei, Kiros, Jamie Ryan, and Hinton, Geoffrey E.
-Layer normalization. arXiv preprint arXiv:1607.06450, 2016.
+Leveraging Union of Subspace Structure to Improve Constrained Clustering
 
-Ha, David, Dai, Andrew, and Le, Quoc V. Hypernetworks.
-arXiv preprint arXiv:1609.09106, 2016.
-
-Bahdanau, Dzmitry, Cho, Kyunghyun, and Bengio, Yoshua.
-Neural machine translation by jointly learning to align and
-translate. arXiv preprint arXiv:1409.0473, 2014.
-
-He, Kaiming, Zhang, Xiangyu, Ren, Shaoqing, and Sun, Jian.
-Deep Residual Learning for Image Recognition. In Proc. of
-CVPR, 2015a.
-
-Bojar, Ondej, Chatterjee, Rajen, Federmann, Christian, Graham,
-Yvette, Haddow, Barry, Huck, Matthias, Jimeno-Yepes,
-Antonio, Koehn, Philipp, Logacheva, Varvara, Monz, Christof,
-Negri, Matteo, Névéol, Aurélie, Neves, Mariana L., Popel,
-Martin, Post, Matt, Rubino, Raphaël, Scarton, Carolina,
-Specia, Lucia, Turchi, Marco, Verspoor, Karin M., and
-Zampieri, Marcos. Findings of the 2016 conference on
-machine translation. In Proc. of WMT, 2016.
-
-He, Kaiming, Zhang, Xiangyu, Ren, Shaoqing, and Sun,
-Jian. Delving deep into rectifiers: Surpassing human-level
-performance on imagenet classification. In Proceedings of
-the IEEE International Conference on Computer Vision, pp.
-1026–1034, 2015b.
-
-Bradbury, James, Merity, Stephen, Xiong, Caiming, and Socher,
-Richard. Quasi-Recurrent Neural Networks. arXiv preprint
-arXiv:1611.01576, 2016.
-
-Ioffe, Sergey and Szegedy, Christian. Batch normalization:
-Accelerating deep network training by reducing internal
-covariate shift. In Proceedings of The 32nd International
-Conference on Machine Learning, pp. 448–456, 2015.
-
-Cho, Kyunghyun, Van Merriënboer, Bart, Gulcehre, Caglar,
-Bahdanau, Dzmitry, Bougares, Fethi, Schwenk, Holger, and
-Bengio, Yoshua. Learning Phrase Representations using RNN
-Encoder-Decoder for Statistical Machine Translation. In Proc.
-of EMNLP, 2014.
-Chorowski, Jan K, Bahdanau, Dzmitry, Serdyuk, Dmitriy, Cho,
-Kyunghyun, and Bengio, Yoshua. Attention-based models
-for speech recognition. In Advances in Neural Information
-Processing Systems, pp. 577–585, 2015.
-Collobert, Ronan, Kavukcuoglu, Koray, and Farabet,
-Clement. Torch7: A Matlab-like Environment for Machine
-Learning. In BigLearn, NIPS Workshop, 2011. URL
-http://torch.ch.
-Dauphin, Yann N., Fan, Angela, Auli, Michael, and Grangier,
-David. Language modeling with gated linear units. arXiv
-preprint arXiv:1612.08083, 2016.
-Dyer, Chris, Chahuneau, Victor, and Smith, Noah A. A Simple,
-Fast, and Effective Reparameterization of IBM Model 2. In
-Proc. of ACL, 2013.
-Elman, Jeffrey L. Finding Structure in Time. Cognitive Science,
-14:179–211, 1990.
-Gehring, Jonas, Auli, Michael, Grangier, David, and Dauphin,
-Yann N. A Convolutional Encoder Model for Neural Machine
-Translation. arXiv preprint arXiv:1611.02344, 2016.
-
-Hochreiter, Sepp and Schmidhuber, Jürgen. Long short-term
-memory. Neural computation, 9(8):1735–1780, 1997.
-
-Jean, Sébastien, Firat, Orhan, Cho, Kyunghyun, Memisevic,
-Roland, and Bengio, Yoshua. Montreal Neural Machine
-Translation systems for WMT15. In Proc. of WMT, pp.
-134–140, 2015.
-Kalchbrenner, Nal, Espeholt, Lasse, Simonyan, Karen, van den
-Oord, Aaron, Graves, Alex, and Kavukcuoglu, Koray. Neural
-Machine Translation in Linear Time. arXiv, 2016.
-LeCun, Yann and Bengio, Yoshua. Convolutional networks
-for images, speech, and time series. The handbook of brain
-theory and neural networks, 3361(10):1995, 1995.
-L’Hostis, Gurvan, Grangier, David, and Auli, Michael. Vocabulary Selection Strategies for Neural Machine Translation.
-arXiv preprint arXiv:1610.00072, 2016.
-Lin, Chin-Yew. Rouge: A package for automatic evaluation
-of summaries. In Text Summarization Branches Out:
-Proceedings of the ACL-04 Workshop, pp. 74–81, 2004.
-Luong, Minh-Thang, Pham, Hieu, and Manning, Christopher D.
-Effective approaches to attention-based neural machine
-translation. In Proc. of EMNLP, 2015.
-Meng, Fandong, Lu, Zhengdong, Wang, Mingxuan, Li, Hang,
-Jiang, Wenbin, and Liu, Qun. Encoding Source Language
-with Convolutional Neural Network for Machine Translation.
-In Proc. of ACL, 2015.
-
-Convolutional Sequence to Sequence Learning
-
-Mi, Haitao, Wang, Zhiguo, and Ittycheriah, Abe. Vocabulary
-Manipulation for Neural Machine Translation. In Proc. of
-ACL, 2016.
-
-Shen, Shiqi, Zhao, Yu, Liu, Zhiyuan, Sun, Maosong, et al.
-Neural headline generation with sentence-wise optimization.
-arXiv preprint arXiv:1604.01904, 2016.
-
-Miller, Alexander H., Fisch, Adam, Dodge, Jesse, Karimi, AmirHossein, Bordes, Antoine, and Weston, Jason. Key-value
-memory networks for directly reading documents. In Proc.
-of EMNLP, 2016.
-
-Srivastava, Nitish, Hinton, Geoffrey E., Krizhevsky, Alex,
-Sutskever, Ilya, and Salakhutdinov, Ruslan. Dropout: a simple
-way to prevent Neural Networks from overfitting. JMLR, 15:
-1929–1958, 2014.
-
-Nallapati, Ramesh, Zhou, Bowen, Gulcehre, Caglar, Xiang,
-Bing, et al. Abstractive text summarization using sequenceto-sequence rnns and beyond. In Proc. of EMNLP, 2016.
-
-Sukhbaatar, Sainbayar, Weston, Jason, Fergus, Rob, and Szlam,
-Arthur. End-to-end Memory Networks. In Proc. of NIPS,
-pp. 2440–2448, 2015.
-
-Oord, Aaron van den, Kalchbrenner, Nal, and Kavukcuoglu,
-Koray. Pixel recurrent neural networks. arXiv preprint
-arXiv:1601.06759, 2016a.
-Oord, Aaron van den, Kalchbrenner, Nal, Vinyals, Oriol,
-Espeholt, Lasse, Graves, Alex, and Kavukcuoglu, Koray.
-Conditional image generation with pixelcnn decoders. arXiv
-preprint arXiv:1606.05328, 2016b.
-Over, Paul, Dang, Hoa, and Harman, Donna. Duc in context.
-Information Processing & Management, 43(6):1506–1520,
-2007.
-Pascanu, Razvan, Mikolov, Tomas, and Bengio, Yoshua. On
-the difficulty of training recurrent neural networks. In
-Proceedings of The 30th International Conference on Machine
-Learning, pp. 1310–1318, 2013.
-Rush, Alexander M, Chopra, Sumit, and Weston, Jason. A
-neural attention model for abstractive sentence summarization.
-In Proc. of EMNLP, 2015.
-Salimans, Tim and Kingma, Diederik P. Weight normalization:
-A simple reparameterization to accelerate training of deep
-neural networks. arXiv preprint arXiv:1602.07868, 2016.
-Schuster, Mike and Nakajima, Kaisuke. Japanese and korean
-voice search. In Acoustics, Speech and Signal Processing
-(ICASSP), 2012 IEEE International Conference on, pp.
-5149–5152. IEEE, 2012.
-Sennrich, Rico, Haddow, Barry, and Birch, Alexandra. Neural
-Machine Translation of Rare Words with Subword Units. In
-Proc. of ACL, 2016a.
-Sennrich, Rico, Haddow, Barry, and Birch, Alexandra. Edinburgh
-Neural Machine Translation Systems for WMT 16. In Proc.
-of WMT, 2016b.
-Shazeer, Noam, Mirhoseini, Azalia, Maziarz, Krzysztof,
-Davis, Andy, Le, Quoc, Hinton, Geoffrey, and Dean, Jeff.
-Outrageously large neural networks: The sparsely-gated
-mixture-of-experts layer. ArXiv e-prints, January 2016.
-
-Sutskever, Ilya, Martens, James, Dahl, George E., and Hinton,
-Geoffrey E. On the importance of initialization and
-momentum in deep learning. In ICML, 2013.
-Sutskever, Ilya, Vinyals, Oriol, and Le, Quoc V. Sequence to
-Sequence Learning with Neural Networks. In Proc. of NIPS,
-pp. 3104–3112, 2014.
-Suzuki, Jun and Nagata, Masaaki. Cutting-off redundant
-repeating generations for neural abstractive summarization.
-arXiv preprint arXiv:1701.00138, 2017.
-Waibel, Alex, Hanazawa, Toshiyuki, Hinton, Geoffrey, Shikano,
-Kiyohiro, and Lang, Kevin J. Phoneme Recognition using
-Time-delay Neural Networks. IEEE transactions on acoustics,
-speech, and signal processing, 37(3):328–339, 1989.
-Wu, Yonghui, Schuster, Mike, Chen, Zhifeng, Le, Quoc V,
-Norouzi, Mohammad, Macherey, Wolfgang, Krikun, Maxim,
-Cao, Yuan, Gao, Qin, Macherey, Klaus, et al. Google’s
-Neural Machine Translation System: Bridging the Gap
-between Human and Machine Translation. arXiv preprint
-arXiv:1609.08144, 2016.
-Yang, Zichao, Hu, Zhiting, Deng, Yuntian, Dyer, Chris, and
-Smola, Alex. Neural Machine Translation with Recurrent
-Attention Modeling. arXiv preprint arXiv:1607.05108, 2016.
-Zhou, Jie, Cao, Ying, Wang, Xuguang, Li, Peng, and Xu,
-Wei. Deep Recurrent Models with Fast-Forward Connections for Neural Machine Translation. arXiv preprint
-arXiv:1606.04199, 2016.
+Wagstaff, Kiri, Cardie, Claire, Rogers, Seth, and Schroedl,
+Stefan. Constrained K-means clustering with background
+knowledge. In Proc. Int. Conf. on Machine Learning,
+2001.
+Wang, Xiang and Davidson, Ian. Active spectral clustering.
+In Proc. 10th Int. Conf. on Data Mining, 2010.
+Wang, Y. and Singh, A. Noise-adaptive margin-based active
+learning for multi-dimensional data and lower bounds
+under tsybakov noise. In Proc. AAAI Conference on
+Artificial Intellgence, 2016.
+Wang, Yining, Wang, Yu-Xiang, and Singh, Aarti. Graph
+connectivity in noisy sparse subspace clustering. In Proceedings of The 19th International Conference on Artificial Intelligence and Statistics, 2016.
+Wang, Yu-Xiang and Xu, Huan. Noisy sparse subspace
+clustering. In Proceedings of The 30th International
+Conference on Machine Learning, pp. 89–97, 2013.
+Wright, John, Yang, Allen Y, Ganesh, Arvind, Sastry,
+S Shankar, and Ma, Yi. Robust face recognition via
+sparse representation. IEEE transactions on pattern analysis and machine intelligence, 31(2):210–227, 2009.
+Xiong, Caiming, 2016. personal correspondence.
+Xiong, Caiming, Johnson, David M., and Corso, Jason J.
+Active clustering with model-based uncertainty reduction. IEEE Trans. Pattern Anal. Mach. Intelligence, 2016.
+Accepted for publication.
+Xu, Qianjun, desJardins, Marie, and Wagstaff, Kiri L. Active constrained clustering by examining spectral eigenvectors. In Proc. 8th Int. Conf. on Discovery Science,
+2005.
+You, Chong, Li, Chun-Guang, Robinson, Daniel P., and
+Vidal, Rene. Oracle based active set algorithm for scalable elastic net subspace clustering. In Proc. IEEE International Conference on Computer Vision and Pattern
+Recognition, 2016a.
+You, Chong, Robinson, Daniel P., and Vidal, Rene. Scalable sparse subspace clustering by orthogonal matching
+pursuit. In Proc. IEEE International Conference on Computer Vision and Pattern Recognition, 2016b.
+Zhang, Teng, Szlam, Arthur, Wang, Yi, and Lerman, Gilad.
+Hybrid linear modeling via local best-fit flats. International Journal of Computer Vision, 100:217–240, 2012.
 
 

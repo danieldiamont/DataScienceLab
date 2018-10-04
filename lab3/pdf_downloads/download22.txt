@@ -1,1088 +1,709 @@
-OptNet: Differentiable Optimization as a Layer in Neural Networks
-
-Brandon Amos 1 J. Zico Kolter 1
+Wasserstein Generative Adversarial Networks
+Martin Arjovsky 1 Soumith Chintala 2 Léon Bottou 1 2
 
 Abstract
-This paper presents OptNet, a network architecture that integrates optimization problems (here,
-specifically in the form of quadratic programs)
-as individual layers in larger end-to-end trainable deep networks. These layers encode constraints and complex dependencies between the
-hidden states that traditional convolutional and
-fully-connected layers often cannot capture. In
-this paper, we explore the foundations for such
-an architecture: we show how techniques from
-sensitivity analysis, bilevel optimization, and implicit differentiation can be used to exactly differentiate through these layers and with respect to
-layer parameters; we develop a highly efficient
-solver for these layers that exploits fast GPUbased batch solves within a primal-dual interior
-point method, and which provides backpropagation gradients with virtually no additional cost on
-top of the solve; and we highlight the application of these approaches in several problems. In
-one notable example, we show that the method
-is capable of learning to play mini-Sudoku (4x4)
-given just input and output games, with no a priori information about the rules of the game; this
-highlights the ability of our architecture to learn
-hard constraints better than other neural architectures.
+We introduce a new algorithm named WGAN,
+an alternative to traditional GAN training. In
+this new model, we show that we can improve
+the stability of learning, get rid of problems like
+mode collapse, and provide meaningful learning
+curves useful for debugging and hyperparameter
+searches. Furthermore, we show that the corresponding optimization problem is sound, and
+provide extensive theoretical work highlighting
+the deep connections to different distances between distributions.
 
 1. Introduction
-In this paper, we consider how to treat exact, constrained
-optimization as an individual layer within a deep learning architecture. Unlike traditional feedforward networks,
-where the output of each layer is a relatively simple (though
-non-linear) function of the previous layer, our optimization
-framework allows for individual layers to capture much
-richer behavior, expressing complex operations that in to1
-School of Computer Science, Carnegie Mellon University. Pittsburgh, PA, USA. Correspondence to: Brandon Amos
-<bamos@cs.cmu.edu>, J. Zico Kolter <zkolter@cs.cmu.edu>.
+The problem this paper is concerned with is that of unsupervised learning. Mainly, what does it mean to learn a
+probability distribution? The classical answer to this is to
+learn a probability density. This is often done by defining
+a parametric family of densities (Pθ )θ∈Rd and finding the
+one that maximized the likelihood on our data: if we have
+real data examples {x(i) }m
+i=1 , we would solve the problem
+m
 
+max
+
+θ∈Rd
+
+1 X
+log Pθ (x(i) )
+m i=1
+
+If the real data distribution Pr admits a density and Pθ is the
+distribution of the parametrized density Pθ , then, asymptotically, this amounts to minimizing the Kullback-Leibler
+divergence KL(Pr kPθ ).
+For this to make sense, we need the model density Pθ to
+exist. This is not the case in the rather common situation
+where we are dealing with distributions supported by low
+dimensional manifolds. It is then unlikely that the model
+manifold and the true distribution’s support have a nonnegligible intersection (see (Arjovsky & Bottou, 2017)),
+and this means that the KL distance is not defined (or simply infinite).
+1
+
+Courant Institute of Mathematical Sciences, NY 2 Facebook
+AI Research, NY. Correspondence to: Martin Arjovsky <martinarjovsky@gmail.com>.
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-tal can reduce the overall depth of the network while preserving richness of representation. Specifically, we build a
-framework where the output of the i + 1th layer in a network is the solution to a constrained optimization problem
-based upon previous layers. This framework naturally encompasses a wide variety of inference problems expressed
-within a neural network, allowing for the potential of much
-richer end-to-end training for complex tasks that require
-such inference procedures.
-Concretely, in this paper we specifically consider the task
-of solving small quadratic programs as individual layers.
-These optimization problems are well-suited to capturing interesting behavior and can be efficiently solved with
-GPUs. Specifically, we consider layers of the form
-1 T
-z Q(zi )z + q(zi )T z
+The typical remedy is to add a noise term to the model distribution. This is why virtually all generative models described in the classical machine learning literature include
+a noise component. In the simplest case, one assumes a
+Gaussian noise with relatively high bandwidth in order to
+cover all the examples. It is well known, for instance, that
+in the case of image generation models, this noise degrades
+the quality of the samples and makes them blurry. For example, we can see in the recent paper (Wu et al., 2016)
+that the optimal standard deviation of the noise added to
+the model when maximizing likelihood is around 0.1 to
+each pixel in a generated image, when the pixels were already normalized to be in the range [0, 1]. This is a very
+high amount of noise, so much that when papers report the
+samples of their models, they don’t add the noise term on
+which they report likelihood numbers. In other words, the
+added noise term is clearly incorrect for the problem, but is
+needed to make the maximum likelihood approach work.
+Rather than estimating the density of Pr which may not exist, we can define a random variable Z with a fixed distribution p(z) and pass it through a parametric function
+gθ : Z → X (typically a neural network of some kind)
+that directly generates samples following a certain distribution Pθ . By varying θ, we can change this distribution and
+make it close to the real data distribution Pr . This is useful in two ways. First of all, unlike densities, this approach
+can represent distributions confined to a low dimensional
+manifold. Second, the ability to easily generate samples is
+often more useful than knowing the numerical value of the
+density (for example in image superresolution or semantic
+segmentation when considering the conditional distribution
+of the output image given the input image). In general, it
+is computationally difficult to generate samples given an
+arbitrary high dimensional density (Neal, 2001).
+Variational Auto-Encoders (VAEs) (Kingma & Welling,
+2013) and Generative Adversarial Networks (GANs)
+(Goodfellow et al., 2014) are well known examples of this
+approach. Because VAEs focus on the approximate likelihood of the examples, they share the limitation of the standard models and need to fiddle with additional noise terms.
+GANs offer much more flexibility in the definition of the
+objective function, including Jensen-Shannon (Goodfellow
+et al., 2014), and all f -divergences (Nowozin et al., 2016)
+as well as some exotic combinations (Huszar, 2015). On
+
+Wasserstein Generative Adversarial Networks
+
+the other hand, training GANs is well known for being delicate and unstable, for reasons theoretically investigated in
+(Arjovsky & Bottou, 2017).
+In this paper, we direct our attention on the various ways to
+measure how close the model distribution and the real distribution are, or equivalently, on the various ways to define
+a distance or divergence ρ(Pθ , Pr ). The most fundamental difference between such distances is their impact on the
+convergence of sequences of probability distributions. A
+sequence of distributions (Pt )t∈N converges if and only if
+there is a distribution P∞ such that ρ(Pt , P∞ ) tends to zero,
+something that depends on how exactly the distance ρ is
+defined. Informally, a distance ρ induces a weaker topology when it makes it easier for a sequence of distribution
+to converge.1 Section 2 clarifies how popular probability
+distances differ in that respect.
+In order to optimize the parameter θ, it is of course desirable to define our model distribution Pθ in a manner that
+makes the mapping θ 7→ Pθ continuous. Continuity means
+that when a sequence of parameters θt converges to θ, the
+distributions Pθt also converge to Pθ . However, it is essential to remember that the notion of the convergence of the
+distributions Pθt depends on the way we compute the distance between distributions. The weaker this distance, the
+easier it is to define a continuous mapping from θ-space to
+Pθ -space, since it’s easier for the distributions to converge.
+The main reason we care about the mapping θ 7→ Pθ to be
+continuous is as follows. If ρ is our notion of distance between two distributions, we would like to have a loss function θ 7→ ρ(Pθ , Pr ) that is continuous, and this is equivalent
+to having the mapping θ 7→ Pθ be continuous when using
+the distance between distributions ρ.
+The contributions of this paper are:
+• In Section 2, we provide a comprehensive theoretical
+analysis of how the Earth Mover (EM) distance behaves in comparison to popular probability distances
+and divergences used in the context of learning distributions.
+• In Section 3, we define a form of GAN called
+Wasserstein-GAN that minimizes a reasonable and efficient approximation of the EM distance, and we theoretically show that the corresponding optimization
+problem is sound.
+• In Section 4, we empirically show that WGANs cure
+the main training problems of GANs. In particular,
+training WGANs does not require maintaining a careful balance in training of the discriminator and the
+1
+
+More exactly, the topology induced by ρ is weaker than that
+induced by ρ0 when the set of convergent sequences under ρ is a
+superset of that under ρ0 .
+
+generator, does not require a careful design of the network architecture either, and also reduces the mode
+dropping that is typical in GANs. One of the most
+compelling practical benefits of WGANs is the ability
+to continuously estimate the EM distance by training
+the discriminator to optimality. Because they correlate
+well with the observed sample quality, plotting these
+learning curves is very useful for debugging and hyperparameter searches.
+
+2. Different Distances
+We now introduce our notation. Let X be a compact metric
+set, say the space of images [0, 1]d , and let Σ denote the
+set of all the Borel subsets of X . Let Prob(X ) denote the
+space of probability measures defined on X . We can now
+define elementary distances and divergences between two
+distributions Pr , Pg ∈ Prob(X ):
+• The Total Variation (TV) distance
+δ(Pr , Pg ) = sup |Pr (A) − Pg (A)| .
+A∈Σ
+
+• The Kullback-Leibler (KL) divergence
+
+
+Z
+Pr (x)
+Pr (x)dµ(x) ,
+KL(Pr kPg ) = log
+Pg (x)
+where both Pr and Pg are assumed to admit densities
+with respect to a same measure µ defined on X .2 The
+KL divergence is famously assymetric and possibly
+infinite when there are points such that Pg (x) = 0
+and Pr (x) > 0.
+• The Jensen-Shannon (JS) divergence
+JS(Pr , Pg ) = KL(Pr kPm ) + KL(Pg kPm ) ,
+where Pm is the mixture (Pr + Pg )/2. This divergence is symmetrical and always defined because we
+can choose µ = Pm .
+• The Earth-Mover (EM) distance or Wasserstein-1
+
+
+W (Pr , Pg ) =
+inf
+E(x,y)∼γ kx − yk , (1)
+γ∈Π(Pr ,Pg )
+
+where Π(Pr , Pg ) is the set of all joint distributions
+γ(x, y) whose marginals are respectively Pr and Pg .
+Intuitively, γ(x, y) indicates how much “mass” must
+be transported from x to y in order to transform the
+distributions Pr into the distribution Pg . The EM distance then is the “cost” of the optimal transport plan.
 2
-z
-subject to A(zi )z = b(zi )
-G(zi )z ≤ h(zi )
+Recall that a probability distribution Pr ∈ Prob(X ) admits
+aR density Pr (x) with respect to µ, that is, ∀A ∈ Σ, Pr (A) =
+P (x)dµ(x), if and only it is absolutely continuous with reA r
+spect to µ, that is, ∀A ∈ Σ, µ(A) = 0 ⇒ Pr (A) = 0 .
 
-zi+1 = argmin
+Wasserstein Generative Adversarial Networks
 
-(1)
+Figure 1: These plots show ρ(Pθ , P0 ) as a function of θ when ρ is the EM distance (left plot) or the JS divergence (right plot). The EM
+plot is continuous and provides a usable gradient everywhere. The JS plot is not continuous and does not provide a usable gradient.
 
-where z is the optimization variable, Q(zi ), q(zi ), A(zi ),
-b(zi ), G(zi ), and h(zi ) are parameters of the optimization
-problem. As the notation suggests, these parameters can
-depend in any differentiable way on the previous layer zi ,
-and which can eventually be optimized just like any other
-weights in a neural network. These layers can be learned
-by taking the gradients of some loss function with respect
-to the parameters. In this paper, we derive the gradients of
-(1) by taking matrix differentials of the KKT conditions of
-the optimization problem at its solution.
-In order to the make the approach practical for larger networks, we develop a custom solver which can simultaneously solve multiple small QPs in batch form. We do so
-by developing a custom primal-dual interior point method
-tailored specifically to dense batch operations on a GPU.
-In total, the solver can solve batches of quadratic programs
-over 100 times faster than existing highly tuned quadratic
-programming solvers such as Gurobi and CPLEX. One crucial algorithmic insight in the solver is that by using a
-specific factorization of the primal-dual interior point update, we can obtain a backward pass over the optimization layer virtually “for free” (i.e., requiring no additional
-factorization once the optimization problem itself has been
-solved). Together, these innovations enable parameterized
-optimization problems to be inserted within the architec-
+The following example illustrates how apparently simple
+sequences of probability distributions converge under the
+EM distance but do not converge under the other distances
+and divergences defined above.
+Example 1 (Learning parallel lines). Let Z ∼ U [0, 1] the
+uniform distribution on the unit interval. Let P0 be the distribution of (0, Z) ∈ R2 (a 0 on the x-axis and the random
+variable Z on the y-axis), uniform on a straight vertical line
+passing through the origin. Now let gθ (z) = (θ, z) with θ
+a single real parameter. It is easy to see that in this case,
+• W (P0 , Pθ ) = |θ|,
+(
+log 2
+• JS(P0 , Pθ ) =
+0
 
-OptNet: Differentiable Optimization as a Layer in Neural Networks
+• KL(Pθ kP0 ) = KL(P0 kPθ ) =
+(
+• and δ(P0 , Pθ ) =
 
-ture of existing deep networks.
-We begin by highlighting background and related work,
-and then present our optimization layer itself. Using matrix
-differentials we derive rules for computing all the necessary backpropagation updates. We then detail our specific
-solver for these quadratic programs, based upon a state-ofthe-art primal-dual interior point method, and highlight the
-novel elements as they apply to our formulation, such as
-the aforementioned fact that we can compute backpropagation at very little additional cost. We then provide experimental results that demonstrate the capabilities of the architecture, highlighting potential tasks that these architectures
-can solve, and illustrating improvements upon existing approaches.
+1
+0
 
-2. Background and related work
-Optimization plays a key role in modeling complex phenomena and providing concrete decision making processes
-in sophisticated environments. A full treatment of optimization applications is beyond our scope (Boyd & Vandenberghe, 2004) but these methods have bound applicability in control frameworks (Morari & Lee, 1999; Sastry
-& Bodson, 2011); numerous statistical and mathematical
-formalisms (Sra et al., 2012), and physical simulation problems like rigid body dynamics (Lötstedt, 1984). Generally
-speaking, our work is a step towards learning optimization
-problems behind real-world processes from data that can
-be learned end-to-end rather than requiring human specification and intervention.
-In the machine learning setting, a wide array of applications consider optimization as a means to perform inference in learning. Among many other applications, these
-architectures are well-studied for generic classification and
-structured prediction tasks (Goodfellow et al., 2013; Stoyanov et al., 2011; Brakel et al., 2013; LeCun et al., 2006;
-Belanger & McCallum, 2016; Belanger et al., 2017; Amos
-et al., 2017); in vision for tasks such as denoising (Tappen
-et al., 2007; Schmidt & Roth, 2014); and Metz et al. (2016)
-uses unrolled optimization within a network to stabilize the
-convergence of generative adversarial networks (Goodfellow et al., 2014). Indeed, the general idea of solving restricted classes of optimization problem using neural networks goes back many decades (Kennedy & Chua, 1988;
-Lillo et al., 1993), but has seen a number of advances in
-recent years. These models are often trained by one of the
-following four methods.
-Energy-based learning methods These methods can be
-used for tasks like (structured) prediction where the training method shapes the energy function to be low around the
-observed data manifold and high elsewhere (LeCun et al.,
-2006). In recent years, there has been a strong push to further incorporate structured prediction methods like condi-
++∞
+0
 
-tional random fields as the “last layer” of a deep network
-architecture (Peng et al., 2009; Zheng et al., 2015; Chen
-et al., 2015) as well as in deeper energy-based architectures (Belanger & McCallum, 2016; Belanger et al., 2017;
-Amos et al., 2017). Learning in this context requires observed data, which isn’t present in some of the contexts we
-consider in this paper, and also may suffer from instability issues when combined with deep energy-based architectures as observed in Belanger & McCallum (2016); Belanger et al. (2017); Amos et al. (2017).
-Analytically If an analytic solution to the argmin can be
-found, such as in an unconstrained quadratic minimization,
-the gradients can often also be computed analytically. This
-is done in Tappen et al. (2007); Schmidt & Roth (2014). We
-cannot use these methods for the constrained optimization
-problems we consider in this paper because there are no
-known analytic solutions.
-Unrolling The argmin operation over an unconstrained
-objective can be approximated by a first-order gradientbased method and unrolled. These architectures typically
-introduce an optimization procedure such as gradient descent into the inference procedure. This is done in Domke
-(2012); Amos et al. (2017); Belanger et al. (2017); Metz
-et al. (2016); Goodfellow et al. (2013); Stoyanov et al.
-(2011); Brakel et al. (2013). The optimization procedure is
-unrolled automatically or manually (Domke, 2012) to obtain derivatives during training that incorporate the effects
-of these in-the-loop optimization procedures. However, unrolling the computation of a method like gradient descent
-typically requires a substantially larger network, and adds
-substantially to the computational complexity of the network.
-In all of these existing cases, the optimization problem is
-unconstrained and unrolling gradient descent is often easy
-to do. When constraints are added to the optimization problem, iterative algorithms often use a projection operator
-that may be difficult to unroll through. In this paper, we
-do not unroll an optimization procedure but instead use
-argmin differentiation as described in the next section.
-Argmin differentiation Most closely related to our own
-work, there have been several papers that propose some
-form of differentiation through argmin operators. These
-techniques also come up in bilevel optimization (Gould
-et al., 2016; Kunisch & Pock, 2013) and sensitivity analysis (Bertsekas, 1999; Fiacco & Ishizuka, 1990; Bonnans
-& Shapiro, 2013). In the case of Gould et al. (2016),
-the authors describe general techniques for differentiation
-through optimization problems, but only describe the case
-of exact equality constraints rather than both equality and
-inequality constraints (in the case inequality constraints,
-they add these via a barrier function). Amos et al. (2017)
+1. If g is continuous in θ, so is W (Pr , Pθ ).
+2. If g is locally Lipschitz and satisfies regularity assumption 1, then W (Pr , Pθ ) is continuous everywhere, and differentiable almost everywhere.
+3. Statements 1-2 are false for the Jensen-Shannon divergence JS(Pr , Pθ ) and all the KLs.
 
-OptNet: Differentiable Optimization as a Layer in Neural Networks
+if θ =
+6 0,
+if θ = 0 ,
+(
 
-considers argmin differentiation within the context of a specific optimization problem (the bundle method) but does
-not consider a general setting. Johnson et al. (2016) performs implicit differentiation on (multi-)convex objectives
-with coordinate subspace constraints, but don’t consider inequality constraints and don’t consider in detail general linear equality constraints. Their optimization problem is only
-in the final layer of a variational inference network while
-we propose to insert optimization problems anywhere in
-the network. Therefore a special case of OptNet layers
-(with no inequality constraints) has a natural interpretation
-in terms of Gaussian inference, and so Gaussian graphical models (or CRF ideas more generally) provide tools
-for making the computation more efficient and interpreting
-or constraining its structure. Similarly, the older work of
-Mairal et al. (2012) considered argmin differentiation for a
-LASSO problem, deriving specific rules for this case, and
-presenting an efficient algorithm based upon our ability to
-solve the LASSO problem efficiently.
-In this paper, we use implicit differentiation (Dontchev
-& Rockafellar, 2009; Griewank & Walther, 2008) and
-techniques from matrix differential calculus (Magnus &
-Neudecker, 1988) to derive the gradients from the KKT
-matrix of the problem we are interested in. A notable different from other work within ML that we are aware of, is
-that we analytically differentiate through inequality as well
-as just equality constraints, but differentiating the complementarity conditions; this differs from e.g., Gould et al.
-(2016) where they instead approximately convert the problem to an unconstrained one via a barrier method. We have
-also developed methods to make this approach practical
-and reasonably scalable within the context of deep architectures.
+distance,3 we can now ask whether W (Pr , Pθ ) is a continuous loss function on θ under mild assumptions:
+Theorem 1. Let Pr be a fixed distribution over X . Let
+Z be a random variable (e.g Gaussian) over another
+space Z. Let Pθ denote the distribution of gθ (Z) where
+g : (z, θ) ∈ Z × Rd 7→ gθ (z) ∈ X . Then,
 
-3. OptNet: solving optimization within a
-neural network
+if θ =
+6 0,
+if θ = 0 ,
 
-1 T
-z Qz + q T z
-2
-subject to Az = b, Gz ≤ h
-z
+if θ =
+6 0,
+if θ = 0 .
 
-Training deep architectures, however, requires that we not
-just have a forward pass in our network but also a backward pass. This requires that we compute the derivative of
-the solution to the QP with respect to its input parameters,
-a general topic we topic we discussed previously. To obtain these derivatives, we differentiate the KKT conditions
-(sufficient and necessary conditions for optimality) of (2)
-at a solution to the problem using techniques from matrix
-differential calculus (Magnus & Neudecker, 1988). Our
-analysis here can be extended to more general convex optimization problems.
-The Lagrangian of (2) is given by
-1 T
-z Qz + q T z + ν T (Az − b) + λT (Gz − h)
-2
-(3)
-where ν are the dual variables on the equality constraints
-and λ ≥ 0 are the dual variables on the inequality constraints. The KKT conditions for stationarity, primal feasibility, and complementary slackness are
+As a consequence, learning by minimizing the EM distance
+makes sense (at least in theory) for neural networks:
+Corollary 1. Let gθ be any feedforward neural network4
+parameterized by θ, and p(z) a prior over z such that
+Ez∼p(z) [kzk] < ∞ (e.g. Gaussian, uniform, etc.). Then
+assumption 1 is satisfied and therefore W (Pr , Pθ ) is continuous everywhere and differentiable almost everywhere.
+Both proofs are given in Appendix C.
 
-L(z, ν, λ) =
+When θt → 0, the sequence (Pθt )t∈N converges to P0 under the EM distance, but does not converge at all under
+either the JS, KL, reverse KL, or TV divergences. Figure 1
+illustrates this for the case of the EM and JS distances.
+Example 1 gives a case where we can learn a probability
+distribution over a low dimensional manifold by doing gradient descent on the EM distance. This cannot be done with
+the other distances and divergences because the resulting
+loss function is not even continuous. Although this simple
+example features distributions with disjoint supports, the
+same conclusion holds when the supports have a non empty
+intersection contained in a set of measure zero. This happens to be the case when two low dimensional manifolds
+intersect in general position (Arjovsky & Bottou, 2017).
+Since the Wasserstein distance is much weaker than the JS
 
-Qz ? + q + AT ν ? + GT λ? = 0
-Az ? − b = 0
-?
-D(λ )(Gz ? − h) = 0,
+All this indicates that EM is a much more sensible cost
+function for our problem than at least the Jensen-Shannon
+divergence. The following theorem describes the relative
+strength of the topologies induced by these distances and
+divergences, with KL the strongest, followed by JS and TV,
+and EM the weakest.
+Theorem 2. Let P be a distribution on a compact space X
+and (Pn )n∈N be a sequence of distributions on X . Then,
+considering all limits as n → ∞,
+3
 
-(4)
+Appendix A explains to the mathematically inclined reader
+why this happens and how we arrived to the idea that Wasserstein
+is what we should really be optimizing.
+4
+By a feedforward neural network we mean a function composed of affine transformations and componentwise Lipschitz
+nonlinearities (such as the sigmoid, tanh, elu, softplus, etc). A
+similar but more technical proof is required for ReLUs.
 
-where D(·) creates a diagonal matrix from a vector and z ? ,
-ν ? and λ? are the optimal primal and dual variables. Taking
-the differentials of these conditions gives the equations
-dQz ? + Qdz + dq + dAT ν ? +
+Wasserstein Generative Adversarial Networks
 
-Although in the most general form, an OptNet layer can
-be any optimization problem, in this paper we will study
-OptNet layers defined by a quadratic program
-minimize
+1. The following statements are equivalent
+• δ(Pn , P) → 0 with δ the total variation distance.
+• JS(Pn , P) → 0 with JS the Jensen-Shannon divergence.
+2. The following statements are equivalent
+• W (Pn , P) → 0.
+D
 
-ral network setting, the optimal solution (or more generally,
-a subset of the optimal solution) of this optimization problems becomes the output of our layer, denoted zi+1 , and
-any of the problem data Q, q, A, b, G, h can depend on the
-value of the previous layer zi . The forward pass in our OptNet architecture thus involves simply setting up and finding
-the solution to this optimization problem.
+D
+
+• Pn −→ P where −→ represents convergence in
+distribution for random variables.
+3. KL(Pn kP) → 0 or KL(PkPn ) → 0 imply the statements in (1).
+4. The statements in (1) imply the statements in (2).
+Proof. See Appendix C
+This highlights the fact that the KL, JS, and TV distances
+are not sensible cost functions when learning distributions
+supported by low dimensional manifolds. However the EM
+distance is sensible in that setup. This leads us to the next
+section where we introduce a practical approximation of
+optimizing the EM distance.
+
+3. Wasserstein GAN
+Again, Theorem 2 points to the fact that W (Pr , Pθ ) might
+have nicer properties when optimized than JS(Pr , Pθ ).
+However, the infimum in (1) is highly intractable. On the
+other hand, the Kantorovich-Rubinstein duality (Villani,
+2009) tells us that
+W (Pr , Pθ ) = sup Ex∼Pr [f (x)] − Ex∼Pθ [f (x)]
 
 (2)
 
-where z ∈ Rn is our optimization variable Q ∈ Rn×n  0
-(a positive semidefinite matrix), q ∈ Rn , A ∈ Rm×n ,
-b ∈ Rm , G ∈ Rp×n and h ∈ Rp are problem data,
-and leaving out the dependence on the previous layer zi
-as we showed in (1) for notational convenience. As is wellknown, these problems can be solved in polynomial time
-using a variety of methods; if one desires exact (to numerical precision) solutions to these problems, then primal-dual
-interior point methods, as we will use in a later section, are
-the current state of the art in solution methods. In the neu-
+kf kL ≤1
 
-AT dν + dGT λ? + GT dλ = 0
-(5)
-dAz ? + Adz − db = 0
-D(Gz ? − h)dλ + D(λ? )(dGz ? + Gdz − dh) = 0
-or written more compactly in matrix form
-
- 
-dz
-Q
-GT
-AT
-D(λ? )G D(Gz ? − h) 0  dλ =
-dν
-A
-0
-0
-
-
-?
-T ?
-−dQz − dq − dG λ − dAT ν ?
- −D(λ? )dGz ? + D(λ? )dh  .
-−dAz ? + db
+max Ex∼Pr [fw (x)] − Ez∼p(z) [fw (gθ (z)]
 
-(6)
+Theorem 3. Let Pr be any distribution. Let Pθ be the distribution of gθ (Z) with Z a random variable with density p
+and gθ a function satisfying assumption 1. Then, there is a
+solution f : X → R to the problem
+max Ex∼Pr [f (x)] − Ex∼Pθ [f (x)]
 
-Using these equations, we can form the Jacobians of z ? (or
-λ? and ν ? , though we don’t consider this case here), with
-respect to any of the data parameters.
-For example, if we
-?
-wished to compute the Jacobian ∂z
-∈
-Rn×m , we would
-∂b
+kf kL ≤1
 
-OptNet: Differentiable Optimization as a Layer in Neural Networks
+and we have
+∇θ W (Pr , Pθ ) = −Ez∼p(z) [∇θ f (gθ (z))]
+when both terms are well-defined.
 
-simply substitute db = I (and set all other differential terms
-in the right hand side to zero), solve the equation, and the
-resulting value of dz would be the desired Jacobian.
-In the backpropagation algorithm, however, we never want
-to explicitly form the actual Jacobian matrices, but rather
-want to form the left matrix-vector product with some
-∂`
-∂` ∂z ?
-n
-previous backward pass vector ∂z
-? ∈ R , i.e., ∂z ? ∂b .
-We can do this efficiently by noting the solution for the
-(dz, dλ, dν) involves multiplying the inverse of the lefthand-side matrix in (6) by some right hand side. Thus, if
-we multiply the backward pass vector by the transpose of
-the differential matrix
-  
-−1 
- 
-∂` T
-dz
-Q
-GT D(λ? )
-AT
-?
-∂z
-dλ  = G D(Gz ? − h) 0   0  (7)
-dν
-A
-0
-0
-0
+where the supremum is over all the 1-Lipschitz functions
+f : X → R. Note that if we replace kf kL ≤ 1 for
+kf kL ≤ K (consider K-Lipschitz for some constant K),
+then we end up with K · W (Pr , Pg ). Therefore, if we have
+a parameterized family of functions {fw }w∈W that are all
+K-Lipschitz for some K, we could consider solving the
+problem
+w∈W
 
-icantly faster than the standard non-batch solvers Gurobi
-and CPLEX.
-Following the method of Mattingley & Boyd (2012), our
-solver introduces slack variables on the inequality constraints and iteratively minimizes the residuals from the
-KKT conditions over the primal variable z ∈ Rn , slack
-variable s ∈ Rp , and dual variables ν ∈ Rm associated with the equality constraints and λ ∈ Rp associated
-with the inequality constraints. Each iteration computes
-the affine scaling directions by solving
-
- aff  
-∆z
-−(AT ν + GT λ + Qz + q)
-
- ∆saff  
-−Sλ
- (9)
- 
-K
-
-∆λaff  = 
-−(Gz + s − h)
-−(Az − b)
-∆ν aff
-where
-
-
-Q
-0
-GT
-AT
- 0 D(λ) D(s) 0 
-,
-K=
-G
-I
-0
-0 
-A
-0
-0
-0
-
-then the relevant gradients with respect to all the QP parameters can be given by
-∂`
-= dz
-∂q
-∂`
-= −D(λ? )dλ
-∂h
-∂`
-= dν z T + νdTz
-∂A
-
-∂`
-= −dν
-∂b
-∂`
+Algorithm 1 WGAN, our proposed algorithm. All experiments in the paper used the default values α = 0.00005,
+c = 0.01, m = 64, ncritic = 5.
+Require: : α, the learning rate. c, the clipping parameter.
+m, the batch size. ncritic , the number of iterations of the
+critic per generator iteration.
+Require: : w0 , initial critic parameters. θ0 , initial generator’s parameters.
+1: while θ has not converged do
+2:
+for t = 0, ..., ncritic do
+3:
+Sample {x(i) }m
+i=1 ∼ Pr a batch from the real data.
+m
+4:
+Sample {z (i) }P
+i=1 ∼ p(z) a batch of priors.
+m
 1
-(8)
-= (dz z T + zdTz )
-∂Q
-2
-∂`
-= D(λ? )(dλ z T + λdTz )
-∂G
-
-where as in standard backpropagation, all these terms are
-at most the size of the parameter matrices. We note that
-some of these parameters should depend on the previous
-layer zi and the gradients with respect to the previous layer
-can be obtained through the chain rule. As we will see in
-the next section, the solution to an interior point method in
-fact already provides a factorization we can use to compute
-these gradient efficiently.
-3.1. An efficient batched QP solver
-Deep networks are typically trained in mini-batches to take
-advantage of efficient data-parallel GPU operations. Without mini-batching on the GPU, many modern deep learning
-architectures become intractable for all practical purposes.
-However, today’s state-of-the-art QP solvers like Gurobi
-and CPLEX do not have the capability of solving multiple optimization problems on the GPU in parallel across
-the entire minibatch. This makes larger OptNet layers become quickly intractable compared to a fully-connected
-layer with the same number of parameters.
-To overcome this performance bottleneck in our quadratic
-program layers, we have implemented a GPU-based
-primal-dual interior point method (PDIPM) based on Mattingley & Boyd (2012) that solves a batch of quadratic programs, and which provides the necessary gradients needed
-to train these in an end-to-end fashion. Our performance
-experiments in Section 4.1 shows that our solver is signif-
-
-then centering-plus-corrector directions by solving
- cc  
-
-0
-∆z
- ∆scc  σµ1 − D(∆saff )∆λaff 
- 
-,
-K
-∆λcc  = 
-
-0
-∆ν cc
-0
-
-(10)
-
-where µ = sT λ/p is the duality gap and σ is defined in
-Mattingley & Boyd (2012). Each variable v is updated with
-∆v = ∆v aff + ∆v cc using an appropriate step size. We actually solve a symmetrized version of the KKT conditions,
-obtained by scaling the second row block by D(1/s). We
-analytically decompose these systems into smaller symmetric systems and pre-factorize portions of them that don’t
-change (i.e. that don’t involve D(λ/s) between iterations).
-We have implemented a batched version of this method
-with the PyTorch library2 and have released it as an open
-source library at https://github.com/locuslab/
-qpth. It uses a custom CUBLAS extension that provides an interface to solve multiple matrix factorizations
-and solves in parallel, and which provides the necessary
-backpropagation gradients for their use in an end-to-end
-learning system.
-3.1.1. E FFICIENTLY COMPUTING GRADIENTS
-A key point of the particular form of primal-dual interior
-point method that we employ is that it is possible to compute the backward pass gradients “for free” after solving
-the original QP, without an additional matrix factorization
-or solve. Specifically, at each iteration in the primal-dual
-interior point, we are computing an LU decomposition of
-2
-
-https://pytorch.org
-
-OptNet: Differentiable Optimization as a Layer in Neural Networks
-
-the matrix Ksym .3 This matrix is essentially a symmetrized
-version of the matrix needed for computing the backpropagated gradients, and we can similarly compute the dz,λ,ν
-terms by solving the linear system
-T 
-  
-∂`
-dz
-−
-∂zi+1
-
- ds  
-
-=
-0
-(11)
-Ksym 
-
-,
-d˜λ  
-
-0
-dν
-0
-where d˜λ = D(λ? )dλ for dλ as defined in (7). Thus, all
-the backward pass gradients can be computed using the
-factored KKT matrix at the solution. Crucially, because
-the bottleneck of solving this linear system is computing
-the factorization of the KKT matrix (cubic time as opposed to the quadratic time for solving via backsubstitution
-once the factorization is computed), the additional time requirements for computing all the necessary gradients in the
-backward pass is virtually nonexistent compared with the
-time of computing the solution. To the best of our knowledge, this is the first time that this fact has been exploited
-in the context of learning end-to-end systems.
-3.2. Properties and representational power
-In this section we briefly highlight some of the mathematical properties of OptNet layers. The proofs here are
-straightforward, and are mostly based upon well-known results in convex analysis, so are deferred to the appendix.
-The first result simply highlights that (because the solution
-of strictly convex QPs is continuous), that OptNet layers
-are subdifferentiable everywhere, and differentiable at all
-but a measure-zero set of points.
-Theorem 1. Let z ? (θ) be the output of an OptNet layer,
-where θ = {Q, p, A, b, G, h}. Assuming Q  0 and that
-A has full row rank, then z ? (θ) is subdifferentiable everywhere: ∂z ? (θ) 6= ∅, where ∂z ? (θ) denotes the Clarke
-generalized subdifferential (Clarke, 1975) (an extension of
-the subgradient to non-convex functions), and has a single
-unique element (the Jacobian) for all but a measure zero
-set of points θ.
-The next two results show the representational power of the
-OptNet layer, specifically how an OptNet layer compares
-to the common linear layer followed by a ReLU activation.
-The first theorem shows that an OptNet layer can approxi3
-
-We actually perform an LU decomposition of a certain subset of the matrix formed by eliminating variables to create only
-a p × p matrix (the number of inequality constraints) that needs
-to be factor during each iteration of the primal-dual algorithm,
-and one m × m and one n × n matrix once at the start of the
-primal-dual algorithm, though we omit the detail here. We also
-use an LU decomposition as this routine is provided in batch form
-by CUBLAS, but could potentially use a (faster) Cholesky factorization if and when the appropriate functionality is added to
-CUBLAS).
-
-mate arbitrary elementwise piecewise-linear functions, and
-so among other things can represent a ReLU layer.
-Theorem 2. Let f : Rn → Rn be an elementwise piecewise linear function with k linear regions. Then the function can be represented as an OptNet layer using O(nk)
-parameters. Additionally, the layer zi+1 = max{W zi +
-b, 0} for W ∈ Rn×m , b ∈ Rn can be represented by an
-OptNet layer with O(mn) parameters.
-Finally, we show that the converse does not hold: that there
-are function representable by an OptNet layer which cannot
-be represented exactly by a two-layer ReLU layer, which
-take exponentially many units to approximate (known to
-be a universal function approximator). A simple example of such a layer (and one which we use in the
-proof) is just the max over three linear functions f (z) =
-max{aT1 x, aT2 x, aT3 x}.
-Theorem 3. Let f (z) : Rn → R be a scalar-valued function specified by an P
-OptNet layer with p parameters. Conm
-versely, let f 0 (z) = i=1 wi max{aTi z + bi , 0} be the output of a two-layer ReLU network. Then there exist functions that the ReLU network cannot represent exactly over
-all of R, and which require O(cp ) parameters to approximate over a finite region.
-3.3. Limitations of the method
-Although, as we will show shortly, the OptNet layer has
-several strong points, we also want to highlight the potential drawbacks of this approach. First, although, with an
-efficient batch solver, integrating an OptNet layer into existing deep learning architectures is potentially practical,
-we do note that solving optimization problems exactly as
-we do here has has cubic complexity in the number of variables and/or constraints. This contrasts with the quadratic
-complexity of standard feedforward layers. This means that
-we are ultimately limited to settings where the number of
-hidden variables in an OptNet layer is not too large (less
-than 1000 dimensions seems to be the limits of what we
-currently find to the be practical, and substantially less if
-one wants real-time results for an architecture).
-Secondly, there are many improvements to the OptNet layers that are still possible. Our QP solver, for instance, uses
-fully dense matrix operations, which makes the solves very
-efficient for GPU solutions, and which also makes sense for
-our general setting where the coefficients of the quadratic
-problem can be learned. However, for setting many realworld optimization problems (and hence for architectures
-that wish to more closely mimic some real-world optimization problem), there is often substantial structure (e.g.,
-sparsity), in the data matrices that can be exploited for efficiency. There is of course no prohibition of incorporating sparse matrix methods into the fast custom solver, but
-doing so would require substantial added complexity, especially regarding efforts like finding minimum fill orderings
-
-OptNet: Differentiable Optimization as a Layer in Neural Networks
-
-4. Experimental results
-In this section, we present several experimental results that
-highlight the capabilities of the QP OptNet layer. Specifically we look at 1) computational efficiency over exiting
-solvers; 2) the ability to improve upon existing convex
-problems such as those used in signal denoising; 3) integrating the architecture into an generic deep learning architectures; and 4) performance of our approach on a problem
-that is challenging for current approaches. In particular, we
-want to emphasize the results of our system on learning the
-game of (4x4) mini-Sudoku, a well-known logical puzzle;
-our layer is able to directly learn the necessary constraints
-using just gradient information and no a priori knowledge of the rules of Sudoku. The code and data for our
-experiments are open sourced in the icml2017 branch
-of https://github.com/locuslab/optnet and
-our batched QP solver is available as a library at https:
-//github.com/locuslab/qpth.
-4.1. Batch QP solver performance
-All of the OptNet performance results in this section are run
-on an unloaded Titan X GPU. Gurobi is run on an unloaded
-quad-core Intel Core i7-5960X CPU @ 3.00GHz.
-Our OptNet layers are much more computationally expensive than a linear or convolutional layer and a natural question is to ask what the performance difference is. We set
-up an experiment comparing a linear layer to a QP OptNet
-layer with a mini-batch size of 128 on CUDA with randomly generated input vectors sized 10, 50, 100, and 500.
-Each layer maps this input to an output of the same dimension; the linear layer does this with a batched matrix-vector
-multiplication and the OptNet layer does this by taking the
-argmin of a random QP that has the same number of inequality constraints as the dimensionality of the problem.
-Figure 1 shows the profiling results (averaged over 10 tri-
-
-Runtime (s)
-
-Lastly, we note that while the OptNet layers can be trained
-just as any neural network layer, since they are a new creation and since they have manifolds in the parameter space
-which have no effect on the resulting solution (e.g., scaling
-the rows of a constraint matrix and its right hand side does
-not change the optimization problem), there is admittedly
-more tuning required to get these to work. This situation
-is common when developing new neural network architectures and has also been reported in the similar architecture
-of Schmidt & Roth (2014). Our hope is that techniques for
-overcoming some of the challenges in learning these layers
-will continue to be developed in future work.
-
-10 1
-10 0
-
-Linear Forward
-
-Linear Backward
-
-QP Forward
-
-QP Backward
-
-10 -1
-10 -2
-10 -3
-10 -4
-10 -5
-
-10
-50
-100
-500
-Number of Variables (and Inequality Constraints)
-
-Figure 1. Performance of a linear layer and a QP layer.
-(Batch size 128)
-10 1
-Gurobi
-
-Runtime (s)
-
-for different sparsity patterns of the KKT systems. In our
-open source solver qpth, we have started experimenting
-with cuSOLVER’s batched sparse QR factorizations and
-solves.
-
-Ours Serial
-
-10 0
-
-Ours Batched
-
-10 -1
-
-10 -2
-
+(x(i) )
+5:
+gw ← ∇w [ m
+i=1 fwP
+m
 1
-
-64
-
-128
-
-Batch Size
-
-Figure 2. Performance of Gurobi and our QP solver.
-
-als) of the forward and backward passes. The OptNet layer
-is significantly slower than the linear layer as expected, yet
-still tractable in many practical contexts.
-Our next experiment illustrates why standard baseline QP
-solvers like CPLEX and Gurobi without batch support are
-too computationally expensive for QP OptNet layers to be
-tractable. We set up random QP of the form (1) that have
-100 variables and 100 inequality constraints in Gurobi and
-in the serialized and batched versions of our solver qpth
-and vary the batch size.4
-Figure 2 shows the means and standard deviations of running each trial 10 times, showing that our batched solver
-outperforms Gurobi, itself a highly tuned solver for reasonable batch sizes. For the minibatch size of 128, we solve
-all problems in an average of 0.18 seconds, whereas Gurobi
-tasks an average of 4.7 seconds. In the context of training a
-deep architecture this type of speed difference for a single
-minibatch can make the difference between a practical and
-a completely unusable solution.
-4.2. Total variation denoising
-Our next experiment studies how we can use the OptNet
-architecture to improve upon signal processing techniques
-4
-Experimental details: we sample entries of a matrix U from a
-random uniform distribution and set Q = U T U + 10−3 I, sample
-G with random normal entries, and set h by selecting generating some z0 random normal and s0 random uniform and setting
-h = Gz0 + s0 (we didn’t include equality constraints just for
-simplicity, and since the number of inequality constraints in the
-primary driver of complexity for the iterations in a primal-dual
-interior point method). The choice of h guarantees the problem is
-feasible.
-
-OptNet: Differentiable Optimization as a Layer in Neural Networks
-
-that currently use convex optimization as a basis. Specifically, our goal in this case is to denoise a noisy 1D signal
-given training data consistency of noisy and clean signals
-generated from the same distribution. Such problems are
-often addressed by convex optimization procedures, and
-(1D) total variation denoising is a particularly common and
-simple approach. Specifically, the total variation denoising
-approach attempts to smooth some noisy observed signal y
-by solving the optimization problem
+(i)
+−m
+i=1 fw (gθ (z ))]
+6:
+w ← w + α · RMSProp(w, gw )
+7:
+w ← clip(w, −c, c)
+8:
+end for
+m
+9:
+Sample {z (i) }P
+i=1 ∼ p(z) a batch of prior samples.
+m
 1
-argmin ||y − z|| + λ||Dz||1
-2
-z
-
-(12)
-
-where D is the first-order differencing operation, which
-can be expressed in matrix form by a matrix with rows
-Di = ei − ei+1 Penalizing the `1 norm of the signal difference encourages this difference to be sparse, i.e., the number of changepoints of the signal is small, and we end up
-approximating y by a (roughly) piecewise constant function.
-To test this approach and competing ones on a denoising
-task, we generate piecewise constant signals (which are the
-desired outputs of the learning algorithm) and corrupt them
-with independent Gaussian noise (which form the inputs
-to the learning algorithm). Table 1 shows the error rate of
-these four approaches.
-4.2.1. BASELINE : T OTAL VARIATION DENOISING
-To establish a baseline for denoising performance with total
-variation, we run the above optimization problem varying
-values of λ between 0 and 100. The procedure performs
-best with a choice of λ ≈ 13, and achieves a minimum test
-MSE on our task of about 16.5 (the units here are unimportant, the only relevant quantity is the relative performances
-of the different algorithms).
-4.2.2. BASELINE : L EARNING WITH A
-FULLY- CONNECTED NEURAL NETWORK
-An alternative approach to denoising is by learning from
-data. A function fθ (x) parameterized by θ can be used to
-predict the original signal. The optimal θ can be learned
-by using the mean squared error between the true and predicted signals. Denoising is typically a difficult function
-to learn and Table 1 shows that a fully-connected neural
-network perform substantially worse on this denoising task
-than the convex optimization problem. Section B shows the
-convergence of the fully-connected network.
-4.2.3. L EARNING THE DIFFERENCING OPERATOR WITH
-O PT N ET
-Between the feedforward neural network approach and the
-convex total variation optimization, we could instead use a
-generic OptNet layers that effectively allowed us to solve
-(12) using any denoising matrix, which we randomly ini-
-
-Figure 3. Initial and learned difference operators for denoising.
-
-Method
-FC Net
-Pure OptNet
-Total Variation
-OptNet Tuned TV
-
-Train MSE
-18.5
-52.9
-16.3
-13.8
-
-Test MSE
-29.8
-53.3
-16.5
-14.4
-
-Table 1. Denoising task error rates.
-
-tialize. While the accuracy here is substantially lower than
-even the fully connected case, this is largely the result of
-learning an over-regularized solution to D. This is indeed
-a point that should be addressed in future work (we refer
-back to our comments in the previous section on the potential challenges of training these layers), but the point we
-want to highlight here is that the OptNet layer seems to
-be learning something very interpretable and understandable. Specifically, Figure 3 shows the D matrix of our solution before and after learning (we permute the rows to
-make them ordered by the magnitude of where the largeabsolute-value entries occurs). What is interesting in this
-picture is that the learned D matrix typically captures exactly the same intuition as the D matrix used by total variation denoising: a mainly sparse matrix with a few entries
-of alternating sign next to each other. This implies that for
-the data set we have, total variation denoising is indeed the
-“right” way to think about denoising the resulting signal,
-but if some other noise process were to generate the data,
-then we can learn that process instead. We can then attain lower actual error for the method (in this case similar
-though slightly higher than the TV solution), by fixing the
-learned sparsity of the D matrix and then fine tuning.
-4.2.4. F INE - TUNING AND IMPROVING THE TOTAL
-VARIATION SOLUTION
-
-To finally highlight the ability of the OptNet methods to
-improve upon the results of a convex program, specifically
-tailoring to the data. Here, we use the same OptNet architecture as in the previous subsection, but initialize D to be
-the differencing matrix as in the total variation solution. As
-shown in Table 1, the procedure is able to improve both the
-training and testing MSE over the TV solution, specifically
-improving upon test MSE by 12%. Section B shows the
-convergence of fine-tuning.
-
-OptNet: Differentiable Optimization as a Layer in Neural Networks
-
-4
-4
-
-1
-
-4
-3
-1
-2
-
-1
-2
-4
-3
-
-Conv Train
-
-3
-4
-2
-1
-
-Figure 4. Example mini-Sudoku initial problem and solution.
-
-10
-
-Sudoku is fundamentally a constraint satisfaction problem,
-and is trivial for computers to solve when told the rules of
-the game. However, if we do not know the rules of the
-game, but are only presented with examples of unsolved
-and the corresponding solved puzzle, this is a challenging
-task. We consider this to be an interesting benchmark task
-for algorithms that seek to capture complex strict relationships between all input and output variables. The input to
-the algorithm consists of a 4x4 grid (really a 4x4x4 tensor
-with a one-hot encoding for known entries an all zeros for
-unknown entries), and the desired output is a 4x4x4 tensor
-of the one-hot encoding of the solution.
-This is a problem where traditional neural networks have
-difficulties learning the necessary hard constraints. As a
-baseline inspired by the models at https://github.
-com/Kyubyong/sudoku, we implemented a multilayer
-feedforward network to attempt to solve Sudoku problems.
-Specifically, we report results for a network that has 10 convolutional layers with 512 3x3 filters each, and tried other
-architectures as well. The OptNet layer we use on this task
-is a completely generic QP in “standard form” with only
-positivity inequality constraints but an arbitrary constraint
-matrix Ax = b, a small Q = 0.1I to make sure the problem is strictly feasible, and with the linear term q simply
-being the input one-hot encoding of the Sudoku problem.
-We know that Sudoku can be approximated well with a
-linear program (indeed, integer programming is a typical
-
-OptNet Test
-
-10 -2
-
-10 -3
-
-2
-
-4
-
-6
-
-8
-
-10
-
-12
-
-14
-
-16
-
-18
-
-Epoch
-
-0
-Error
-
-10 -3
-
-0
-
-10 0
-
-2
-
-4
-
-6
-
-8
-
-10
-
-12
-
-14
-
-16
-
-18
-
-Epoch
-
-10 -1
-
-10 -2
-
-10 -3
-
-0
-
-2
-
-4
-
-6
-
-8
-
-10
-
-12
-
-14
-
-16
-
-18
-
-Epoch
-
-4.4. Sudoku
-Finally, we present the main illustrative example of the representational power of our approach, the task of learning
-the game of Sudoku. Sudoku is a popular logical puzzle,
-where a (typically 9x9) grid of points must be arranged
-given some initial point, so that each row, each column, and
-each 3x3 grid of points must contain one of each number
-1 through 9. We consider the simpler case of 4x4 Sudoku
-puzzles, with numbers 1 through 4, as shown in Figure 4.3.
-
-OptNet Train
-
--2
-
-4.3. MNIST
-One compelling use case of an OptNet layer is to learn constraints and dependencies over the output or latent space of
-a model. As a simple example to illustrate that OptNet layers can be included in existing architectures and that the
-gradients can be efficiently propagated through the layer,
-we show the performance of a fully-connected feedforward
-network with and without an OptNet layer in Section A in
-the supplemental material.
-
-Conv Test
-
-10 -1
-
-10 -1
-Loss
-
-1
-
-2
-1
-3
-4
-
-Loss
-
-3
-
-Figure 5. Sudoku training plots.
-
-solution method for such problems), but the model here is
-told nothing about the rules of Sudoku.
-We trained these models using ADAM (Kingma & Ba,
-2014) to minimize the MSE (which we refer to as “loss”)
-on a dataset we created consisting of 9000 training puzzles, and we then tested the models on 1000 different heldout puzzles. The error rate is the percentage of puzzles
-solved correctly if the cells are assigned to whichever index is largest in the prediction. Figure 5 shows that the
-convolutional is able to learn all of the necessary logic for
-the task and ends up over-fitting to the training data. We
-contrast this with the performance of the OptNet network,
-which learns most of the correct hard constraints within the
-first three epochs and is able to generalize much better to
-unseen examples.
-
-5. Conclusion
-We have presented OptNet, a neural network architecture
-where we use optimization problems as a single layer in
-the network. We have derived the algorithmic formulation for differentiating through these layers, allowing for
-backpropagating in end-to-end architectures. We have also
-developed an efficient batch solver for these optimizations
-based upon a primal-dual interior point method, and developed a method for attaining the necessary gradient information “for free” from this approach. Our experiments highlight the potential power of these networks, showing that
-they can solve problems where existing networks are very
-poorly suited, such as learning Sudoku problems purely
-from data. There are many future directions of research
-for these approaches, but we feel that they add another important primitive to the toolbox of neural network practitioners.
-
-OptNet: Differentiable Optimization as a Layer in Neural Networks
+10:
+gθ ← −∇θ m i=1 fw (gθ (z (i) ))
+11:
+θ ← θ − α · RMSProp(θ, gθ )
+12: end while
+
+(3)
+
+and if the supremum in (2) is attained for some w ∈ W
+(a pretty strong assumption akin to what’s assumed when
+proving consistency of an estimator), this process would
+yield a calculation of W (Pr , Pθ ) up to a multiplicative
+constant. Furthermore, we could consider differentiating W (Pr , Pθ ) (again, up to a constant) by back-proping
+through equation (2) via estimating Ez∼p(z) [∇θ fw (gθ (z))].
+While this is all intuition, we now prove that this process is
+principled under the optimality assumption.
+
+Proof. See Appendix C
+Now comes the question of finding the function f that
+solves the maximization problem in equation (2). To
+roughly approximate this, something that we can do is
+train a neural network parameterized with weights w lying in a compact space W and then backprop through
+Ez∼p(z) [∇θ fw (gθ (z))], as we would do with a typical
+GAN. Note that the fact that W is compact implies that all
+the functions fw will be K-Lipschitz for some K that only
+depends on W and not the individual weights, therefore
+approximating (2) up to an irrelevant scaling factor and the
+capacity of the ‘critic’ fw . In order to have parameters w lie
+in a compact space, something simple we can do is clamp
+the weights to a fixed box (say W = [−0.01, 0.01]l ) after
+each gradient update. The Wasserstein Generative Adversarial Network (WGAN) procedure is described in Algorithm 1.
+
+Wasserstein Generative Adversarial Networks
+
+Figure 2: Different methods learning a mixture of 8 gaussians spread in a circle. WGAN is able to learn the distribution without mode
+collapse. An interesting fact is that the WGAN (much like the Wasserstein distance) seems to capture first the low dimensional structure
+of the data (the approximate circle) before matching the specific bumps in the density. Green: KDE plots. Blue: samples from the model.
+
+is differentiable almost everywhere. For the JS, as the discriminator gets better the gradients get more reliable but
+the true gradient is 0 since the JS is locally saturated and
+we get vanishing gradients, as can be seen in Figure 1 of
+this paper and Theorem 2.4 of (Arjovsky & Bottou, 2017).
+In Figure 3 we show a proof of concept of this, where we
+train a GAN discriminator and a WGAN critic till optimality. The discriminator learns very quickly to distinguish
+between fake and real, and as expected provides no reliable
+gradient information. The critic, however, can’t saturate,
+and converges to a linear function that gives remarkably
+clean gradients everywhere. The fact that we constrain the
+weights limits the possible growth of the function to be at
+most linear in different parts of the space, forcing the optimal critic to have this behaviour.
+Figure 3: Optimal discriminator and critic when learning to differentiate two Gaussians. As we can see, the traditional GAN
+discriminator saturates and results in vanishing gradients. Our
+WGAN critic provides very clean gradients on all parts of the
+space.
+
+The fact that the EM distance is continuous and differentiable a.e. means that we can (and should) train the critic
+till optimality. The argument is simple, the more we train
+the critic, the more reliable gradient of the Wasserstein we
+get, which is actually useful by the fact that Wasserstein
+
+Perhaps more importantly, the fact that we can train the
+critic till optimality makes it impossible to collapse modes
+when we do. This is due to the fact that mode collapse
+comes from the fact that the optimal generator for a fixed
+discriminator is a sum of deltas on the points the discriminator assigns the highest values, as observed by (Goodfellow et al., 2014) and highlighted in (Metz et al., 2016).
+In the following section we display the practical benefits of
+our new algorithm, and we provide an in-depth comparison
+of its behaviour and that of traditional GANs.
+
+Wasserstein Generative Adversarial Networks
+
+Figure 4: Training curves and samples at different stages of training. We can see a clear correlation between lower error and better
+sample quality. Upper left: the generator is an MLP with 4 hidden layers and 512 units at each layer. The loss decreases constistently
+as training progresses and sample quality increases. Upper right: the generator is a standard DCGAN. The loss decreases quickly
+and sample quality increases as well. In both upper plots the critic is a DCGAN without the sigmoid so losses can be subjected to
+comparison. Lower half: both the generator and the discriminator are MLPs with substantially high learning rates (so training failed).
+Loss is constant and samples are constant as well. The training curves were passed through a median filter for visualization purposes.
+
+4. Empirical Results
+
+4.2. Experimental Procedure for Image Generation
+
+We run experiments on image generation using our
+Wasserstein-GAN algorithm and show that there are significant practical benefits to using it over the formulation
+used in standard GANs. We claim two main benefits:
+
+We run experiments on image generation. The target distribution to learn is the LSUN-Bedrooms dataset (Yu et al.,
+2015) – a collection of natural images of indoor bedrooms.
+Our baseline comparison is DCGAN (Radford et al., 2015),
+a GAN with a convolutional architecture trained with the
+standard GAN procedure using the − log D trick (Goodfellow et al., 2014). The generated samples are 3-channel images of 64x64 pixels in size. We use the hyper-parameters
+specified in Algorithm 1 for all of our experiments.
+
+• a meaningful loss metric that correlates with the generator’s convergence and sample quality
+• improved stability of the optimization process
+4.1. Mixtures of Gaussians
+
+4.3. Meaningful loss metric
+
+In (Metz et al., 2016) the authors presented a simple mixture of Gaussians experiments that served a very specific
+purpose. In this mixture, the mode collapse problem of
+GANs is easy to visualize, since a normal GAN would rotate between the different modes of the mixture, and fail
+to capture the whole distribution. In 2 we show how our
+WGAN algorithm approximately finds the correct distribution, without any mode collapse.
+
+Because the WGAN algorithm attempts to train the critic f
+(lines 2–8 in Algorithm 1) relatively well before each generator update (line 10 in Algorithm 1), the loss function at
+this point is an estimate of the EM distance, up to constant
+factors related to the way we constrain the Lipschitz constant of f .
+
+An interesting thing is that the WGAN first seems to learn
+to match the low-dimensional structure of the data (the approximate circle), before zooming in on the specific bumps
+of the true density. Similar to the Wasserstein distance, it
+looks like WGAN gives more importance to matching the
+low dimensional supports rather than the specific ratios between the densities.
+
+Our first experiment illustrates how this estimate correlates
+well with the quality of the generated samples. Besides
+the convolutional DCGAN architecture, we also ran experiments where we replace the generator or both the generator
+and the critic by 4-layer ReLU-MLP with 512 hidden units.
+Figure 4 plots the evolution of the WGAN estimate (3) of
+the EM distance during WGAN training for all three architectures. The plots clearly show that these curves correlate
+
+Wasserstein Generative Adversarial Networks
+
+Figure 5: JS estimates for an MLP generator (upper left) and a DCGAN generator (upper right) trained with the standard GAN
+procedure. Both had a DCGAN discriminator. Both curves have increasing error. Samples get better for the DCGAN but the JS estimate
+increases or stays constant, pointing towards no significant correlation between sample quality and loss. Bottom: M LP with both
+generator and discriminator. The curve goes up and down regardless of sample quality. All training curves were passed through the
+same median filter as in Figure 4.
+
+well with the visual quality of the generated samples.
+To our knowledge, this is the first time in GAN literature that such a property is shown, where the loss of the
+GAN shows properties of convergence. This property is
+extremely useful when doing research in adversarial networks as one does not need to stare at the generated samples to figure out failure modes and to gain information on
+which models are doing better over others.
+However, we do not claim that this is a new method to
+quantitatively evaluate generative models yet. The constant scaling factor that depends on the critic’s architecture
+means it’s hard to compare models with different critics.
+Even more, in practice the fact that the critic doesn’t have
+infinite capacity makes it hard to know just how close to
+the EM distance our estimate really is. This being said, we
+have succesfully used the loss metric to validate our experiments repeatedly and without failure, and we see this as a
+huge improvement in training GANs which previously had
+no such facility.
+In contrast, Figure 5 plots the evolution of the GAN estimate of the JS distance during GAN training. More precisely, during GAN training, the discriminator is trained to
+maximize
+L(D, gθ ) = Ex∼Pr [log D(x)] + Ex∼Pθ [log(1 − D(x))]
+which is is a lower bound of 2JS(Pr , Pθ ) − 2 log 2. In the
+figure, we plot the quantity 12 L(D, gθ ) + log 2, which is a
+lower bound of the JS distance.
+
+This quantity clearly correlates poorly the sample quality.
+Note also that the JS estimate usually stays constant or goes
+up instead of going down. In fact it often remains very
+close to log 2 ≈ 0.69 which is the highest value taken by
+the JS distance. In other words, the JS distance saturates,
+the discriminator has zero loss, and the generated samples
+are in some cases meaningful (DCGAN generator, top right
+plot) and in other cases collapse to a single nonsensical image (Goodfellow et al., 2014). This last phenomenon has
+been theoretically explained in (Arjovsky & Bottou, 2017)
+and highlighted in (Metz et al., 2016).
+When using the − log D trick (Goodfellow et al., 2014),
+the discriminator loss and the generator loss are different.
+Figure 9 in Appendix F reports the same plots for GAN
+training, but using the generator loss instead of the discriminator loss. This does not change the conclusions.
+Finally, as a negative result, we report that WGAN training becomes unstable at times when one uses a momentum
+based optimizer such as Adam (Kingma & Ba, 2014) (with
+β1 > 0) on the critic, or when one uses high learning rates.
+Since the loss for the critic is nonstationary, momentum
+based methods seemed to perform worse. We identified
+momentum as a potential cause because, as the loss blew up
+and samples got worse, the cosine between the Adam step
+and the gradient usually turned negative. The only places
+where this cosine was negative was in these situations of
+instability. We therefore switched to RMSProp (Tieleman
+& Hinton, 2012) which is known to perform well even on
+very nonstationary problems (Mnih et al., 2016).
+
+Wasserstein Generative Adversarial Networks
+
+Figure 6: Algorithms trained with a DCGAN generator. Left: WGAN algorithm. Right: standard GAN formulation. Both algorithms
+produce high quality samples.
+
+Figure 7: Algorithms trained with a generator without batch normalization and constant number of filters at every layer (as opposed
+to duplicating them every time as in (Radford et al., 2015)). Aside from taking out batch normalization, the number of parameters is
+therefore reduced by a bit more than an order of magnitude. Left: WGAN algorithm. Right: standard GAN formulation. As we can see
+the standard GAN failed to learn while the WGAN still was able to produce samples.
+
+Figure 8: Algorithms trained with an MLP generator with 4 layers and 512 units with ReLU nonlinearities. The number of parameters
+is similar to that of a DCGAN, but it lacks a strong inductive bias for image generation. Left: WGAN algorithm. Right: standard GAN
+formulation. The WGAN method still was able to produce samples, lower quality than the DCGAN, and of higher quality than the MLP
+of the standard GAN. Note the significant degree of mode collapse in the GAN MLP.
+
+4.4. Improved stability
+
+5. Related Work
+
+One of the benefits of WGAN is that it allows us to train
+the critic till optimality. When the critic is trained to completion, it simply provides a loss to the generator that we
+can train as any other neural network. This tells us that we
+no longer need to balance generator and discriminator’s capacity properly. The better the critic, the higher quality the
+gradients we use to train the generator.
+
+We refer the reader to Appendix D for the connections to
+the different integral probability metrics (Müller, 1997).
+
+We observe that WGANs are more robust than GANs when
+one varies the architectural choices for the generator in certain ways. We illustrate this by running experiments on
+three generator architectures: (1) a convolutional DCGAN
+generator, (2) a convolutional DCGAN generator without
+batch normalization and with a constant number of filters
+(the capacity of the generator is drastically smaller than that
+of the discriminator), and (3) a 4-layer ReLU-MLP with
+512 hidden units. The last two are known to perform very
+poorly with GANs. We keep the convolutional DCGAN architecture for the WGAN critic or the GAN discriminator.
+Figures 6, 7, and 8 show samples generated for these three
+architectures using both the WGAN and GAN algorithms.
+We refer the reader to Appendix H for full sheets of generated samples. Samples were not cherry-picked.
+In no experiment did we see evidence of mode collapse
+for the WGAN algorithm.
+
+The recent work of (Montavon et al., 2016) has explored
+the use of Wasserstein distances in the context of learning for Restricted Boltzmann Machines for discrete spaces.
+Even though the motivations at a first glance might seem
+quite different, at the core of it both our works want to compare distributions in a way that leverages the geometry of
+the underlying space, which Wasserstein allows us to do.
+Finally, the work of (Genevay et al., 2016) shows new algorithms for calculating Wasserstein distances between different distributions. We believe this direction is quite important, and perhaps could lead to new ways to evaluate
+generative models.
+
+6. Conclusion
+We introduced an algorithm that we deemed WGAN, an
+alternative to traditional GAN training. In this new model,
+we showed that we can improve the stability of learning,
+get rid of problems like mode collapse, and provide meaningful learning curves useful for debugging and hyperparameter searches. Furthermore, we showed that the corresponding optimization problem is sound, and provided extensive theoretical work highlighting the deep connections
+to other distances between distributions.
+
+Wasserstein Generative Adversarial Networks
 
 Acknowledgments
-BA is supported by the National Science Foundation
-Graduate Research Fellowship Program under Grant No.
-DGE1252522. We would like to thank the developers
-of PyTorch for helping us add core features, particularly
-Soumith Chintala and Adam Paszke. We also thank Ian
-Goodfellow, Lekan Ogunmolu, Rui Silva, Po-Wei Wang,
-and Eric Wong for invaluable comments, as well as Rocky
-Duan who helped us improve our feedforward network
-baseline on mini-Sudoku.
+We would like to thank Mohamed Ishmael Belghazi, Emily
+Denton, Ian Goodfellow, Ishaan Gulrajani, Alex Lamb,
+David Lopez-Paz, Eric Martin, musyoku, Maxime Oquab,
+Aditya Ramesh, Ronan Riochet, Uri Shalit, Pablo Sprechmann, Arthur Szlam, Ruohan Wang, for helpful comments
+and advice.
 
 References
-Amos, Brandon, Xu, Lei, and Kolter, J Zico. Input convex neural networks. In Proceedings of the International
-Conference on Machine Learning, 2017.
-Belanger, David and McCallum, Andrew. Structured prediction energy networks. In Proceedings of the International Conference on Machine Learning, 2016.
-Belanger, David, Yang, Bishan, and McCallum, Andrew.
-End-to-end learning for structured prediction energy networks. In Proceedings of the International Conference
-on Machine Learning, 2017.
-Bertsekas, Dimitri P. Nonlinear programming. Athena scientific Belmont, 1999.
-Bonnans, J Frédéric and Shapiro, Alexander. Perturbation
-analysis of optimization problems. Springer Science &
-Business Media, 2013.
-Boyd, Stephen and Vandenberghe, Lieven. Convex optimization. Cambridge university press, 2004.
-Brakel, Philémon, Stroobandt, Dirk, and Schrauwen, Benjamin. Training energy-based models for time-series imputation. Journal of Machine Learning Research, 14(1):
-2771–2797, 2013.
-Chen, Liang-Chieh, Schwing, Alexander G, Yuille, Alan L,
-and Urtasun, Raquel. Learning deep structured models.
-In Proceedings of the International Conference on Machine Learning, 2015.
-Clarke, Frank H. Generalized gradients and applications. Transactions of the American Mathematical Society, 205:247–262, 1975.
-Domke, Justin. Generic methods for optimization-based
-modeling. In AISTATS, volume 22, pp. 318–326, 2012.
-Dontchev, Asen L and Rockafellar, R Tyrrell. Implicit
-functions and solution mappings. Springer Monogr.
-Math., 2009.
+Arjovsky, Martin and Bottou, Léon. Towards principled
+methods for training generative adversarial networks. In
+International Conference on Learning Representations,
+2017.
+Dziugaite, Gintare Karolina, Roy, Daniel M., and Ghahramani, Zoubin. Training generative neural networks
+via maximum mean discrepancy optimization. CoRR,
+abs/1505.03906, 2015.
 
-Duchi, John, Shalev-Shwartz, Shai, Singer, Yoram, and
-Chandra, Tushar. Efficient projections onto the l 1-ball
-for learning in high dimensions. In Proceedings of the
-25th international conference on Machine learning, pp.
-272–279, 2008.
-Fiacco, Anthony V and Ishizuka, Yo. Sensitivity and stability analysis for nonlinear programming. Annals of Operations Research, 27(1):215–235, 1990.
-Goodfellow, Ian, Mirza, Mehdi, Courville, Aaron, and
-Bengio, Yoshua. Multi-prediction deep boltzmann machines. In Advances in Neural Information Processing
-Systems, pp. 548–556, 2013.
-Goodfellow, Ian, Pouget-Abadie, Jean, Mirza, Mehdi, Xu,
-Bing, Warde-Farley, David, Ozair, Sherjil, Courville,
-Aaron, and Bengio, Yoshua. Generative adversarial nets.
-In Advances in Neural Information Processing Systems,
-pp. 2672–2680, 2014.
-Gould, Stephen, Fernando, Basura, Cherian, Anoop, Anderson, Peter, Santa Cruz, Rodrigo, and Guo, Edison. On
-differentiating parameterized argmin and argmax problems with application to bi-level optimization. arXiv
-preprint arXiv:1607.05447, 2016.
-Griewank, Andreas and Walther, Andrea. Evaluating
-derivatives: principles and techniques of algorithmic
-differentiation. SIAM, 2008.
-Johnson, Matthew, Duvenaud, David K, Wiltschko, Alex,
-Adams, Ryan P, and Datta, Sandeep R. Composing
-graphical models with neural networks for structured
-representations and fast inference. In Advances in Neural
-Information Processing Systems, pp. 2946–2954, 2016.
-Kennedy, Michael Peter and Chua, Leon O. Neural networks for nonlinear programming. IEEE Transactions
-on Circuits and Systems, 35(5):554–562, 1988.
-Kingma, Diederik and Ba, Jimmy.
-method for stochastic optimization.
-arXiv:1412.6980, 2014.
-
-Adam: A
-arXiv preprint
-
-Kunisch, Karl and Pock, Thomas. A bilevel optimization
-approach for parameter learning in variational models.
-SIAM Journal on Imaging Sciences, 6(2):938–983, 2013.
-LeCun, Yann, Chopra, Sumit, Hadsell, Raia, Ranzato, M,
-and Huang, F. A tutorial on energy-based learning. Predicting structured data, 1:0, 2006.
-Lillo, Walter E, Loh, Mei Heng, Hui, Stefen, and Zak,
-Stanislaw H. On solving constrained optimization problems with neural networks: A penalty method approach.
-IEEE Transactions on neural networks, 4(6):931–940,
-1993.
-
-OptNet: Differentiable Optimization as a Layer in Neural Networks
-
-Lötstedt, Per. Numerical simulation of time-dependent
-contact and friction problems in rigid body mechanics.
-SIAM journal on scientific and statistical computing, 5
-(2):370–393, 1984.
-Magnus, X and Neudecker, Heinz. Matrix differential calculus. New York, 1988.
-Mairal, Julien, Bach, Francis, and Ponce, Jean. Task-driven
-dictionary learning. IEEE Transactions on Pattern Analysis and Machine Intelligence, 34(4):791–804, 2012.
-Mattingley, Jacob and Boyd, Stephen. Cvxgen: A code
-generator for embedded convex optimization. Optimization and Engineering, 13(1):1–27, 2012.
+International Conference on Machine Learning (ICML15), pp. 1718–1727. JMLR Workshop and Conference
+Proceedings, 2015.
 Metz, Luke, Poole, Ben, Pfau, David, and Sohl-Dickstein,
-Jascha. Unrolled generative adversarial networks. arXiv
-preprint arXiv:1611.02163, 2016.
-Morari, Manfred and Lee, Jay H. Model predictive control: past, present and future. Computers & Chemical
-Engineering, 23(4):667–682, 1999.
-Peng, Jian, Bo, Liefeng, and Xu, Jinbo. Conditional neural fields. In Advances in neural information processing
-systems, pp. 1419–1427, 2009.
-Sastry, Shankar and Bodson, Marc. Adaptive control: stability, convergence and robustness. Courier Corporation,
-2011.
-Schmidt, Uwe and Roth, Stefan. Shrinkage fields for effective image restoration. In Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition, pp.
-2774–2781, 2014.
-Sra, Suvrit, Nowozin, Sebastian, and Wright, Stephen J.
-Optimization for machine learning. Mit Press, 2012.
-Stoyanov, Veselin, Ropson, Alexander, and Eisner, Jason.
-Empirical risk minimization of graphical model parameters given approximate inference, decoding, and model
-structure. In AISTATS, pp. 725–733, 2011.
-Tappen, Marshall F, Liu, Ce, Adelson, Edward H, and Freeman, William T. Learning gaussian conditional random
-fields for low-level vision. In Computer Vision and Pattern Recognition, 2007. CVPR’07. IEEE Conference on,
-pp. 1–8. IEEE, 2007.
-Zheng, Shuai, Jayasumana, Sadeep, Romera-Paredes,
-Bernardino, Vineet, Vibhav, Su, Zhizhong, Du, Dalong,
-Huang, Chang, and Torr, Philip HS. Conditional random
-fields as recurrent neural networks. In Proceedings of
-the IEEE International Conference on Computer Vision,
-pp. 1529–1537, 2015.
+Jascha. Unrolled generative adversarial networks. Corr,
+abs/1611.02163, 2016.
+Milgrom, Paul and Segal, Ilya. Envelope theorems for arbitrary choice sets. Econometrica, 70(2):583–601, 2002.
+ISSN 1468-0262.
+Mnih, Volodymyr, Badia, Adrià Puigdomènech, Mirza,
+Mehdi, Graves, Alex, Lillicrap, Timothy P., Harley, Tim,
+Silver, David, and Kavukcuoglu, Koray. Asynchronous
+methods for deep reinforcement learning. In Proceedings of the 33nd International Conference on Machine
+Learning, ICML 2016, New York City, NY, USA, June
+19-24, 2016, pp. 1928–1937, 2016.
+
+Genevay, Aude, Cuturi, Marco, Peyré, Gabriel, and Bach,
+Francis. Stochastic optimization for large-scale optimal
+transport. In Lee, D. D., Sugiyama, M., Luxburg, U. V.,
+Guyon, I., and Garnett, R. (eds.), Advances in Neural Information Processing Systems 29, pp. 3440–3448. Curran Associates, Inc., 2016.
+
+Montavon, Grégoire, Müller, Klaus-Robert, and Cuturi,
+Marco. Wasserstein training of restricted boltzmann machines. In Lee, D. D., Sugiyama, M., Luxburg, U. V.,
+Guyon, I., and Garnett, R. (eds.), Advances in Neural Information Processing Systems 29, pp. 3718–3726. Curran Associates, Inc., 2016.
+
+Goodfellow, Ian J., Pouget-Abadie, Jean, Mirza, Mehdi,
+Xu, Bing, Warde-Farley, David, Ozair, Sherjil,
+Courville, Aaron, and Bengio, Yoshua. Generative adversarial nets. In Advances in Neural Information Processing Systems 27, pp. 2672–2680. Curran Associates,
+Inc., 2014.
+
+Müller, Alfred. Integral probability metrics and their generating classes of functions. Advances in Applied Probability, 29(2):429–443, 1997.
+
+Gretton, Arthur, Borgwardt, Karsten M., Rasch, Malte J.,
+Schölkopf, Bernhard, and Smola, Alexander. A kernel two-sample test. J. Mach. Learn. Res., 13:723–773,
+2012. ISSN 1532-4435.
+Huszar, Ferenc. How (not) to train your generative model:
+Scheduled sampling, likelihood, adversary?
+CoRR,
+abs/1511.05101, 2015.
+Kakutani, Shizuo. Concrete representation of abstract (m)spaces (a characterization of the space of continuous
+functions). Annals of Mathematics, 42(4):994–1024,
+1941.
+Kingma, Diederik P. and Ba, Jimmy. Adam: A method for
+stochastic optimization. CoRR, abs/1412.6980, 2014.
+Kingma, Diederik P. and Welling, Max. Auto-encoding
+variational bayes. CoRR, abs/1312.6114, 2013.
+Li, Yujia, Swersky, Kevin, and Zemel, Rich. Generative
+moment matching networks. In Proceedings of the 32nd
+
+Neal, Radford M. Annealed importance sampling. Statistics and Computing, 11(2):125–139, April 2001. ISSN
+0960-3174.
+Nowozin, Sebastian, Cseke, Botond, and Tomioka, Ryota.
+f-gan: Training generative neural samplers using variational divergence minimization. pp. 271–279, 2016.
+Radford, Alec, Metz, Luke, and Chintala, Soumith. Unsupervised representation learning with deep convolutional
+generative adversarial networks. CoRR, abs/1511.06434,
+2015.
+Ramdas, Aaditya, Reddi, Sashank J., Poczos, Barnabas, Singh, Aarti, and Wasserman, Larry.
+On
+the high-dimensional power of linear-time kernel twosample testing under mean-difference alternatives. Corr,
+abs/1411.6314, 2014.
+Sutherland, Dougal J, Tung, Hsiao-Yu, Strathmann, Heiko,
+De, Soumyajit, Ramdas, Aaditya, Smola, Alex, and
+Gretton, Arthur. Generative models and model criticism
+via optimized maximum mean discrepancy. In International Conference on Learning Representations, 2017.
+
+Wasserstein Generative Adversarial Networks
+
+Tieleman, T. and Hinton, G. Lecture 6.5—RmsProp: Divide the gradient by a running average of its recent magnitude. COURSERA: Neural Networks for Machine
+Learning, 2012.
+Villani, Cédric.
+Optimal Transport: Old and New.
+Grundlehren der mathematischen Wissenschaften.
+Springer, Berlin, 2009.
+Wu, Yuhuai, Burda, Yuri, Salakhutdinov, Ruslan, and
+Grosse, Roger B.
+On the quantitative analysis of decoder-based generative models.
+CoRR,
+abs/1611.04273, 2016.
+Yu, Fisher, Zhang, Yinda, Song, Shuran, Seff, Ari, and
+Xiao, Jianxiong. LSUN: Construction of a large-scale
+image dataset using deep learning with humans in the
+loop. Corr, abs/1506.03365, 2015.
+Zhao, Junbo, Mathieu, Michael, and LeCun, Yann.
+Energy-based generative adversarial network. Corr,
+abs/1609.03126, 2016.
 
 

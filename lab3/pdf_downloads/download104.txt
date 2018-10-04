@@ -1,907 +1,958 @@
-On the Sampling Problem for Kernel Quadrature
-
-François-Xavier Briol 1 2 Chris J. Oates 3 4 Jon Cockayne 1 Wilson Ye Chen 5 Mark Girolami 2 4
+Probabilistic Path Hamiltonian Monte Carlo
+Vu Dinh * 1 Arman Bilge * 1 2 Cheng Zhang * 1 Frederick A. Matsen IV 1
 
 Abstract
+Hamiltonian Monte Carlo (HMC) is an efficient
+and effective means of sampling posterior distributions on Euclidean space, which has been extended to manifolds with boundary. However,
+some applications require an extension to more
+general spaces. For example, phylogenetic (evolutionary) trees are defined in terms of both a
+discrete graph and associated continuous parameters; although one can represent these aspects
+using a single connected space, this rather complex space is not suitable for existing HMC algorithms. In this paper, we develop Probabilistic
+Path HMC (PPHMC) as a first step to sampling
+distributions on spaces with intricate combinatorial structure. We define PPHMC on orthant
+complexes, show that the resulting Markov chain
+is ergodic, and provide a promising implementation for the case of phylogenetic trees in opensource software. We also show that a surrogate
+function to ease the transition across a boundary on which the log-posterior has discontinuous
+derivatives can greatly improve efficiency.
 
-Carlo (MC) methods can be used to estimate the numerical
-value of Eqn. 1. A classical research problem in computational statistics is to reduce the MC estimation error in this
-context, where the integral can, for example, represent an
-expectation or marginalisation over a random variable of
-interest.
+date step, and thus has proved to be more effective than
+standard MCMC methods in a variety of applications. The
+method has gained a lot of interest from the scientific community and since then has been extended to tackle the problem of sampling on various geometric structures such as
+constrained spaces (Lan et al., 2014; Brubaker et al., 2012;
+Hartmann and Schütte, 2005), on general Hilbert space
+(Beskos et al., 2011) and on Riemannian manifolds (Girolami and Calderhead, 2011; Wang et al., 2013).
+However, these extensions are not yet sufficient to apply to
+all sampling problems, such as in phylogenetics, the inference of evolutionary trees. Phylogenetics is the study of
+the evolutionary history and relationships among individuals or groups of organisms. In its statistical formulation
+it is an inference problem on hypotheses of shared history
+based on observed heritable traits under a model of evolution. Phylogenetics is an essential tool for understanding
+biological systems and is an important discipline of computational biology. The Bayesian paradigm is now commonly used to assess support for inferred tree structures
+or to test hypotheses that can be expressed in phylogenetic
+terms (Huelsenbeck et al., 2001).
 
-The standard Kernel Quadrature method for numerical integration with random point sets (also
-called Bayesian Monte Carlo) is known to converge in root mean square error at a rate determined by the ratio s/d, where s and d encode the smoothness and dimension of the integrand. However, an empirical investigation
-reveals that the rate constant C is highly sensitive to the distribution of the random points.
-In contrast to standard Monte Carlo integration,
-for which optimal importance sampling is wellunderstood, the sampling distribution that minimises C for Kernel Quadrature does not admit
-a closed form. This paper argues that the practical choice of sampling distribution is an important open problem. One solution is considered; a
-novel automatic approach based on adaptive tempering and sequential Monte Carlo. Empirical results demonstrate a dramatic reduction in integration error of up to 4 orders of magnitude can be
-achieved with the proposed method.
-
-The default MC estimator comprises of
-n
-
-Π̂MC (f ) =
-
-where xj are sampled identically and independently (i.i.d.)
-from Π. Then we have a root mean square error (RMSE)
-bound
-q
-CMC (f ; Π)
-√
-,
-E[Π̂MC (f ) − Π(f )]2 ≤
-n
-where CMC (f ; Π) = Std(f ; Π) and the expectation is with
-respect to the joint distribution of the {xj }nj=1 . For settings where the Lebesgue density of Π is only known up to
-normalising constant, Markov chain Monte Carlo (MCMC)
-methods can be used; the rate-constant CMC (f ; Π) is then
-related to the asymptotic variance of f under the Markov
-chain sample path.
-
-1. INTRODUCTION
-Consider approximation of the Lebesgue integral
-Z
-Π(f ) =
-f dΠ
-
-1X
-f (xj ),
-n j=1
-
-(1)
-
-X
-
-where Π is a Borel measure defined over X ⊆ Rd and
-f is Borel measurable. Define P(f ) to be the set of
-0
-that f ∈ L2 (Π0 ), meaning that
-Borel measures
-R Π 2 such
+Equal contribution 1 Program in Computational Biology,
+Fred Hutchison Cancer Research Center, Seattle, WA, USA
 2
-0
-kf kL2 (Π0 ) = X f dΠ < ∞, and assume Π ∈ P(f ). In
-situations where Π(f ) does not admit a closed-form, Monte
-1
+Department of Statistics, University of Washington, Seattle,
+WA, USA. Correspondence to: Frederick, A. Matsen IV <matsen@fredhutch.org>.
 
-University of Warwick, Department of Statistics. 2 Imperial
-College London, Department of Mathematics. 3 Newcastle University, School of Mathematics and Statistics 4 The Alan Turing Institute for Data Science 5 University of Technology Sydney,
-School of Mathematical and Physical Sciences. Correspondence
-to: François-Xavier Briol <f-x.briol@warwick.ac.uk>.
+Although the last several decades have seen an explosion
+of advanced methods for sampling from Bayesian posterior
+distributions, including HMC, phylogenetics still uses relatively classical Markov chain Monte Carlo (MCMC) based
+methods. This is in part because the number of possible tree
+topologies (the labeled graphs describing the branching
+structure of the evolutionary history) explodes combinatorially as the number of species increases. Also, to represent
+the phylogenetic relation among a fixed number of species,
+one needs to specify both the tree topology (a discrete object) and the branch lengths (continuous distances). This
+composite structure has thus far limited sampling methods
+to relatively classical Markov chain Monte Carlo (MCMC)
+based methods. One path forward is to use a construction
+of the set of phylogenetic trees as a single connected space
+composed of Euclidean spaces glued together in a combinatorial fashion (Kim, 2000; Moulton and Steel, 2004;
+Billera et al., 2001; Gavryushkin and Drummond, 2016)
+and try to define an HMC-like algorithm thereupon.
+
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-Considerations of computational cost place emphasis on
-methods to reduce the rate constant CMC (f ; Π). For the
-MC estimator, this rate constant can be made smaller via
-importance sampling (IS): f 7→ f · dΠ/dΠ0 where an
-optimal choice Π0 ∈ P(f · dΠ/dΠ0 ), that minimises
-Std(f · dΠ/dΠ0 ; Π0 ), is available in explicit closed-form
-(see Robert and Casella, 2013, Thm. 3.3.4). However, the
-RMSE remains asymptotically gated at O(n−1/2 ).
-The default Kernel Quadrature (KQ) estimate comprises of
-Π̂(f ) =
+Experts in HMC are acutely aware of the need to extend
+HMC to such spaces with intricate combinatorial structure:
+Betancourt (2017) describes the extension of HMC to dis-
 
-n
-X
+1. Introduction
+Hamiltonian Monte Carlo is a powerful sampling algorithm which has been shown to outperform many existing MCMC algorithms, especially in problems with highdimensional and correlated distributions (Duane et al.,
+1987; Neal, 2011). The algorithm mimics the movement of
+a body balancing potential and kinetic energy by extending
+the state space to include auxiliary momentum variables
+and using Hamiltonian dynamics. By traversing long isoprobability contours in this extended state space, HMC is
+able to move long distances in state space in a single up*
 
-wj f (xj ),
+Probabilistic Path Hamiltonian Monte Carlo
+12|3456
 
-(2)
+(a)
 
-j=1
-
-where the xj ∼ Π0 are independent (or arise from
-a Markov chain) and supp(Π) ⊆ supp(Π0 ). In contrast to MC, the weights {wj }nj=1 in KQ are in general
-non-uniform, real-valued and depend on {xj }nj=1 . The
-KQ nomenclature derives from the (symmetric, positivedefinite) kernel k : X × X P
-→ R that is used to conn
-struct an interpolant fˆ(x) =
-j=1 βj k(x, xj ) such that
-
-On the Sampling Problem for Kernel Quadrature
-
-fˆ(xj ) = f (xj ) for j = 1, . . . , n. The weights wj in Eqn.
-R
-2 are implicitly defined via the equation Π̂(f ) = X fˆdΠ.
-The KQ estimator is identical to the posterior mean in
-Bayesian Monte Carlo (O’Hagan, 1991; Rasmussen and
-Ghahramani, 2002), and its relationship with classical numerical quadrature rules has been studied (Diaconis, 1988;
-Särkkä et al., 2015).
-Under regularity conditions, Briol et al. (2015b) established the following RMSE bound for KQ:
-q
-
-E[Π̂(f ) − Π(f )]2 ≤
-
-C(f ; Π0 )
-,
-ns/d−
-
-(s > d/2)
-
-where both the integrand f and each argument of the kernel
-k admit continuous mixed weak derivatives of order s and
- > 0 can be arbitrarily small. An information-theoretic
-lower bound on the RMSE is O(n−s/d−1/2 ) (Bakhvalov,
-1959). The faster convergence of the RMSE, relative to
-MC, can lead to improved precision in applications. Akin
-to IS, the samples {xj }nj=1 need not be draws from Π in order for KQ to provide consistent estimation (since Π is encoded in the weights wj ). Importantly, KQ can be viewed
-as post-processing of MC samples; the kernel k can be
-reverse-engineered (e.g. via cross-validation) and does not
-need to be specified up-front.
-One notable disadvantage of KQ methods is that little is
-known about how the rate constant C(f ; Π0 ) depends on
-the choice of sampling distribution Π0 . In contrast to IS,
-no general closed-form expression has been established for
-an optimal distribution Π0 for KQ (the technical meaning
-of ‘optimal’ is defined below). Moreover, limited practical
-guidance is available on the selection of the sampling distribution (an exception is Bach, 2015, as explained in Sec.
-2.4) and in applications it is usual to take Π0 = Π.
-This choice is convenient but leads to estimators that are
-not efficient, as we demonstrate in dramatic empirical examples in Sec. 2.3.
-The main contributions of this paper are twofold. First, we
-formalise the problem of optimal sampling for KQ as an
-important and open challenge in computational statistics.
-To be precise, our target is an optimal sampling distribution
-for KQ, defined as
-q
-Π∗ ∈ arg min sup E[Π̂(f ) − Π(f )]2 .
-(3)
-Π0
-
-f ∈F
-
-for some functional class F to be specified. In general a
-(possibly non-unique) optimal Π∗ will depend on F and,
-unlike for IS, also on the kernel k and the number of samples n.
-Second, we propose a novel and automatic method for selection of Π0 that is rooted in approximation of the unavailable Π∗ . In brief, our method considers candidate sampling
-
-t
-distributions of the form Π0 = Π1−t
-0 Π for t ∈ [0, 1] and
-Π0 a reference distribution on X . The exponent t is chosen
-such that Π0 minimises an empirical upper bound on the
-RMSE. The overall approach is facilitated with an efficient
-sequential MC (SMC) sampler and called SMC-KQ. In particular, the approach (i) provides practical guidance for selection of Π0 for KQ, (ii) offers robustness to kernel misspecification, and (iii) extends recent work on computing
-posterior expectations with kernels obtained using Stein’s
-method (Oates et al., 2017).
-
-The paper proceeds as follows: Empirical results in Sec.
-2 reveal that the RMSE for KQ is highly sensitive to the
-choice of Π0 . The proposed approach to selection of Π0 is
-contained in Sec. 3. Numerical experiments, presented in
-Sec. 4, demonstrate that dramatic reductions in integration
-error (up to 4 orders of magnitude) can be achieved with
-SMC-KQ. Lastly, a discussion is provided in Sec. 5.
-
-2. BACKGROUND
-This section presents an overview of KQ (Sec. 2.1 and 2.2),
-empirical (Secs. 2.3) and theoretical (Sec. 2.4) results on
-the choice of sampling distribution, and discusses kernel
-learning for KQ (Sec. 2.5).
-2.1. Overview of Kernel Quadrature
-We now proceed to describe KQ: Recall the approximation
-fˆ to f ; an explicit form for the coefficients βj is given as
-β = K−1 f , where Ki,j = k(xi , xj ) and fj = f (xj ). It is
-assumed that K−1 exists almost surely; for non-degenerate
-kernels, this corresponds to Π having no atoms. From the
-above definition of KQ,
-Π̂(f ) =
-
-n
-X
-j=1
-
-Z
-βj
-
-k(x, xj )Π(dx).
-X
-
-R
-Defining zj = X k(·, xj )dΠ leads to the estimate in Eqn.
-2 with weights w = K−1 z. Pairs (Π, k) for which the
-zj have closed form are reported in Table 1 of Briol et al.
-(2015b). Computation of these weights incurs a computational cost of at most O(n3 ) and can be justified when
-either (i) evaluation of f forms the computational bottleneck, or (ii) the gain in estimator precision (as a function in
-n) dominates this cost (i.e. whenever s/d > 3 + 1/2).
-Notable contributions on KQ include Diaconis (1988);
-O’Hagan (1991); Rasmussen and Ghahramani (2002) who
-introduced the method and Huszar and Duvenaud (2012);
-Osborne et al. (2012a;b); Gunter et al. (2014); Bach (2015);
-Briol et al. (2015a;b); Särkkä et al. (2015); Kanagawa
-et al. (2016); Liu and Lee (2017) who provided consequent methodological extensions. KQ has been applied
-to a wide range of problems including probabilistic ODE
-
-On the Sampling Problem for Kernel Quadrature
-
-solvers (Kersting and Hennig, 2016), reinforcement learning (Paul et al., 2016), filtering (Prüher and Šimandl, 2015)
-and design of experiments (Ma et al., 2014).
-Several characterisations of the KQ estimator are known
-and detailed below. Let H denote the Hilbert space characterised by the reproducing kernel k, and denote its norm as
-k · kH (Berlinet and Thomas-Agnan, 2011). Then we have
-the following: (a) The function fˆ is the minimiser of kgkH
-over g ∈ H subject to g(xj ) = f (xj ) for all j = 1, . . . , n.
-(b) The function fˆ is the posterior mean for f under the
-Gaussian process prior f ∼ GP(0, k) conditioned on data
-f and Π̂(f ) is the mean of the implied posterior marginal
-over Π[f ]. (c) The weights w are characterised as the minimiser over γ ∈ Rn of
-
-
-n
-X
-
-
-
-en (γ; {xj }nj=1 ) = sup 
-γj f (xj ) − Π(f ),
-
-
-kf kH =1
-j=1
-
-the maximal error in the unit ball of H. These characterisations connect KQ to (a) non-parametric regression, (b)
-probabilistic integration and (c) quasi-Monte Carlo (QMC)
-methods (Dick and Pillichshammer, 2010). The scattered
-data approximation literature (Sommariva and Vianello,
-2006) and the numerical analysis literature (where KQ is
-known as the ‘empirical interpolation method’; Eftang and
-Stamm, 2012; Kristoffersen, 2013) can also be connected
-to KQ. However, our search of all of these literatures did
-not yield guidance on the optimal selection of the sampling
-distribution Π0 (with the exception of Bach (2015) reported
-in Sec. 2.4).
-2.2. Over-Reliance on the Kernel
-In Osborne et al. (2012a); Huszar and Duvenaud (2012);
-Gunter et al. (2014); Briol et al. (2015a), the selection of xn
-was approached as a greedy optimisation problem, wherein
-the maximal integration error en (w; {xj }nj=1 ) was minimised, given the location of the previous {xj }n−1
-j=1 . This
-approach has demonstrated considerable success in applications. However, the error criterion en is strongly dependant on the choice of kernel k and the sequential optimisation approach is vulnerable to kernel misspecification. In particular, if the intrinsic length scale of k is “too
-small” then the {xj }nj=1 all cluster around the mode of
-Π, leading to poor integral estimation (see Fig. 5 in the
-Appendix). Related work on sub-sample selection, such
-as leverage scores (Bach, 2013), can also be non-robust to
-mis-specified kernels. The partial solution of online kernel
-learning requires a sufficient number n of data and is not
-always practicable in small-n regimes that motivate KQ.
-This paper considers sampling methods as a robust alternative to optimisation methods. Although our method also
-makes use of k to select Π0 , it reverts to Π0 = Π in the
-
-limit as the length scale of k is made small. In this sense,
-sampling offers more robustness to kernel mis-specification
-than optimisation methods, at the expense of a possible
-(non-asymptotic) decrease in precision in the case of a
-well-specified kernel. This line of research is thus complementary to existing work. However, we emphasise that
-robustness is an important consideration for general applications of KQ in which kernel specification may be a nontrivial task.
-2.3. Sensitivity to the Sampling Distribution
-To date, we are not aware of a clear demonstration of the
-acute dependence of the performance of the KQ estimator
-on the choice of distribution Π0 . It is therefore important to
-illustrate this phenomenon in order to build intuition.
-Consider the toy problem with state space X = R, target
-distribution Π = N(0, 1), a single test function f (x) =
-1 + sin(2πx) and kernel k(x, x0 ) = exp(−(x − x0 )2 ). For
-this problem, consider a range of sampling distributions of
-the form Π0 = N(0, σ 2 ) for σ ∈ (0, ∞). Fig. 1 plots
-v
-u
-M
-u 1 X
-(Π̂n,m,σ (f ) − Π(f ))2 ,
-R̂n,σ = t
-M m=1
-an empirical estimate for the RMSE where Π̂n,m,σ (f ) is
-the mth of M independent KQ estimates for Π(f ) based
-on n samples drawn from the distribution Π0 with standard
-deviation σ (M = 1000). In this case Π(f ) = 1 is available in closed-form. It is seen that the ‘obvious’ choice of
-σ = 1, i.e. Π0 = Π, is sub-optimal. The intuition here
-is that ‘extreme’ samples xi from the tails of Π are rather
-informative for building the interpolant fˆ underlying KQ;
-we should therefore over-sample these values via a heaviertailed Π0 . The same intuition is used for column sampling
-and to construct leverage scores (Mahoney, 2011; Drineas
-et al., 2012).
-2.4. Established Results
-Here we recall the main convergence results to-date on KQ
-and discuss how these relate to choices of sampling distribution. To reduce the level of detail below, we make several
-assumptions at the outset:
-Assumption on the domain: The domain X will either be
-Rd itself or a compact subset of Rd that satisfies an ‘interior
-cone condition’, meaning that there exists an angle θ ∈
-(0, π/2) and a radius r > 0 such that for every x ∈ X
-there exists kξk2 = 1 such that the cone {x + λy : y ∈
-Rd , kyk2 = 1, y T ξ ≥ cos θ, λ ∈ [0, r]} is contained in
-X (see Wendland, 2004, for background).
-Assumption on the kernel: Consider the integral operator Σ : L2 (Π) → L2 (Π), with (Σf )(x) defined as the
-
-On the Sampling Problem for Kernel Quadrature
-
-Figure 1. The performance of kernel quadrature is sensitive to
-the choice of sampling distribution. Here the test function was
-f (x) = 1 + sin(2πx), the target measure was N(0, 1), while n
-samples were generated from N(0, σ 2 ). The kernel k(x, x0 ) =
-exp(−(x − x0 )2 ) was used. Notice that the values of σ that minimise the root mean square error (RMSE) are uniformly greater
-than σ = 1 (dashed line) and depend on the number n of samples
-in general.
-
-R
-0
-0
-0
-RBochner integral X f (x )k(x, x )Π(dx ). Assume that
-k(x, x)Π(dx) < ∞, so that Σ is self-adjoint, positive
-X
-semi-definite and trace-class (Simon, 1979). Then, from an
-extension of Mercer’s theorem
-a deP∞(König, 1986) we have
-0
-composition k(x, x0 ) =
-m=1 µm em (x)em (x ), where
-µm and em (x) are the eigenvalues and eigenfunctions of
-Σ. Further assume that H is dense in L2 (Π).
-The first result is adapted and extended from Thm. 1 in
-Oates et al. (2016).
-Theorem 1. Assume that Π0 admits a density π 0 defined
-on a compact domain X . Assume that π 0 > c for some
-c > 0. Let x1 , . . . , xm be fixed and define the Euclidean
-fill distance
-hm = sup
-
-min kx − xj k2 .
-
-x∈X j=1,...,m
-
-Let xm+1 , . . . , xn be independent draws from Π0 . Assume
-k gives rise to a Sobolev space Hs (Π). Then there exists
-h0 > 0 such that, for hm < h0 ,
-q
-E[Π̂(f ) − Π(f )]2 ≤ C(f )n−s/d+
-for all  > 0. Here C(f ) = ck,Π0 , kf kH for some constant
-0 < ck,Π0 , < ∞ independent of n and f .
-All proofs are reserved for the Appendix. The main contribution of Thm. 1 is to establish a convergence rate for
-KQ when using importance sampling distributions. A similar result appeared in Thm. 1 of Briol et al. (2015b) for
-samples from Π (see the Appendix) and was extended to
-MCMC samples in Oates et al. (2016). An extension to
-
-Figure 2. The performance of kernel quadrature is sensitive to the
-choice of kernel. Here the same set-up as Fig. 1 was used with
-n = 75. The kernel k(x, x0 ) = exp(−(x − x0 )2 /`2 ) was used
-for various choices of parameter ` ∈ (0, ∞). The root mean
-square error (RMSE) is sensitive to choice of ` for all choices of
-σ, suggesting that online kernel learning could be used to improve
-over the default choice of ` = 1 and σ = 1 (dashed lines).
-
-the case of a mis-specified kernel was considered in Kanagawa et al. (2016). However a limitation of this direction
-of research is that it does not address the question of how
-to select Π0 .
-The second result that we present is a consequence of the
-recent work of Bach (2015), who considered a particular
-choice of Π0 = ΠB ,P
-depending on a fixed λ > 0, via the
-∞
-µm
 2
-density πB (x; λ) ∝ m=1 µm
-+λ em (x). The following is
-adapted from Prop. 1 in Bach (2015):
-Theorem 2. Let x1 , . . . , xn ∼ ΠB be independent and
-λ > 0.P For δ ∈ (0, 1) and n ≥ 5d(λ) log 16d(λ)
-,
-δ
-∞
-µm
-d(λ) = m=1 µm
-,
-we
-have
-that
-+λ
-|Π̂(f ) − Π(f )| ≤ 2λ1/2 kf kH ,
-with probability greater than 1 − δ.
-Some remarks are in order: (i) Bach (2015, Prop. 3)
-showed that, for ΠB , integration error scales at an optimal rate in n up to logarithmic terms and, after n samples,
-√
-is of size µn . (ii) The distribution ΠB is obtained from
-minimising an upper bound on the integration error, rather
-than the error itself. It is unclear to us how well ΠB approximates an optimal sampling distribution for KQ. (iii)
-In general ΠB is hard to compute. For the specific case
-X = [0, 1]d , H equal to Hs (Π) and Π uniform, the distribution ΠB is also uniform (and hence independent of n;
-see Sec. 4.4 of Bach (2015)). However, even for the simple
-example of Sec. 2.3, ΠB does not appear to have a closed
-form (details in Appendix). An approximation scheme was
-proposed in Sec. 4.2 of Bach (2015) but the error of this
-scheme was not studied.
-Optimal sampling for approximation in k · kL2 (Π) with
-weighted least squares (not in the kernel setting) was
 
-On the Sampling Problem for Kernel Quadrature
+123|456
 
-considered in Hampton and Doostan (2015); Cohen and
-Migliorati (2016).
-2.5. Goals
-Our first goal was to formalise the sampling problem for
-KQ; this is now completed. Our second goal was to develop a novel automatic approach to selection of Π0 , called
-SMC-KQ; full details are provided in Sec. 3.
-Also, observe that the integrand f will in general belong
-to an infinitude of Hilbert spaces, while for KQ a single
-kernel k must be selected. This choice will affect the performance of the KQ estimator; for example, in Fig. 2, the
-problem of Sec. 2.3 was reconsidered based on a class of
-kernels k(x, x0 ) = exp(−(x − x0 )2 /`2 ) parametrised by
-` ∈ (0, ∞). Results showed that, for all choices of σ parameter, the RMSE of KQ is sensitive to choice of `. In particular, the default choice of ` = 1 is not optimal. For this
-reason, an extension that includes kernel learning, called
-SMC-KQ-KL, is proposed in Sec. 3.
+different between topologies. In fact, there is no general
+notion of differentiability of the posterior function on the
+whole tree space and any scheme to approximate Hamiltonian dynamics needs to take this issue into account.
 
-3. METHODS
-In this section the SMC-KQ and SMC-KQ-KL methods are
-presented. Our aim is to explain in detail the main components (SMC, temp, crit) of Alg. 1. To this end, Secs. 3.1
-and 3.2 set up our SMC sampler to target tempered distributions, while Sec. 3.3 presents a heuristic for the choice
-of temperature schedule. Sec. 3.4 extends the approach to
-kernel learning and Sec. 3.5 proposes a novel criterion to
-determine when a desired error tolerance is reached.
-3.1. Thermodynamic Ansatz
-To begin, consider f , k and n as fixed. The following
-ansatz is central to our proposed SMC-KQ method: An optimal distribution Π∗ (in the sense of Eqn. 3) can be wellapproximated by a distribution of the form
-t
-Πt = Π1−t
-0 Π ,
+5
 
-t ∈ [0, 1]
-
-(4)
-
-for a specific (but unknown) ‘inverse temperature’ parameter t = t∗ . Here Π0 is a reference distribution to be specified and which should be chosen to be un-informative in
-practice. It is assumed that all Πt exist (i.e. can be normalised). The motivation for this ansatz stems from Sec.
-2.3, where Π = N(0, 1) and Πt = N(0, σ 2 ) can be cast
-in this form with t = σ −1 and Π0 an (improper) uniform
-distribution on R. In general, tempering generates a class
-of distributions which over-represent extreme events relative to Π (i.e. have heavier tails). This property has the
-potential to improve performance for KQ, as demonstrated
-in Sec. 2.3.
-The ansatz of Eqn. 4 reduces the non-parametric sampling
-problem for KQ to the one-dimensional parametric prob-
-
-lem of selecting a suitable t ∈ [0, 1]. The problem can
-be further simplified by focusing on a discrete temperature
-ladder {ti }Ti=0 such that t0 = 0, ti < ti+1 and tT = 1.
-Discussion of the choice of ladder is deferred to Sec. 3.3.
-This reduced problem, where we seek an optimal index
-i∗ ∈ {0, . . . , T }, is still non-trivial as no closed-form expression is available for the RMSE at each candidate ti .
-To overcome this impasse a novel approach to estimate the
-RMSE is presented in Sec. 3.5.
-3.2. Convex Ansatz (SMC)
-The proposed SMC-KQ algorithm requires a second ansatz,
-namely that the RMSE is convex in t and possesses a global
-minimum in the range t ∈ (0, 1). This second ansatz (borne
-out in numerical results in Fig. 1) motivates an algorithm
-that begins at t0 = 0 and tracks the RMSE until an increase
-is detected, say at ti ; at which point the index i∗ = i − 1 is
-taken for KQ.
-To realise such an algorithm, this paper exploited SMC
-methods (Chopin, 2002; Del Moral et al., 2006). Here, a
-particle approximation {(wj , xj )}N
-j=1 to Πt0 is first obtained where xj are independent draws from Π0 , wj =
-N −1 and N  n. Then, at iteration i, the particle approximation to Πti−1 is re-weighted, re-sampled and subject to a Markov transition, to deliver a particle approximation {(wj0 , x0j )}N
-j=1 to Πti . This ‘re-sample-move’ algorithm, denoted SMC, is standard but, for completeness,
-pseudo-code is provided as Alg. 2 in the Appendix.
-At iteration i, a subset of size n is drawn from the unique1
-elements in {x0j }N
-j=1 , from the particle approximation to
-Πti , and proposed for use in KQ. A criterion crit, defined
-in Sec. 3.5, is used to determine whether the resultant KQ
-error has increased relative to Πti−1 . If this is the case,
-then the distribution Πti−1 from the previous iteration is
-taken for use in KQ. Otherwise the algorithm proceeds to
-ti+1 and the process repeats. In the degenerate case where
-the RMSE has a minimum at tT , the algorithm defaults to
-standard KQ with Π0 = Π.
-Both ansatz of the SMC-KQ algorithm are justified through
-the strong empirical results presented in Sec. 4.
-3.3. Choice of Temperature Schedule (temp)
-The choice of temperature schedule {ti }Ti=0 influences several aspects of SMC-KQ: (i) The SMC approximation to
-Πti is governed by the “distance” (in some appropriate
-metric) between Πti−1 and Πti . (ii) The speed at which
-the minimum t∗ can be reached is linear in the number of
 1
-This ensures that kernel matrices have full rank. It does not
-introduce bias into KQ, since in general Π0 need not equal Π.
-However, to keep notation clear, we do not make this operation
-explicit.
+3 4
 
-On the Sampling Problem for Kernel Quadrature
+1
 
-temperatures between 0 and t∗ . (iii) The precision of KQ
-depends on the approximation t∗ ≈ ti∗ . Factors (i,iii) motivate the use of a fine schedule with T large, while (ii)
-motivates a coarse schedule with T small.
-For this work, a temperature schedule was used that is
-well suited to both (i) and (ii), while a strict constraint
-ti − ti−1 ≤ ∆ was imposed on the grid spacing to acknowledge (iii). The specific schedule used in this work
-was determined based on the conditional effective sample
-size of the current particle population, as proposed in the
-recent work of Zhou et al. (2016). Full details are presented
-in Algs. 4 and 5 in the Appendix.
-3.4. Kernel Learning
-In Sec. 2.5 we demonstrated the benefit of kernel learning
-for KQ. From the Gaussian process characterisation of KQ
-from Sec. 2.1, it follows that kernel parameters θ can be
-estimated, conditional on a vector of function evaluations
-f , via maximum marginal likelihood:
-θ0
+5
 
-← arg max p(f |θ) = arg min f > K−1
-θ f + log |Kθ |.
-θ
+2 3 4
 
-θ
+6
 
-In SMC-KQ-KL, the function evaluations f are obtained
-at the first2 n (of N ) states {xj }nj=1 and the parameters θ
-are updated in each iteration of the SMC. This demands repeated function evaluation; this burden can be reduced with
-less frequent parameter updates and caching of all previous
-function evaluations. The experiments in Sec. 4 assessed
-both SMC-KQ and SMC-KQ-KL in terms of precision per
-total number of function evaluations, so that the additional
-cost of kernel learning was taken into account.
+6
 
-Algorithm 1 SMC Algorithm for KQ
-function SMC-KQ(f, Π, k, Π0 , ρ, n, N )
-input f (integrand)
-input Π (target disn.)
-input k (kernel)
-input Π0 (reference disn.)
-input ρ (re-sample threshold)
-input n (num. func. evaluations)
-input N (num. particles)
-i ← 0; ti ← 0; Rmin ← ∞
-x0j ∼ Π0 (initialise states ∀j ∈ 1 : N )
-wj0 ← N −1 (initialise weights ∀j ∈ 1 : N )
-R ← crit(Π, k, {x0j }N
-j=1 ) (est’d error)
-while test(R < Rmin ) and ti < 1 do
-i ← i + 1; Rmin ← R
-N
-0
-0
-{(wj , xj )}N
-j=1 ← {(wj , xj )}j=1
-N
-ti ← temp({(wj , xj )}j=1 , ti−1 , ρ) (next temp.)
-N
-{(wj0 , x0j )}N
-j=1 ← SMC({(wj , xj )}j=1 , ti , ti−1 , ρ)
-(next particle approx.)
-R ← crit(Π, k, {x0j }N
-j=1 ) (est’d error)
-end while
-fj ← fR(xj ) (function eval. ∀j ∈ 1 : n)
-zj ← X k(·, xj )dΠ (kernel mean eval. ∀j ∈ 1 : n)
-Kj,j 0 ← k(xj , xj 0 ) (kernel eval. ∀j, j 0 ∈ 1 : n)
-Π̂(f ) ← z > K−1 f (eval. KQ estimator)
-return Π̂(f )
+1356|24
+5
 
-the following upper bound on MSE:
-E[Π̂(f ) − Π(f )]2 ≤ E[en ({xj }nj=1 )2 ] kf k2H
-{z
-} | {z }
-|
-(∗)
+1
+3
 
-(6)
+2 4
 
-(∗∗)
+6
 
-3.5. Termination Criterion (crit)
-The SMC-KQ-KL algorithm is designed to track the RMSE
-as t is increased. However, the RMSE is not available in
-closed form. In this section we derive a tight upper bound
-on the RMSE that is used for the crit component in Alg.
-1.
-From the worst-case characterisation of KQ presented in
-Sec. 2.1, we have an upper bound
-|Π̂(f ) − Π(f )| ≤ en (w; {xj }nj=1 )kf kH .
+1
 
-(5)
+5
 
-The term en (w; {xj }nj=1 ), denoted henceforth as
-en ({xj }nj=1 ) (since w depends on {xj }nj=1 ), can be computed in closed form (see the Appendix). This motivates
+3
+
+6
 2
-This is a notational convention and is without loss of generality. In this paper these states were a random sample (without
-replacement) of size n, though stratified sampling among the N
-states could be used. More sophisticated alternatives that also involve the kernel k, such as leverage scores, were not considered,
-since in general these (i) introduce a vulnerability to mis-specified
-kernels and (ii) require manipulation of a N × N kernel matrix
-(Patel et al., 2015).
 
-The term (∗) can be estimated with the bootstrap approximation
-E[en ({xj }nj=1 )2 ] =
+4
 
-M
-X
-en ({x̃m,j }nj=1 )2
-=: R2
-M
-m=1
+13|2456
 
-where x̃m,j are independent draws from {xj }N
-j=1 . In
-SMC-KQ the term (∗∗) is an unknown constant and the
-statistic R, an empirical proxy for the RMSE, is monitored
-at each iteration. The algorithm terminates once an increase
-in this statistic occurs. For SMC-KQ-KL the term (∗∗) is
-non-constant as it depends on the kernel hyper-parameters;
-then (∗∗) can in addition be estimated as kfˆk2H = w> Kθ w
-and we monitor the product of R and kfˆkH , with termination when an increase is observed (c.f. test, defined in
-the Appendix).
-Full pseudo-code for SMC-KQ is provided as Alg. 1, while
-SMC-KQ-KL is Alg. 9 in the Appendix. To summarise, we
-have developed a novel procedure, SMC-KQ (and an extension SMC-KQ-KL), designed to approximate the optimal
+(b)
 
-On the Sampling Problem for Kernel Quadrature
+q
+p
 
-KQ estimator based on the unavailable optimal distribution
-in Eqn. 3 where F is the unit ball of H. Earlier empirical results in Sec. 2.3 suggest that SMC-KQ has potential
-to provide a powerful and general algorithm for numerical integration. The additional computational cost of optimising the sampling distribution does however have to be
-counterbalanced with the potential gain in error, and so this
-method will mainly be of practical interest for problems
-with expensive integrands or complex target distributions.
-The following section reports experiments designed to test
-this claim.
+q1
+q2
+q3
+Figure 1. PPHMC on the orthant complex of tree space, in which
+each orthant (i.e. Rn
+≥0 ) represents the continuous branch length
+parameters of one tree topology. PPHMC uses the leapfrog algorithm to approximate Hamiltonian dynamics on each orthant,
+but can move between tree topologies by crossing boundaries between orthants. (a) A single PPHMC step moving through three
+topologies; each topology change along the path is one NNI move.
+(b) Because three orthants meet at every top-dimensional boundary, the algorithm must make a choice as to which topology to select. PPHMC uniformly selects a neighboring tree topology when
+the algorithm hits such a boundary. Here we show three potential
+outcomes q1 , q2 and q3 of running a single step of PPHMC started
+at position q with momentum p.
 
-4. RESULTS
-Here we compared SMC-KQ (and SMC-KQ-KL) against
-the corresponding default approaches KQ (and KQ-KL) that
-are based on Π0 = Π. Sec. 4.1 below reports an assessment
-in which the true value of integrals is known by design,
-while in Sec. 4.2 the methods were deployed to solve a
-parameter estimation problem involving differential equations.
-4.1. Simulation Study
-To continue our illustration from Sec. 2, we investigated
-the performance of SMC-KQ and SMC-KQ-KL for integration of f (x) = 1 + sin(2πx) against the distribution
-Π = N(0, 1). Here the reference distribution was taken to
-be Π0 = N(0, 82 ). All experiments employed SMC with
-N = 300 particles, random walk Metropolis transitions
-(Alg. 3), the re-sample threshold ρ = 0.95 and a maximum grid size ∆ = 0.1. Dependence of the subsequent
-results on the choice of Π0 was investigated in Fig. 10 in
-the Appendix.
-Fig. 3 (top) reports results for SMC-KQ against KQ, for
-fixed length-scale ` = 1. Corresponding results for
-SMC-KQ-KL against KQ-KL are shown in the bottom plot.
-It was observed that SMC-KQ (resp. SMC-KQ-KL) outperformed KQ (resp. KQ-KL) in the sense that, on a perfunction-evaluation basis, the MSE achieved by the proposed method was lower than for the standard method.
-The largest reduction in MSE achieved was about 8 orders
-of magnitude (correspondingly 4 orders of magnitude in
-RMSE). A fair approximation to the σ = 2 method, which
-is approximately optimal for n = 75 (c.f. results in Fig.
-1), was observed. The termination criterion in Sec. 3.5 was
-observed to be a good approximation to the optimal temperature t∗ (Fig. 9 in Appendix). As an aside, we note that
-the MSE was gated at 10−16 for all methods due to numerical condition of the kernel matrix K (a known feature of
-the Gaussian kernel used in this experiment).
-The investigation was extended to larger dimensions (d = 3
-and d = 10) and more complex integrands f in the Ap-
+crete and tree spaces as a major outstanding challenge for
+the area. However, there are several challenges to defining
+a continuous dynamics-based sampling methods on such
+spaces. These tree spaces are composed of Euclidean components, one for each discrete tree topology, which are
+glued together in a way that respects natural similarities between trees. These similarities dictate that more than two
+such Euclidean spaces should get glued together along a
+common lower-dimensional boundary. The resulting lack
+of manifold structure poses a problem to the construction of
+an HMC sampling method on tree space, since up to now,
+HMC has just been defined on spaces with differential geometry. Similarly, while the posterior function is smooth
+within each topology, the function’s behavior may be very
 
-Figure 3. Performance on for the running illustration of Figs. 1
-and 2. The top plot shows SMC-KQ against KQ, whilst the bottom
-plot illustrates the versions with kernel learning.
+In this paper, we develop Probabilistic Path Hamiltonian
+Monte Carlo (PPHMC) as a first step to sampling distributions on spaces with intricate combinatorial structure (Figure 1). After reviewing how the ensemble of phylogenetic
+trees is naturally described as a geometric structure we
+identify as an orthant complex (Billera et al., 2001), we define PPHMC for sampling posteriors on orthant complexes
+along with a probabilistic version of the leapfrog algorithm.
+This algorithm generalizes previous HMC algorithms by
+doing classical HMC on the Euclidean components of the
+orthant complex, but making random choices between alternative paths available at a boundary. We establish that
+the integrator retains the good theoretical properties of
+Hamiltonian dynamics in classical settings, namely probabilistic equivalents of time-reversibility, volume preservation, and accessibility, which combined together result in
+a proof of ergodicity for the resulting Markov chain. Although a direct application of the integrator to the phylogenetic posterior does work, we obtain significantly better performance by using a surrogate function near the
+boundary between topologies to control approximation error. This approach also addresses a general problem in using Reflective HMC (RHMC; Afshar and Domke, 2015)
+for energy functions with discontinuous derivatives (for
+which the accuracy of RHMC is of order O(), instead of
+the standard local error O(3 ) of HMC on Rn ). We provide, validate, and benchmark two independent implementations in open-source software.
 
-pendix. In all cases, considerable improvements were obtained using SMC-KQ over KQ.
-4.2. Inference for Differential Equations
-Consider the model given by dx/dt = f (t|θ) with solution
-x(t|θ) depending on unknown parameters θ. Suppose we
-can obtain observations through the following noise model
-(likelihood): y(ti ) = x(ti |θ) + ei at times 0 = t1 < . . . <
-tn where we assume ei ∼ N (0, σ 2 ) for known σ > 0. Our
-goal is to estimate x(T |θ) for a fixed (potentially large)
-T > 0. To do so, we will use a Bayesian approach and
-specify a prior p(θ), then obtain samples from the posterior π(θ) := p(θ|y) using MCMC. The
-predictive
- posterior
-R
-mean is then defined as: Π x(T |·) = x(T |θ)π(θ)dθ,
-and this can be estimated using an empirical average from
-the posterior samples. This type of integration problem is
-particularly challenging as the integrand requires simulating from the differential equation at each iteration. Furthermore, the larger T or the smaller the grid, the longer the
-simulation will be and the higher the computational cost.
-For a tractable test-bed, we considered Hooke’s law, given
+2. Mathematical framework
+2.1. Bayesian learning on phylogenetic tree space
+A phylogenetic tree (τ, q) is a tree graph τ with N leaves,
+each of which has a label, and such that each edge e is
+associated with a non-negative number qe . Trees will be
+assumed to be bifurcating (internal nodes of degree 3) unless otherwise specified. We denote the number of edges of
+such a tree by n = 2N − 3. Any edge incident to a leaf
+is called a pendant edge, and any other edge is called an
+internal edge. Let TN be the set of all N -leaf phylogenetic
+trees for which the lengths of pendant edges are bounded
+from below by some constant e0 > 0. (This lower bound
+on branch lengths is a technical condition for theoretical
+development and can be relaxed in practice.)
+We will use nearest neighbor interchange (NNI) moves
+(Robinson, 1971) to formalize what tree topologies that are
+“near” to each other. An NNI move is a transformation
+that collapses an internal edge to zero and then expands
 
-On the Sampling Problem for Kernel Quadrature
+Probabilistic Path Hamiltonian Monte Carlo
 
-5. DISCUSSION
-In this paper we formalised the optimal sampling problem for KQ. A general, practical solution was proposed,
-based on novel use of SMC methods. Initial empirical results demonstrate performance gains relative to standard
-approach of KQ with Π0 = Π. A more challenging example based on parameter estimation for differential equations
-was used to illustrate the potential of SMC-KQ for Bayesian
-computation in combination with Stein’s method.
+the resulting degree 4 vertex into an edge and two degree 3
+vertices in a new way (Figure 1a). Two tree topologies τ1
+and τ2 are called adjacent topologies if there exists a single
+NNI move that transforms τ1 into τ2 .
 
-Figure 4. Comparison of SMC-KQ and KQ on the ODE inverse
-problem. The top plot illustrates the physical system, the middle plot shows observations of the ODE, whilst the bottom plot
-illustrates the superior performance of SMC-KQ against KQ.
+Given a proper prior distribution with density π0 imposed
+on the branch lengths and on tree topologies, the posterior
+distribution can be computed as P(τ, q) ∝ L(τ, q)π0 (τ, q).
 
-by the following second order homogeneous ODE given by
-θ5
+We will parameterize TN as Billera-Holmes-Vogtmann
+(BHV) space (Billera et al., 2001), which we describe as
+follows. An orthant of dimension n is simply Rn≥0 ; each
+n-dimensional orthant is bounded by a collection of lower
+dimensional orthant faces. An orthant complex is a geometric object X obtained by gluing various orthants of the
+same dimension n, indexed by a countable set Γ, such that:
+(i) the intersection of any two orthants is a face of both
+orthants, and (ii) each x ∈ X belongs to a finite number
+of orthants. Each state of X is thus represented by a pair
+(τ, q), where τ ∈ Γ and q ∈ Rn≥0 . Generalizing the definitions from phylogenetics, we refer to τ as its topology and
+to q as the vector of attributes. The topology of a point in
+an orthant complex indexes discrete structure, while the attributes formalize the continuous components of the space.
 
-dx
-d2 x
-+ θ4
-+ θ3 x = 0,
-dt2
+2.2. Bayesian learning on orthant complexes
+
+For phylogenetics, the complex is constructed by taking
+one n-dimensional orthant for each of the (2n − 3)!! possible tree topologies, and gluing them together along their
+common faces. The geometry can also be summarized as
+follows. In BHV space, each of these orthants parameterizes the set of branch lengths for a single topology (as a
+technical point, because we are bounding pendant branch
+lengths below by e0 , we can take the corresponding entries
+in the orthant to parameterize the amount of branch length
+above e0 ). Top-dimensional orthants of the complex sharing a facet, i.e. a codimension 1 face, correspond to (NNI)
+adjacent topologies.
+
+An orthant complex, being a union of Euclidean orthants,
+naturally inherits the Lebesgue measure which we will denote hereafter by µ. Orthant complexes are typically not
+manifolds, thus to ensure consistency in movements across
+orthants, we assume that local coordinates of the orthants
+are defined in such a way that there is a natural one-to-one
+correspondence between the sets of attributes of any two
+orthants sharing a common face.
+
+For a fixed phylogenetic tree (τ, q), the phylogenetic likelihood is defined as follows and will be denoted by L(τ, p)
+(see Kenney and Gu, 2012, for a full exposition). Let
+ψ = (ψ1 , ψ2 , ..., ψS ) ∈ ΩN ×S be the observed sequences
+(with characters in Ω) of length S over N leaves. The likelihood of observing ψ given the tree has the form
+L(τ, q) =
+
+S X
+Y
+s=1
+
+as
+
+η(asρ )
+
+Y
+
+Pauv
+s as (quv )
+u v
+
+With the motivation of phylogenetics in mind, we now describe how the phylogenetic problem sits as a specific case
+of a more general problem of Bayesian learning on orthant
+complexes, and distill the criteria needed to enable PPHMC
+on these spaces. This generality will also enable applications of Bayesian learning on similar spaces in other settings. For example in robotics, the state complex can be
+described by a cubical complexes whose vertices are the
+states, whose edges correspond to allowable moves, and
+whose cubes correspond to collections of moves which can
+be performed simultaneously (Ardila et al., 2014). Similarly, in learning on spaces of treelike shapes, the attributes
+are open curves translated to start at the origin, described by
+a fixed number of landmark points (Feragen et al., 2010).
+
+Assumption 2.1 (Consistency of local coordinates). Given
+two topologies τ, τ 0 ∈ Γ and state x = (τ, qτ ) = (τ 0 , qτ 0 )
+on the boundary of the orthants for τ and τ 0 , then qτ = qτ 0 .
+We show that BHV tree space can be given such coordinates in the Appendix. For the rest of the paper, we define
+for each state (τ, q) ∈ X the set N (τ, q) of all neighboring
+topologies τ 0 such that τ 0 orthant contains (τ, q). Note that
+N (τ, q) always includes τ , and if all coordinates of q are
+positive, N (τ, q) is exactly {τ }. Moreover, if τ 0 ∈ N (τ, q)
+and τ 0 6= τ , we say that τ and τ 0 are joined by (τ, q). If
+the intersection of orthants for two topologies is a facet of
+each, we say that the two topologies are adjacent.
+
+(u,v)∈E(τ,q)
+
+where ρ is any internal node of the tree, as ranges over all
+extensions of ψ s to the internal nodes of the tree, asu denotes the assigned state of node u by as , E(τ, q) denotes
+the set of tree edges, Pij (t) denotes the transition probability from character i to character j across an edge of
+length t defined by a given evolutionary model and η is
+the stationary distribution of this evolutionary model. For
+this paper we will assume the simplest Jukes and Cantor
+(1969) model of a homogeneous continuous-time Markov
+chain on Ω with equal transition rates, noting that inferring
+parameters of complex substitution models is a vibrant yet
+separate subject of research (e.g. Zhao et al., 2016).
+
+Finally, let G be the adjacency graph of the orthant complex
+X , that is, the graph with vertices representing the topologies and edges connecting adjacent topologies. Recalling
+that the diameter of a graph is the maximum value of the
+graph distance between any two vertices, we assume that
+Assumption 2.2. The adjacency graph G of X has finite
+diameter, hereafter denoted by k.
+For phylogenetics, k is of order O(N log N ) (Li et al.,
+1996).
+We seek to sample from a posterior distribution P(τ, q) on
+X . Assume that the negative logarithm of the posterior dis-
+
+Probabilistic Path Hamiltonian Monte Carlo
+
+tribution U (τ, q) := − log P (τ, q) satisfies:
+Assumption 2.3. U (τ, q) is a continuous function on X ,
+and is smooth up to the boundary of each orthant τ ∈ Γ.
+In the Appendix, we prove that if the logarithm of the phylogenetic prior distribution π0 (τ, q) satisfies Assumption
+2.3, then so does the phylogenetic posterior distribution.
+It is also worth noting that while U (τ, q) is smooth within
+each orthant, the function’s behavior may be very different
+between orthants and we do not assume any notion of differentiability of the posterior function on the whole space.
+2.3. Hamiltonian dynamics on orthant complexes
+The HMC state space includes auxiliary momentum variables in addition to the usual state variables. In our framework, the augmented state of this system is represented by
+the position (τ, q) and the momentum p, an n-dimensional
+vector. We will denote the set of all possible augmented
+state (τ, q, p) of the system by T.
+The Hamiltonian is defined as in the traditional HMC setting: H(τ, q, p) = U (τ, q) + K(p), where K(p) = 12 kpk2 .
+We will refer to U (τ, q) and K(p) as the potential energy
+function and the kinetic energy function of the system at
+the state (τ, q, p), respectively.
+Our stochastic Hamiltonian-type system of equations is:
+dpi
+∂U
+=−
+(τ, q)
+dt
+∂qi
+pi ← −pi ; τ ∼ Z(N (τ, q))
+dqi
+= pi
 dt
 
-with initial conditions x(0) = θ1 and x0 (0) = θ2 . This
-equation represents the evolution of a mass on a spring with
-friction (Robinson, 2004, Chapter 13). More precisely, θ3
-denotes the spring constant, θ4 the damping coefficient representing friction and θ5 the mass of the object. Since this
-differential equation is an overdetermined system we fixed
-θ5 = 1. In this case, if θ42 ≤ 4θ3 , we get a damped oscillatory behaviour as presented in Fig. 4 (top). Data were generated with σ = 0.4, (θ1 , θ2 , θ3 , θ4 ) = (1, 3.75, 2.5, 0.5).
-with log-normal priors with scale equal to 0.5 for all parameters.
-To implement KQ under an unknown normalisation constant for Π, we followed Oates et al. (2017) and made use
-of a Gaussian kernel that was adapted with Stein’s method
-(see the Appendix for details). The reference distribution
-Π0 was an wide uniform prior on the hypercube [0, 10]4 .
-Brute force computation was used to obtain a benchmark
-value for the integral. For the SMC algorithm, an independent lognormal transition kernel was used at each iteration
-with parameters automatically tuned to the current set of
-particles. Results in Fig. 4 demonstrate that SMC-KQ outperforms KQ for these integration problems. These results
-improve upon those reported in Oates et al. (2016) for a
-similar integration problem based on parameter estimation
-for differential equations.
+if qi > 0
+if qi = 0
 
-Our methods were general but required user-specified
-choice of an initial distribution Π0 . For compact state
-spaces X we recommend taking Π0 to be uniform. For
-non-compact spaces, however, there is a degree of flexibility here and default solutions, such as wide Gaussian
-distributions, necessarily require user input. However, the
-choice of Π0 is easier than the choice of Π0 itself, since Π0
-is not required to be optimal. In our examples, improved
-performance (relative to standard KQ) was observed for a
-range of reference distributions Π0 .
-A main motivation for this research was to provide an alternative to optimisation-based KQ that alleviates strong
-dependence on the choice of kernel (Sec. 2.2). This paper provides essential groundwork toward that goal, in developing sampling-based methods for KQ in the case of
-complex and expensive integration problems. An empirical comparison of sampling-based and optimisation-based
-methods is reserved for future work.
-Two extensions of this research are identified: First, the
-curse of dimension that is intrinsic to standard Sobolev
-spaces can be alleviated by demanding ‘dominating mixed
-smoothness’; our methods are compatible with these (essentially tensor product) kernels (Dick et al., 2013). Second, the use of sequential QMC (Gerber and Chopin, 2015)
-can be considered, motivated by further orders of magnitude reduction in numerical error observed for deterministic point sets (see Fig. 13 in the Appendix).
-ACKNOWLEDGEMENTS
-FXB was supported by the EPSRC grant [EP/L016710/1].
-CJO & MG we supported by the Lloyds Register Foundation Programme on Data-Centric Engineering. WYC
-was supported by the ARC Centre of Excellence in Mathematical and Statistical Frontiers. MG was supported
-by the EPSRC grants [EP/J016934/3, EP/K034154/1,
-EP/P020720/1], an EPSRC Established Career Fellowship,
-the EU grant [EU/259348], a Royal Society Wolfson Research Merit Award. FXB, CJO, JC & MG were also supported by the SAMSI working group on Probabilistic Numerics.
+(2.1)
 
-On the Sampling Problem for Kernel Quadrature
+where Z(A) denotes the uniform distribution on the set A.
+If all coordinates of q are positive, the system behaves as
+in the traditional Hamiltonian setting on Rn . When some
+attributes hit zero, however, the new orthant is picked randomly from the orthants of neighboring topologies (including the current one), and the momenta corresponding to
+non-positive attributes are negated.
+Assumption 2.3 implies that despite the non-differentiable
+changes in the governing equation across orthants, the
+Hamiltonian of the system along any path is constant:
+Lemma 2.1. H is conserved along any system dynamics.
+2.4. A probabilistic “leap-prog” algorithm
+In practice, we approximate Hamiltonian dynamics by the
+following integrator with step size , which we call “leapprog” as a probabilistic analog of the usual leapfrog algorithm. This extends previous work of (Afshar and Domke,
+2015) on RHMC where particles can reflect against planar
+surfaces of Rn≥0 .
 
-R EFERENCES
-F. Bach. Sharp analysis of low-rank kernel matrix approximations. In Proc. I. Conf. Learn. Theory, 2013.
-F. Bach. On the equivalence between kernel quadrature
-rules and random features. arXiv:1502.06800, 2015.
-N. S. Bakhvalov. On approximate computation of integrals.
-Vestnik MGU, Ser. Math. Mech. Astron. Phys. Chem., 4:
-3–18, 1959. In Russian.
-A. Berlinet and C. Thomas-Agnan. Reproducing kernel
-Hilbert spaces in probability and statistics. Springer Science & Business Media, 2011.
+In the RHMC formulation, one breaks the step size  into
+smaller sub-steps, each of which correspond to an event
+when some of the coordinates cross zero. We adapt this
+idea to HMC on orthant complexes as follows. Every time
+such an event happens, we reevaluate the values of the position and the momentum vectors, update the topology (uniformly at random from the set of neighboring topologies),
+reverse the momentum of crossing coordinates and continue the process until a total step size  is achieved (Algorithm 1). We note that several topologies might be visited
+in one leap-prog step.
+If there are no topological changes in the trajectory to time
+, this procedure is equivalent to classical HMC. Moreover,
+since the algorithm only re-evaluates the gradient of the energy function at the end of the step when the final position
+has been fixed, changes in topology on the path have no
+effect on the changes of position and momentum. Thus,
+the projection of the particles (in a single leap-prog step) to
+the (q, p) space is identical to a leapfrog step of RHMC on
+Rn≥0 .
+Algorithm 1 Leap-prog algorithm with step size .
+p ← p − ∇U (τ, q)/2
+if FirstUpdateEvent(τ, q, p, ) = ∅ then
+q ← q + p
+else
+t←0
+while FirstUpdateEvent(τ, q, p,  − t) 6= ∅ do
+(q, e, I) ← FirstUpdateEvent(τ, q, p,  − t)
+t←t+e
+τ ∼ Z(N (τ, q))
+pI ← −pI
+end while
+q ← q + ( − t)p
+end if
+p ← p − ∇U (τ, q)/2
+Here FirstUpdateEvent(τ, q, p, t) returns x, the position of
+the first event for which the line segment [q, q + tp] crosses
+zero; e, the time when this event happens; and I, the indices
+of the coordinates crossing zero during this event. If qi and
+pi are both zero before FirstUpdateEvent is called, i is not
+considered as a crossing coordinate. If no such an event
+exists, ∅ is returned.
 
-T. Gunter, R. Garnett, M. Osborne, P. Hennig, and
-S. Roberts. Sampling for inference in probabilistic models with fast Bayesian quadrature. In Adv. Neur. Inf. Proc.
-Sys., 2014.
-J. Hampton and A. Doostan. Coherence motivated sampling and convergence analysis of least squares polynomial Chaos regression. Comput. Methods Appl. Mech.
-Engrg., 290:73–97, 2015.
-A. Hinrichs. Optimal importance sampling for the approximation of integrals. J. Complexity, 26(2):125–134, 2010.
-F. Huszar and D. Duvenaud. Optimally-weighted herding
-is Bayesian quadrature. In Uncert. Artif. Intell., 2012.
+3. Hamiltonian Monte Carlo on orthant
+complexes
+Probabilistic Path Hamiltonian Monte Carlo (PPHMC)
+with leap-prog dynamics iterates three steps, similar to that
+of classical HMC. First, new values for the momentum
+variables are randomly drawn from their Gaussian distribution, independently of the current values of the posi-
 
-F-X. Briol, C. J. Oates, M. Girolami, and M. A. Osborne.
-Frank-Wolfe Bayesian quadrature: Probabilistic integration with theoretical guarantees. In Adv. Neur. Inf. Proc.
-Sys., 2015a.
+Probabilistic Path Hamiltonian Monte Carlo
 
-M. Kanagawa, B. Sriperumbudur, and K. Fukumizu. Convergence guarantees for kernel-based quadrature rules in
-misspecified settings. In Adv. Neur. Inf. Proc. Sys., 2016.
+tion variables. Second, starting with the current augmented
+state, s = (τ, q, p), the Hamiltonian dynamics is run for a
+fixed number of steps T using the leap-prog algorithm with
+fixed step size . The momentum at the end of this trajectory is then negated, giving a proposed augmented state
+s∗ = (τ ∗ , q ∗ , p∗ ). Finally, this proposed augmented state is
+accepted as the next augmented state of the Markov chain
+with probability r(s, s∗ ) = min (1, exp(H(s) − H(s∗ ))).
+PPHMC has two natural advantages over MCMC methods for phylogenetic inference: jumps between topologies
+are guided by the potential surface, and many jumps can
+be combined into a single proposal with high acceptance
+probability. Indeed, rather than completely random jumps
+as used for MCMC, the topological modifications of HMC
+are guided by the gradient of the potential. This is important because there are an enormous number of phylogenetic
+trees, namely (2n − 3)!! trees with n leaves. Secondly,
+HMC can combine a great number of tree modifications
+into a single step, allowing for large jumps in tree space
+with high acceptance probability. These two characteristics are analogs of why HMC is superior to conventional
+MCMC in continuous settings and what we aimed to extend to our problem.
+3.1. Theoretical properties of the leap-prog integrator
+To support the use of this leap-prog integrator for MCMC
+sampling, we establish that integrator retains analogs of
+the good theoretical properties of Hamiltonian dynamics
+in classical settings, namely, time-reversibility, volume
+preservation and accessibility (proofs in Appendix).
+We formulate probabilistic reversibility as:
+Lemma 3.1 (Reversibility). For a fixed finite time horizon
+T , we denote by P (s, s0 ) the probability that the integrator
+moves s to s0 in a single update step. We have
+0
 
-F-X. Briol, C. J. Oates, M. Girolami, M. A. Osborne, and
-D. Sejdinovic. Probabilistic integration: A role for statisticians in numerical analysis? arXiv:1512.00933, 2015b.
+0
 
-H. Kersting and P. Hennig. Active uncertainty calibration
-in bayesian ode solvers. In Proc. Conf. Uncert. Artif.
-Intell., 2016.
+0
 
-N. Chopin. A sequential particle filter method for static
-models. Biometrika, 89(3):539–552, 2002.
+0
 
-H. König. Eigenvalues of compact operators with applications to integral operators. Linear Algebra Appl., 84:
-111–122, 1986.
+0
 
-A. Cohen and G. Migliorati. Optimal weighted leastsquares methods. arXiv:1608.00512, 2016.
-P. Del Moral, A. Doucet, and A. Jasra. Sequential monte
-carlo samplers. J. R. Stat. Soc. Ser. B. Stat. Methodol.,
-68:411–436, 2006.
-P. Diaconis. Bayesian Numerical Analysis, volume IV of
-Statistical Decision Theory and Related Topics, pages
-163–175. Springer-Verlag, New York, 1988.
+0
 
-S. Kristoffersen. The empirical interpolation method. Master’s thesis, Department of Mathematical Sciences, Norwegian University of Science and Technology, 2013.
-Q. Liu and J. D. Lee. Black-Box Importance Sampling. I.
-Conf. Artif. Intell. Stat., 2017.
-Y. Ma, R. Garnett, and J. Schneider. Active Area Search
-via Bayesian Quadrature. I. Conf Artif. Intell. Stat., 33,
-2014.
+P ((τ, q, p), (τ , q , p )) = P ((τ , q , −p ), (τ, q, −p)).
+for any augmented states (τ 0 , q 0 , p0 ) and (τ, q, p) ∈ T.
+The central part of proving the detailed balance condition
+of PPHMC is to verify that Hamiltonian dynamics preserves volume. Unlike the traditional HMC setting where
+the proposal distribution is a single point mass, in our probabilistic setting, if we start at one augmented state s, we
+may end up at countably many end points due to stochastic
+HMC integration. The equation describing volume preservation in this case needs to be generalized to the form of
+Equation (3.1), where the summations account for the discreteness of the proposal distribution.
+Lemma 3.2 (Volume preservation). For every pair of measurable sets A, B ⊂ T and elements s, s0 ∈ T, we denote
+by P (s, s0 ) the probability that the integrator moves s to s0
 
-J. Dick and F. Pillichshammer. Digital nets and sequences:
-Discrepancy Theory and Quasi–Monte Carlo Integration. Cambridge University Press, 2010.
+in a single update step and define
+B(s) = {s0 ∈ B : P (s, s0 ) > 0}
+and
+A(s0 ) = {s ∈ A : P (s, s0 ) > 0}.
+Then
+Z
 
-M. W. Mahoney. Randomized algorithms for matrices and
-data. Found. Trends Mach. Learn., 3(2):123–224, 2011.
+X
 
-J. Dick, F. Y. Kuo, and I. H. Sloan. High-dimensional integration: The quasi-Monte Carlo way. Acta Numerica,
-22:133–288, 2013.
+A s0 ∈B(s)
 
-C. J. Oates, J. Cockayne, F-X. Briol, and M. Girolami.
-Convergence Rates for a Class of Estimators Based on
-Stein’s Identity. arXiv:1603.03220, 2016.
+0
 
-P. Drineas, M. Magdon-Ismail, M. W. Mahoney, and D. P.
-Woodruff. Fast approximation of matrix coherence and
-statistical leverage. J. Mach. Learn. Res., 13:3475–3506,
-2012.
+P (s, s ) ds =
 
-C. J. Oates, M. Girolami, and N. Chopin. Control Functionals for Monte Carlo Integration. J. R. Stat. Soc. Ser.
-B. Stat. Methodol., 2017. To appear.
+Z
 
-J. L. Eftang and B. Stamm. Parameter multi-domain ‘hp’
-empirical interpolation. I. J. Numer. Methods in Eng., 90
-(4):412–428, 2012.
-M. Gerber and N. Chopin. Sequential quasi Monte Carlo.
-J. R. Statist. Soc. B, 77(3):509–579, 2015.
+X
 
-A. O’Hagan. Bayes-Hermite quadrature. J. Statist. Plann.
-Inference, 29:245–260, 1991.
-M. A. Osborne, D. Duvenaud, R. Garnett, C. E. Rasmussen, S. Roberts, and Z. Ghahramani. Active learning
-of model evidence using Bayesian quadrature. In Adv.
-Neur. Inf. Proc. Sys., 2012a.
+P (s0 , s) ds0 .
 
-On the Sampling Problem for Kernel Quadrature
+(3.1)
 
-M. A. Osborne, R. Garnett, S. Roberts, C. Hart, S. Aigrain,
-and N. Gibson. Bayesian quadrature for ratios. In Proc.
-I. Conf. Artif. Intell. Stat., 2012b.
-R. Patel, T. A. Goldstein, E. L. Dyer, A.Mirhoseini, and
-R. G. Baraniuk. OASIS: Adaptive Column Sampling for
-Kernel Matrix Approximation. arXiv:1505.05208, 2015.
-S. Paul, K. Ciosek, M. A. Osborne, and S. Whiteson. Alternating Optimisation and Quadrature for Robust Reinforcement Learning. arXiv:1605.07496, 2016.
-L. Plaskota, G.W. Wasilkowski, and Y. Zhao. New averaging technique for approximating weighted integrals. J.
-Complexity, 25(3):268–291, 2009.
-J. Prüher and M. Šimandl. Bayesian Quadrature in Nonlinear Filtering. In 12th I. Conf. Inform. Control Autom.
-Robot., 2015.
-C. E. Rasmussen and Z. Ghahramani. Bayesian Monte
-Carlo. In Adv. Neur. Inf. Proc. Sys., 2002.
-C. Robert and G. Casella. Monte Carlo statistical methods.
-Springer Science & Business Media, 2013.
-J. C. Robinson. An introduction to ordinary differential
-equations. Cambridge University Press, 2004.
-S. Särkkä, J. Hartikainen, L. Svensson, and F. Sandblom.
-On the relation between Gaussian process quadratures
-and sigma-point methods. arXiv:1504.05994, 2015.
-T. Shi, M. Belkin, and B. Yu.
-Data spectroscopy:
-Eigenspaces of convolution operators and clustering.
-Ann. Statist., 37(6):3960–3984, 2009.
-B. Simon. Trace Ideals and Their Applications. Cambridge
-University Press, 1979.
-A. Smola, A. Gretton, L. Song, and B. Schölkopf. A
-Hilbert space embedding for distributions. In Algorithmic Learn. Theor., pages 13–31, 2007.
-A. Sommariva and M. Vianello. Numerical cubature on
-scattered data by radial basis functions. Computing, 76
-(3-4):295–310, 2006.
-N. M. Temme. Special Functions: An Introduction to the
-Classical Functions of Mathematical Physics. Wiley,
-New York, 1996.
-H. Wendland. Scattered Data Approximation. Cambridge
-University Press, 2004.
-Y. Zhou, A. M. Johansen, and J. A. D. Aston. Towards
-Automatic Model Comparison: An Adaptive Sequential
-Monte Carlo Approach. J. Comput. Graph. Statist., 25
-(3):701–726, 2016.
+B s∈A(s0 )
+
+If we restrict to the case of trajectories staying in a single
+topology, A(s) and B(s0 ) are singletons and we get back
+the traditional equation of volume preservation. We also
+note that the measure ds in Equation (3.1) is the Lebesgue
+measure: when there is no randomness in the Hamiltonian
+paths, (3.1) becomes the standard volume preservation condition, where volumes are expressed by the Lebesgue measure.
+Typically, accessibility poses no major problem in various settings of HMC since it is usually clear that one
+can go between any two positions in a single HMC step.
+In the case of PPHMC, however, the composition of discrete and continuous structure, along with the possible
+non-differentiability of the potential energy across orthants,
+make it challenging to verify this condition. Here we show
+instead that the PPHMC algorithm can go between any two
+states with k steps, where k denotes the diameter of adjacency graph G the space X and each PPHMC step consists
+of T leap-prog steps of size .
+Lemma 3.3 (k-accessibility). For a fixed starting state
+(τ (0) , q (0) ), any state (τ 0 , q 0 ) ∈ X can be reached from
+(τ (0) , q (0) ) by running k steps of PPHMC.
+The proof of this Lemma is based on Assumption 2.2,
+which asserts that the adjacency graph G of X has finite
+diameter, and that classical HMC allows the particles to
+move freely in each orthant by a single HMC step.
+To show that Markov chains generated by PPHMC are ergodic, we also need to prove that the integrator can reach
+any subset of positive measure of the augmented state space
+with positive probability. To enable such a result, we show:
+Lemma 3.4. For every sequence of topologies ω =
+{τ (0) , τ (1) , . . . , τ (nω ) } and every set with positive measure
+B ⊂ X , let Bω be the set of all (τ 0 , q 0 ) ∈ B such that
+(τ 0 , q 0 ) can be reached from (τ (0) , q (0) ) in k PPHMC steps
+and such that the sequence of topologies crossed by the trajectory is ω. We denote by IB,ω the set of all sequences of
+initial momenta for each PPHMC step {p(0) , . . . , p(k) } that
+make such a path possible.
+Then, if µ(IB,ω ) = 0, then µ(Bω ) = 0.
+
+Probabilistic Path Hamiltonian Monte Carlo
+
+We also need certain sets to be countable.
+Lemma 3.5. Given s ∈ T, we denote by R(s) the set of
+all augmented states s0 such that there is a finite-size leapprog step with path γ connecting s and s0 , and by K(s)
+the set of all such leap-prog paths γ connecting s and s0 ∈
+R(s). Then R(s) and K(s) are countable. Moreover, the
+probability P∞ (s, s0 ) of moving from s to s0 via paths with
+infinite number of topological changes is zero.
+3.2. Ergodicity of Probabilistic Path HMC
+In this section, we establish that a Markov chain generated by PPHMC is ergodic with stationary distribution
+π(τ, q) ∝ exp(−U (τ, q)). To do so, we need to verify that
+the Markov chain generated by PPHMC is aperiodic, because we have shown k-accessibility of the integrator rather
+than 1-accessibility. Throughout this section, we will use
+the notation P ((τ, q, p), ·) to denote the one-step proposal
+distribution of PPHMC starting at augmented state (τ, q, p),
+and P ((τ, q), ·) to denote the one-step proposal distribution
+of PPHMC starting at position (τ, q) and with a momentum
+vector drawn from a Gaussian as described above.
+We first note that:
+Lemma 3.6. PPHMC preserves the target distribution π.
+Given probabilistic volume preservation (3.2), the proof is
+standard and is given in the Appendix.
+Theorem 3.1 (Ergodic). The Markov chain generated by
+PPHMC is ergodic.
+Proof of Theorem 3.1. For every sequence of topologies
+ω = {τ (0) , τ (1) , . . . , τ (nω ) } (finite by Lemma 3.5) and every set with positive measure B ⊂ X , we define Bω and
+IB,ω as in the previous section. By Lemma 3.3, we have
+[
+B=
+Bω .
+ω
+
+Assume that µ(IB,ω ) = 0 for all ω. From Lemma 3.4, we
+deduce that µ(Bω ) = 0 for all ω. This makes µ(B) = 0,
+which is a contradiction. Hence µ(IB,ω ) > 0 for some ω
+and P nω ((τ (0) , q (0) ), B) is at least the positive quantity
+Z
+1
+P nω ((τ (0) , q (0) , p), B) exp(−K(p))dp
+Z p∈IB,ω
+where Z is the normalizing constant. This holds for all sets
+with positive measure B ⊂ X , so PPHMC is irreducible.
+Now assume that a Markov chain generated by the leapfrog
+algorithm is periodic. The reversibility of Hamiltonian dynamics implies that the period d must be equal to 2. In
+other words, there exist two disjoint subsets X1 , X2 of X
+such that π(X1 ) > 0, and
+P (x, X2 ) = 1 ∀x ∈ X1 , and P (x, X1 ) = 1 ∀x ∈ X2 .
+
+Consider x ∈ X1 with all positive attributes. There exists a
+neighborhood Ux around x such that any y ∈ Ux is reachable from x by Hamiltonian dynamics. Since X1 , X2 are
+disjoint, we deduce that µ(Ux ∩ X1 ) = 0. Since the neighborhood Ux exists for almost every x ∈ X1 , this implies
+that µ(X1 ) = 0, and hence, that π(X1 ) = 0, which is a
+contradiction. We conclude that any Markov chain generated by the leapfrog algorithm is aperiodic.
+Lemma 3.6 shows that PPHMC preserves the target distribution π. This, along with π-irreducibility and aperiodicity,
+completes the proof (Roberts and Rosenthal, 2004).
+3.3. An efficient surrogate smoothing strategy
+One major advantage of HMC methods over traditional approaches is that HMC-proposed states may be distant from
+the current state but nevertheless have a high probability of
+acceptance. This partially relies on the fact that the leapfrog
+algorithm with smooth energy functions has a local approximation error of order O(3 ) (which leads to global
+error O(T 3 ), where T is the number of leapfrog steps in a
+Hamiltonian path).
+However, when the potential energy function U (τ, q) is not
+differentiable on the whole space this low approximation
+error can break down. Indeed, although PPHMC inherits
+many nice properties from vanilla HMC and RHMC (Afshar and Domke, 2015), this discontinuity of the derivatives of the potential energy across orthants may result in
+non-negligible loss of accuracy during numerical simulations of the Hamiltonian dynamics. A careful analysis of
+the local approximation error of RHMC for potential energy functions with discontinuous first derivatives reveals
+that it only has an local error rate of order at least Ω() (see
+proof in Appendix):
+Proposition 3.1. Given a potential function V , we denote
+by V + and V − the restrictions of V on the half-spaces
+{x1 ≥ 0} and {x1 ≤ 0} and assume that V + and V −
+are smooth up to the boundary of their domains. If the
+first derivative with respect to the first component of the
+potential energy V (q) are discontinuous across the hyperplane {x1 = 0} (i.e., (∂V + )/(∂q1 ) and (∂V − )/(∂q1 ) are
+not identical on this set), then RHMC on this hyper-plane
+has a local error of order at least Ω().
+Since PPHMC uses RHMC, when the first derivatives of
+the potential energy are discontinuous, it also has a global
+error of order O(C + T 3 ), which depends on the number
+of critical events C along a Hamiltonian path (that is, the
+number of reflection/refraction events). This makes it difficult to tune the step size  for optimal acceptance rate, and
+requires small , limiting topology exploration.
+To alleviate this issue, we propose the use of a surrogate
+induced Hamiltonian dynamics (Strathmann et al., 2015;
+
+Probabilistic Path Hamiltonian Monte Carlo
+
+Zhang et al., 2016) with the Hamiltonian H̃(τ, q, p) =
+Ũ (τ, q) + K(p), where the surrogate potential energy is
+Ũ (τ, q) = U (τ, G(q)),
+
+G(q) = (g(q1 ), . . . , g(qn ))
+
+and g(x) is some positive and smooth approximation of |x|
+with vanishing gradient at x = 0. One simple example
+which will be used for the rest of this paper is
+
+x,
+x≥δ
+gδ (x) =
+1
+2
+2
+(x
++
+δ
+),
+0
+≤x<δ
+2δ
+where δ will be called the smoothing threshold.
+Due to the vanishing gradient of g, Ũ now has continuous
+derivatives across orthants. However, Ũ is no longer continuous across orthants since g(0) 6= 0 and we thus employ
+the refraction technique introduced in Afshar and Domke
+(2015) (see Algorithm 2 for more details). The proposed
+state s∗δ = (τδ∗ , qδ∗ , p∗δ ) at the end of the trajectory is accepted with probability according to the original Hamiltonian, that is, min(1, exp(H(s) − H(s∗δ ))).
+By following the same framework proposed in previous
+sections, we can prove that the resulting sampler still samples from the exact posterior distribution P(τ, q). A complete treatment, however, requires more technical adjustments and is beyond the scope of the paper. We will leave
+this as a subject of future work.
+Algorithm 2 Refractive Leap-prog with surrogate
+p ← p − ∇Ũ (τ, q)/2
+if FirstUpdateEvent(τ, q, p, ) = ∅ then
+q ← q + p
+else
+t←0
+while FirstUpdateEvent(q, p,  − t) 6= ∅ do
+(q, e, I) ← FirstUpdateEvent(τ, q, p,  − t)
+t←t+e
+τ 0 ∼ Z(N (τ, q))
+∆E ← Ũ (τ 0 , q) − Ũ (τ, q)
+if kpI k2 > 2∆E then
+p
+−pI
+pI ← kpI k2 − 2∆E ·
+kpI k
+τ ← τ0
+else
+pI ← −pI
+end if
+end while
+q ← q + ( − t)p
+end if
+p ← p − ∇Ũ (τ, q)/2
+As we will illustrate later, compared to the exact potential
+energy, the continuity of the derivative of the surrogate potential across orthants dramatically reduces the discretiza-
+
+tion error and allows for high acceptance probability with
+relatively large step size.
+
+4. Experiments
+In this section, we demonstrate the validity and efficiency
+of our PPHMC method by an application to Bayesian
+phylogenetic inference. We compared our PPHMC implementations to industry-standard MrBayes 3.2.5, which
+uses MCMC to sample phylogenetic trees (Ronquist et al.,
+2012). We concentrated on the most challenging part: sampling jointly for the branch lengths and tree topologies,
+and assumed other parameters (e.g., substitution model,
+hyper-parameters for the priors) are fixed. More specifically, for all of our experiments we continued to assume
+the Jukes-Cantor model of DNA substitution and placed a
+uniform prior on the tree topology τ ∼ Z (TN ) with branch
+lengths i.i.d. qi ∼ Exponential (λ = 10), as done by others
+when measuring the performance of MCMC algorithms for
+Bayesian phylogenetics (e.g., Whidden and Matsen, 2015).
+As mentioned earlier, although in the theoretical development we assumed that the lengths of the pendant edges are
+bounded from below by a positive constant e0 to ensure
+that the likelihood stays positive on the whole tree space,
+this condition is not necessary in practice since the Hamiltonian dynamics guide the particles away from regions with
+zero likelihood (i.e., the region with U = ∞). We validate
+the algorithm through two independent implementations in
+open-source software:
+1. a Scala version available at https://github.com/
+armanbilge/phyloHMC that uses the Phylogenetic
+Likelihood Library1 (Flouri et al., 2015), and
+2. a Python version available at https://github.
+com/zcrabbit/PhyloInfer that uses the ETE
+toolkit (Huerta-Cepas et al., 2016) and Biopython
+(Cock et al., 2009).
+4.1. Simulated data
+As a proof of concept, we first tested our PPHMC method
+on a simulated data set. We used a random unrooted tree
+with N = 50 leaves sampled from the aforementioned
+prior. 1000 nucleotide observations for each leaf were
+then generated by simulating the continuous-time Markov
+model along the tree. This moderate data set provided
+enough information for model inference while allowing for
+a relatively rich posterior distribution to sample from.
+We ran MrBayes for 107 iterations and sampled every 1000
+iterations after a burn-in period of the first 25% iterations
+to establish a ground truth for the posterior distribution.
+1
+
+https://github.com/xflouris/libpll
+
+For PPHMC, we set the step size  = 0.0015 and smoothing threshold δ = 0.003 to give an overall acceptance rate
+of about α = 0.68 and set the number of leap-prog steps
+T = 200. We then ran PPHMC for 10, 000 iterations with
+a burn-in of 25%. We saw that PPHMC indeed samples
+from the correct posterior distribution (see Figure S1 in the
+Appendix).
+
+PPHMC(surrogate)
+acceptance probability
+
+Probabilistic Path Hamiltonian Monte Carlo
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+0
+
+We also analyzed an empirical data set labeled DS4 by
+Whidden and Matsen (2015) that has become a standard
+benchmark for MCMC algorithms for Bayesian phylogenetics since Lakner et al. (2008). DS4 consists of 1137
+nucleotide observations per leaf from N = 41 leaves representing different species of fungi. Notably, only 554 of
+these observations are complete; the remaining 583 are
+missing a character for one or more leaves so the likelihood is marginalized over all possible characters. Whidden
+and Matsen (2015) observed that the posterior distribution
+for DS4 features high-probability trees separated by paths
+through low-probability trees and thus denoted it a “peaky”
+data set that was difficult to sample from using MrBayes.
+To find the optimal choice of tuning parameters for DS4,
+we did a grid search on the space of step size  and the
+smoothing threshold–step size ratio δ/. The number of
+leap-prog steps T was adjusted to keep the total simulation
+time T fixed. For each choice of parameters, we estimated
+the expected acceptance rate α by averaging over 20 proposals from the PPHMC transition kernel per state for 100
+states sampled from the posterior in a previous, well-mixed
+run. This strategy enabled us to obtain an accurate estimate
+of the average acceptance rate without needing to account
+for the different mixing rates in a full PPHMC run due to
+the various settings for the tuning parameters.
+The results suggest that choosing δ ≈ 2 maximizes the acceptance probability (Figure 2b). Furthermore, when aiming for the optimal acceptance rate of α = 0.65 (Neal,
+2011), the use of the surrogate function enables a choice of
+step size  nearly 10 times greater than otherwise. In practice, this means that an equivalent proposal requires less
+leap-prog steps and gives a more efficient sampling algorithm.
+To see the difference this makes in practice, we ran long
+trajectories for exact and surrogate-smoothed PPHMC with
+a relatively large step size  = 0.0008. Indeed, we found
+that the surrogate enables very long trajectories and large
+number of topology transformations (Figure 2a,c).
+
+5. Conclusion
+Sophisticated techniques for sampling posteriors using
+HMC have thus far been restricted to manifolds with
+
+PPHMC(exact)
+acceptance probability
+
+4.2. Empirical data
+
+1000
+
+2000
+
+1000
+
+2000
+
+(b)
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+0
+
+(a)
+
+# of critical events
+
+(c)
+
+Figure 2. (a) A hexbin plot comparison showing that the
+surrogate-smoothed PPHMC achieves much higher acceptance
+rate and longer paths than exact PPHMC on the DS4 data set.
+(b) Average acceptance rate α for different choices of step size 
+and smoothing threshold δ for phylogenetic HMC applied to DS4,
+where T = 0.08. The black series (δ/ = 0.0) is equivalent to
+exact PPHMC. The dashed red line indicates the acceptance rate
+α = 0.65. (c) Expected number of NNI moves made by both
+exact and surrogate-smoothed PPHMC. Results are obtained by
+averaging 100 HMC iterations with long trajectories (T = 1000),
+starting from the same posterior sample.
+
+boundary. To address this limitation, we have developed
+“PPHMC,” which is the first extension of HMC to a space
+with intricate combinatorial structure. The corresponding integrator makes a random choice among alternatives
+when encountering a boundary. To prove ergodicity, we
+extend familiar elements of HMC proofs to this probabilistic path setting. We develop a smoothing surrogate function
+that enables long HMC paths with many boundary transitions across which the posterior is not differentiable. Our
+surrogate method enables high acceptance probability for
+RHMC (Afshar and Domke, 2015) in the case of potential
+functions with discontinuous derivatives; this aspect of our
+work is independent of the probabilistic nature of PPHMC.
+Our implementation shows good performance on both simulated and real data. There are many opportunities for future development, including extending the theory to other
+classes of combinatorially-described spaces and surrogate
+functions, developing adaptive path length algorithms, as
+well as extending our implementation for phylogenetics to
+sample other mutation model and demographic parameters
+along with topologies.
+
+Probabilistic Path Hamiltonian Monte Carlo
+
+Acknowledgements
+This work supported by National Science Foundation
+grants DMS-1223057, DMS-1341325, and CISE-1564137.
+The research of Frederick Matsen was supported in part by
+a Faculty Scholar grant from the Howard Hughes Medical
+Institute and the Simons Foundation. The authors are grateful to Alex Gavryushkin for helpful discussions about this
+work.
+
+References
+Hadi Mohasel Afshar and Justin Domke. Reflection, refraction,
+and Hamiltonian Monte Carlo. In Advances in Neural Information Processing Systems, pages 2989–2997, 2015.
+Federico Ardila, Tia Baker, and Rika Yatchak. Moving robots
+efficiently using the combinatorics of cat (0) cubical complexes. SIAM Journal on Discrete Mathematics, 28(2):986–
+1007, 2014.
+Alexandros Beskos, Frank J Pinski, Jesús Marıa Sanz-Serna, and
+Andrew M Stuart. Hybrid Monte Carlo on Hilbert spaces.
+Stochastic Processes and their Applications, 121(10):2201–
+2230, 2011.
+Michael Betancourt. A conceptual introduction to Hamiltonian
+Monte Carlo. arXiv preprint arXiv:1701.02434, 2017.
+Louis J Billera, Susan P Holmes, and Karen Vogtmann. Geometry of the space of phylogenetic trees. Advances in Applied
+Mathematics, 27(4):733–767, 2001.
+
+Aasa Feragen, Francois Lauze, Pechin Lo, Marleen de Bruijne,
+and Mads Nielsen. Geometries on spaces of treelike shapes.
+In Asian Conference on Computer Vision, pages 160–173.
+Springer, 2010.
+T. Flouri, F. Izquierdo-Carrasco, D. Darriba, A.J. Aberer, L.T. Nguyen, B.Q. Minh, A. Von Haeseler, and A. Stamatakis.
+The phylogenetic likelihood library. Syst. Bio., 64(2):356–362,
+2015. doi: 10.1093/sysbio/syu084.
+Alex Gavryushkin and Alexei J Drummond. The space of ultrametric phylogenetic trees. J. Theor. Biol., 403:197–208, 21 August 2016. ISSN 0022-5193, 1095-8541. doi: 10.1016/j.jtbi.
+2016.05.001. URL http://dx.doi.org/10.1016/j.
+jtbi.2016.05.001.
+Mark Girolami and Ben Calderhead. Riemann manifold Langevin
+and Hamiltonian Monte Carlo methods. Journal of the Royal
+Statistical Society: Series B (Statistical Methodology), 73(2):
+123–214, 2011.
+Carsten Hartmann and Christof Schütte. A constrained hybrid
+Monte Carlo algorithm and the problem of calculating the free
+energy in several variables. ZAMM-Journal of Applied Mathematics and Mechanics, 85(10):700–710, 2005.
+J P Huelsenbeck, F Ronquist, R Nielsen, and J P Bollback.
+Bayesian inference of phylogeny and its impact on evolutionary biology. Science, 294(5550):2310–2314, 14 December
+2001. ISSN 0036-8075. doi: 10.1126/science.1065889. URL
+http://dx.doi.org/10.1126/science.1065889.
+Jaime Huerta-Cepas, Francois Serra, and Peek Bork. ETE3: Reconstruction, analysis and visualization of phylogenomic data.
+Mol. Biol. Evol., 2016.
+
+Marcus A Brubaker, Mathieu Salzmann, and Raquel Urtasun. A
+family of MCMC methods on implicitly defined manifolds. In
+International Conference on Artificial Intelligence and Statistics, pages 161–172, 2012.
+
+Thomas H. Jukes and Charles R. Cantor. Evolution of protein molecules. In H. N. Munro, editor, Mammalian protein
+metabolism, pages 21–132. Academic Press, New York, 1969.
+
+David Bryant.
+The splits in the neighborhood of a
+tree.
+Ann. Comb., 8(1):1–11, 2004.
+ISSN 02180006. URL http://link.springer.com/article/
+10.1007/s00026-004-0200-z.
+
+Toby Kenney and Hong Gu. Hessian calculation for phylogenetic
+likelihood based on the pruning algorithm and its applications.
+Stat. Appl. Genet. Mol. Biol., 11(4):Article 14, 25 September
+2012. ISSN 1544-6115. doi: 10.1515/1544-6115.1779. URL
+http://dx.doi.org/10.1515/1544-6115.1779.
+
+O Peter Buneman. The recovery of trees from measures of dissimilarity. Mathematics in the archaeological and historical sciences, 1971. URL http://ci.nii.ac.jp/naid/
+10018379872/.
+
+Junhyong Kim. Slicing hyperdimensional oranges: the geometry of phylogenetic estimation. Molecular phylogenetics and
+evolution, 17(1):58–75, 2000.
+
+Eric Cances, Frédéric Legoll, and Gabriel Stoltz. Theoretical and
+numerical comparison of some sampling methods for molecular dynamics. ESAIM: Mathematical Modelling and Numerical
+Analysis, 41(02):351–389, 2007.
+
+Clemens Lakner, Paul van der Mark, John P Huelsenbeck, Bret
+Larget, and Fredrik Ronquist. Efficiency of markov chain
+monte carlo tree proposals in bayesian phylogenetics. Syst.
+Biol., 57(1):86–103, February 2008. ISSN 1063-5157. doi: 10.
+1080/10635150801886156. URL http://dx.doi.org/
+10.1080/10635150801886156.
+
+P. A. Cock, T. Antao, J. T. Chang, B. A. Chapman, C. J. Cox,
+A. Dalke, I. Friedberg, T. Hamelryck, F. Kauff, B. Wilczynski, and M. J. L. de Hoon. Biopython: freely available python
+tools for computational molecular biology and bioinformatics.
+Bioinformatics, 25:1422–1423, 2009.
+S. Duane, A. D. Kennedy, B J. Pendleton, and D. Roweth. Hybrid
+Monte Carlo. Physics Letters B, 195(2):216 – 222, 1987.
+Lawrence Craig Evans and Ronald F Gariepy. Measure theory
+and fine properties of functions. CRC press, 2015.
+
+Shiwei Lan, Bo Zhou, and Babak Shahbaba. Spherical Hamiltonian Monte Carlo for constrained target distributions. In
+Proceedings of the 31st International Conference on Machine
+Learning (ICML-14), pages 629–637, 2014.
+M Li, J Tromp, and L Zhang. On the nearest neighbour interchange distance between evolutionary trees. J. Theor. Biol.,
+182(4):463–467, 21 October 1996. ISSN 0022-5193. doi:
+10.1006/jtbi.1996.0188. URL http://dx.doi.org/10.
+1006/jtbi.1996.0188.
+
+Probabilistic Path Hamiltonian Monte Carlo
+Vincent Moulton and Mike Steel. Peeling phylogenetic oranges.
+Advances in Applied Mathematics, 33(4):710–727, 2004.
+Radford M Neal. MCMC using Hamiltonian dynamics. Handbook of Markov Chain Monte Carlo, 2, 2011.
+Gareth O Roberts and Jeffrey S Rosenthal. General state space
+Markov chains and MCMC algorithms. Probability Surveys,
+1:20–71, 2004.
+David F Robinson. Comparison of labeled trees with valency
+three. Journal of Combinatorial Theory, Series B, 11(2):105–
+119, 1971.
+Fredrik Ronquist, Maxim Teslenko, Paul van der Mark, Daniel L
+Ayres, Aaron Darling, Sebastian Höhna, Bret Larget, Liang
+Liu, Marc A Suchard, and John P Huelsenbeck. MrBayes
+3.2: efficient bayesian phylogenetic inference and model
+choice across a large model space. Syst. Biol., 61(3):539–
+542, 22 February 2012. ISSN 1063-5157. doi: 10.1093/
+sysbio/sys029. URL http://dx.doi.org/10.1093/
+sysbio/sys029.
+C Semple and M Steel. Phylogenetics. Oxford University Press,
+New York, NY, 2003.
+Heiko Strathmann, Dino Sejdinovic, Samuel Livingstone, Zoltan
+Szabo, and Arthur Gretton. Gradient-free Hamiltonian Monte
+Carlo with efficient kernel exponential families. In Advances in
+Neural Information Processing Systems, pages 955–963, 2015.
+Ziyu Wang, Shakir Mohamed, and Nando de Freitas. Adaptive
+Hamiltonian and Riemann manifold monte carlo. In Proceedings of the 30th International Conference on Machine Learning
+(ICML-13), pages 1462–1470, 2013.
+Chris Whidden and IV Matsen, Frederick A. Quantifying MCMC
+exploration of phylogenetic tree space. Syst. Biol., 64(3):472–
+491, 2015.
+Cheng Zhang, Babak Shahbaba, and Hongkai Zhao. Hamiltonian
+Monte Carlo acceleration using surrogate functions with random bases. Statistics and Computing, pages 1–18, 2016.
+Tingting Zhao, Ziyu Wang, Alexander Cumberworth, Joerg
+Gsponer, Nando de Freitas, and Alexandre Bouchard-Côté.
+Bayesian analysis of continuous time markov chains with
+application to phylogenetic modelling.
+Bayesian Anal.,
+2016.
+ISSN 1936-0975, 1931-6690.
+URL http://
+projecteuclid.org/euclid.ba/1448899900.
 
 

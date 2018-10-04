@@ -1,1163 +1,953 @@
-Efficient Regret Minimization in Non-Convex Games
+Variational Boosting: Iteratively Refining Posterior Approximations
 
-Elad Hazan 1 Karan Singh 1 Cyril Zhang 1
+Andrew C. Miller 1 Nicholas J. Foti 2 Ryan P. Adams 1 3
 
 Abstract
-We consider regret minimization in repeated
-games with non-convex loss functions. Minimizing the standard notion of regret is computationally intractable. Thus, we define a natural notion of regret which permits efficient optimization and generalizes offline guarantees for convergence to an approximate local optimum. We
-give gradient-based methods that achieve optimal
-regret, which in turn guarantee convergence to
-equilibrium in this framework.
+We propose a black-box variational inference
+method to approximate intractable distributions
+with an increasingly rich approximating class.
+Our method, variational boosting, iteratively refines an existing variational approximation by
+solving a sequence of optimization problems, allowing a trade-off between computation time and
+accuracy. We expand the variational approximating class by incorporating additional covariance
+structure and by introducing new components to
+form a mixture. We apply variational boosting
+to synthetic and real statistical models, and show
+that the resulting posterior inferences compare
+favorably to existing variational algorithms.
 
 1. Introduction
-Repeated games with non-convex utility functions serve to
-model many natural settings, such as multiplayer games
-with risk-averse players and adversarial (e.g. GAN) training. However, standard regret minimization and equilibria
-computation with general non-convex losses are computationally hard. This paper studies computationally tractable
-notions of regret minimization and equilibria in non-convex
-repeated games.
-Efficient online learning algorithms are intimately connected to convexity. This connection is natural, since in
-a very broad sense1 , convexity captures efficient computation in continuous mathematical optimization.
-The recent success of non-convex learning models, notably deep neural networks, motivates the need for efficient non-convex optimization. Since the latter is NP-hard
-in general, efficient optimization methods for non-convex
-optimization are designed to find local minima of varied
-quality. Stochastic gradient-based methods for non-convex
-optimization are currently state-of-the-art in training nonconvex machines.
+Variational inference (VI) is a family of methods to approximate an intractable target distribution (typically known
+only up to a constant) with a tractable surrogate distribution (Blei et al., 2016; Jordan et al., 1999; Wainwright
+& Jordan, 2008). VI procedures typically minimize the
+Kullback-Leibler (KL) divergence between the approximation and target distributions by maximizing a tractable lower
+bound on the marginal likelihood. The approximating family is often fixed, and typically excludes the neighborhood
+surrounding the target distribution, which prevents the approximation from becoming arbitrarily close to the true
+posterior. In the context of Bayesian inference, this mismatch between the variational family and the true posterior
+often manifests as underestimating the posterior variances of
+the model parameters and the inability to capture posterior
+correlations (Wainwright & Jordan, 2008).
+An alternative approach to posterior inference uses Markov
 1
-Computer Science, Princeton University.
-Correspondence to:
-Elad Hazan <ehazan@princeton.edu>,
-Karan Singh <karans@princeton.edu>,
-Cyril Zhang
-<cyril.zhang@princeton.edu>.
 
+Harvard University, Cambridge, MA, USA 2 University
+of Washington, Seattle, WA, USA 3 Google Brain,
+Cambridge, MA, USA. Correspondence to:
+Andrew
+C. Miller <acm@seas.harvard.edu>, Nicholas J. Foti
+<nfoti@uw.edu>.
 Proceedings of the 34 th International Conference on Machine
-Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
-by the author(s).
+Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017 by
+the author(s).
+
+chain Monte Carlo (MCMC) methods that approximate a
+target distribution with samples drawn from a Markov chain
+constructed to admit the target distribution as the stationary
+distribution. MCMC enables a trade-off between computation and accuracy: drawing more samples makes the approximation closer to the target distribution. However, MCMC
+algorithms typically must be run iteratively and it can be difficult to assess convergence to the true target. Furthermore,
+correctly specifying MCMC moves can be more algorithmically restrictive than optimization-based approaches.
+To alleviate the mismatch between tractable variational approximations and complicated posterior distributions, we
+propose a variational inference method that iteratively allows the approximating family of distributions to become
+more complex. Under certain conditions, the proposed approximations are eventually expressive enough to represent
+the true target arbitrarily well (though we do not prove our algorithm attains such a universal approximation here). Thus,
+the practitioner can trade time fitting a posterior approximation for increased accuracy of posterior estimates. Our
+algorithm grows the complexity of the approximating class
+in two ways: 1) incorporating rich covariance structure, and
+2) sequentially adding new components to the approximating distribution. Our method builds on black-box variational
+inference methods using the re-parameterization trick by
+adapting it to be used with mixture distributions. This allows
+our method to be applied to a variety of target distributions
+including those arising from non-conjugate model specifications (Kingma & Welling, 2014; Ranganath et al., 2014;
+Salimans & Knowles, 2013). We demonstrate empirically
+that our algorithm improves posterior estimates over other
+variational methods for several practical Bayesian models.
+
+2. Variational Inference
+Given a target distribution with density1 π(x) for a continuous random variable x ∈ X ⊆ RD , variational inference approximates π(x) with a tractable distribution,
+q(x; λ), from which we can efficiently draw samples and
+form sample-based estimates of functions of x. Variational
+methods minimize the KL-divergence, KL(q||π), between
+q(·; λ) and the true π as a function of variational parameter λ (Bishop, 2006). Although direct minimization of
 1
-Though by no means exclusively, PCA and other spectral
-methods being a notable exception.
 
-In this paper we investigate the generalization of the nonconvex statistical, or batch, learning model to online learning. The main question we ask is what kind of guarantees can be obtained efficiently in an adversarial non-convex
-scenario.
-After briefly discussing why standard regret is not a suitable metric of performance, we introduce and motivate local regret, a surrogate for regret to the non-convex world.
-We then proceed to give efficient algorithms for nonconvex online learning with optimal guarantees for this new
-objective. In analogy with the convex setting, we discuss
-the way our framework captures the offline and stochastic
-cases. In the final section, we describe a game-theoretic solution concept which is intuitively appealing, and, in contrast to Nash equilibria, efficiently attainable by simple algorithms.
-1.1. Related work
-The field of online learning is by now rich with a diverse
-set of algorithms for extremely general scenarios, see e.g.
-(Cesa-Bianchi & Lugosi, 2006). For bounded cost functions over a bounded domain, it is well known that versions
-of the multiplicative weights method gives near-optimal regret bounds (Cover, 1991; Vovk, 1990; Arora et al., 2012).
-Despite the tremendous generality in terms of prediction,
-the multiplicative weights method in its various forms
-yields only exponential-time algorithms for these general
-scenarios. This is inevitable, since regret minimization implies optimization, and general non-convex optimization is
-NP-hard. Convex forms of regret minimization have dominated the learning literature in recent years due to the fact
-that they allow for efficient optimization, see e.g. (Hazan,
-2016; Shalev-Shwartz, 2011).
-Non-convex mathematical optimization algorithms typically find a local optimum. For smooth optimization,
-gradient-based methods are known to find a point with gradient of squared norm at most ε in O( 1ε ) iterations (Nesterov, 2004).2 A rate of O( ε12 ) is known for stochastic
-2
-We note here that we measure the squared norm of the
-gradient, since it is more compatible with convex optimization.
-The mathematical optimization literature sometimes measures the
-norm of the gradient without squaring it.
+We assume π(x) is known up to a constant, π̃(x) = Cπ(x).
 
-Efficient Regret Minimization in Non-Convex Games
+Variational Boosting: Iteratively Refining Posterior Approximations
 
-gradient descent (Ghadimi & Lan, 2013). Further accelerations in terms of the dimension are possible via adaptive
-regularization (Duchi et al., 2011).
+KL(q||π) is often intractable, we can derive a tractable objective based on properties of the KL-divergence. This
+objective is known as the evidence lower bound (ELBO):
+L(λ) = Eqλ [ln π(x) − ln q(x; λ)] + ln C
+Z
+= ln C − KL(qλ ||π) ≤ ln C = ln π̃(x)dx
+which, due to the positivity of KL(q||π), is a lower bound
+on C = log π(x), i.e., the marginal likelihood.
+Variational methods typically fix a family of distributions
+Q = {q(·; λ) : λ ∈ Λ} parameterized by λ, and maximize
+the ELBO with respect to λ ∈ Λ. Often there exists some
+(possibly non-unique) λ∗ ∈ Λ for which KL(q||π) is minimized. However, when the family Q does not include π
+then KL(qλ∗ ||π) > 0 which will result in biased estimates
+of functions f (x), Ex∼qλ∗ [f (x)] 6= Ex∼π [f (x)].
+The primary alternative to variational methods for approximate inference is Markov chain Monte Carlo (MCMC),
+which constructs a Markov chain such that the target distribution remains invariant. Expectations with respect to
+the target distribution can be calculated as an average with
+respect to these correlated samples. MCMC typically enjoys nice asymptotic properties; as the number of samples
+grows, MCMC samplers represent the true target distribution with increasing fidelity. However, rules for constructing
+correct Markov steps are restrictive. With a few exceptions,
+most MCMC algorithms require evaluating a log-likelihood
+that touches all data at each step in the chain (Maclaurin &
+Adams, 2014; Welling & Teh, 2011). This becomes problematic during statistical analyses of large amounts of data —
+MCMC is often considered unusable because of this computational bottleneck. Notably, variational methods can avoid
+this bottleneck by sub-sampling the data (Ranganath et al.,
+2016a), as unbiased estimates of the log-likelihood can often
+be straight-forwardly used with optimization methods.
+In the next section, we propose an algorithm that iteratively
+grows the approximating class Q and reframes the VI procedure as a series of optimization problems, resulting in a
+practical inference method that can both represent arbitrarily
+complex distributions and scale to large data sets.
 
-bounded, local information may provide no information
-about the location of a stationary point. This motivates us
-to refine our search criteria.
+3. Variational Boosting
+We define our class of approximating distributions to be
+mixtures of C simpler component distributions:
+q (C) (x; λ, ρ) =
 
-Recently, stochastic second-order methods have been considered, which enable even better guarantees for nonconvex optimization: not only is the gradient at the point
-returned small, but the Hessian is also guaranteed to be
-close to positive semidefinite (i.e. the objective function
-is locally almost-convex), see e.g. (Erdogdu & Montanari,
-2015; Carmon et al., 2016; Agarwal et al., 2016a;b).
+C
+X
+c=1
 
-Consider, for example, the function sketched in Figure 1.
-In this construction, defined on the hypercube in Rn , the
-unique point with a vanishing gradient is a hidden valley,
-and gradients outside this valley are all identical. Clearly,
-it is hopeless in an information-theoretic sense to find this
-point efficiently: the number of value or gradient evaluations of this function must be exp(Ω(n)) to discover the
-valley.
+ρc qc (x; λc ) , s.t. ρc ≥ 0,
 
-The relationship between regret minimization and learning
-in games has been considered in both the machine learning
-literature, starting with (Freund & Schapire, 1997), and the
-game theory literature by (Hart & Mas-Colell, 2000). Motivated by (Hart & Mas-Colell, 2000), (Blum & Mansour,
-2005) study reductions from internal to external regret, and
-(Hazan & Kale, 2007) relate the computational efficiency
-of these reductions to fixed point computations.
-
-Figure 1. A difficult “needle in a haystack” case for constrained
-non-convex optimization. Left: A function with a hidden valley, with small gradients shown in yellow. Right: Regions with
-small projected gradient for the same function. For smaller η,
-only points near the valley and bottom-left corner have small projected gradient.
-
-2. Setting
-We begin by introducing the setting of online non-convex
-optimization, which is modeled as a game between a
-learner and an adversary. During each iteration t, the
-learner is tasked with predicting xt from K ⊆ Rn , a convex decision set. Concurrently, the adversary chooses a loss
-function ft : K → R; the learner then observes ft (x) (via
-access to a first-order oracle) and suffers a loss of ft (xt ).
-This procedure of play is repeated across T rounds.
-The performance of the learner is measured through its regret, which is defined as a function of the loss sequence
-f1 , . . . , fT and the sequence of online decisions x1 , . . . , xT
-made by the learner. We discuss our choice of regret measure at length in Section 2.2.
-Throughout this paper, we assume the following standard
-regularity conditions:
-Assumption 2.1. We assume the following is true for each
-loss function ft :
-
-To circumvent such inherently difficult and degenerate
-cases, we relax our conditions, and try to find a vanishing projected gradient. In this section, we introduce this
-notion formally, and motivate it as a natural quantity of interest to capture the search for local minima in constrained
-non-convex optimization.
-Definition 2.2 (Projected gradient). Let f : K → R be
-a differentiable function on a closed (but not necessarily
-bounded) convex set K ⊆ Rn . Let η > 0. We define
-∇K,η f : K → Rn , the (K, η)-projected gradient of f , by
-def
-
-∇K,η f (x) =
-
-1
-(x − ΠK [x − η∇f (x)]) ,
-η
-
-where ΠK [·] denotes the orthogonal projection onto K.
-(i) ft is bounded: |ft (x)| ≤ M.
-(ii) ft is L-Lipschitz: |ft (x) − ft (y)| ≤ Lkx − yk.
-(iii) ft is β-smooth (has a β-Lipschitz gradient):
-k∇ft (x) − ∇ft (y)k ≤ βkx − yk.
-2.1. Projected Gradients and Constrained Non-Convex
-Optimization
-In constrained non-convex optimization, minimizing the
-gradient presents difficult computational challenges. In
-general, even when objective functions are smooth and
-
-This can be viewed as a surrogate for the gradient which
-ensures that the gradient descent step always lies within K,
-by transforming it into a projected gradient descent step.
-Indeed, one can verify by definition that
-x − η∇K,η (x) = ΠK [x − η∇f (x)] .
-In particular, when K = Rn ,
-∇K,η f (x) =
-
-1
-(x − x + η∇f (x)) = ∇f (x),
-η
-
-and we retrieve the usual gradient at all x.
-
-Efficient Regret Minimization in Non-Convex Games
-
-We first note that there always exists a point with vanishing
-projected gradient.
-Proposition 2.3. Let K be a compact convex set, and suppose f : K → R satisfies Assumption 2.1. Then, there
-exists some point x∗ ∈ K for which
-∇K,η f (x∗ ) = 0.
-Proof. Consider the map g : K → K, defined by
-def
-
-g(x) = x − η∇K,η f (x) = ΠK [x − η∇f (x)] .
-This is a composition of continuous functions (noting that
-the smoothness assumption implies that ∇f is continuous),
-and is therefore continuous. Thus g satisfies the conditions
-for Brouwer’s fixed point theorem, implying that there exists some x∗ ∈ K for which g(x∗ ) = x∗ . At this point, the
-projected gradient vanishes.
-In the limit where ηk∇f (x)k is infinitesimally small, the
-projected gradient is equal to the gradient in the interior of
-K; on the boundary of K, it is the gradient with its outwardfacing component removed. This exactly captures the firstorder condition for a local minimum.
-The final property that we note here is that an approximate
-local minimum, as measured by a small projected gradient,
-is robust with respect to small perturbations.
-Proposition 2.4. Let x be any point in K ⊆ Rn , and let f, g
-be differentiable functions K → R. Then, for any η > 0,
-k∇K,η [f + g](x)k ≤ k∇K,η f (x)k + k∇g(x)k.
-Proof. Let u = x + η∇f (x), and v = u + η∇g(x). Define
-their respective projections u0 = ΠK [u] , v 0 = ΠK [v], so
-that u0 = x − η∇K,η f (x) and v 0 = x − η∇K,η [f + g](x).
-We first show that ku0 − v 0 k ≤ ku − vk.
-By the generalized Pythagorean theorem for convex sets,
-we have both hu0 − v 0 , v − v 0 i ≤ 0 and hv 0 − u0 , u − u0 i ≤
-0. Summing these, we get
-hu0 − v 0 , u0 − v 0 − (u − v)i ≤ 0
-0
-
-0 2
-
-0
-
-0
-
-=⇒ ku − v k ≤ hu − v , u − vi
-≤ ku0 − v 0 k · ku − vk,
-
-In particular, this fact
-k∇K,η f (x)k ≤ k∇f (x)k.
-
-≤ k∇K,η [f + g](x) − ∇K,η f (x)k
-1
-= ku0 − v 0 k
-η
-1
-≤ ku − vk = k∇g(x)k,
-η
-as required.
-
-implies
-
-that
-
-As we demonstrate later, looking for a small projected gradient becomes a feasible task. In Figure 1 above, such a
-point exists on the boundary of K, even when there is no
-“hidden valley” at all.
-2.2. A Local Regret Measure
-In the well-established framework of online convex optimization, numerous algorithms can efficiently achieve optimal regret, in the sense of converging in terms of average
-loss towards the best fixed decision in hindsight. That is,
-for any u ∈ K, one can play iterates x1 , . . . , xT such that
-T
-1X
-[ft (xt ) − ft (u)] = o(1).
-T i=1
-
-Unfortunately, even in the offline case, it is too ambitious
-to converge towards a global minimizer in hindsight. In
-the existing literature, it is usual to state convergence guarantees towards an ε-approximate stationary point – that is,
-there exists some iterate xt for which k∇f (xt )k2 ≤ ε. As
-discussed in the previous section, the projected gradient is
-a natural analogue for the constrained case.
-In light of the computational intractability of direct analogues of convex regret, we introduce local regret, a new
-notion of regret which quantifies the objective of predicting points with small gradients on average. The remainder
-of this paper discusses the motivating roles of this quantity.
-Throughout this paper, for convenience, we will use the
-following notation to denote the sliding-window time average of functions f , parametrized by some window size
-1 ≤ w ≤ T:
-def
-
-Ft,w (x) =
-
-w−1
-1 X
-ft−i (x).
-w i=0
-
-For simplicity of notation, we define ft (x) to be identically
-zero for all t ≤ 0. We define local regret below:
-Definition 2.5 (Local regret). Fix some η > 0. Define the
-w-local regret of an online algorithm as
-
-as claimed. Finally, by the triangle inequality, we have
-k∇K,η [f + g](x)k − k∇K,η f (x)k
-
-immediately
-
-def
-
-Rw (T ) =
-
-T
 X
 
-k∇K,η Ft,w (xt )k2 ,
-
-t=1
-
-When the window size w is understood by context, we omit
-the parameter, writing simply local regret as well as Ft (x).
-We turn to the first motivating perspective on local regret.
-When an algorithm incurs local regret sublinear in T , a randomly selected iterate has a small time-averaged gradient
-in expectation:
-
-Efficient Regret Minimization in Non-Convex Games
-
-Proposition 2.6. Let x1 , . . . , xT be the iterates produced
-by an algorithm for online non-convex optimization which
-incurs a local regret of Rw (T ). Then,
-
- Rw (T )
-.
-Et∼Unif([T ]) k∇K,η Ft,w (xt )k2 ≤
-T
-This generalizes typical convergence results for the gradient in offline non-convex optimization; we discuss concrete
-reductions in Section 4.
-2.3. Why Smoothing is Necessary
-In this section, we show that for any online algorithm, an
-adversarial sequence of loss functions can force the local
-regret incurred to scale with T as Ω wT2 . This demonstrates the need for a time-smoothed performance measure
-in our setting, and justifies our choice of larger values of
-the window size w in the sections that follow.
-Theorem 2.7. Define K = [−1, 1]. For any T ≥ 1,
-1 ≤ w ≤ T , and η ≤ 1, there exists a distribution D on
-0-smooth, 1-bounded cost functions f1 , . . . , fT on K such
-that for any online algorithm, when run on this sequence of
-functions,
- 
-1
-T
-ED [Rw (T )] ≥
-.
-4w 2w
-Proof. We begin by partitioning the T rounds of play into
-T
-b 2w
-c repeated segments, each of length 2w.
-For the first half of the first segment (t = 1, . . . , w), the
-adversary declares that
-
-ft (x), a bound on local regret truly captures a guarantee of
-playing points with small gradients.
-
-3. An Efficient Non-Convex Regret
-Minimization Algorithm
-Our approach, as given in Algorithm 1, is to play followthe-leader iterates, approximated to a suitable tolerance
-using projected gradient descent. We show that this
-method efficiently
-achieves an optimal local regret bound
-
-of O wT2 , taking O (T w) iterations.
-Algorithm 1 Time-smoothed online gradient descent
-1: Input: window size w ≥ 1, learning rate 0 < η <
-n
-
-tolerance δ > 0, a convex body K ⊆ R .
-
-2: Set x1 ∈ K arbitrarily.
-3: for t = 1, . . . , T do
-4:
-Predict xt . Observe the cost function ft : K → R.
-5:
-Initialize xt+1 := xt .
-6:
-while k∇K,η Ft,w (xt+1 )k > δ/w do
-7:
-Update xt+1 := xt+1 − η∇K,η Ft,w (xt+1 ).
-8:
-end while
-9: end for
-
-Theorem 3.1. Let f1 , . . . , fT be the sequence of loss functions presented to Algorithm 1, satisfying Assumption 2.1.
-Then:
-(i) The w-local regret incurred satisfies
-2
-
-• For odd t, select ft (x) i.i.d. as follows:
-(
-−x, with probability
-ft (x) :=
-x,
-with probability
-
-Rw (T ) ≤ (δ + 2L)
-1
-2
-1
-2
-
-• For even t, ft (x) := −ft−1 (x).
-During the second half (t = w + 1, . . . , 2w), the adverT
-sary sets all ft (x) = 0. This construction is repeated b 2w
+qc (·; λc )s can be any distribution over X ⊆ RD from which
+we can efficiently draw samples using a continuous mapping
+parameterized by λc (e.g., multivariate normal (Jaakkola &
+Jordan, 1998), or a composition of invertible maps (Rezende
+& Mohamed, 2015)).
+When posterior expectations and variances are of interest,
+mixture distributions provide tractable summaries. Expectations are easily expressed in terms of component expectations:
+Z
+X
+Eq(C) [f (x)] = q (C) (x)f (x)dx =
+ρc Eqc [f (x)].
 c
-times, padding the final T mod 2w costs arbitrarily with
-ft (x) = 0.
-By this construction, at each round t at which ft (x) is
-drawn randomly, we have Ft,w (x) = ft (x)/w. Furthermore, for any xt played by the algorithm,
-|ft (xt )| = 1 with
+
+In the case of multivariate normal components, the mean
+and covariance of a mixture are easy to compute, as are
+marginal distributions along any set of dimensions.
+Variational boosting (VBoost) begins with a single mixture component, q (1) (x; λ) = q1 (x; λ1 ) with C = 1. We
+fix ρ1 = 1 and use existing black-box variational inference methods to fit the first component parameter, λ1 . At
+the next iteration C = 2, we fix λ1 and introduce a new
+component into the mixture, q2 (x; λ2 ). We define a new
+ELBO objective as a function of new component parameters, λ2 , and a new mixture weight, ρ2 . We then optimize
+this objective with respect to λ2 and ρ2 until convergence.
+At each subsequent round, c, we introduce new component
+parameters and a mixing weight, (λc , ρc ), which are then
+optimized according to a new ELBO objective. The name
+variational boosting is inspired by methods that iteratively
+construct strong learners from ensembles of weak learners.
+We apply VBoost to target distributions via black-box variational inference with the re-parameterization trick to fit
+each component and mixture weights (Kingma & Welling,
+2014; Ranganath et al., 2014; Salimans & Knowles, 2013).
+However, using mixtures as the variational approximation
+complicates the use of the re-parameterization trick.
+3.1. The re-parameterization trick and mixtures
+The re-parameterization trick is used to compute an unbiased
+estimate of the gradient of an objective that is expressed
+as an intractable expectation with respect to a continuousvalued random variable. This situation arises in variational
+inference when the ELBO cannot be evaluated analytically.
+We form an unbiased estimate as:
+L(λ) = Eq [ln π(x) − ln q(x; λ)]
+L
+i
+1 Xh
+≈
+ln π(x(`) ) − ln q(x(`) ; λ)
+L
+
+(1)
+(2)
+
+`=1
+
+ρc = 1,
+
+c
+
+where we denote the full mixture as q (C) , mixing
+proportions ρ = (ρ1 , . . . , ρC ), and component distributions qc (·; λc ) parameterized by λ = (λ1 , . . . , λC ). The
+
+where x(`) ∼ q(x; λ). To obtain a Monte Carlo estimate
+of the gradient of L(λ) using the re-parameterization
+trick, we first separate the randomness needed to generate x(`) from the parameters λ, by defining a deterministic map x(`) , fq (; λ) such that  ∼ p() implies
+
+Variational Boosting: Iteratively Refining Posterior Approximations
+existing approx
+target
+
+x(`) ∼ q(x; λ). Note that p() does not depend on λ. We
+then differentiate Eq. (2) with respect to λ through the map
+fq to obtain an estimate of ∇λ L(λ).
+When q(·; λ) is a mixture, applying the re-parameterization
+trick is not straightforward. The typical sampling procedure
+for a mixture model includes a discrete random variable that
+indicates a mixture component, which complicates differentiation. We circumvent this by re-writing the variational
+objective as a weighted combination of expectations with
+respect to individual mixture components:
+!
+Z X
+C
+ρc qc (x; λc ) [ln π(x) − ln q(x; λ)] dx
+L(λ, ρ) =
+c=1
+
+=
+
+C
+X
+
+qc (x; λc ) [ln π(x) − ln q(x; λ)] dx
+
+c=1
+
+=
+
+C
+X
+
+ρc Eqc [ln π(x) − ln q(x; λ)]
+
+c=1
+
+which is a weighted sum of component-specific ELBOs. If
+the qc are continuous and there exists some function fc (; λ)
+such that x = fc (; λ) and x ∼ qc (·; λ) when  ∼ p(), then
+we can apply the re-parameterization trick to each component to obtain gradients of the ELBO :
+∇λc L(λ, ρ) = ∇λc
+
+C
+X
+
+ρc Ex∼q(x;λ) [ln π(x) − ln q(x; λ)]
+
+c=1
+
+=
+
+C
+X
+
+existing approx
+optimized new comp
+target
+
+Figure 1. One-dimensional illustration of the VBoost procedure.
+Top: Initial single-component approximation (solid blue). Middle:
+A new component (dotted red) is initialized. Bottom: New component parameters and mixing weights are optimized using Monte
+Carlo gradients of the ELBO. Note that the mass of the existing
+components can rise and fall, but not shift in space.
+
+Z
+ρc
+
+existing approx
+initial new comp
+target
+
 
-probability at least 21 . so that E k∇K,η Ft,w (xt )k2 ≥ 2w1 2 .
-The claim now follows from the fact that there
- T are at least
-w
-of
-these
-rounds
-per
-segment,
-and
-exactly
-2
-2w segments
-in total.
-We further note that the notion of time-smoothing captures non-convex online optimization under limited concept drift: in online learning problems where Ft,w (x) ≈
+ρc E∼p() ∇λc ln π(fc (; λc ))
 
-β
-2,
-
-T
-.
-w2
-
-(ii) The total number of gradient steps τ taken by Algorithm 1 satisfies
-τ≤
-
-M
-
-δ2 η −
-
-βη 2
-2
-
-
- · 2T w + w2 .
-
-Proof of (i). We note that Algorithm 1 will only play an
-iterate xt if k∇K,η Ft−1,w k ≤ δ/w. (Note that at t = 1,
-Ft−1,w is zero.) Let ht (x) = w1 (ft (x) − ft−w (x)), which
-is 2L
-w -Lipschitz. Then, for each 1 ≤ t ≤ T we have a
-bound on each cost
-k∇K,η Ft,w (xt )k2 = k∇K,η [Ft,w−1 + ht (x)] (xt )k2
-2
-
-≤ (k∇K,η Ft,w−1 k + k∇ht (xt )k)
-
-2
-δ
-2L
-(δ + 2L)2
-,
-≤
-+
-=
-w
-w
-w2
-
-where the first inequality follows from Proposition 2.4.
-Summing over all t gives the desired result.
-
-Efficient Regret Minimization in Non-Convex Games
-
-Proof of (ii). First, we require an additional property of the
-projected gradient.
-n
-
-Lemma 3.2. Let K ∈ R be a closed convex set, and let
-η > 0. Suppose f : K → R is differentiable. Then, for any
-x ∈ R,
-h∇f (x), ∇K,η f (x)i ≥ k∇K,η f (x)k2 .
-Proof. Let u = x − η∇f (x) and u0 = ΠK [u]. Then,
-
-Using Lemma 3.3, we have
-
-FT (xT ) ≤
-
-0
-
-= hu − u , u − xi ≥ 0,
-
-βη 2
-2
-
-
-
-w2
-
-T
-δ2 X
-·
-τt ,
-t=1
-
-whence
-τ=
-
-T
-X
-
-τt ≤
-
-t=1
-
-h∇f (x), ∇K,η f (x)i k∇K,η f (x)k2
-−
-η2
-η2
-= hu − x, u0 − xi − hu0 − x, u0 − xi
-0
-
-2M T
-−
-w
-
-η−
-
-≤
-
-w2
-
-δ2 η −
-
-
-βη 2
-2
-
-M
-
-
-δ2 η −
-
-βη 2
-
-·
-
-
-2M T
-− FT (xT )
-w
-
-
- · 2T w + w2 ,
-
-2
-
-as claimed.
-
-where the last inequality follows by the generalized
-Pythagorean theorem.
-For 2 ≤ t ≤ T , let τt be the number of gradient steps taken
-in the outer loop at iteration t − 1, in order to compute the
-iterate xt . For convenience, define τ1 = 0. We establish a
-progress lemma during each gradient descent epoch:
-
-Setting η = 1/β and δ = L gives the asymptotically optimal local regret bound, with O(T w) time-averaged gradient steps (and thus O(T w2 ) individual gradient oracle
-calls). We further note that in the case where K = Rn ,
-one can replace the gradient descent subroutine (the inner
-loop) with non-convex SVRG (Allen-Zhu & Hazan, 2016),
-achieving a complexity of O(T w5/3 ) gradient oracle calls.
-
-Lemma 3.3. For any 2 ≤ t ≤ T ,
-
-
-βη 2 δ 2
-Ft−1 (xt ) − Ft−1 (xt−1 ) ≤ −τt η −
-.
-2
-w2
-Proof. Consider a single iterate z of the inner loop, and
-the next iterate z 0 := z − η∇K,η Ft−1 (z). We have, by
-β-smoothness of Ft−1 ,
-Ft−1 (z 0 ) − Ft−1 (z) ≤ h∇Ft−1 (z), z 0 − zi +
-= −η h∇Ft−1 (z), ∇K,η Ft−1 (z)i +
-
-β 0
-kz − zk2
-2
-
-βη 2
-k∇K,η Ft−1 (z)k2 .
-2
-
-
-
-Ft−1 (z 0 ) − Ft−1 (z) ≤ − η −
-
-βη
-2
-
-
-2
-
-k∇K,η Ft−1 (z)k2 .
-
-The algorithm only takes projected gradient steps when
-k∇K,η Ft−1 (z)k ≥ δ/w. Summing across all τt consecutive iterations in the epoch yields the claim.
-To complete the proof of the theorem, we write the telescopic sum (understanding F0 (x0 ) = 0):
-T
-X
-
-=
-
-T
-X
-t=2
-
-Corollary 4.1. Let f : K → R satisfy Assumption 2.1.
-When online algorithm A is run on a sequence of T identical loss functions f (x), it holds that for any 1 ≤ w < T ,
-Et∼D[w,T ] k∇K,η f (xt )k2 ≤
-
-Ft−1 (xt ) − Ft−1 (xt−1 ) + ft (xt ) − ft−w (xt )
-
-t=1
-
-≤
-
-For offline optimization on a fixed non-convex function
-f : K → R, we demonstrate that a bound on local regret translates to convergence. In particular, using Algorithm 1 one finds apoint x ∈ K with k∇K,η f (x)k2 ≤ ε
-while making O 1ε calls to the gradient oracle, matching
-the best known result for the convergence of gradient-based
-methods.
-
-Ft (xt ) − Ft−1 (xt−1 )
-
-t=1
-T
-X
-
-In this section, we discuss the ways in which our online
-framework generalizes the offline and stochastic versions
-of non-convex optimization – that any algorithm achieving
-a small value of Rw (T ) efficiently finds a point with small
-gradient in these settings. For convenience, for 1 ≤ t ≤
-t0 ≤ T , we denote by D[t,t0 ] the uniform distribution on
-time steps t through t0 inclusive.
-4.1. Offline non-convex optimization
-
-Thus, by Lemma 3.2,
-
-FT (xT ) =
-
-4. Implications for Offline and Stochastic
-Non-Convex Optimization
-
-[Ft−1 (xt ) − Ft−1 (xt−1 )] +
-
-2M T
-.
-w
-
-Rw (A)
-.
-T −w
-
-In particular, Algorithm 1, with parameter
-choices T =
+Component C + 1 After iteration C, our current approximation to π(x) is a mixture distribution with C components:
 q
-1
-2
-2w, η = β , δ = L, and w = (δ + 2L) ε , yields
-Et∼Dw,T k∇K,η f (xt )k2 ≤ ε.
 
-Efficient Regret Minimization in Non-Convex Games
+(C)
 
-Furthermore, the algorithm makes O
-dient oracle in total.
+(x; λ, ρ) =
 
-1
-ε
-
-
-
-calls to the gra-
-
-When an online algorithm incurs small local regret in expectation, it has a convergence guarantee in offline stochastic non-convex optimization:
-
-Proof. Since ft (x) = f (x) for all t, it follows that
-Ft,w (x) = f (x) for all t ≥ w. As a consequence, we
-have
-
-Proposition 4.3. Let 1 ≤ w < T . Suppose that online algorithm A is run on a sequence of T identical
-loss functions f (x) satisfying Assumption 2.1, with identical stochastic gradient oracles satisfying Assumption 4.2.
-Sample t ∼ D[w,T ] . Then, over the randomness of t and
-the oracles,
-
-Et∼Dw,t k∇K,η f (xt )k2 ≤
-≤
-
-T
-1 X
-k∇K,η f (xt )k2
-T − w t=1
-
-Rw (A)
-.
-T −w
-
-With the stated choice of parameters, Theorem 3.1 guarantees that
-Et∼Dw,t k∇K,η f (xt )k2 ≤
-
-T
-ε
-·
-= ε.
-2 T −w
-
-Also, since the loss functions are identical, the execution
-of line 7 of Algorithm 1 requires exactly one call to the
-gradient oracle at each iteration. This entails that the total
-number of gradient oracle calls made in the execution is
-O(T w + w2 ) = O( 1ε ).
-4.2. Stochastic non-convex optimization
-We examine the way in which our online framework captures stochastic non-convex optimization of a fixed function f : Rn → R, in which an algorithm has access to a
-f (x). We note that the
-noisy stochastic gradient oracle ∇f
-reduction here will only apply in the unconstrained case;
-it becomes challenging to reason about the projected gradient under noisy information. From a local regret bound,
-werecover
-a stochastic algorithm with oracle complexity
-
-σ4
-O ε2 . We note that this black-box reduction recovers an
-optimal convergence rate in terms of ε, but not σ 2 .
-In the setting, the algorithm must operate on the noisy estimates of the gradient as the feedback. In particular, for
-any ft that the adversary chooses, the learning algorithm
-is supplied with a stochastic gradient oracle for ft . The
-discussion in the preceding sections may be viewed as a
-special case of this setting with σ = 0. We list the assumptions we make on the stochastic gradient oracle, which are
-standard:
-Assumption 4.2. We assume that each call to the stochasf (x)
-tic gradient oracle yields an i.i.d. random vector ∇f
-with the following properties:
-h
-i
-f (x) = ∇f (x).
-(i) Unbiased: E ∇f
-h
-i
-f (x) − ∇f (x)k2 ≤ σ 2 .
-(ii) Bounded variance: E k∇f
-
-
- E [Rw (A)]
-.
-E k∇f (xt )k2 ≤
-T −w
-Proof. Observe that
-
-
-Et∼D[w,T ] k∇f (xt )k2 ≤
-
-PT
-
-k∇f (xt )k2
-Rw (A)
-≤
-.
-T −w
-T −w
-
-t=1
-
-The claim follows by taking the expectation of both sides,
-over the randomness of the oracles.
-For a concrete online-to-stochastic reduction, we consider
-Algorithm 2, which exhibits such a bound on expected local regret.
-Algorithm 2 Time-smoothed online gradient descent with
-stochastic gradient oracles
-1: Input: learning rate η > 0, window size w ≥ 1.
-2: Set x1 = 0 ∈ Rn arbitrarily.
-3: for t = 1, . . . , T do
-4:
-Predict xt . Observe the cost function ft : Rn → R.
-Pw−1 f
-5:
-Update xt+1 := xt − wη i=0 ∇f
-t−i (xt ).
-6: end for
-Theorem 4.4. Let f1 , . . . , ft satisfy Assumption 2.1. Then,
-Algorithm 2, with access to stochastic gradient oracles
-f (xt )} satisfying Assumption 4.2, and a choice of η =
-{∇f
-t
-1
-,
-guarantees
-β
-E [Rw (T )] ≤ 8βM + σ 2
-
-T
-.
-w
-
-Furthermore, Algorithm 2 makes a total of O(T w) calls to
-the stochastic gradient oracles.
-Using this expected local regret bound in Proposition 4.3,
-we obtain the reduction claimed at the beginning of the section:
-Corollary 4.5. Algorithm 2, with parameter choices w =
-12M β+2σ 2
-, T = 2w, and η = β1 , yields
-ε
-
-
-E k∇f (xt )k2 ≤ ε.
- 4
-Furthermore, the algorithm makes O σε2 stochastic gradient oracle calls in total.
-
-Efficient Regret Minimization in Non-Convex Games
-
-5. An Efficient Algorithm with Second-Order
-Guarantees
-We note that by modifying Algorithm 1 to exploit secondorder information, our online algorithm can be improved to
-play approximate first-order critical points which are also
-locally almost convex. This entails replacing the gradient
-descent epochs with a cubic-regularized Newton method
-(Nesterov & Polyak, 2006; Agarwal et al., 2016a).
-In this setting, we assume that we have access to each ft
-through a value, gradient, and Hessian oracle. That is,
-once we have observed ft , we can obtain ft (x), ∇ft (x),
-and ∇2 ft (x) for any x. Let MinEig(A) be the minimum
-(eigenvalue, eigenvector) pair for matrix A. As is standard
-for offline second-order algorithms, we must add the following additional smoothness restriction:
-Assumption 5.1. ft is twice differentiable and has an L2 Lipschitz Hessian:
-k∇2 f (x) − ∇2 f (y)k ≤ L2 kx − yk.
-Additionally, we consider only the unconstrained case
-where K = Rn ; the second-order optimality condition is
-irrelevant when the gradient does not vanish at the boundary of K.
-The second-order Algorithm 3 uses the same approach as
-in Algorithm 1, but terminates each epoch under a stronger
-approximate-optimality condition. We define
-
-
-4β
-Φt (x) := max k∇Ft (x)k2 , − 2 · λmin (∇2 Ft (x))3 ,
-3L2
-PT
-so that the quantity
-t=1 Φt (xt ) is termwise lower
-bounded by the costs in Rw (T ), but penalizes local concavity.
-We characterize the convergence and oracle complexity
-properties of this algorithm:
-Theorem 5.2. Let f1 , . . . , fT be the sequence of loss functions presented to Algorithm 3, satisfying Assumptions 2.1
-and 5.1. Choose δ = β. Then, for some constants C1 , C2
-in terms of M, L, β, L2 :
-(i) The iterates {xt } produced by Algorithm 3 satisfy
-T
+C
 X
 
-Φt (xt ) ≤ C1 ·
+ρc qc (x; λc ).
 
-t=1
+Adding a component to Eq. (5) introduces a new component parameter, λC+1 , and a new mixing weight, ρC+1 . In
+this section, the mixing parameter ρC+1 ∈ [0, 1] mixes between the new component, qC+1 (·; λC+1 ) and the existing
+approximation, q (C) . The new approximate distribution is
+q (C+1) (x; λ, ρ)
 
-T
-.
-w2
+c=1
 
-(ii) The total number of iterations τ of the inner loop taken
-by Algorithm 3 satisfies
-τ ≤ C2 · T w 2 .
+
 
-Algorithm 3 Time-smoothed online Newton method
-1: Input: window size w ≥ 1, tolerance δ > 0.
-2: Set x1 ∈ K arbitrarily.
-3: for t = 1, . . . , T do
-4:
-Predict xt . Observe the cost function ft : Rn → R.
-5:
-Initialize xt+1 := xt .
-6:
-while Φt (xt+1 ) > δ 3 /w3 do
-7:
-Update xt+1 := xt+1 − β1 ∇Ft,w (xt+1 ).
+− ∇λc ln q(fc (; λc ); λ) .
+
+= (1 − ρC+1 )q (C) (x) + ρC+1 qC+1 (x; λC+1 ) .
+
+VBoost leverages the above formulation of ∇λc L(λ, ρ)
+to use the re-parameterization trick in a component-bycomponent manner, allowing us to improve the variational
+approximation as we incorporate new components.
+
+The new ELBO, as a function of ρC+1 and λC+1 , is:
+
+3.2. Incorporating New Components
+Next, we describe how to incrementally add components
+during the VBoost procedure.
+The first component VBoost starts by fitting a approximation to π(x) consisting of a single component, q1 . We do
+this by maximizing the first ELBO objective
+L(1) (λ1 ) = Eq1 [ln π(x) − ln q1 (x; λ1 )]
+λ∗1 = arg max L(1) (λ1 ) .
+
+(5)
+
+c=1
+
+(3)
+(4)
+
+λ1
+
+Depending on the forms of π and q1 , optimizing L(1) can
+be accomplished by various methods — an obvious choice
+being black-box VI with the re-parameterization trick. After
+convergence we fix λ1 to be λ∗1 .
+
+L(C+1) (ρC+1 , λC+1 )
+h
+i
+= Ex∼q(C+1) ln π(x) − ln q (C+1) (x; λC+1 , ρC+1 )
+h
+i
+= (1 − ρC+1 )Eq(C) ln π(x) − ln q (C+1) (x; λC+1 , ρC+1 )
+h
+i
++ ρC+1 EqC+1 ln π(x) − ln q (C+1) (x; λC+1 , ρC+1 ) .
+Crucially, we have separated out two expectations: one
+with respect to the existing approximation, q (C) (which is
+fixed), and the other with respect to the new component
+distribution, qC+1 . Because we have fixed q (C) , we only
+need to optimize the new component parameters, λC+1
+and ρC+1 , allowing us to use the re-parameterization trick
+to obtain gradients of L(C+1) . Note that evaluating the
+gradient requires sampling from the existing components
+which may result in larger variance than typical black-box
+variational methods. To mitigate the extra variance we use
+many samples to estimate the gradient and leave variance
+reduction to future work.
+
+Variational Boosting: Iteratively Refining Posterior Approximations
+
+Figure 1 illustrates the algorithm on a simple onedimensional example — the initialization of a new component and the resulting mixture after optimizing the second objective, L(2) (ρ2 , λ2 ). Figure 2 depicts the result
+of VBoost on a two-dimensional, multi-modal target distribution. In both cases, the component distributions are
+Gaussians with diagonal covariance.
+3.3. Structured Multivariate Normal Components
+Though our method can use any component distribution
+that can be sampled using a continuous mapping, a sensible
+choice of component distribution is a multivariate normal
+q(x; λ) = N (x; µλ , Σλ )
 
-8:
-Let (λ, v) := MinEig ∇2 Ft,w (xt+1 ) .
-9:
-if λ < 0 then
-10:
-Flip the sign of v so that hv, ∇Ft,w (xt+1 )i ≤ 0.
-2λ
-v.
-11:
-Compute yt+1 := xt + L
+= |2πΣλ |−1/2 exp − 12 (x − µλ )| Σ−1
+λ (x − µλ )
+where the variational parameter λ is transformed into a mean
+vector µλ and covariance matrix Σλ .
+Specifying the structure of the covariance matrix is a choice
+that largely depends on the dimensionality of X ⊆ RD
+and the correlation structure of the target distribution.
+A common choice of covariance is a diagonal matrix,
 2
-12:
-if Ft,w (yt+1 ) < Ft,w (xt+1 ) then
-13:
-Set xt+1 := yt+1 .
-14:
-end if
-15:
-end if
-16:
-end while
-17: end for
-Proof of (i). For each 1 ≤ t ≤ T , we have
-Φt−1 (xt ) ≤
+Σλ = diag(σ12 , . . . , σD
+), which implies that x is independent across dimensions. When the approximation only consists of one component, this structure is commonly referred
+to as the mean field family. While computationally efficient,
+mean field approximations cannot model posterior correlations, which often leads to underestimation of marginal
+variances. Additionally, when diagonal covariances are used
+as the component distributions in Eq. (5) the resulting mixture may require a large number of components to represent
+the strong correlations (see Fig. 2). Furthermore, independence constraints can actually introduce local optima in the
+variational objective (Wainwright & Jordan, 2008).
+On the other end of the spectrum, we can parameterize
+the entire covariance matrix using the Cholesky decomposition, L, such that LL| = Σ. This allows Σ to be any
+positive semi-definite matrix, enabling q to have the full
+flexibility of a D-dimensional multivariate normal distribution. However, this introduces D(D + 1)/2 parameters,
+which can be computationally cumbersome when D is even
+moderately large. Furthermore, only a few pairs of variables
+may exhibit posterior correlations, particularly in multi-level
+models or neural networks where different parameter types
+may be nearly independent in the posterior.
+As such, we would like to incorporate some capacity to
+capture correlations between dimensions of x without overparameterizing the approximation. The next subsection discusses a covariance specification that provides this tradeoff,
+while remaining computationally tractable.
+Low-rank plus diagonal covariance Black-box variational inference methods with the re-parameterization trick
 
-δ3
-.
-w3
+Figure 2. Sequence of increasingly complex approximate posteriors, with C = 1, 2, 3, 4 isotropic Gaussian components. The
+background (grey/black) contours depict the target distribution,
+and the foreground (red) contours depict the approximations.
 
-Let ht (x) := w1 (ft (x) − ft−w (x)). Then, since ht (x) is
-2β
-2L
-w -Lipschitz and w -smooth,
-n
-Φt (xt ) = max k∇Ft−1 (xt ) + ∇ht (xt )k2 ,
-o
-4β
-2
+require sampling from the variational distribution and efficiently computing (or approximating) the entropy of the
+variational distribution. For multivariate normal distributions, the entropy is a function of the determinant of the
+covariance matrix, Σ, while computing the log likelihood
+requires computing Σ−1 . When the dimensionality of the
+target, D, is large, computing determinants and inverses
+will have O(D3 ) time complexity and therefore may be
+prohibitively expensive to compute at every iteration.
+However, it may be unnecessary to represent all D(D−1)/2
+possible correlations in the target distribution, particularly
+if certain dimensions are close to independent. One way to
+increase the capacity of q(x; λ) is to model the covariance
+as a low-rank plus diagonal (LR+D) matrix
+Σ = F F | + diag(exp(v))
+
+(6)
+
+where F ∈ RD×r is a matrix of off diagonal factors,
+and v ∈ RD is the log-diagonal component. This is effectively approximating the target via a factor analysis model.
+The choice of the rank r presents a tradeoff: with a larger
+rank, the variational approximation can be more flexible;
+with a lower rank, the computations necessary for fitting the
+variational approximation are more efficient. As a concrete
+example, in Section 4 we present a D = 37 dimensional
+posterior resulting from a non-conjugate hierarchical model,
+and we show that a “rank r = 2 plus diagonal” covariance
+does an excellent job capturing all D(D − 1)/2 = 780 pairwise correlations and D marginal variances. Incorporating
+more components using the VBoost framework further improves the approximation of the distribution.
+To use the re-parameterization trick with this low rank covariance, we can simulate from q in two steps
+z (lo) ∼ N (0, Ir )
+
+z (hi) ∼ N (0, ID )
+
+x = F z (lo) + µ + I(v/2)z (hi)
+
+Variational Boosting: Iteratively Refining Posterior Approximations
+
+where z (lo) generates the randomness due to the low-rank
+structure, and z (hi) generates the randomness due to the diagonal structure. We use the operator I(a) = diag(exp(a))
+for notational brevity. This generative process can be differentiated, yielding Monte Carlo estimates of the gradient
+with respect to F and v suitable for stochastic optimization.
+In order to use LR+D covariance structure within VBoost,
+we will need to efficiently compute the determinant and
+inverse of Σ. The matrix determinant lemma expresses the
+determinant of Σ as the product of two determinants
+|F F | + I(v))| = |I(v))||Ir + F | I(−v)F |
+!
+X
+= exp
+vd |Ir + F | I(−v)F |
+d
+
+where the left term is simply the product of the diagonal
+component, and the right term is the determinant of an r × r
+matrix, computable in O(r3 ) time (Harville, 1997).
+To compute Σ−1 , the Woodbury matrix identity states that
+(F F | + I(v))−1
+= I(−v) − I(−v)F (Ir + F | I(−v)F )−1 F | I(−v)
+which involves the inversion of a smaller, r × r matrix
+and can be done in O(r3 ) time (Golub & Van Loan, 2013).
+Importantly, for r  D the above operations are efficiently
+differentiable and amenable for use in the BBVI framework.
+Fitting the rank To specify the ELBO objective, we need
+to choose a rank r for the component covariance. There are
+many ways to decide on the rank of the variational approximation, some more appropriate for certain settings given
+dimensionality and computational constraints. For instance,
+we can greedily incorporate new rank components. Alternatively, we can fit a sequence of ranks r = 1, 2, . . . , rmax ,
+and choose the best result (in terms of KL). In the Bayesian
+neural network model, we report results for a fixed schedule
+of ranks. In the hierarchical Poisson model, we monitor the
+change in marginal variances to decide the appropriate rank.
+See Section B of the supplement for further discussion.
+Initializing new component parameters When we add
+a new component, we must first initialize the component
+parameters. We find that the VBoost optimization procedure can be sensitive to initialization, so we devise a cheap
+importance sampling-based algorithm to generate a good
+starting point. This initialization procedure is detailed in
+Section A and Algorithm 1 of the supplement.
+3.4. Related Work
+Mixtures of mean field approximations were introduced
+in Jaakkola & Jordan (1998) where mean field-like updates
+were developed using a bound on the entropy term and
+
+model-specific parameter updates. Nonparametric variational inference, introduced in Gershman et al. (2012), is a
+black-box variational inference algorithm that approximates
+a target distribution with a mixture of equally-weighted
+isotropic normals. The authors use a lower-bound on the entropy term in the ELBO to make the optimization procedure
+tractable. Similarly, Salimans & Knowles (2013) present a
+method for fitting mixture distributions as an approximation.
+However, their method is restricted to mixture component
+distributions within the exponential family, and a joint optimization procedure. Mixture distributions are a type of
+hierarchical variational model (Ranganath et al., 2016b),
+where the component identity can be thought of as latent
+variables in the variational distribution. While in Ranganath
+et al. (2016b), the authors optimize a lower bound on the
+ELBO to fit general hierarchical variational models, our approach integrates out the discrete latent variables, allowing
+us to directly optimize the ELBO.
+Sequential maximum-likelihood estimation of mixture models has been studied previously where the error between the
+sequentially learned model and the optimal model where all
+components and weights are jointly learned is bounded by
+O(1/C) where C is the number of mixture components (Li
+& Barron, 1999; Li, 1999; Rakhlin et al., 2006). A similar
+bound was proven in Zhang (2003) using arguments from
+convex analysis. More recently, sequentially constructing
+a mixture of deep generative models has been shown to
+achieve the same O(1/C) error bound when trained using
+an adversarial approach (Tolstikhin et al., 2016). Though
+these ideas show promise for deriving error bounds for variational boosting, there are difficulties in applying them.
+In concurrent work, Guo et al. (2016) developed a boosting
+procedure to construct flexible approximations to posterior
+distributions. In particular, they use gradient-boosting to
+determine candidate component distributions and then optimize the mixture weight for the new component (Friedman,
+2000). However, Guo et al. (2016) assume that the gradientboosting procedure is able to find the optimal new component so that the arguments in Zhang (2003) apply, which is
+not true in general. We note that if we make the similar assumption that at each step of VBoost the component parameters λ∗C are found exactly, then the optimization of ρC is
+convex and can be optimized exactly. We can then appeal to
+the same arguments in Zhang (2003) and obtain an O(1/C)
+error bound. The work in Guo et al. (2016) provides important first steps in the theoretical development of boosting
+methods applied to variational inference, however, we note
+that developing a comprehensive theory that deals with the
+difficulties of multimodality and the non-joint-convexity of
+KL divergence in λ and ρ is still needed. Recently, Moore
+(2016) began to address issues of multimodality from model
+symmetry in variational inference. However, the question
+remains whether the entire distribution is being explored.
+
+Variational Boosting: Iteratively Refining Posterior Approximations
+
+(a) baseball marginals
+
+(b) baseball covariances
+
+Figure 3. Left: Comparison of bivariate (top) and univariate (bottom) marginals for the baseball model. Histograms/scatterplots depict
+20,000 NUTS samples. The top left depicts (ln κ, θ0 ) marginal samples and a mean field approximation (MFVI). The Top Right shows
+the same bivariate marginal, and the VBoost approximation with isotropic components. The bottom panels compare NUTS, MFVI, and
+VBoost on univariate marginals (φ and ln κ). Right: Comparison of posterior covariances for the D = 20-dimensional baseball model.
+Each plot compares covariance estimates of VBoost (x-axis) with increasing numbers of components and MCMC samples (y-axis). As
+more components are added, the VBoost estimates more closely match the MCMC covariance estimates.
+
+Seeger (2010) explored the use of low-rank covariance Gaussians as variational approximations using a PCA-like algorithm. Additionally, concurrent work has proposed the use
+a LR+D matrices as the covariances of Gaussian posterior
+approximations (Ong et al., 2017). We have also found that
+though the LR+D covariance approximation is useful for
+capturing posterior correlations, combining the idea with
+boosting new components to capture non-Gaussian posteriors yields superior posterior inferences.
+
+4. Experiments and Analysis
+To supplement the previous synthetic examples, we use
+VBoost to approximate various challenging posterior distributions arising from real statistical models of interest.2
+Binomial Regression We first apply VBoost to a nonconjugate hierarchical binomial regression model.3 The
+model describes the binomial rates of success (batting averages) of baseball players using a hierarchical model (Efron
+& Morris, 1975), parameterizing the “skill” of each player:
+θj ∼ Beta(φ · κ, (1 − φ) · κ)
+
+player j prior
+
+yj ∼ Binomial(Kj , θj )
+
+player j hits ,
+
+where yj is the number of successes (hits) player j has
+attempted in Kj attempts (at bats). Each player has a latent success rate θj , which is governed by two global variables κ and φ. We specify the priors φ ∼ Unif(0, 1) and
+κ ∼ Pareto(1, 1.5). There are 18 players in this example,
+creating a posterior distribution with D = 20 parameters.
+For each round of VBoost, we estimate ∇λ,ρ L(C+1) using
 2
 3
-·
-λ
-(∇
-F
-(x
-)
-+
-∇
-h
-(x
-))
-−
-min
-t t
-t t
-3L22
-(
-
-
-3 )
-2
-δ 3/2
-2L
-δ
-2β
-4β
-≤ max
-+
-+
-,
-·
-,
-w
-3L22
-w
-w
-w3/2
-which is bounded by C1 /w2 , for some C1 (M, L, β, L22 ).
-The claim follows by summing this inequality across all
-1 ≤ t ≤ T.
-Proof of (ii). We first show the following progress lemma:
-Lemma 5.3. Let z, z 0 be two consecutive iterates of the
-inner loop in Algorithm 3 during round t. Then,
-Ft (z 0 ) − Ft (z) ≤ −
 
-Φt (z)
-.
-2β
+Code available at https://github.com/andymiller/vboost.
+Model and data from the mc-stan case studies
 
-Proof. Let u denote the step z 0 − z. Let g := ∇Ft (z),
-H := ∇2 Ft (z), and (λ, v) := MinEig(H).
-Suppose that at time t, the algorithm takes a gradient step,
-so that u = g/β. Then, by second-order smoothness of Ft ,
-we have
-Ft (z 0 ) − Ft (z) ≤ hg, ui +
+400 samples each for qC+1 and qC . We use 1,000 iterations of adam with default parameters to update ρC+1 and
+λC+1 (Kingma & Ba, 2014).
+In all experiments, we use autograd to obtain gradients
+with respect to new component parameters (Maclaurin et al.,
+2015b;a). To highlight the fidelity of our method, we compare VBoost with rank-1 components to mean field VI
+(MFVI) and the No-U-Turn Sampler (NUTS) (Hoffman
+& Gelman, 2014). The empirical distribution resulting from
+20k NUTS samples is considered the “ground truth” posterior in this example. Figure 3a compares a selection of
+univariate and bivariate posterior marginals. We see that
+VBoost is able to closely match the NUTS posteriors, improving upon the MFVI approximation. Figure 3b compares
+the VBoost covariance estimates to the “ground truth” estimates of MCMC at various stages of the algorithm. We
+see that VBoost is able to capture pairwise covariances with
+increasing accuracy as the number of components increases.
+Multi-level Poisson GLM We use VBoost to approximate the posterior of a hierarchical Poisson GLM, a common non-conjugate Bayesian model. Here, we focus on a
+specific model that was formulated to measure the relative
+rates of stop-and-frisk events for different ethnicities and in
+different precincts (Gelman et al., 2007), and has been used
+as an illustrative example of multi-level modeling (Gelman
+& Hill, 2006). The model uses a precinct and ethnicity effect
+to describe the relative rate of stop-and-frisk events
+αe ∼ N (0, σα2 )
 
-β
+ethnicity effect
+
+N (0, σβ2 )
+
+precinct effect
+
+βp ∼
+
+ln λep = µ + αe + βp + ln Nep
+Yep ∼ P(λep )
+
+log rate
+stop-and-frisk events
+
+Variational Boosting: Iteratively Refining Posterior Approximations
+
+(a) Rank 0 (MFVI)
+
+(d) Rank 3, 2-component
+
+(b) Rank 1
+
+(e) Rank 3, 4-component
+
+(c) Rank 2
+(f) Rank 3, 8-component
+Figure 4. Left: A sampling of bivariate marginals for a single Gaussian component approximation for the D = 37-dimensional frisk
+model. Each row incorporates more covariance structure. Though there are a total of 666 covariances to be approximated, only a few
+directions in the D-dimensional parameter space exhibit non-trivial correlations. Right: The same marginals with a mixture approximation
+using rank-3 Gaussians at various stages of the VBoost algorithm. Introducing new mixture components allows the posterior to take a
+non-Gaussian shape, most exhibited in the third column.
+
+dataset
+
+pbp
+
+rank 5
+
+vboost 2
+
+vboost 6
+
+vboost 10
+
+wine
+boston
+concrete
+power-plant
+yacht
+energy-eff.
+
+-0.990 (± 0.08)
+-2.902 (± 0.64)
+-3.162 (± 0.15)
+-2.798 (± 0.04)
+-0.990 (± 0.08)
+-1.971 (± 0.11)
+
+-0.972 (± 0.05)
+-2.670 (± 0.16)
+-3.247 (± 0.06)
+-2.814 (± 0.03)
+-0.972 (± 0.05)
+-2.452 (± 0.12)
+
+-0.971 (± 0.05)
+-2.651 (± 0.16)
+-3.228 (± 0.06)
+-2.811 (± 0.03)
+-0.971 (± 0.05)
+-2.422 (± 0.11)
+
+-0.978 (± 0.06)
+-2.599 (± 0.16)
+-3.169 (± 0.07)
+-2.800 (± 0.03)
+-0.978 (± 0.06)
+-2.345 (± 0.11)
+
+-0.994 (± 0.06)
+-2.628 (± 0.16)
+-3.134 (± 0.08)
+-2.793 (± 0.03)
+-0.994 (± 0.06)
+-2.299 (± 0.12)
+
+where Yep are the number of stop-and-frisk events within
+ethnicity group e and precinct p over some fixed period of time; Nep is the total number of arrests of ethnicity group e in precinct p over the same period of
+time; αe and βp are the ethnicity and precinct effects. The
+prior over the mean offset and group variances is given
+by µ, ln σα2 , ln σβ2 ∼ N (0, 102 ).
+As before, we simulate 20k NUTS samples, and compare
+various variational approximations. Because of the high
+posterior correlations present in this example, VBoost with
+diagonal covariance components is inefficient in its representation of this structure. As such, this example relies
+on the low-rank approximation to shape the posterior. Figure 4 shows how posterior accuracy is affected by incorporating covariance structure (left) and adding more components (right). Figures 6 and 7 in the supplement compare
+VBoost covariances to MCMC samples, showing that increased posterior rank capacity and number of components
+yield more accurate marginal variance and covariance estimates. These results indicate that while incorporating
+covariance structure increases the accuracy of estimating
+marginal variances, the non-Gaussianity afforded by the use
+
+Table 1. Test log probability for PBP and
+VBoost with varying number of components (fixed rank of 5). Each entry shows
+the average predictive performance of
+the model and the standard deviation
+across the 20 trials — bold indicates the
+best average (though not necessarily “statistical significance”).
+
+of mixture components allows for a better posterior approximation translating into more accurate moment estimates.
+Bayesian Neural Network We apply our method to a
+Bayesian neural network (BNN) regression model, which
+admits a high-dimensional, non-Gaussian posterior. We
+compare predictive performance of VBoost to Probabilistic Backpropagation (PBP) (Hernández-Lobato & Adams,
+2015). Mimicking the experimental setup of HernándezLobato & Adams (2015), we use a single 50-unit hidden
+layer, with ReLU activation functions. We place a normal
+prior over each weight in the neural network, governed by
+the same variance and an inverse Gamma prior over the
+observation variance yielding the model:
+wi ∼ N (0, 1/α)
+y|x, w, τ ∼ N (φ(x, w), 1/τ )
+
+weights
+output distribution
+
+where w = {wi } is the set of weights, and φ(x, w) is
+a multi-layer perceptron that maps input x to output y
+as a function of parameters w. Both α and τ are given
+Gamma(1, .1) priors. We denote the set of parameters as
+θ , (w, α, τ ). We approximate the posterior p(w, α, τ |D),
+
+Variational Boosting: Iteratively Refining Posterior Approximations
+
+where D is the training set of {xn , yn }N
+n=1 input-output
+pairs. We then use the posterior predictive distribution to
+compute the distribution for a new input x∗
+p(y|x∗ , D) =
+
+Z
+
+p(y|x∗ , θ)p(θ|D)dθ
+
+(7)
+
+L
+
+1X
+p(y|x∗ , θ(`) ) ,
+≈
+L
+
+θ(`) ∼ p(θ|D) (8)
+
+`=1
+
+and report average predictive log probabilities for held out
+data, p(Y = y ∗ |x∗ , D). For a dataset with input dimension
+P , the posterior has dimension D = (P +2)·50+3 (between
+D = 303 and D = 753 for the data sets considered).
+We report held-out predictive performance for different approximate posteriors for six datasets. For each dataset, we
+perform the following training procedure 20 times. First,
+we create a random partition into a 90% training set and
+10% testing set. We then apply VBoost, adding rank 5 components. We allow each additional component only 200
+iterations. To save time on initialization, we draw 100 samples from the existing approximation, and initialize the new
+component with the sample with maximum weight. For
+comparison, Probabilistic back-propagation is given 1000
+passes over the training data — empirically, sufficient for
+the algorithm to converge.
+Table 3 in the supplement presents out-of-sample log probability for single-component multivariate Gaussian approximations with varying rank structure. Table 1 presents outof-sample log probability for additional rank 5 components
+added using VBoost. We note that though we do not see
+much improvement as rank structure is added, we do see
+predictive improvement as components are added. Our results suggest that incorporating and adapting new mixture
+components is a recipe for a more expressive posterior approximation, translating into better predictive results. In fact,
+for all datasets we see that incorporating a new component
+improves test log probability, and we see further improvement with additional components for most of the datasets.
+Furthermore, in five of the datasets we see predictive performance surpass probabilistic back-propagation as new
+components are added. This highlights VBoost’s ability to
+trade computation for improved accuracy. These empirical
+results suggest that augmenting a Gaussian approximation
+to include additional capacity can improve predictive performance in a BNN while retaining computational tractability.
+4.1. Comparison to NPVI
+We also compare VBoost to nonparametric variational inference (NPVI) (Gershman et al., 2012), a similar mixture based black-box variational method. NPVI derives a
+tractable lower bound to the ELBO which is then approximately maximized. NPVI requires computing the Hessian
+
+num comps
+VBoost
+NPVI
+
 1
-kuk2 = − kgk2 .
+
 2
-2β
 
-Efficient Regret Minimization in Non-Convex Games
+5
 
-Supposing instead that the algorithm takes a second-order
-2λ
-v (whichever sign makes hg, ui ≤ 0),
-step, so that u = ± L
-2
-the third-order smoothness of Ft implies
-1
-L2
-Ft (z 0 ) − Ft (z) ≤ hg, ui + uT Ht u +
-kuk3
-2
-6
-L2
-λ
-kuk3
-= hg, ui + kuk2 +
-2
-6
-1 4βλ3
-2λ3
-=
-·
-.
-≤
-2
-3L2
-2β 3L22
-The lemma follows due to the fact that the algorithm takes
-the step that gives a smaller value of Ft (z 0 ).
-The rest of the proof follows the same structure as that for
-part (ii) of Theorem 3.1: summing Lemma 5.3 implies a
-statement analogous to Lemma 3.3, which we telescope
-over all epochs. For sake of completeness, we give the
-proof in the appendix.
+10
 
-6. A Solution Concept for Non-Convex Games
-Finally, we discuss an application of our regret minimization framework to learning in k-player T -round iterated
-games with smooth, non-convex payoff functions. Suppose
-that each player i ∈ [k] has a fixed decision set Ki ⊂ Rn ,
-and a fixed payoff function fi : K → R satisfies Assumption 2.1 as before. Here, K denotes the Cartesian product
-of the decision sets Ki : each payoff function is defined in
-terms of the choices made by every player.
-In such a game, it is natural to consider the setting where
-players will only consider small local deviations from their
-strategies. This is a natural setting, which models risk aversion. This setting lends itself to the notion of a local equilibrium, to replace the stronger condition of Nash equilibrium: a joint strategy in which no player encounters a large
-gradient on her utility. However, finding an approximate
-local equilibrium in this sense remains computationally intractable when the utility functions are non-convex.
-Using the idea time-smoothing, we formulate a tractable relaxed notion of local equilibrium, defined over some time
-window w. Intuitively, this definition captures a state of
-an iterated game in which each player examines the past
-w actions played, and no player can make small deviations
-to improve the average performance of her play against her
-opponents’ historical play. We formulate this solution concept as follows:
-Definition 6.1 (Smoothed local equilibrium). Fix some
-
-	k
-η > 0, w ≥ 1. Let fi (x1 , . . . , xk ) : K → R i=1 be
-the payoff functions for a k-player iterated game. A
-joint strategy (x1t , . . . , xkt ) is an ε-approximate (η, w)smoothed local equilibrium with respect to past iterates
+20
 
-
+-702.97
+-718.47
 
-	w−1
-(x1t−j , . . . , xkt−j ) j=0 if, for every player i ∈ [k],
+-700.92
+-717.86
 
+-699.69
+-717.09
 
-#
-" Pw−1
+-699.07
+-716.36
 
+-698.88
+-715.86
 
-˜i,t−j
-f
+Table 2. ELBO values for VBoost and NPVI (higher is better).
+Note that VBoost with 1 component is MFVI. All ELBO values are
+computed using a Monte Carlo estimate with L = 100k samples
+from the variational distribution. In NPVI, each component is a
+spherical gaussian with a single σ 2 shared across all dimensions
+— this limits the capacity of the approximation, requiring more
+components. Note, VBoost greedily incorporates components,
+while NPVI is re-run using a different number of components.
 
+of the model for the ELBO approximation, so we limit our
+comparison to the lower dimensional hierarchical models.
+We also note that the NPVI ELBO approximation does not
+fully integrate the ln π(x) term against the variational approximation, q(x; λ) when optimizing the mean parameters
+of the approximation components. When we applied NPVI
+to the baseball model, we discovered an instability in
+the optimization of these mean parameters (which we verified by finding that map optimization diverges). Black box
+VI, VBoost, and MCMC were not susceptible to this pathology. Consequently, we only compare NPVI to VBoost on
+the frisk model. Because NPVI uses diagonal components, we restrict VBoost to use purely diagonal components
+(r = 0). In Table 2 we show marginal likelihood lower
+bounds, comparing NPVI to VBoost with a varying number
+of components. Even with a single component, the NPVI
+objective tends to underperform. The NPVI component variance is spherical, limiting its capacity to represent posterior
+correlations. Further, NPVI is approximately optimizing a
+looser lower bound to the marginal likelihood. These two
+factors explain why NPVI fails to match MFVI and VBoost.
 
-j=0
-(xit ) ≤ ε,
-∇K,η
+5. Discussion and Conclusion
+We proposed VBoost, a practical variational inference
+method that constructs an increasingly expressive posterior
+approximation and is applicable to a variety of Bayesian
+models. We demonstrated the ability of VBoost to learn
+rich representations of complex, high-dimensional posteriors on a variety of real world statistical models. One avenue
+for future work is incorporating flexible component distributions such as compositions of invertible maps (Rezende
+& Mohamed, 2015) or auxiliary variable variational models (Maaløe et al., 2016). We also plan to study approximation guarantees of the VBoost method and variance reduction techniques for our reparameterization gradient approach. Also, when optimizing parameters of a variational
+family, recent work has shown that the natural gradient can
+be more robust and lead to better optima (Hoffman et al.,
+2013; Johnson et al., 2016). Deriving and applying natural
+gradient updates for mixture approximations could make
+VBoost more efficient.
 
-
-w
-
-where
-def
-i+1
-k
-f˜i,t0 (x) = fi (x1t0 , . . . , xi−1
-t0 , x, xt0 , . . . , xt0 ).
-
-To achieve such an equilibrium efficiently, we use Algorithm 4, which runs k copies of any online algorithm that
-achieves a w-local regret bound for some η > 0.
-Algorithm 4 Time-smoothed game simulation
-1: Input: convex decision sets K1 , . . . , Kk ⊆ Rn , payoff
-functions fi : (K1 , . . . , Kk ) → R, online algorithm A,
-window size 1 ≤ w < T .
-2: Initialize k copies (A1 , . . . , Ak ) of A with window
-size w, where each Ai plays on decision set Ki .
-3: for t = 1, . . . , T do
-4:
-Each Ai outputs xit .
-5:
-Show each Ai the online loss function
-k
-fi,t (x) := −fi (x1t , . . . , xi−1
-, x, xi+1
-t
-t , . . . , xt ).
-
-6: end for
-
-We show this meta-algorithm yields a subsequence of iterates that satisfy our solution concept, with error parameter
-dependent on the local regret guarantees of each player:
-Theorem 6.2. For some t such that w ≤ t ≤ T , the
-joint strategy (x1t , . . . , xkt ) produced by Algorithm 4 is an
-ε-approximate (η, w)-smoothed local equilibrium with re
-	t−1
-spect to (x1t−j , . . . , xkt−j ) j=0 , where
-v
-u k
-uX Rw,A (T )
-i
-ε=t
-.
-T
-−
-w
-i=1
-The proof, which we give in the appendix, follows from
-the same method as for the reductions in Section 4, after
-summing the regret bounds from each Ai .
-
-7. Concluding Remarks
-We have described how to extend the theory of online learning to non-convex loss functions, while permitting efficient
-algorithms. Our definitions give rise to efficient online and
-stochastic non-convex optimization algorithms that converge to local optima of first and second order. We give
-a game theoretic solution concept which we call local equilibrium, which, in contrast to existing solution concepts
-such as Nash equilibrium, is efficiently attainable in any
-non-convex game.
-
-Efficient Regret Minimization in Non-Convex Games
+Variational Boosting: Iteratively Refining Posterior Approximations
 
 Acknowledgements
-This material is based upon work supported by the National
-Science Foundation under Grant No. 1523815. The authors
-gratefully acknowledge Naman Agarwal, Brian Bullins,
-Matt Weinberg, and Yi Zhang for helpful discussions.
+The authors would like to thank Arjumand Masood, Mike
+Hughes, and Finale Doshi-Velez for helpful feedback. ACM
+is supported by the Applied Mathematics Program within
+the Office of Science Advanced Scientific Computing Research of the U.S. Department of Energy under contract No.
+DE-AC02-05CH11231. NJF is supported by a Washington
+Research Foundation Innovation Postdoctoral Fellowship in
+Neuroengineering and Data Science. RPA is supported by
+NSF IIS-1421780 and the Alfred P. Sloan Foundation.
 
 References
-Agarwal, Naman, Allen-Zhu, Zeyuan, Bullins, Brian,
-Hazan, Elad, and Ma, Tengyu. Finding approximate local minima for nonconvex optimization in linear time.
-arXiv preprint arXiv:1611.01146, 2016a.
-Agarwal, Naman, Bullins, Brian, and Hazan, Elad. Second order stochastic optimization for machine learning
-in linear time. arXiv preprint arXiv:1602.03943, 2016b.
-Allen-Zhu, Zeyuan and Hazan, Elad. Variance reduction
-for faster non-convex optimization. In Proceedings of
-The 33rd International Conference on Machine Learning, pp. 699–707, 2016.
-Arora, Sanjeev, Hazan, Elad, and Kale, Satyen. The multiplicative weights update method: a meta-algorithm
-and applications.
-Theory of Computing, 8(6):
-121–164, 2012.
-doi: 10.4086/toc.2012.v008a006.
-URL http://www.theoryofcomputing.org/
-articles/v008a006.
-Blum, A. and Mansour, Y. From external to internal regret.
-In COLT, pp. 621–636, 2005.
-Carmon, Yair, Duchi, John C., Hinder, Oliver, and Sidford,
-Aaron. Accelerated methods for non-convex optimization. arXiv preprint 1611.00756, 2016.
-Cesa-Bianchi, Nicolò and Lugosi, Gábor. Prediction,
-Learning, and Games. Cambridge University Press,
-2006.
-Cover, Thomas. Universal portfolios. Math. Finance, 1(1):
-1–19, 1991.
-Duchi, John, Hazan, Elad, and Singer, Yoram. Adaptive
-subgradient methods for online learning and stochastic
-optimization. The Journal of Machine Learning Research, 12:2121–2159, 2011.
-Erdogdu, Murat A and Montanari, Andrea. Convergence
-rates of sub-sampled newton methods. In Advances in
-Neural Information Processing Systems, pp. 3034–3042,
-2015.
-Freund, Yoav and Schapire, Robert E. A decision-theoretic
-generalization of on-line learning and an application to
-boosting. J. Comput. Syst. Sci., 55(1):119–139, August
-1997.
+Bishop, C. Pattern Recognition and Machine Learning.
+Springer-Verlag, 2006.
+Blei, D. M., Kucukelbir, A., and McAuliffe, J. D. Variational inference: A review for statisticians. arXiv preprint
+arXiv:1601.00670, 2016.
+Dempster, A. P., Laird, N. M., and Rubin, D. B. Maximum
+likelihood from incomplete data via the EM algorithm.
+Journal of the Royal Statistical Society. Series B (methodological), pp. 1–38, 1977.
+Efron, B. and Morris, C. Data analysis using Stein’s estimator and its generalizations. Journal of the American
+Statistical Association, 70(350):311–319, 1975.
+Friedman, J. H. Greedy function approximation: A gradient
+boosting machine. Annals of Statistics, 29:1189–1232,
+2000.
+Gelman, A. and Hill, J. Data Analysis Using Regression and
+Multilevel/Hierarchical Models. Cambridge University
+Press, 2006.
 
-Ghadimi, Saeed and Lan, Guanghui. Stochastic first-and
-zeroth-order methods for nonconvex stochastic programming. SIAM Journal on Optimization, 23(4):2341–2368,
-2013.
-Hart, Sergiu and Mas-Colell, Andreu. A simple adaptive
-procedure leading to correlated equilibrium. Econometrica, 68(5):1127–1150, 2000.
-Hazan, Elad. Introduction to online convex optimization.
-Foundations and Trends in Optimization, 2
-(3-4):157–325, 2016. ISSN 2167-3888. doi: 10.
-1561/2400000013.
-URL http://dx.doi.org/
-10.1561/2400000013.
-Hazan, Elad and Kale, Satyen. Computational equivalence
-of fixed points and no regret algorithms, and convergence to equilibria. In Platt, J.c., Koller, D., Singer, Y.,
-and Roweis, S. (eds.), Advances in Neural Information
-Processing Systems 20, pp. 625–632. MIT Press, Cambridge, MA, 2007. URL http://books.nips.cc/
-papers/files/nips20/NIPS2007_0695.pdf.
-Nesterov, Yurii. Introductory lectures on convex optimization, volume 87. Springer Science & Business Media,
-2004.
-Nesterov, Yurii and Polyak, Boris T. Cubic regularization
-of newton method and its global performance. Mathematical Programming, 108(1):177–205, 2006.
-Shalev-Shwartz, Shai. Online learning and online convex optimization. Foundations and Trends in Machine
-Learning, 4(2):107–194, 2011.
-Vovk, Volodimir G. Aggregating strategies. In Proceedings
-of the Third Annual Workshop on Computational Learning Theory, COLT ’90, pp. 371–386, 1990.
+Hoffman, M. D. and Gelman, A. The No-U-turn sampler:
+adaptively setting path lengths in Hamiltonian monte
+carlo. Journal of Machine Learning Research, 15(1):
+1593–1623, 2014.
+Hoffman, M. D., Blei, D. M., Wang, C., and Paisley, J. W.
+Stochastic variational inference. Journal of Machine
+Learning Research, 14(1):1303–1347, 2013.
+Jaakkola, T. S. and Jordan, M. I. Improving the mean field
+approximation via the use of mixture distributions. In
+Learning in Graphical Models, pp. 163–173. Springer,
+1998.
+Johnson, M. J., Duvenaud, D. K., Wiltschko, A. B., and
+Datta, S. R.and Adams, R. P. Composing graphical models with neural networks for structured representations
+and fast inference. In Advances in Neural Information
+Processing Systems, 2016.
+Jordan, M. I., Ghahramani, Z., Jaakkola, T. S., and Saul,
+L. K. An introduction to variational methods for graphical
+models. Machine learning, 37(2):183–233, 1999.
+Kingma, D. and Ba, J. Adam: A method for stochastic
+optimization. In International Conference on Learning
+Representations, 2014.
+Kingma, D. P. and Welling, M. Auto-encoding variational
+Bayes. In International Conference on Learning Representations, 2014.
+Li, Q. Estimation of Mixture Models. PhD thesis, Yale
+University, May 1999.
+Li, Q. J. and Barron, A. R. Mixture density estimation.
+In Advances in Neural Information Processing Systems,
+1999.
+
+Gelman, A., Fagan, J., and Kiss, A. An analysis of the
+NYPD’s stop-and-frisk policy in the context of claims of
+racial bias. Journal of the American Statistical Association, 102:813–823, 2007.
+
+Maaløe, L., Sønderby, C. K., Sønderby, S. K., and Winther,
+O. Auxiliary deep generative models. In International
+Conference on Machine Learning, 2016.
+
+Gershman, S., Hoffman, M., and Blei, D. M. Nonparametric
+variational inference. In International Conference on
+Machine Learning, 2012.
+
+Maclaurin, D. and Adams, R. P. Firefly Monte Carlo: Exact
+MCMC with subsets of data. In Uncertainty in Artificial
+Intelligence, 2014.
+
+Golub, G. H. and Van Loan, C. F. Matrix Computations.
+JHU Press, 2013.
+
+Maclaurin, D., Duvenaud, D., and Adams, R. P. Autograd:
+Reverse-mode differentiation of native python. ICML
+workshop on Automatic Machine Learning, 2015a.
+
+Guo, F., Wang, X., Fan, K., Broderick, T., and Dunson, D. B.
+Boosting variational inference. arXiv:1611.05559, 2016.
+Harville, D. A. Matrix Algebra from a Statistician’s Perspective. Springer-Verlag, 1997.
+
+Maclaurin, D., Duvenaud, D., Johnson, M., and Adams,
+R. P. Autograd: Reverse-mode differentiation of native
+Python, 2015b. URL http://github.com/HIPS/
+autograd.
+
+Hernández-Lobato, J. M. and Adams, R. P. Probabilistic
+backpropagation for scalable learning of Bayesian neural
+networks. 2015.
+
+Moore, D. A. Symmetrized variational inference. In NIPS
+Workshop on Advances in Approximate Bayesian Inferece,
+2016.
+
+Variational Boosting: Iteratively Refining Posterior Approximations
+
+Ong, V. M.-H., Nott, D. J., and Smith, M. S. Gaussian variational approximation with factor covariance structure.
+arXiv preprint arXiv:1701.03208, 2017.
+Rakhlin, A., D., Panchenko, and S., Mukherjee. Risk bounds
+for mixture density estimation. ESAIM: Probability and
+Statistics, 9:220–229, 2006.
+Ranganath, R., Gerrish, S., and Blei, D. M. Black box
+variational inference. In International Conference on
+Artificial Intelligence and Statistics, pp. 814–822, 2014.
+Ranganath, R., Altosaar, J., Tran, D., and Blei, D. M. Operator variational inference. In Advances in Neural Information Processing Systems, 2016a.
+Ranganath, R., Tran, D., and Blei, D. M. Hierarchical variational models. In International Conference on Machine
+Learning, 2016b.
+Rezende, D. and Mohamed, S. Variational inference with
+normalizing flows. In International Conference on Machine Learning, pp. 1530–1538, 2015.
+Salimans, T. and Knowles, D. A. Fixed-form variational posterior approximation through stochastic linear regression.
+Bayesian Analysis, 8(4):837–882, 2013.
+Seeger, M. W. Gaussian covariance and scalable variational inference. In International Conference on Machine
+Learning, 2010.
+Tolstikhin, I., Gelly, S., Bousquet, O., Simon-Gabriel, C.-J.,
+and Schoelkopf, B. Adagan: Boosting generative models.
+arXiv preprint arXiv:1701.02386, 2016.
+Wainwright, M. J. and Jordan, M. I. Graphical models, exponential families, and variational inference. Foundations
+and Trends in Machine Learning, 1(1-2):1–305, 2008.
+Welling, M. and Teh, Y. W. Bayesian learning via stochastic
+gradient Langevin dynamics. In International Conference
+on Machine Learning, 2011.
+Zhang, T. Sequential greedy approximation for certain
+convex optimization problems. IEEE Transactions on
+Information Theory, 49:682–691, 2003.
 
 

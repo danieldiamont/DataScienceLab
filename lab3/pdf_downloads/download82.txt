@@ -1,1070 +1,1130 @@
-Neural Optimizer Search with Reinforcement Learning
+Nearly Optimal Robust Matrix Completion
 
-Irwan Bello * 1 Barret Zoph * 1 Vijay Vasudevan 1 Quoc V. Le 1
+Yeshwanth Cherapanamjeri 1 Kartik Gupta 1 Prateek Jain 1
 
 Abstract
-We present an approach to automate the process
-of discovering optimization methods, with a focus on deep learning architectures. We train a
-Recurrent Neural Network controller to generate
-a string in a specific domain language that describes a mathematical update equation based on
-a list of primitive functions, such as the gradient, running average of the gradient, etc. The
-controller is trained with Reinforcement Learning to maximize the performance of a model after a few epochs. On CIFAR-10, our method discovers several update rules that are better than
-many commonly used optimizers, such as Adam,
-RMSProp, or SGD with and without Momentum
-on a ConvNet model. These optimizers can also
-be transferred to perform well on different neural
-network architectures, including Google’s neural
-machine translation system.
+In this paper, we consider the problem of Robust Matrix Completion (RMC) where the goal
+is to recover a low-rank matrix by observing
+a small number of its entries out of which a
+few can be arbitrarily corrupted. We propose a
+simple projected gradient descent-based method
+to estimate the low-rank matrix that alternately
+performs a projected gradient descent step and
+cleans up a few of the corrupted entries using hard-thresholding. Our algorithm solves
+RMC using nearly optimal number of observations while tolerating a nearly optimal number
+of corruptions. Our result also implies significant improvement over the existing time complexity bounds for the low-rank matrix completion problem. Finally, an application of our result to the robust PCA problem (low-rank+sparse
+matrix separation) leads to nearly linear time (in
+matrix dimensions) algorithm for the same; existing state-of-the-art methods require quadratic
+time. Our empirical results corroborate our theoretical results and show that even for moderate
+sized problems, our method for robust PCA is an
+order of magnitude faster than the existing methods.
 
 1. Introduction
-The choice of the right optimization method plays a major role in the success of training deep learning models.
-Although Stochastic Gradient Descent (SGD) often works
-well out of the box, more advanced optimization methods
-such as Adam (Kingma & Ba, 2015) or Adagrad (Duchi
-et al., 2011) can be faster, especially for training very deep
-networks. Designing optimization methods for deep learning, however, is very challenging due to the non-convex
-nature of the optimization problems.
-In this paper, we consider an approach to automate the process of designing update rules for optimization methods,
-especially for deep learning architectures. The key insight
-is to use a controller in the form of a recurrent network to
-generate an update equation for the optimizer. The recur*
-Equal contribution 1 Google Brain. Correspondence to:
-Irwan Bello <ibello@google.com>, Barret Zoph <barretzoph@google.com>, Vijay Vasudevan <vrv@google.com>,
-Quoc V. Le <qvl@google.com>.
+In this paper, we study the Robust Matrix Completion
+(RMC) problem where the goal is to recover an underlying
+low-rank matrix by observing a small number of sparsely
+corrupted entries. Formally,
+RMC:
+
+Find rank-r matrix L∗ ∈ Rm×n
+using Ω and PΩ (L∗ ) + S ∗ , (1)
+
+where Ω ⊆ [m] × [n] is the set of observed entries
+(throughout the paper we assume that m ≤ n), S ∗ denotes the sparse corruptions of the observed entries, i.e.,
+1
+Microsoft Research India. Correspondence to: Prateek Jain
+<prajain@microsoft.com>.
 
 Proceedings of the 34 th International Conference on Machine
 Learning, Sydney, Australia, PMLR 70, 2017. Copyright 2017
 by the author(s).
 
-Figure 1. An overview of Neural Optimizer Search.
+Supp(S ∗ ) ⊂ Ω and sampling operator PΩ : Rm×n →
+Rm×n is defined as:
+(
+Aij , if (i, j) ∈ Ω
+(PΩ (A))ij =
+(2)
+0,
+otherwise.
+RMC is an important problem with several applications.
+It is used to model recommendation systems with outliers
+and to perform PCA under gross outliers as well as erasures (Jalali et al., 2011). In addition, it is a strict generalization of the following two fundamental problems in
+machine learning:
+Matrix Completion (MC): Matrix completion is the task
+of completing a low rank matrix given a subset of entries of the matrix. It is widely used in recommender systems and also finds applications in system identification
+and global positioning. Note that it is a special case of
+the RMC problem where the matrix S ∗ = 0. State-of-theart result for MC uses nuclear norm minimization and requires |Ω| ≥ µ2 nr2 log2 n under standard µ-incoherence
+assumption (see Section 3). But it requires O(m2 n) time
+in general. The best sample complexity result for a nonconvex iterative method (with at most logarithmic dependence on the condition number of L∗ ) achieve exact recovery when |Ω| ≥ µ6 nr5 log2 n and needs O(|Ω|r) computational steps.
+Robust PCA (RPCA): RPCA aims to decompose a
+sparsely corrupted low rank matrix into its low rank and
+sparse components. It corresponds to another special case
+of RMC where the whole matrix is observed. State-ofthe-art results for RPCA shows exact recovery of a rank-r,
+∗
+µ-incoherent
+L (see Assumption 1, Section 3) if at most
+
+ρ = O µ12 r fraction of the entries in each row/column of
+S ∗ are corrupted (Hsu et al., 2011; Netrapalli et al., 2014).
+Moreover, St-NcRPCA algorithm (Netrapalli et al., 2014)
+solves the problem in time O(mnr2 ).
+Therefore, an efficient solution to the RMC problem implies efficient solutions to both the MC and RPCA problems. In this work, we attempt to answer the following
+open question (assuming m ≤ n):
+Can RMC be solved exactly by using |Ω| = O(rn log n)
+observations out of which O( µ12 r ) fraction of the observed
 
-rent network controller is trained with reinforcement learning to maximize the accuracy of a particular model architecture, being trained for a fixed number of epochs by the
-update rule, on a held-out validation set. This process is
-illustrated in Figure 1.
-On CIFAR-10, our approach discovers several update rules
-that are better than many commonly used optimizers such
-as Adam, RMSProp, or SGD with and without Momentum
-on a small ConvNet model. Many of the generated update
-equations can be easily transferred to new architectures and
-datasets. For instance, update rules found on a small ConvNet architecture, when applied to the Wide ResNet architecture (Zagoruyko & Komodakis, 2016), improved accuracy over Adam, RMSProp, Momentum, and SGD by a
-margin up to 2% on the test set. The same update rules also
-work well for Google’s Neural Machine Translation system (Wu et al., 2016) giving an improvement of up to 0.7
-BLEU on the WMT 2014 English to German task.
+Nearly Optimal Robust Matrix Completion
 
-2. Related Work
-Neural networks are difficult and slow to train, and
-many methods have been designed to tackle this difficulty
-(e.g., Riedmiller & Braun (1992); LeCun et al. (1998);
-Schraudolph (2002); Martens (2010); Le et al. (2011);
-Duchi et al. (2011); Zeiler (2012); Martens & Sutskever
-(2012); Schaul et al. (2013); Pascanu & Bengio (2013);
-Pascanu et al. (2013); Kingma & Ba (2014); Ba et al.
-(2017)). More recent optimization methods combine insights from both stochastic and batch methods in that they
-use a small minibatch, similar to SGD, yet they implement
-many heuristics to estimate diagonal second-order informa-
+entries in each row/column are corrupted?
+Note that both |Ω| (for uniformly random Ω) and ρ values mentioned in the question above denote the information theoretic limits. Hence, the goal is to solve RMC for
+nearly-optimal number of samples and nearly-optimal fraction of corruptions.
+The existing state-of-the-art results for RMC with optimal ρ = µ12 r fraction of corrupted entries, either require
+at least a constant fraction of the entries of L∗ to be observed (Chen et al., 2011; Candès et al., 2011) or require
+restrictive assumptions like the support of corruptions being uniformly random (Li, 2013). (Klopp et al., 2014) also
+considers RMC problem but studies the noisy setting and
+does not provide exact recovery bounds. Moreover, most
+of the existing methods for RMC use convex relaxation for
+both low-rank and sparse components, and in general exhibit large time complexity (O(m2 n)).
+Under standard assumptions on L∗ , S ∗ , Ω and for n =
+O(m), we answer the above question in affirmative albeit
+with |Ω| which is O(r) (ignoring log factors) larger than
+the optimal sample complexity (see Theorem 1). In particular, we propose a simple projected gradient (PGD) style
+method for RMC that alternately cleans up corrupted entries by hard-thresholding and performs a projected gradient descent update onto the space of low rank matrices; our
+method’s computational complexity is also nearly optimal
+(O(|Ω|r + (m + n)r2 + r3 )). Our algorithm is based on
+projected gradient descent for estimating L∗ and alternating projection on the set of sparse matrices for estimating
+S ∗ . Note that projection is onto non-convex sets of lowrank matrices (for L∗ ) and sparse matrices (for S ∗ ), hence
+standard convex analysis techniques cannot be used for our
+algorithm.
+Several recent results (Jain & Netrapalli, 2015; Netrapalli
+et al., 2014; Jain et al., 2014; Hardt & Wootters, 2014; Blumensath, 2011) show that under certain assumptions, projection onto non-convex sets indeed lead to provable algorithms with fast convergence to the global optima. However, as explained in Section 3, RMC presents a unique
+set of challenges as we have to perform error analysis with
+the errors arising due to missing entries as well as sparse
+corruptions, both of which interact among themselves as
+well. In contrast, MC and RPCA only handle noise arising from one of the two sources. To overcome this challenge, we perform error analysis by segregating the effects
+due to random sampling and sparse corruptions and leverage their unique structure to obtain our result (See proof
+of Lemma 14). Another consequence of our careful error analysis is improved results for the MC as well as the
+RPCA problem.
 
-Neural Optimizer Search with Reinforcement Learning
+Our empirical results on synthetic data demonstrates effectiveness of our method. We also apply our method to the
+foreground background separation problem and find that
+our method is an order of magnitude faster than the stateof-the-art method (St-NcRPCA) while achieving similar
+accuracy.
+In a concurrent and independent work, (Yi et al., 2016)
+also studied the RMC problem and obtained similar results.
+They study an alternating gradient descent style algorithm
+while our algorithm is based on low-rank projected gradient descent. Our sample complexity, corruption tolerance
+as well as time complexity differ along certain critical parameters: a) Sample complexity: Our sample complexity
+bound is dependent only logarithmically on κ, the condition number of the matrix L∗ (see Table 1). On the other
+hand, result of (Yi et al., 2016) depends quadratically on κ,
+which can be significantly large. Another difference is that
+our sample complexity bound depends logarithmically on
+the final error  (defined as  = kL − L∗ k2 ); which for typical finite precision computation only introduces an extra
+constant factor. b) Corruption tolerance: Our result allows
+the fraction of corrupted entries to be information theoretic
+optimal (up to a constant) O( µ12 r ), while the result of (Yi
+
+
+
+et al., 2016) allows only O min µ2 r1√rκ , µ2 1κ2 r
+fraction of corrupted entries. c) Time Complexity: As a consequence of the sample complexity bounds, running time
+of the method by (Yi et al., 2016) depends quintically on κ
+whereas our algorithm only has a polylogarithmic dependence.
+In summary, this paper’s main contributions are:
+(a) RMC: We propose a nearly linear time method that
+solves RMC with |Ω| = O(nr2 log2 n log2 kM k2 /) random entries and with optimal fraction of corruptions upto
+constant factors (ρ = O( µ12 r )).
+(b) Matrix Completion: Our result improves upon the
+existing linear time algorithm’s sample complexity by an
+O(r3 ) factor, and time complexity by O(r4 ) factor, although with an extra O(log kL∗ k/) factor in both time and
+sample complexity.
+(c) RPCA: We present a nearly linear time (O(nr3 )) algorithm for RPCA under optimal fraction of corruptions,
+improving upon O(mnr2 ) time complexity of the existing
+methods.
+Notations: We assume that M = L∗ + Se∗ and PΩ (M ) =
+PΩ (L∗ ) + S ∗ , i.e., S ∗ = PΩ (Se∗ ). kvkp denotes `p norm
+of a vector v; kvk denotes `2 norm of v. kAk2 , kAkF ,
+kAk∗ denotes the operator, Frobenius, and nuclear norm of
+A, respectively; by default kAk = kAk2 . Operator PΩ is
+given by (2), operators Pk (A) and HT ζ (A) are defined in
+Section 2. σi (A) denotes i-th singular value of A and σi∗
+denotes the i-th singular value of L∗ .
 
-tion, similar to Hessian-free or L-BFGS (Liu & Nocedal,
-1989). This combination often yields faster convergence
-for practical problems (Duchi et al., 2011; Dean et al.,
-2012; Kingma & Ba, 2014). For example, Adam (Kingma
-& Ba, 2014), a commonly-used optimizer in deep learning, implements simple heuristics to estimate the mean and
-variance of the gradient, which are used to generate more
-stable updates during training.
-Many of the above update rules are designed by borrowing ideas from convex analysis, even though optimization
-problems in neural networks are non-convex. Recent empirical results with non-monotonic learning rate heuristics (Loshchilov & Hutter, 2017) suggest that there are still
-many unknowns in training neural networks and that many
-ideas in non-convex optimization can be used to improve
-it.
-The goal of our work is to search for better update rules
-for neural networks in the space of well known primitives. In other words, instead of hand-designing new update
-rules from scratch, we use a machine learning algorithm to
-search the update rules. This goal is shared with recentlyproposed methods by Andrychowicz et al. (2016); Ravi &
-Larochelle (2017); Wichrowska et al. (2017), which employ an LSTM to generate numerical updates for training
-neural networks. The key difference is that our approach
-generates a mathematical equation for the update instead
-of numerical updates. The main advantage of generating an
-equation is that it can easily be transferred to larger tasks
-and does not require training any additional neural networks for a new optimization problem. Finally, although
-our method does not aim to optimize the memory usage of
-update rules, our method discovers update rules that are on
-par with Adam or RMSProp while requiring less memory.
-The concept of using a Recurrent Neural Network for
-meta-learning has been attempted in the past, either via
-genetic programming or gradient descent (Schmidhuber,
-1992; Hochreiter et al., 2001). Similar to the above recent
-methods, these approaches only generate the updates, but
-not the update equations, as proposed in this paper.
-A related approach is using genetic programming to evolve
-update equations for neural networks (e.g., Bengio et al.
-(1994); Runarsson & Jonsson (2000); Orchard & Wang
-(2016)). Genetic programming however is often slow and
-requires many heuristics to work well. For that reason,
-many prior studies in this area have only experimented with
-very small-scale neural networks. For example, the neural
-networks used for experiments in Orchard & Wang (2016)
-have around 100 weights, which is quite small compared to
-today’s standards.
-Our approach is reminiscent of recent work in automated
-model discovery with Reinforcement Learning (Baker
+Nearly Optimal Robust Matrix Completion
 
-et al., 2016), especially Neural Architecture Search (Zoph
-& Le, 2017), in which a recurrent network is used to generate the configuration string of neural architectures instead.
-In addition to applying the key ideas to different applications, this work presents a novel scheme to combine primitive inputs in a much more flexible manner, which makes
-the search for novel optimizers possible.
-Finally, our work is also inspired by the recent studies
-by Keskar et al. (2016); Zhang et al. (2017), in which it was
-found that SGD can act as a regularizer that helps generalization. In our work, we use the accuracy on the validation
-set as the reward signal, thereby implicitly searching for
-optimizers that can help generalization as well.
+Paper Organization: We present our main algorithm in
+Section 2 and our main results in Section 3. We also present
+an overview of the proof in Section 3. Section 4 presents
+our empirical result. Due to lack of space, we present most
+of the proofs and useful lemmas in the appendix.
 
-3. Method
-3.1. A simple domain specific language for update rules
-In our framework, the controller generates strings corresponding to update rules, which are then applied to a neural network to estimate the update rule’s performance; this
-performance is then used to update the controller so that the
-controller can generate improved update rules over time.
-To map strings sampled by the controller to an update
-rule, we design a domain specific language that relies on a
-parenthesis-free notation (in contrast to the classic infix notation). Our choice of domain specific language (DSL) is
-motivated by the observation that the computational graph
-of most common optimizers can be represented as a simple binary expression tree, assuming input primitives such
-as the gradient or the running average of the gradient and
-basic unary and binary functions.
-We therefore express each update rule with a string describing 1) the first operand to select, 2) the second operand to
-select, 3) the unary function to apply on the first operand,
-4) the unary function to apply on the second operand and
-5) the binary function to apply to combine the outputs of
-the unary functions. The output of the binary function is
-then either temporarily stored in our operand bank (so that
-it can be selected as an operand in subsequent parts of the
-string) or used as the final weight update as follows:
-∆w = λ ∗ b(u1 (op1 ), u2 (op2 ))
-where op1 , op2 , u1 (.), u2 (.) and b(., .) are the operands,
-the unary functions and the binary function corresponding
-to the string, w is the parameter that we wish to optimize
-and λ is the learning rate.
-With a limited number of iterations, our DSL can only represent a subset of all mathematical equations. However we
-note that it recovers common optimizers within one iteration assuming access to simple primitives. Figure 2 shows
+2. Algorithm
+In this section we present our algorithm for solving the
+RMC (Robust Matrix Completion) problem: given Ω and
+PΩ (M ) where M = L∗ + Se∗ ∈ Rm×n , rank(L∗ ) ≤ r,
+kSe∗ k0 ≤ s and S ∗ = PΩ (Se∗ ), the goal is to recover L∗ .
+To this end, we focus on solving the following non-convex
+optimization problem:
 
-Neural Optimizer Search with Reinforcement Learning
+(L∗ , S ∗ ) = arg min kPΩ (M ) − PΩ (L) − Sk2F
+L,S
 
-Figure 2. Computation graph of some commonly used optimizers: SGD, RMSProp, Adam. Here, we show the computation of Adam in
-1 step and 2 steps. Blue boxes correspond to input primitives or temporary outputs, yellow boxes are unary functions and gray boxes
-represent binary functions. g is the gradient, m̂ is the bias-corrected running estimate of the gradient, and v̂ is the bias-corrected running
-estimate of the squared gradient.
+s.t., rank(L) ≤ r, PΩ (S) = S, kSk0 ≤ s. (3)
+For the above problem, we propose a simple iterative algorithm that combines projected gradient descent (for L) with
+alternating projections (for S). In particular, we maintain
+iterates L(t) and S (t) , where L(t) is the current low-rank
+approximation of L∗ and S (t) is the current sparse approximation of S ∗ . L(t+1) is computed using gradient descent
+step for objective (3) and then projecting back onto the set
+of rank k matrices. That is,
+
+
+1
+(t)
+(t)
+(t+1)
+(t)
+L
+= Pk L + PΩ (M − L − S ) , (4)
+p
+where Pk (A) denotes projection of A onto the set of rankk matrices and can be computed efficiently using SVD of
+|Ω|
+A, p = mn
+. S (t+1) is computed by projecting the residual
+PΩ (M − L(t+1) ) onto set of sparse matrices using a hardthresholding operator, i.e.,
+S (t+1) = HT ζ (M − L(t+1) ),
 
-Figure 3. Overview of the controller RNN. The controller iteratively selects subsequences of length 5. It first selects the 1st and 2nd
-operands op1 and op2 , then 2 unary functions u1 and u2 to apply to the operands and finally a binary function b that combines the
-outputs of the unary functions. The resulting b(u1 (op1 ), u2 (op2 )) then becomes an operand that can be selected in the subsequent group
-of predictions or becomes the update rule. Every prediction is carried out by a softmax classifier and then fed into the next time step as
-input.
+(5)
 
-how some commonly used optimizers can be represented in
-the DSL. We also note that multiple strings in our prediction scheme can map to the same underlying update rule,
-including strings of different lengths (c.f. the two representations of Adam in Figure 2). This is both a feature
-of our action space corresponding to mathematical expressions (addition and multiplication are commutative for example) and our choice of domain specific language. We
-argue that this makes for interesting exploration dynamics
-because a competitive optimizer may be obtained by expressing a standard optimizer in an expanded fashion and
-modifying it slightly.
+where HT ζ : Rm×n → Rm×n is the hard thresholding
+operator defined as: (HT ζ (A))ij = Aij if |Aij | ≥ ζ and
+0 otherwise. Intuitively, a better estimate of the sparse corruptions for each iteration will reduce the noise of the projected gradient descent step and a better estimate of the low
+rank matrix will enable better estimation of the sparse corruptions. Hence, under correct set of assumptions, the algorithm should recover L∗ , S ∗ exactly.
+Unfortunately, just the above two simple iterations cannot
+handle problems where L∗ has poor condition number, as
+the intermediate errors can be significantly larger than the
+smallest singular values of L∗ , making recovery of the corresponding singular vectors challenging. To alleviate this
+issue, we propose an algorithm that proceeds in stages. In
 
-3.2. Controller optimization with policy gradients
-Our controller is implemented as a Recurrent Neural Network which samples strings of length 5n where n is a number of iterations fixed during training (see Figure 3). Since
-the operand bank grows as more iterations are computed,
-we use different softmax weights at every step of prediction.
-The controller is trained to maximize the performance of
-its sampled update rules on a specified model. The training
-objective is formulated as follows:
-J(θ) = E∆∼pθ (.) [R(∆)]
+the q-th stage, we project L(t) onto set of rank-kq matrices.
+Rank kq is monotonic w.r.t. q. Under standard assumptions, we show that we
+kq in a manner such
+ can increase
 
-(1)
+that after each stage L(t) − L∗ ∞ decreases by at least a
+constant factor. Hence, the number of stages is only logarithmic in the condition number of L∗ . See Algorithm 1
+(PG-RMC ) for a pseudo-code of the algorithm.
+We require an upper bound of the first singular value for our
+algorithm to work. Specifically, we require σ = O (σ1∗ ).
+Alternatively, we can also obtain an estimate of σ1∗ by using
+the thresholding technique from (Yi et al., 2016) although
+this requires an estimate of the number of corruptions in
+each row and column. We also use a simplified version of
+Algorithm 5 from (Hardt & Wootters, 2014) to form independent sets of samples for each iteration which is required
+for our theoretical analysis. Our algorithm has an “outer
+loop” (see Line 6) which sets rank kq of iterates L(t) appropriately (see Line 7). We then update L(t) and S (t) in
+the “inner loop” using (4), (5). We set threshold for the
+hard-thresholding operator using singular values of current
+gradient descent update (see Line 12). Note that, we divide
+Ω uniformly into Q · T sets, where Q is an upper bound on
+the number of outer iterations and T is the number of inner
+iterations. This division ensures independence across iterates that is critical to application of standard concentration
+bounds; such division is a standard technique in the matrix completion related literature (Jain & Netrapalli, 2015;
+Hardt & Wootters, 2014; Recht, 2011). Also, η is a tunable
+parameter which should be less than one and is smaller for
+“easier” problems.
+Note that updating S (t) requires O(|Ω| · r + (m + n) · r)
+computational steps. Computation of L(t+1) requires computing SVD for projection Pr , which can be computed in
+O(|Ω| · r + (m + n) · r2 + r3 ) time (ignoring log factors);
+see (Jain et al., 2010) for more details. Hence, the computational complexity of each step of the algorithm is linear
+in |Ω| · r (assuming |Ω| ≥ r · (m + n)). As we show in
+the next section, the algorithm exhibits geometric convergence rate under standard assumptions and hence the overall complexity is still nearly linear in |Ω| (assuming r is just
+a constant).
+Rank based Stagewise algorithm: We also provide a
+rank-based stagewise algorithm (R-RMC) where the outer
+loop increments kq by one at each stage, i.e., the rank is q
+in the q-th stage. Our analysis extends for this algorithm as
+well, however, its time and sample complexity trades off a
+factor of O(log(σ1 /)) from the complexity of PG-RMC
+with a factor of r (rank of L∗ ). We provide the detailed
+algorithm in Appendix 5.3 due to lack of space (see Algorithm 3).
 
-where R(∆) corresponds to the accuracy on a held-out val-
+Nearly Optimal Robust Matrix Completion
 
-Neural Optimizer Search with Reinforcement Learning
+b = PG-RMC (Ω, PΩ (M ), , r, µ, η, σ)
+Algorithm 1 L
+1: Input: Observed entries Ω, Matrix PΩ (M ) ∈ Rm×n ,
 
-idation set obtained after training a target network with update rule ∆.
-Zoph & Le (2017) train their controller using a vanilla policy gradient obtained via REINFORCE (Williams, 1992),
-which is known to exhibit poor sample efficiency. We find
-that using the more sample efficient Trust Region Policy
-Optimization (Schulman et al., 2015) algorithm speeds up
-convergence of the controller. For the baseline function in
-TRPO, we use a simple exponential moving average of previous rewards.
-3.3. Accelerated Training
-To further speed up the training of the controller RNN, we
-employ a distributed training scheme. In our distributed
-training scheme the samples generated from the controller
-RNN are added to a queue, and run on a set of distributed
-workers that are connected across a network. This scheme
-is different from (Zoph & Le, 2017) in that now a parameter server and controller replicas are not needed for the
-controller RNN, which simplifies training. At each iteration, the controller RNN samples a batch of update rules
-and adds them to the global worker queue. Once the training of the child network is complete, the accuracy on a
-held-out validation set is computed and returned to the controller RNN. whose parameters get updated with TRPO.
-New samples are then generated and this same process continues.
-Ideally, the reward fed to the controller would be the performance obtained when running a model with the sampled optimizer until convergence. However, such a setup
-requires significant computation and time. To help deal
-with these issues, we propose the following trade-offs to
-greatly reduce computational complexity. First, we find
-that searching for optimizers with a small two layer convolutional network provides enough of a signal for whether
-an optimizer would do well on much larger models such
-as the Wide ResNet model. Second, we train each model
-for a modest 5 epochs only, which also provides enough
-signal for whether a proposed optimizer is good enough
-for our needs. These techniques allow us to run experiments more quickly and efficiently compared to Zoph &
-Le (2017), with our controller experiments typically converging in less than a day using 100 CPUs, compared to
-800 GPUs over several weeks.
+2:
+3:
+4:
+5:
+6:
+7:
+8:
+9:
+10:
+11:
+12:
+13:
+14:
+15:
+16:
+17:
+18:
+
+convergence criterion , target rank r, incoherence parameter µ, thresholding parameter η, estimate of first
+singular value σ
+2
+T ← 10 log 20µ nrσ , Q ← T
+Partition Ω into Q · T + 1 subsets {Ω0 } ∪ {Ωq,t : q ∈
+[Q], t ∈ [T ]} with p set to QTΩ+1 using algorithm 2
+L(0) = 0, ζ (0) ← ησ
+mn
+M (0) = |Ω
+PΩ0 (M − HT ζ (M ))
+0|
+k0 ← 0, q ← 0
+
+do
+while σkq +1 (M (0) ) > 2ηn
+q ← q + 1,
+
+(0)
+
+σk
+) 
++1 (M
+}
+kq ← {i : σi (M (0) ) ≥ q−1 2
+for Iteration t = 0 to t = T do
+S (t) = HT ζ (PΩq,t (M − L(t) ))
+M (t) = L(t) − |Ωmn
+PΩq,t (L(t) + S (t) − M )
+q,t |
+L(t+1) = Pkq (M (t) )
+
+
+t−2
+ζ (t+1) ← η σkq +1 (M (t) ) + 12
+σkq (M (t) )
+end for
+S (0) = S (T ) , L(0) = L(T +1) , M (0) = M (T ) ,
+ζ (0) = ζ (T +1)
+end while
+Return: L(T )
+
+Algorithm 2 {Ω1 , . . . , ΩT } = SplitSamples(Ω, p, T )
+1: Input: Random samples with probability T p Ω, Re-
+
+quired Sampling Probability p, Number of Sets T
+2: Output: T independent sets of entries {Ω1 , . . . , ΩT }
+
+sampled with sampling probability p
+3: p0 ← 1 − (1 − p)T
+4: Ω0 be sampled from Ω with each entry being included
+0
+
+independently with probability p /p
+5: for r = 1 to r = T do
+6:
+7:
+8:
+9:
+10:
+11:
+12:
+13:
+
+T
+r
+
+( )p
+
+r
+
+(1−p)
+p0
+
+T −r
+
+qr ←
+end for
+Initialize Ωt ← {} for t ∈ {1, . . . , T }
+for Sample s ∈ Ω0 do
+Draw r ∈ {1, . . . , T } with probability qr
+Draw a random subset S of size r from {1, . . . , T }
+Add s to Ωi for i ∈ S
+end for
+
+3. Analysis
+We now present our analysis for both of our algorithms PGRMC (Algorithm 1) and R-RMC (Algorithm 3). In general the problem of Robust PCA with Missing Entries (3)
+is harder than the standard Matrix Completion problem and
+hence is NP-hard (Hardt et al., 2014). Hence, we need to
+
+impose certain (by now standard) assumptions on L∗ , Se∗ ,
+and Ω to ensure tractability of the problem:
+∗
+Assumption 1. Rank and incoherence of L∗ : L
+ ∈
+m×n
+> ∗
+
+R
+is a rank-r incoherent matrix, i.e., ei U 2 ≤
+p
+p r  > ∗
+, ej V 2 ≤ µ nr , ∀i ∈ [m], ∀j ∈ [n], where
+µ m
+L∗ = U ∗ Σ∗ (V ∗ )> is the SVD of L∗ .
+Assumption 2. Sampling (Ω): Ω is obtained by sampling
+|Ω|
+each entry with probability p = mn
+.
+∗
+Assumption 3. Sparsity of Se , S ∗ : We assume that at
+most ρ ≤ µc2 r fraction of the elements in each row and
+column of Se∗ are non-zero for a small enough constant c.
+Moreover, we assume that Ω is independent of Se∗ . Hence,
+S ∗ = PΩ (Se∗ ) also has p · ρ fraction of the entries in expectation.
+Assumptions 1, 2 are standard assumptions in the provable matrix completion literature (Candès & Recht, 2009;
+Recht, 2011; Jain & Netrapalli, 2015), while Assumptions
+1, 3 are standard assumptions in the robust PCA (lowrank+sparse matrix recovery) literature (Chandrasekaran
+et al., 2011; Candès et al., 2011; Hsu et al., 2011). Hence,
+our setting is a generalization of both the standard and popular problems and as we show later in the section, our result
+can be used to meaningfully improve the state-of-the-art for
+both of these problems.
+We first present our main result for Algorithm 1 under the
+assumptions given above.
+Theorem 1. Let Assumptions 1, 2 and 3 on L∗ , Se∗ and
+Ω hold respectively. Let m ≤ n, n = O(m), and let the
+number of samples |Ω| satisfy:
+
+ 2
+µ rσ1
+2
+2
+2 4 2
+,
+E[|Ω|] ≥ Cα µ r n log (n) log
+
+where C is a global constant. Then, with probability at
+2
+α
+least 1 − n− log 2 , Algorithm 1 with η = 4µm r , at most
+2
+
+O(log(kM k2 /))) outer iterations and O(log( µ
+inner iterations, outputs a matrix L̂ such that:
+
+
+
+
+L̂ − L∗  ≤ .
+
+rkM k2
+))
+
+
+F
+
+Note that the number of samples matches information theoretic bound upto O(r log n log2 σ1∗ /) factor. Also, the
+number of allowed corruptions in Se∗ also matches the
+known lower bounds (up to a constant factor) and cannot
+be improved upon information theoretically.
+We now present our result for the rank based stagewise algorithm (Algorithm 3).
+Theorem 2. Under Assumptions 1, 2 and 3 on L∗ , Se∗ and
+Ω respectively and Ω satisfying:
+
+ 2
+µ rσ1
+,
+E[|Ω|] ≥ Cα2 µ4 r3 n log2 (n) log
+
+
+Nearly Optimal Robust Matrix Completion
+
+for a large enough constant C, then Algorithm
+
+3 with η set
+2
+
+
+to 4µm r outputs a matrix L̂ such that: L̂ − L∗  ≤ , w.p.
+α
+
+≥ 1 − n− log 2 .
+
+F
+
+Notice that the sample complexity of Algorithm 3 has an
+additional multiplicative factor of O(r) when compared to
+that of Algorithm 1, but shaves off a factor of O(log(κ)).
+Similarly, computational complexity of Algorithm 3 also
+trades off a O(log κ) factor for O(r) factor from the computational complexity of Algorithm 1.
+Result for Matrix Completion: Note that for Se∗ = 0, the
+RMC problem with Assumptions 1,2 is exactly the same as
+the standard matrix completion problem and hence, we get
+the following result as a corollary of Theorem 1:
+Corollary 1 (Matrix Completion). Suppose we observe Ω
+and PΩ (L∗ ) where Assumptions 1,2 hold for L∗ and Ω.
+Also, let E[|Ω|] ≥ Cα2 µ4 r2 n log2 n log2 σ1 / and m ≤
+α
+n. Then, w.p. ≥ 1 − n− log 2 , Algorithm 1 outputs L̂ s.t.
+kL̂ − L∗ k2 ≤ .
+Table 1 compares our sample and time complexity bounds
+for low-rank MC. Note that our sample complexity is
+nearly the same as that of nuclear-norm methods while the
+running time of our algorithm is significantly better than
+the existing results that have at most logarithmic dependence on the condition number of L∗ .
+Result for Robust PCA: Consider the standard Robust
+PCA problem (RPCA), where the goal is to recover L∗
+from M = L∗ + Se∗ . For RPCA as well, we can randomly
+sample |Ω| entries from M , where Ω satisfies the assumption required by Theorem 1. This leads us to the following
+corollary:
+Corollary 2 (Robust PCA). Suppose we observe M =
+L∗ + Se∗ , where Assumptions 1, 3 hold for L∗ and
+Se∗ . Generate Ω ∈ [m] × [n] by sampling each entry independently with probability p, s.t., E[|Ω|] ≥
+Cα2 µ4 r2 n log2 n log2 σ1 /. Let m ≤ n. Then, w.p.
+α
+≥ 1 − n− log 2 , Algorithm 1 outputs L̂ s.t. kL̂ − L∗ k2 ≤ .
+Hence, using Theorem 1, we will still be able to recover L∗
+but using only the sampled entries. Moreover, the running
+time of the algorithm is only O(µ4 nr3 log2 n log2 (σ1 /)),
+i.e., we are able to solve RPCA problem in time almost linear in n. To the best of our knowledge, the existing stateof-the-art methods for RPCA require at least O(n2 r) time
+to perform the same task (Netrapalli et al., 2014; Gu et al.,
+2016). Similarly, we don’t need to load the entire data matrix in memory, but we can just sample the matrix and work
+with the obtained sparse matrix with at most linear number
+of entries. Hence, our method significantly reduces both
+run-time and space complexities, and as demonstrated empirically in Section 4 can help scale our algorithm to very
+large data sets without losing accuracy.
+
+3.1. Proof Outline for Theorem 1
+We now provide an outline of our proof for Theorem 1
+and motivate some of our proof techniques; the proof of
+Theorem 2 follows similarly. Recall that we assume that
+M = L∗ + Se∗ and define S ∗ = PΩ (Se∗ ). Similarly, we define Se(t) = HT ζ (M − L(t) ). Critically, S (t) = PΩ (Se(t) )
+(see Line 9 of Algorithm 1), i.e., Se(t) is the set of iterates
+that we “could” obtain if entire M was observed. Note that
+we cannot compute Se(t) , it is introduced only to simplify
+our analysis.
+We first re-write the projected gradient descent step for
+L(t+1) as described in (4):
+
+L(t+1) = Pkq L∗ + (Se∗ − Se(t) ) +
+| {z }
+E1
+
+
+ z E
+}|2
+{
+
+PΩq,t
+I−
+((L(t) − L∗ ) +(Se(t) − Se∗ ))
+p
+|
+{z
+}
+
+(6)
+
+E3
+
+That is, L(t+1) is obtained by rank-kq SVD of a perturbed
+version of L∗ : L∗ + E1 + E3 . As we perform entrywise
+thresholding to reduce kSe∗ − Se(t) k∞ , we need to bound
+kL(t+1) −L∗ k∞ . To this end, we use techniques from (Jain
+& Netrapalli, 2015), (Netrapalli et al., 2014) that explicitly
+model singular vectors of L(t+1) and argue about the infinity norm error using a Taylor series expansion. However,
+in our case, such an error analysis requires analyzing the
+following key quantities (H = E1 + E3 ):
+>
+Aj := max ke>
+q H H
+
+∀1 ≤ j, s.t., j even :
+
+ 2j
+
+V ∗ k2
+
+ 2j
+
+U ∗ k2 ,
+
+q∈[n]
+
+>
+Bj := max ke>
+q HH
+q∈[m]
+
+>
+Cj := max ke>
+HH >
+q H
+
+∀1 ≤ j, s.t., j odd :
+
+b 2j c
+
+q∈[n]
+
+>
+Dj := max ke>
+q H H H
+q∈[m]
+
+b 2j c
+
+U ∗ k2
+
+V ∗ k2 .
+(7)
+
+Note that E1 = 0 in the case of standard RPCA which was
+analyzed in (Netrapalli et al., 2014), while E3 = 0 in the
+case of standard MC which was considered in (Jain & Netrapalli, 2015). In contrast, in our case both E1 and E3
+are non-zero. Moreover, E3 is dependent on random variable Ω. Hence, for j ≥ 2, we will get cross terms between
+E3 and E1 that will also have dependent random variables
+which precludes application of standard Bernstein-style tail
+bounds. To overcome this issue, we first carefully segregate
+the errors arising due to the randomness in the sampling
+process and the deterministic sparse corruptions in Se∗ . We
+do this by introducing Se(t) which is the sparse iterate we
+
+Nearly Optimal Robust Matrix Completion
+
+Table 1: Comparison of PG-RMC and R-RMC with Other Matrix Completion Methods
+
+SVP (Jain & Netrapalli, 2015)
+
+Sample Complexity
+
+O µ2 rn log2 n
+
+O µ4 r5 n log3 n
+
+Alt. Min. (Hardt & Wootters, 2014)
+
+O nµ4 r9 log3 (κ) log2 n
+
+Alt. Grad. Desc. (Sun & Luo, 2015)
+
+
+O nrκ2 max{µ2 log n, µ4 r6 κ4 }
+
+ ∗ 
+σ
+O µ4 r3 n log2 (n) log 1
+
+ ∗ 
+σ
+O µ4 r2 n log2 (n) log2 1
+
+Nuclear norm (Recht, 2011)
+
+R-RMC (This Paper)
+PG-RMC (This Paper)
+
+would have obtained had the whole matrix been observed.
+This allows us to decompose the error term into the sum of
+E1 and E3 where E1 represents the error due to the sparse
+corruptions and E3 represents the error arising from the
+randomness in the sampling procedure. We then incorporate this decomposition into a careful combinatorial-style
+argument similar to that of (Erdos et al., 2013; Jain & Netrapalli, 2015) to bound the above given quantity. That is,
+we can provide the following key lemma:
+Lemma 1. Let L∗ , Ω, and Se∗ satisfy Assumptions 1, 2 and
+3 respectively. Let L∗ = U ∗ Σ∗ (V ∗ )> be the singular value
+decomposition of L∗ . Furthermore, suppose that in the tth
+iteration of the q th stage, Se(t) defined as HTζ (M − L(t) )
+satisfies Supp(Se(t) ) ⊆ Supp(Se∗ ), then we have:
+r 
+r
+max{Aa , Ba , Ca , Da } ≤ µ
+ρn kE1 k∞
+m
+a
+r
+n
++c
+(kE1 − E2 k∞ ) log n ,
+p
+c
+
+∀c > 0, ∀0 ≤ j ≤ log n w.p. ≥ 1 − n−2 log 4 +4 , where
+E1 , E2 and E3 are defined in (6), Aa , Ba , Ca , Da are defined in (7).
+Remark: We would like to note that even for the standard MC setting, i.e., when E1 = 0, we obtain better bound than that of (Jain & Netrapalli, 2015) as we
+T
+q
+can bound
+√ maxi keTi (E3 )q U k2 directly rather than the
+weaker r maxi kei (E3 ) uj k bound that (Jain & Netrapalli, 2015) uses.
+Now, using Lemmas 1 and 7 and by using a hardthresholding argument we can bound kL(t+1) − L∗ k∞ ≤
+
+2µ2 r
+1 t ∗
+∗
+σkq ) (see Lemma 9) in the q-th stage.
+m (σkq +1 + 2
+Hence, after O(log(σ1∗ /)) “inner” iterations, we can guar-
+
+
+
+Computational Complexity
+
+O n3 log 1
+
+O µ4 r7 n log3 n log( 1 )
+
+O nµ4 r13 log3 (κ) log2 n
+
+O n2 r6 κ4 log 1
+
+ ∗ 
+σ
+O µ4 r4 n log2 (n) log 1
+
+ ∗ 
+σ
+O µ4 r3 n log2 (n) log2 1
+
+antee in the q-th stage:
+4µ2 r ∗
+σ
+m kq +1
+20µ2 r ∗
+σkq +1 .
+≤
+m
+
+kL(T ) − L∗ k∞ ≤
+kE1 k∞ + kE2 k∞
+
+Moreover, by using sparsity of Se∗ and the special structure
+of E3 (See Lemma 7), we have: kE1 + E3 k2 ≤ c · σk∗q +1 ,
+where c is a small constant.
+Now, the outer iteration sets the next stage’s rank kq+1 as:
+kq+1 = |{i : σi (L∗ + E1 + E3 ) ≥ 0.5 · σkq +1 (L∗ + E1 +
+E3 )}|. Using the bound on kE1 + E3 k2 and Weyl’s eigenvalue perturbation bound (Lemma 2), we have: σk∗q+1+1 ≤
+0.6 σk∗q +1 . Hence, after Q = O(log(σ1∗ /)) “outer” iterations, Algorithm 1 converges to an -approximate solution
+to L∗ .
 
 4. Experiments
-We aim to answer the following questions:
-• Can the controller discover update rules that outperform other stochastic optimization methods?
-• Do the discovered update rules transfer well to other
+In this section we discuss the performance of Algorithm
+1 on synthetic data and its use in foreground background
+separation. The goal of the section is two-fold: a) to
+demonstrate practicality and effectiveness of Algorithm 1
+for the RMC problem, b) to show that Algorithm 1 indeed solves RPCA problem in significantly smaller time
+than that required by the existing state-of-the-art algorithm
+(St-NcRPCA (Netrapalli et al., 2014)). To this end, we use
+synthetic data as well as video datasets where the goal is to
+perform foreground-background separation (Candès et al.,
+2011).
+We implemented our algorithm in MATLAB and the results for the synthetic data set were obtained by averaging
+over 20 runs. We obtained a matlab implementation of StNcRPCA (Netrapalli et al., 2014) from the authors of (Netrapalli et al., 2014). Note that if the sampling probability
+is p = 1, then our method is similar to St-NcRPCA; the
+key difference being how the rank is selected in each stage.
 
-architectures and tasks?
-In this section, we will focus on answering the first question by performing experiments with the optimizer search
-framework to find optimizers on a small ConvNet model
-and compete with the existing optimizers. In the next section, we will transfer the found optimizers to other architectures and tasks thereby answering the second question.
-4.1. Search space
-The operands, unary functions and binary functions that are
-accessible to our controller are as follows (details below):
-• Operands: g, g 2 , g 3 , m̂, v̂, γ̂, sign(g), sign(m̂), 1,
-small constant noise, 10−4 w, 10−3 w, 10−2 w, 10−1 w,
-ADAM and RMSProp.
-• Unary functions which map input x to: x, −x, ex ,
-log |x|, clip(x, 10−5 ), clip(x, 10−4 ), clip(x, 10−3 ),
-drop(x, 0.1), drop(x, 0.3), drop(x, 0.5) and sign(x).
-• Binary functions which map (x, y) to x+y (addition),
-x
-(divix − y (subtraction), x ∗ y (multiplication), y+
-sion) or x (keep left).
-Here, m̂, v̂, γ̂ are running exponential moving averages of
-g, g 2 and g 3 , obtained with decay rates β1 , β2 and β3 respectively, drop(.|p) sets its inputs to 0 with probability p
-and clip(.|l) clips its input to [−l, l]. All operations are
-applied element-wise.
-In our experiments, we use binary trees with depths of 1,
-2 and 3 which correspond to strings of length 5, 10 and 15
-respectively. The above list of operands, unary functions
-and binary function is quite large, so to address this issue,
-we find it helpful to only work with subsets of the operands
-and functions presented above. This leads to typical search
-space sizes ranging from 106 to 1010 possible update rules.
-We also experiment with several constraints when sampling
-an update rule, such as forcing the left and right operands to
-be different at each iteration, and not using addition as the
-final binary function. An additional constraint added is to
-force the controller to reuse one of the previously computed
-operands in the subsequent iterations. The constraints are
-implemented by manually setting the logits corresponding
-to the forbidden operands or functions to −∞.
-4.2. Experimental details
-Across all experiments, our controller RNN is trained with
-the ADAM optimizer with a learning rate of 10−5 and a
-minibatch size of 5. The controller is a single-layer LSTM
-with hidden state size 150 and weights are initialized uniformly at random between -0.08 and 0.08. We also use an
+Nearly Optimal Robust Matrix Completion
+n = 5000, µ = 1, r = 10, ρ = 0.01
+2
 
-Neural Optimizer Search with Reinforcement Learning
+n = 2000, µ = 1, r = 5, ρ = 0.01
+12
 
-entropy penalty to aid in exploration. This entropy penalty
-coefficient is set to 0.0015.
-
-0.66
-
-Accuracy
-
-The child network architecture that all sampled optimizers
-are run on is a small two layer 3x3 ConvNet. This ConvNet
-has 32 filters with ReLU activations and batch normalization applied after each convolutional layer. These child networks are trained on the CIFAR-10 dataset, one of the most
-benchmarked datasets in deep learning.
-
-Test accuracy comparison with Small ConvNet model
-0.68
-
-0.64
-
-0.62
-adam
-mom
-rmsprop
-sgd
-optimizer_1
-
-0.60
-
-The hyperparameter values for the update rules are inspired
-by standard values used in the literature. We set  to 10−8 ,
-β1 to 0.9 and β2 = β3 to 0.999. Preliminary experiments
-indicate that the update rules are robust to slight changes in
-the hyperparameters they were searched over.
-4.3. Experimental results
-Our results show that the controller discovers many different updates that perform well during training and the maximum accuracy also increases over time. In Figure 4, we
-show the learning curve of the controller as more optimizers are sampled.
-Controller reward
-
-Validation accuracy
-
-0.6
-
-0.58
 0
+-2
+-4
+-6
 
-50
+p = 0.05
+p = 0.1
+St-NcRPCA
 
-100
+5
 
-150
-
-200
-
-250
-
-300
-
-Epoch
-
-Test accuracy comparison with Small ConvNet model
-0.68
-
-0.66
-
-Accuracy
-
-The controller is trained on a CPU and the child models are
-trained using 100 distributed workers which also run on
-CPUs (see Section 3.3). Once a worker receives an optimizer to run from the controller, it performs a basic hyperparameter sweep on the learning rate: 10i with i ranging
-from -5 to 1, with each learning rate being tried for 1 epoch
-of 10,000 CIFAR-10 training examples. The best learning
-rate after 1 epoch is then used to train our child network
-for 5 epochs and the final validation accuracy is reported
-as a reward to the controller. The child networks have a
-batch size of 100 and evaluate the update rule on a fixed
-held-out validation set of 5,000 examples. In this setup,
-training a child model with a sampled optimizer generally
-takes less than 10 minutes. Experiments typically converge
-within a day. All experiments are carried out using TensorFlow (Abadi et al., 2016).
-
-0.64
-
-0.62
-adam
-mom
-rmsprop
-sgd
-optimizer_2
-
-0.60
-
-0.58
+Synthetic data. We generate M = L∗ + Se∗ of two sizes,
+where L∗ = U V > ∈ R2000×2000 (and R5000×5000 ) is a
+random rank-5 (and rank-10 respectively) matrix with incoherence ≈ 1. Se∗ is generated
+  by considering a uni 
+formly random subset of size Se∗  from [m] × [n] where
 0
+every entry is i.i.d. from the uniform distribution in
+r
+[ 2√rmn , √mn
+]. This is the same setup as used in (Candès
+et al., 2011).
+Figure 1 (a) plots recovery error (kL − L∗ kF ) vs computational time for our PG-RMC method (with different
+sampling probabilities) as well as the St-NcRPCA algorithm. Note that even for very small values of sampling
+p, we can achieve the same recovery error as when using
+significantly small values. For example, our method with
+p = 0.1 achieve 0.01 error (kL − L∗ kF ) in ≈ 2.5s while
+St-NcRPCA method requires ≈ 10s to achieve the same
+accuracy. Note that we do not compare against the convex
+relaxation based methods like IALM from (Candès et al.,
+2011), as (Netrapalli et al., 2014) shows that St-NcRPCA
+is significantly faster than IALM and several other convex
+relaxation solvers.
+Figure 1 (b) plots time required to achieve different recovery errors (kL − L∗ kF ) as the sampling probability p increases. As expected, we observe a linear increase in the
+run-time with p. Interestingly, for very small values of p,
+we observe an increase in running time. In this regime,
 
-50
+8
+6
+4
 
-100
+10
 
-150
+15
 
-200
-
-250
-
-300
-
-Epoch
-
-Figure 5. Comparison of two of the best optimizers found with
-Neural Optimizer Search using a 2-layer ConvNet as the architecture. Optimizer 1 refers to [esign(g)∗sign(m) + clip(g, 10−4 )] ∗ g
-−3
-and Optimizer 2 refers to drop(m̂, 0.3) ∗ e10 ∗w .
-
-optimizers being run for 300 epochs on the full CIFAR10 dataset. From the plots we observe that our optimizers slightly outperform Momentum and SGD, while greatly
-outperforming RMSProp and Adam.
-The controller discovered update rules that work well, but
-also produced update equations that are fairly intuitive. For
-instance, among the top candidates is the following update
-function:
-
-0.5
-
-• esign(g)∗sign(m) ∗ g
-
-0.4
-0.3
-0.2
 0.1
-0.0
+
+Time(s)
+
+0.15
+
+0.2
+
+0.25
+
+0.3
+
+Sampling probability
+
+(a)
+
+(b)
+
+n = 2000, r = 5, ρ = 0.01, p = 0.5
+
+n = 2000, r = 5, ρ = 0.01, p = 0.1
+
+30
+
+10
+
+err = 1e-1
+err = 1e-3
+err = 1e-5
+
+Time(s)
+
+Time(s)
+
+40
+
+20
+10
 0
+5
 
-5000
+8
 
-10000 15000 20000 25000 30000 35000 40000 45000
+err = 1e-5
+err = 1e-3
+err = 1e-1
 
-Number of sampled optimizers
+6
+4
 
-Figure 4. Controller reward increasing over time as more optimizers are sampled.
+10
 
-The plots in Figure 5 show the results of two of our best
+15
 
-Because esign(g)∗sign(m) is positive, in each dimension the
-update follows the direction of g with some adjustments to
-the scale. The term esign(g)∗sign(m) means that if the signs
-of the gradient and its running average agree, we should
-make an update to the coordinate with the scale of e, otherwise make an update with the scale of 1/e. This expression
-appears in many optimizers that the model found, showing
-up in 5 of the top 10 candidate update rules:
-• [esign(g)∗sign(m) + clip(g, 10−4 )] ∗ g
+2
+0.5
 
-Neural Optimizer Search with Reinforcement Learning
+20
 
-• drop(g, 0.3) ∗ esign(g)∗sign(m)
-
-is run for 4000 iterations with 4 different learning rates on
-a logarithmic scale and and the best performance is plotted.
-The update rule we test is the intuitive g ∗ esign(g)∗sign(m) .
-The results in Figure 6 show that our optimizer outperforms
-Adam, RMSProp, SGD, and is close to matching the performance of Momentum on this task.
-
-• ADAM ∗ esign(g)∗sign(m)
-• drop(g, 0.1) ∗ esign(g)∗sign(m)
-
-5. Transferability experiments
-
-5.1. Control Experiment with Rosenbrock function
-
-5.2. CIFAR-10 with Wide ResNet
-
-0.94
-
-Test accuracy comparison with Wide ResNet model
-
-0.93
-
-0.92
-
-Accuracy
-
-A key advantage of our method of discovering update equations compared to the previous approach (Andrychowicz
-et al., 2016) is that update equations found by our method
-can be easily transferred to new tasks. In the following experiments, we will exercise some of the update equations
-found in the previous experiment on different network architectures and tasks. The controller is not trained again,
-and the update rules are simply reused.
-
-0.91
-
-0.90
-
-Adam
-
-3.0
-
-3.0
-
-2.5
-
-2.5
-
-2.0
-
-2.0
+1
 
 1.5
 
-1.5
+Rank
 
-1.0
+µ
 
-1.0
+(c)
+
+(d)
+success probability
+
+Parameters. The algorithm has three main parameters: 1)
+threshold ζ, 2) incoherence µ and 3) sampling probability p (E[|Ω|] = p · mn). In the experiments
+on synthetic
+
+ √
+data we observed that keeping ζ ∼ µ M − S (t) 2 / n
+speeds up the 
+recovery while
+for background extraction
+
+keeping ζ ∼ µ M − S (t) 2 /n gives a better quality output. The value of µ for real world data sets was figured
+out using cross validation while for the synthetic data the
+same value was used as used in data generation. The sampling probability for the synthetic data could be kept as low
+as (θ =)2r log2 (n)/n while for the real world data set we
+get good results for p = 0.05. We define effective sample size as the ratio between the sampling probability and
+θ. Also, rather than splitting samples, we use the entire
+set of observed entries to perform our updates (see Algorithm 1).
+
+err = 1e-5
+err = 1e-3
+err = 1e-1
+
+10
+
+Time(s)
+
+log ||L∗ − L̂||F
+
+We also implemented the Alternating Minimzation based
+algorithm from (Gu et al., 2016). However, we found it
+to be an order of magnitude slower than Algorithm 1 on
+the foreground-background separation task. For example,
+on the escalator video, the algorithm did not converge in
+less than 150 seconds despite discounting for the expensive sorting operation in the truncation step. On the other
+hand, our algorithm finds the foreground in about 8 seconds.
+
+1
+
+r = 5, µ = 1, ρ = 0.01
+n = 1000
+n = 2000
+n = 3000
 
 0.5
 
-0.5
-
-0.0
-
-0.0
-
-−0.5
-
-−1.0
-−2.0
-
-0.89
-
-0.88
+0
 0
 
-50
+2
+
+0.5
+1
+effective sample size
+
+(e)
+
+Figure 1: Performance of PG-RMC on synthetic data. 1a:
+time vs error for various sampling probabilities; time taken
+by St-NcRPCA 1b: sampling probability vs time for constant error; time taken decreases with decreasing sampling
+probability upto an extent and then increases 1c: time vs
+rank for constant error 1d: incoherence vs time for constant error 1e: success probability vs effective sample size
+for various matrix sizes
+
+kPΩ (M )k2
+p
+
+becomes very large (as p doesn’t satisfy the sampling requirements). Hence, the increase in the number of
+)k2
+) dominates the decrease in
+iterations (T ≈ log kPΩ (M
+p
+per iteration time complexity.
+Figure 1 (c), (d) plot computation time required by our
+method (PG-RMC , Algorithm 1) versus rank and incoherence, respectively. As expected, as these two problem
+parameters increase, our method requires more time. Note
+that our run-time dependence on rank seems to be linear,
+while our results require O(r3 ) time. This hints at the possibility of further improving the computational complexity
+analysis of our algorithm.
+Figure 1 (e) plots the effective sample size against success probability. We see that the probability of recovering
+the underlying low rank matrix undergoes a rapid phase
+
+Nearly Optimal Robust Matrix Completion
+
+(a)
+
+(b)
+
+(c)
+
+(d)
+µ = 1, r = 5
+
+10
+0
+p = 0.05
+p = 0.1
+St-NcRPCA
+
+-20
+0
 
 100
 
-150
-
 200
-
-250
 
 300
 
-Epoch
-
-−0.5
-
-−1.5
-
-−1.0
-
-−0.5
-
-0.0
-
-0.5
-
-1.0
-
-1.5
-
-−1.0
-−2.0
-
-2.0
-
-−1.5
-
-−1.0
-
-−0.5
-
-0.0
-
-0.5
-
-1.0
-
-1.5
-
-2.0
-
-0.94
-
-2.5
-
-2.5
-
-2.0
-
-2.0
-
-1.5
-
-1.5
-
-1.0
-
-1.0
-
-0.5
-
-0.5
-
-0.0
-
-0.0
-
-−0.5
-
-−0.5
-
-−1.5
-
-−1.0
-
-−0.5
-
-0.0
-
-0.5
-
-1.0
-
-1.5
-
-0.93
-
-0.92
-
-−1.0
-−2.0
-
-2.0
-
-−1.5
-
-−1.0
-
-−0.5
-
-0.0
-
-0.5
-
-1.0
-
-1.5
-
-2.0
-
-Optimizer_1
-
-3.0
-
-Test accuracy comparison with Wide ResNet model
-
-RMSProp
-
-3.0
-
-Accuracy
-
-SGD
-
-3.0
-
-−1.0
-−2.0
-
-mom
-rmsprop
-adam
-sgd
-optimizer_1
-
-Momentum
-
-0.91
-
-0.90
-mom
-rmsprop
-adam
-sgd
-optimizer_2
-
-2.5
-
-0.89
-
-2.0
-
-1.5
-
-0.88
+log ||M − L̂ − Ŝ||F
+
+log ||M − L̂ − Ŝ||F
+
+µ = 1, r = 5
+20
+
+-10
+
+eral videos. Figure 2 (a), (d) show one frame each from two
+such videos (a shopping center video, a restaurant video).
+Figure 2 (b), (d) show the extracted background from the
+two videos by using our method (PG-RMC , Algorithm 1)
+with probability of sampling p = 0.05. Figure 2 (c), (f)
+compare objective function value for different p values.
+Clearly, PG-RMC can recover the true background with
+p as small as 0.05. We also observe an order of magnitude speedup (≈ 5x) over St-NcRPCA (Netrapalli et al.,
+2014). We present results on the video Escalator in Appendix 5.5.
+
+15
+10
+5
+p = 0.01
+p = 0.05
+p = 0.1
+St-NcRPCA
+
+0
+-5
+-10
 0
 
-1.0
+10
 
-50
+20
 
-100
+Time(s)
 
-150
+Time(s)
 
-200
+(e)
 
-250
+(f)
 
-300
+30
 
-Epoch
-0.5
+Figure 2: PG-RMC on Shopping video. 2a: a video frame
+2c: an extracted background frame 2e: time vs error for different sampling probabilities; PG-RMC takes 38.7s while
+St-NcPCA takes 204.4s. PG-RMC on Restaurant video.
+2b: a video frame 2d: an extracted background frame
+2f: time vs error for different sampling probabilities; PGRMC takes 7.9s while St-NcPCA takes 27.8s
 
-0.0
+transition from 0 to 1 when sampling probability crosses
+∼ r log2 n/n.
+We also study phase transition for different values of sampling probability p. Figure 3 (a) in Appendix 5.5 show a
+phase transition phenomenon where beyond p > .06 the
+probability of recovery is almost 1 while below it, it is almost 0.
+Foreground-background separation. We also applied
+our technique to the problem of foreground-background
+separation. We use the usual method of stacking up the
+vectorized video frames to construct a matrix. The background, being static, will form the low rank component
+while the foreground is considered to be the noise.
+We applied our PG-RMC method (with varying p) to sev-
 
-−0.5
-
-−1.0
-−2.0
-
-−1.5
-
-−1.0
-
-−0.5
-
-0.0
-
-0.5
-
-1.0
-
-1.5
-
-2.0
-
-Figure 6. Comparison of an optimizer found with Neural Optimizer Search to the other well-known optimizers on the Rosenbrock function. Optimizer 1 refers to esign(g)∗sign(m) ∗ g. The
-black dot is the optimum.
-
-We first test one of the optimizers we found in the previous experiment on the famous Rosenbrock function against
-the commonly used deep learning optimizers in TensorFlow (Abadi et al., 2016): Adam, SGD, RMSProp and Momentum, and tune the value of  in Adam in a log scale between 10−3 and 10−8 . In this experiment, each optimizer
-
-Figure 7. Comparison of two of the best optimizers found with
-Neural Optimizer Search using Wide ResNet as the architecture.
-Optimizer 1 refers to [esign(g)∗sign(m) + clip(g, 10−4 )] ∗ g and
-−3
-Optimizer 2 refers to drop(m̂, 0.3) ∗ e10 w .
-
-We further investigate the generalizability of the found update rules on a different and much larger model: the Wide
-ResNet architecture (Zagoruyko & Komodakis, 2016). Our
-controller finds many optimizers that perform well when
-run for 5 epochs on the small ConvNet. To filter optimizers that do well when run for many more epochs, we
-run dozens of our top optimizers for 300 epochs and aggressively stop optimizers that show less promise. The top
-optimizers identified by this process are also the top optimizers for the small ConvNet and the GNMT experiment.
-
-Neural Optimizer Search with Reinforcement Learning
-
-Optimizer
-SGD
-Momentum
-ADAM
-RMSProp
-[esign(g)∗sign(m) + clip(g, 10−4 )] ∗ g
-clip(m̂, 10−4 ) ∗ ev̂
-m̂ ∗ ev̂
-g ∗ esign(g)∗sign(m)
-drop(g, 0.3) ∗ esign(g)∗sign(m)
-2
-m̂ ∗ eg
-2
-drop(m̂, 0.1)/(eg + )
-drop(g, 0.1) ∗ esign(g)∗sign(m)
-clip(RMSProp, 10−5 ) + drop(m̂, 0.3)
-ADAM ∗ esign(g)∗sign(m)
-ADAM ∗ em̂
-g + drop(m̂, 0.3)
-3
-drop(m̂, 0.1) ∗ eg
-g − clip(g 2 , 10−4 )
-eg − em̂
-−3
-drop(m̂, 0.3) ∗ e10 w
-
-Final Val
-92.0
-92.7
-90.4
-90.7
-92.5
-93.5
-93.1
-93.1
-92.7
-93.1
-92.6
-92.8
-90.8
-92.6
-92.9
-93.4
-92.8
-93.4
-93.2
-93.2
-
-Final Test
-91.8
-92.1
-90.1
-90.3
-92.4
-92.5
-92.4
-92.8
-92.2
-92.5
-92.4
-92.4
-90.8
-92.0
-92.8
-92.9
-92.7
-92.8
-92.5
-93.0
-
-Best Val
-92.9
-93.1
-91.8
-91.4
-93.8
-93.8
-93.8
-93.8
-93.6
-93.6
-93.5
-93.5
-91.4
-93.4
-93.3
-93.7
-93.7
-93.7
-93.5
-93.5
-
-Best Test
-91.9
-92.3
-90.7
-90.3
-93.1
-92.7
-92.6
-92.8
-92.7
-92.4
-93.0
-92.2
-90.9
-92.0
-92.7
-92.9
-92.8
-92.8
-93.1
-93.2
-
-Table 1. Performance of Neural Search Search and standard optimizers on the Wide-ResNet architecture (Zagoruyko & Komodakis,
-2016) on CIFAR-10. Final Val and Final Test refer to the final validation and test accuracy after for training for 300 epochs. Best Val
-corresponds to the best validation accuracy over the 300 epochs and Best Test is the test accuracy at the epoch where the validation
-accuracy was the highest. For each optimizer we report the best results out of seven learning rates on a logarithmic scale according to
-the validation accuracy.
-
-Figure 7 shows the comparison between SGD, Adam, RMSProp, Momentum and two of the top candidate optimizers. The plots reveal that these two optimizers outperform
-the other optimizers by a size-able margin on a competitive
-CIFAR-10 model.
-Table 1 shows more details of the comparison between our
-top 16 optimizers against the commonly used SGD, RMSProp, Momentum, and Adam optimizers. We note that
-although Momentum was used and tuned by Zagoruyko &
-Komodakis (2016), many of our updates outperform that
-setup. The margin of improvement is around 1%. Our
-method is also better than other optimizers, with a margin
-up to 2%.
-5.3. Neural Machine Translation
-We run one particularly promising optimizer, g ∗
-esign(g)∗sign(m) , on the WMT 2014 English → German
-task. Our goal is to test the transferability of this optimizer
-on a completely different model and task, since before our
-optimizers were run on convolutional networks and the
-translation models are RNNs. Our optimizer in this experiment is compared against the Adam optimizer (Kingma
-& Ba, 2015). The architecture of interest is the Google
-
-Neural Machine Translation (GNMT) model (Wu et al.,
-2016), which was shown to achieve competitive translation quality on the English → German task. The GNMT
-network comprises 8 LSTM layers for both its encoder and
-decoder (Hochreiter & Schmidhuber, 1997), with the first
-layer of the encoder having bidirectional connections. This
-GNMT model also employs attention in the form of a 1
-layer neural network.
-The model is trained in a distributed fashion using a parameter server. Twelve workers are used, with each worker
-using 8 GPUs and a minibatch size of 128. Further details
-for this model can be found in Wu et al. (2016).
-In our experiments, the only change we make to training is
-to replace Adam with the new update rule. We note that the
-GNMT model’s hyperparameters, such as weight initialization, were previously tuned to work well with Adam (Wu
-et al., 2016), so we expect more tuning can further improve
-the results of this new update rule.
-The results in Table 2 show that our optimizer does indeed
-generalize well and achieves an improvement of 0.1 perplexity, which is considered to be a decent gain on this task.
-This gain in training perplexity enables the model to obtain
-
-Neural Optimizer Search with Reinforcement Learning
-
-a 0.5 BLEU improvement over the Adam optimizer on the
-test set Wu et al. (2016). On the validation set, the averaged
-improvement of 5 points near the peak values is 0.7 BLEU.
-
-Optimizer
-Adam
-g ∗ esign(g)∗sign(m)
-
-Train perplexity
-1.49
-1.39
-
-Test BLEU
-24.5
-25.0
-
-Table 2. Performance of our optimizer versus ADAM in a strong
-baseline GNMT model on WMT 2014 English → German.
-
-Finally, the update rule is also more memory efficient as it
-only keeps one running average per parameter, compared to
-two running averages for Adam. This has practical implications for much larger translation models where Adam cannot currently be used due to memory constraints (Shazeer
-et al., 2017).
-
-6. Conclusion
-This paper considers an approach for automating the discovery of optimizers with a focus on deep neural network
-architectures. We evaluate our discovered optimizers on
-widely used CIFAR-10 and NMT models for which we obtain competitive performance against common optimizers
-and validate to some extent that the optimizers generalize
-across architectures and datasets.
+Conclusion. In this work, we studied the Robust Matrix
+Completion problem. For this problem, we provide exact
+recovery of the low-rank matrix L∗ using nearly optimal
+number of observations as well as nearly optimal fraction
+of corruptions in the observed entries. Our RMC result
+is based on a simple and efficient PGD algorithm that has
+nearly linear time complexity as well. Our result improves
+state-of-the-art sample and run-time complexities for the
+related Matrix Completion as well as Robust PCA problem. For Robust PCA, we provide first nearly linear time
+algorithm under standard assumptions.
+Our sample complexity depends on , the desired accuracy in L∗ . Removing this factor will be an interesting
+future work. Moreover, improving dependence of sample
+complexity on r (from r2 to r) also represents an important direction. Finally, similar to foreground background
+separation, we would like to explore more applications of
+RMC/RPCA.
 
 References
-Abadi, Martı́n, Barham, Paul, Chen, Jianmin, Chen,
-Zhifeng, Davis, Andy, Dean, Jeffrey, Devin, Matthieu,
-Ghemawat, Sanjay, Irving, Geoffrey, Isard, Michael,
-Kudlur, Manjunath, Levenberg, Josh, Monga, Rajat,
-Moore, Sherry, Murray, Derek G., Steiner, Benoit,
-Tucker, Paul, Vasudevan, Vijay, Warden, Pete, Wicke,
-Martin, Yu, Yuan, , and Zheng, Xiaoqiang. Tensorflow:
-A system for large-scale machine learning. Proceedings
-of the 12th USENIX Symposium on Operating Systems
-Design and Implementation (OSDI), 2016.
-Andrychowicz, Marcin, Denil, Misha, Gomez, Sergio,
-Hoffman, Matthew W., Pfau, David, Schaul, Tom, and
-de Freitas, Nando. Learning to learn by gradient descent
-by gradient descent. In Advances in Neural Information
-Processing Systems, pp. 3981–3989, 2016.
-Ba, Jimmy, Grosse, Roger, and Martens, James. Distributed second-order optimization using Kroneckerfactored approximations. In International Conference on
-Learning Representations, 2017.
-Baker, Bowen, Gupta, Otkrist, Naik, Nikhil, and
-Raskar, Ramesh. Designing neural network architectures using reinforcement learning. arXiv preprint
-arXiv:1611.02167, 2016.
-Bengio, Samy, Bengio, Yoshua, and Cloutier, Jocelyn. Use
-of genetic programming for the search of a new learning
-rule for neural networks. In Evolutionary Computation,
-1994. IEEE World Congress on Computational Intelligence., Proceedings of the First IEEE Conference on, pp.
-324–327. IEEE, 1994.
+Bhatia, Rajendra. Matrix Analysis. Springer, 1997.
+Blumensath, Thomas. Sampling and reconstructing signals
+from a union of linear subspaces. IEEE Trans. Information Theory, 57(7):4660–4671, 2011. doi: 10.1109/
+TIT.2011.2146550.
+URL http://dx.doi.org/
+10.1109/TIT.2011.2146550.
+Candès, Emmanuel J. and Recht, Benjamin. Exact matrix completion via convex optimization. Foundations
+of Computational Mathematics, 9(6):717–772, December 2009.
+Candès, Emmanuel J., Li, Xiaodong, Ma, Yi, and Wright,
+John. Robust principal component analysis? J. ACM, 58
+(3):11, 2011.
+Chandrasekaran, Venkat, Sanghavi, Sujay, Parrilo,
+Pablo A., and Willsky, Alan S. Rank-sparsity incoherence for matrix decomposition. SIAM Journal on
+Optimization, 21(2):572–596, 2011.
 
-One strength of our approach is that it naturally encompasses the environment in which the optimization process
-happens. One may for example use our method for discovering optimizers that perform well in scenarios where computations are only carried out using 4 bits, or a distributed
-setup where workers can only communicate a few bits of
-information to a shared parameter server. Unlike previous
-approaches in learning to learn, the update rules in the form
-of equations can be easily transferred to other optimization
-tasks.
+Nearly Optimal Robust Matrix Completion
 
-Dean, Jeffrey, Corrado, Greg, Monga, Rajat, Chen, Kai,
-Devin, Matthieu, Mao, Mark, Senior, Andrew, Tucker,
-Paul, Yang, Ke, Le, Quoc V, et al. Large scale distributed
-deep networks. In Advances in Neural Information Processing Systems, pp. 1223–1231, 2012.
-
-Finally, one of the update rules found by our method,
-g ∗ esign(g)∗sign(m) , is surprisingly intuitive and particularly
-promising. Our experiments show that it performs well on a
-range of tasks that we have tried, from image classification
-with ConvNets to machine translation with LSTMs. In addition to opening up new ways to design update rules, this
-new update rule can now be used to improve the training of
-deep networks.
-
-Hochreiter, Sepp and Schmidhuber, Jürgen. Long shortterm memory. Neural Computation, 9(8):1735–1780,
-1997.
-
-Duchi, John, Hazan, Elad, and Singer, Yoram. Adaptive
-subgradient methods for online learning and stochastic
-optimization. Journal of Machine Learning Research,
+Chen, Yudong, Jalali, Ali, Sanghavi, Sujay, and Caramanis, Constantine. Low-rank matrix recovery from errors
+and erasures. In 2011 IEEE International Symposium on
+Information Theory Proceedings, ISIT 2011, St. Petersburg, Russia, July 31 - August 5, 2011, pp. 2313–2317,
+2011. doi: 10.1109/ISIT.2011.6033975. URL http:
+//dx.doi.org/10.1109/ISIT.2011.6033975.
+Erdos, László, Knowles, Antti, Yau, Horng-Tzer, and Yin,
+Jun. Spectral statistics of Erdos–Rényi graphs I: Local
+semicircle law. The Annals of Probability, 41(3B):2279–
+2375, 2013.
+Gu, Quanquan, Wang, Zhaoran Wang, and Liu, Han. Lowrank and sparse structure pursuit via alternating minimization. In Proceedings of the Nineteenth International Conference on Artificial Intelligence and Statistics, AISTATS 2016, Cádiz, Spain, May 9-11, 2016,
+2016. URL http://jmlr.org/proceedings/
+papers/v51/gu16.html.
+Hardt, Moritz and Wootters, Mary. Fast matrix completion without the condition number. In Proceedings
+of The 27th Conference on Learning Theory, COLT
+2014, Barcelona, Spain, June 13-15, 2014, pp. 638–678,
+2014. URL http://jmlr.org/proceedings/
+papers/v35/hardt14a.html.
+Hardt, Moritz, Meka, Raghu, Raghavendra, Prasad, and
+Weitz, Benjamin. Computational limits for matrix
+completion.
+In Proceedings of The 27th Conference on Learning Theory, COLT 2014, Barcelona,
+Spain, June 13-15, 2014, pp. 703–725, 2014. URL
+http://jmlr.org/proceedings/papers/
+v35/hardt14b.html.
+Hsu, Daniel, Kakade, Sham M, and Zhang, Tong. Robust
+matrix decomposition with sparse corruptions. Information Theory, IEEE Transactions on, 57(11):7221–7234,
 2011.
+Jain, Prateek and Netrapalli, Praneeth. Fast exact matrix completion with finite samples. In Proceedings
+of The 28th Conference on Learning Theory, COLT
+2015, Paris, France, July 3-6, 2015, pp. 1007–1034,
+2015. URL http://jmlr.org/proceedings/
+papers/v40/Jain15.html.
+Jain, Prateek, Meka, Raghu, and Dhillon, Inderjit S. Guaranteed rank minimization via singular value projection.
+In NIPS, pp. 937–945, 2010.
+Jain, Prateek, Tewari, Ambuj, and Kar, Purushottam. On iterative hard thresholding methods for high-dimensional
+m-estimation. In Advances in Neural Information Processing Systems 27: Annual Conference on Neural Information Processing Systems 2014, December 8-13 2014,
 
-Acknowledgements
-
-Hochreiter, Sepp, Younger, A Steven, and Conwell, Peter R. Learning to learn using gradient descent. In International Conference on Artificial Neural Networks, pp.
-87–94. Springer, 2001.
-
-We thank Samy Bengio, Jeff Dean, Vishy Tirumalashetty
-and the Google Brain team for the help with the project.
-
-Keskar, Nitish Shirish, Mudigere, Dheevatsa, Nocedal,
-Jorge, Smelyanskiy, Mikhail, and Tang, Ping Tak Peter.
-
-Neural Optimizer Search with Reinforcement Learning
-
-On large-batch training for deep learning: Generalization gap and sharp minima. In International Conference
-on Learning Representations, 2016.
-Kingma, Diederik and Ba, Jimmy.
-method for stochastic optimization.
-arXiv:1412.6980, 2014.
-
-Adam: A
-arXiv preprint
-
-Kingma, Diederik P. and Ba, Jimmy. Adam: A method for
-stochastic optimization. In International Conference on
-Learning Representations, 2015.
-Le, Quoc V., Ngiam, Jiquan, Coates, Adam, Lahiri, Ahbik,
-Prochnow, Bobby, and Ng, Andrew Y. On optimization
-methods for deep learning. In Proceedings of the 28th
-International Conference on Machine Learning, 2011.
-LeCun, Yann A, Bottou, Léon, Orr, Genevieve B., and
-Müller, Klaus-Robert. Efficient backprop. In Neural networks: Tricks of the trade. Springer, 1998.
-Liu, Dong C and Nocedal, Jorge. On the limited memory
-BFGS method for large scale optimization. Mathematical programming, 45(1):503–528, 1989.
-Loshchilov, Ilya and Hutter, Frank. SGDR: stochastic gradient descent with restarts. In International Conference
-on Learning Representations, 2017.
-Martens, James. Deep learning via Hessian-free optimization. In Proceedings of the 27th International Conference on Machine Learning, pp. 735–742, 2010.
-Martens, James and Sutskever, Ilya. Training deep and
-recurrent networks with Hessian-free optimization. In
-Neural networks: Tricks of the trade, pp. 479–535.
-Springer, 2012.
-Orchard, Jeff and Wang, Lin. The evolution of a generalized neural learning rule. In 2016 International Joint
-Conference on Neural Networks (IJCNN), pp. 4688–
-4694, 2016.
-Pascanu, Razvan and Bengio, Yoshua.
-ural gradient for deep networks.
-arXiv:1301.3584, 2013.
-
-Revisiting natarXiv preprint
-
-Pascanu, Razvan, Mikolov, Tomas, and Bengio, Yoshua.
-On the difficulty of training recurrent neural networks. In
-International Conference on Machine Learning, 2013.
-Ravi, Sachin and Larochelle, Hugo. Optimization as a
-model for few-shot learning. In International Conference on Learning Representations, 2017.
-Riedmiller, Martin and Braun, Heinrich. RPROP - a fast
-adaptive learning algorithm. In Proc. of ISCIS VII, Universitat. Citeseer, 1992.
-
-Runarsson, Thomas P. and Jonsson, Magnus T. Evolution
-and design of distributed learning rules. In IEEE Symposium on Combinations of Evolutionary Computation and
-Neural Networks, 2000.
-Schaul, Tom, Zhang, Sixin, and LeCun, Yann. No more
-pesky learning rates. In International Conference on Machine Learning, 2013.
-Schmidhuber, Juergen. Steps towards ’self-referential’ neural learning: A thought experiment. Technical report,
-University of Colorado Boulder, 1992.
-Schraudolph, Nicol N. Fast curvature matrix-vector products for second-order gradient descent. Neural Computation, 14(7):1723–1738, 2002.
-Schulman, John, Levine, Sergey, Abbeel, Pieter, Jordan,
-Michael I, and Moritz, Philipp. Trust region policy
-optimization. In International Conference on Machine
-Learning, pp. 1889–1897, 2015.
-Shazeer, Noam, Mirhoseini, Azalia, Maziarz, Krzysztof,
-Davis, Andy, Le, Quoc, Hinton, Geoffrey, and Dean,
-Jeff. Outrageously large neural networks: The sparselygated mixture-of-experts layer. In International Conference on Learning Representations, 2017.
-Wichrowska, Olga, Maheswaranathan, Niru, Hoffman,
-Matthew W., Colmenarejo, Sergio Gomez, Denil, Misha,
-de Freitas, Nando, and Sohl-Dickstein, Jascha. Learned
-optimizers that scale and generalize. In International
-Conference on Machine Learning, 2017.
-Williams, Ronald J. Simple statistical gradient-following
-algorithms for connectionist reinforcement learning. In
-Machine Learning, 1992.
-Wu, Yonghui, Schuster, Mike, Chen, Zhifeng, Le, Quoc V.,
-Norouzi, Mohammad, Macherey, Wolfgang, Krikun,
-Maxim, Cao, Yuan, Gao, Qin, Macherey, Klaus,
-Klingner, Jeff, Shah, Apurva, Johnson, Melvin, Liu,
-Xiaobing, Kaiser, Lukasz, Gouws, Stephan, Kato,
-Yoshikiyo, Kudo, Taku, Kazawa, Hideto, Stevens, Keith,
-Kurian, George, Patil, Nishant, Wang, Wei, Young, Cliff,
-Smith, Jason, Riesa, Jason, Rudnick, Alex, Vinyals,
-Oriol, Corrado, Greg, Hughes, Macduff, and Dean, Jeffrey. Google’s neural machine translation system: Bridging the gap between human and machine translation.
-arXiv preprint arXiv:1609.08144, 2016.
-Zagoruyko, Sergey and Komodakis, Nikos. Wide residual
-networks. arXiv preprint arXiv:1605.07146, 2016.
-Zeiler, Matthew D. Adadelta: an adaptive learning rate
-method. arXiv preprint arXiv:1212.5701, 2012.
-
-Neural Optimizer Search with Reinforcement Learning
-
-Zhang, Chiyuan, Bengio, Samy, Hardt, Moritz, Recht, Benjamin, and Vinyals, Oriol. Understanding deep learning
-requires rethinking generalization. In International Conference on Learning Representations, 2017.
-Zoph, Barret and Le, Quoc V. Neural Architecture Search
-with reinforcement learning. In International Conference on Learning Representations, 2017.
+Montreal, Quebec, Canada, pp. 685–693, 2014. URL
+http://papers.nips.cc/paper/5293-oniterative-hard-thresholding-methodsfor-high-dimensional-m-estimation.
+Jalali, Ali, Ravikumar, Pradeep, Vasuki, Vishvas, and
+Sanghavi, Sujay. On learning discrete graphical models
+using group-sparse regularization. In Proceedings of
+the Fourteenth International Conference on Artificial
+Intelligence and Statistics, AISTATS 2011, Fort Lauderdale, USA, April 11-13, 2011, pp. 378–387, 2011.
+URL
+http://www.jmlr.org/proceedings/
+papers/v15/jalali11a/jalali11a.pdf.
+Klopp, Olga, Lounici, Karim, and Tsybakov, Alexandre B. Robust matrix completion. arXiv preprint
+arXiv:1412.8132, 2014.
+Li, Xiaodong. Compressed sensing and matrix completion with constant proportion of corruptions. Constructive Approximation, 37(1):73–99, 2013. ISSN 14320940. doi: 10.1007/s00365-012-9176-9. URL http:
+//dx.doi.org/10.1007/s00365-012-9176-9.
+Netrapalli, Praneeth, U N, Niranjan, Sanghavi, Sujay,
+Anandkumar, Animashree, and Jain, Prateek. Nonconvex robust pca.
+In Ghahramani, Z., Welling,
+M., Cortes, C., Lawrence, N. D., and Weinberger,
+K. Q. (eds.), Advances in Neural Information Processing Systems 27, pp. 1107–1115. Curran Associates, Inc.,
+2014. URL http://papers.nips.cc/paper/
+5430-non-convex-robust-pca.pdf.
+Recht, Benjamin. A simpler approach to matrix completion.
+Journal of Machine Learning Research,
+12:3413–3430, 2011. URL http://dl.acm.org/
+citation.cfm?id=2185803.
+Sun, Ruoyu and Luo, Zhi-Quan. Guaranteed matrix completion via nonconvex factorization. In IEEE 56th Annual Symposium on Foundations of Computer Science,
+FOCS 2015, Berkeley, CA, USA, 17-20 October, 2015,
+pp. 270–289, 2015. doi: 10.1109/FOCS.2015.25. URL
+http://dx.doi.org/10.1109/FOCS.2015.25.
+Yi, Xinyang, Park, Dohyung, Chen, Yudong, and Caramanis, Constantine. Fast algorithms for robust PCA via
+gradient descent. CoRR, abs/1605.07784, 2016. URL
+http://arxiv.org/abs/1605.07784.
 
 
